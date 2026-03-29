@@ -16,7 +16,164 @@ import {
 } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
+import { generateAiResponse } from '../services/ai-response.js';
 import type { Env } from '../index.js';
+
+/**
+ * AI 応答テキストを美しい Flex Message に変換
+ *
+ * AI出力フォーマット:
+ *   ## セクション見出し  → 緑背景の太字ヘッダー
+ *   **ラベル**: 値       → テーブル行（ラベル太字緑 + 値）
+ *   * 箇条書き           → 緑ドット付きリスト
+ *   ■見出し / 【見出し】 → セクションヘッダー（互換）
+ *   ・箇条書き / - 項目  → リスト（互換）
+ *   ラベル: 値            → テーブル行（互換）
+ *   ---                  → 区切り線
+ *   通常テキスト          → 本文
+ */
+function buildAiFlexJson(text: string): string {
+  const lines = text.split('\n').filter(line => line.trim());
+  const bodyContents: object[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // セクション見出し（## / ■ / ● / ▶ / 【】）
+    if (/^(##\s+|[■●▶])/.test(trimmed) || /^【.+】$/.test(trimmed)) {
+      const label = trimmed
+        .replace(/^##\s+/, '')
+        .replace(/^[■●▶]\s*/, '')
+        .replace(/^【/, '').replace(/】$/, '');
+      bodyContents.push({
+        type: 'box', layout: 'horizontal',
+        backgroundColor: '#f0fdf4', cornerRadius: 'md',
+        paddingAll: '10px',
+        margin: bodyContents.length > 0 ? 'lg' : 'none',
+        contents: [
+          { type: 'box', layout: 'vertical', width: '3px',
+            backgroundColor: '#06C755', cornerRadius: '2px',
+            contents: [{ type: 'filler' }] },
+          { type: 'text', text: label,
+            size: 'sm', weight: 'bold', color: '#15803d',
+            wrap: true, margin: 'sm' },
+        ],
+      });
+    }
+    // テーブル行: **ラベル**: 値
+    else if (/^\*\*[^*]+\*\*[:：]\s*.+/.test(trimmed)) {
+      const match = trimmed.match(/^\*\*([^*]+)\*\*[:：]\s*(.+)/);
+      if (match) {
+        bodyContents.push({
+          type: 'box', layout: 'horizontal', spacing: 'md',
+          margin: 'sm', paddingStart: '6px',
+          contents: [
+            { type: 'text', text: match[1],
+              size: 'xs', color: '#15803d', weight: 'bold',
+              flex: 3, wrap: false },
+            { type: 'text', text: match[2],
+              size: 'xs', color: '#1e293b', flex: 7, wrap: true },
+          ],
+        });
+      }
+    }
+    // テーブル行: ラベル: 値（コロンが前半15文字以内にある）
+    else if (/^[^:：\n]{1,15}[:：]\s*.+/.test(trimmed) && !/^https?:/.test(trimmed)) {
+      const colonIdx = trimmed.search(/[:：]/);
+      const label = trimmed.slice(0, colonIdx).trim();
+      const value = trimmed.slice(colonIdx + 1).trim();
+      bodyContents.push({
+        type: 'box', layout: 'horizontal', spacing: 'md',
+        margin: 'sm', paddingStart: '6px',
+        contents: [
+          { type: 'text', text: label,
+            size: 'xs', color: '#15803d', weight: 'bold',
+            flex: 3, wrap: false },
+          { type: 'text', text: value,
+            size: 'xs', color: '#1e293b', flex: 7, wrap: true },
+        ],
+      });
+    }
+    // 箇条書き（* ・ - • で始まる）
+    else if (/^[*・\-•]\s+/.test(trimmed)) {
+      const itemText = trimmed.replace(/^[*・\-•]\s+/, '');
+      bodyContents.push({
+        type: 'box', layout: 'horizontal', spacing: 'sm',
+        margin: 'sm', paddingStart: '8px',
+        contents: [
+          { type: 'text', text: '▸', size: 'xs', color: '#06C755',
+            flex: 0, gravity: 'top' },
+          { type: 'text', text: itemText,
+            size: 'sm', color: '#334155', wrap: true },
+        ],
+      });
+    }
+    // 区切り線
+    else if (/^-{3,}$/.test(trimmed)) {
+      bodyContents.push({ type: 'separator', margin: 'lg', color: '#e2e8f0' });
+    }
+    // 通常テキスト
+    else {
+      bodyContents.push({
+        type: 'text', text: trimmed,
+        size: 'sm', color: '#334155', wrap: true,
+        margin: bodyContents.length > 0 ? 'md' : 'none',
+      });
+    }
+  }
+
+  if (bodyContents.length === 0) {
+    bodyContents.push({ type: 'text', text, size: 'sm', color: '#334155', wrap: true });
+  }
+
+  const bubble = {
+    type: 'bubble',
+    header: {
+      type: 'box', layout: 'horizontal',
+      backgroundColor: '#06C755', paddingAll: '12px',
+      cornerRadius: 'none',
+      contents: [
+        { type: 'text', text: '🌿', size: 'sm', flex: 0 },
+        { type: 'text', text: 'naturism',
+          size: 'xs', color: '#ffffff', weight: 'bold',
+          gravity: 'center', margin: 'sm' },
+        { type: 'filler' },
+        { type: 'text', text: 'AI応答',
+          size: 'xxs', color: '#d1fae5', gravity: 'center' },
+      ],
+    },
+    body: {
+      type: 'box', layout: 'vertical',
+      contents: bodyContents,
+      paddingAll: '16px',
+    },
+    footer: {
+      type: 'box', layout: 'vertical', paddingAll: '12px',
+      backgroundColor: '#f8fafc',
+      contents: [
+        { type: 'box', layout: 'horizontal',
+          justifyContent: 'center', spacing: 'xs',
+          contents: [
+            { type: 'text', text: '詳しくは',
+              size: 'xxs', color: '#94a3b8', flex: 0 },
+            { type: 'text', text: 'info@kenkoex.com',
+              size: 'xxs', color: '#06C755', weight: 'bold',
+              flex: 0, decoration: 'underline' },
+            { type: 'text', text: 'まで📩',
+              size: 'xxs', color: '#94a3b8', flex: 0 },
+          ],
+        },
+      ],
+    },
+    styles: {
+      header: { separator: false },
+      body: { separator: false },
+      footer: { separator: true },
+    },
+  };
+
+  return JSON.stringify(bubble);
+}
 
 const webhook = new Hono<Env>();
 
@@ -66,7 +223,7 @@ webhook.post('/webhook', async (c) => {
   const processingPromise = (async () => {
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin);
+        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env);
       } catch (err) {
         console.error('Error handling webhook event:', err);
       }
@@ -85,6 +242,7 @@ async function handleEvent(
   lineAccessToken: string,
   lineAccountId: string | null = null,
   workerUrl?: string,
+  env?: Env['Bindings'],
 ): Promise<void> {
   if (event.type === 'follow') {
     const userId =
@@ -269,7 +427,7 @@ async function handleEvent(
             await otherClient.pushMessage(other.line_user_id, [bm('flex', JSON.stringify({
               type: 'bubble', size: 'giga',
               header: { type: 'box', layout: 'vertical', paddingAll: '20px', backgroundColor: '#fffbeb',
-                contents: [{ type: 'text', text: `${friend.display_name || ''}さんへ`, size: 'lg', weight: 'bold', color: '#1e293b' }],
+                contents: [{ type: 'text', text: `${(friend.display_name || '').replace(/[\x00-\x1f]/g, '').slice(0, 50)}さんへ`, size: 'lg', weight: 'bold', color: '#1e293b' }],
               },
               body: { type: 'box', layout: 'vertical', paddingAll: '20px',
                 contents: [
@@ -282,7 +440,7 @@ async function handleEvent(
               footer: { type: 'box', layout: 'vertical', paddingAll: '16px',
                 contents: [
                   { type: 'button', action: { type: 'message', label: '導入について相談する', text: '導入支援を希望します' }, style: 'primary', color: '#06C755' },
-                  ...(c.env.LIFF_URL ? [{ type: 'button', action: { type: 'uri', label: 'フィードバックを送る', uri: `${c.env.LIFF_URL}?page=form` }, style: 'secondary', margin: 'sm' }] : []),
+                  ...(env?.LIFF_URL ? [{ type: 'button', action: { type: 'uri', label: 'フィードバックを送る', uri: `${env.LIFF_URL}?page=form` }, style: 'secondary', margin: 'sm' }] : []),
                 ],
               },
             }))]);
@@ -309,8 +467,8 @@ async function handleEvent(
     // NOTE: Auto-replies use replyMessage (free, no quota) instead of pushMessage
     // The replyToken is only valid for ~1 minute after the message event
     const autoReplyQuery = lineAccountId
-      ? `SELECT * FROM auto_replies WHERE is_active = 1 AND (line_account_id IS NULL OR line_account_id = ?) ORDER BY created_at ASC`
-      : `SELECT * FROM auto_replies WHERE is_active = 1 AND line_account_id IS NULL ORDER BY created_at ASC`;
+      ? `SELECT * FROM auto_replies WHERE is_active = 1 AND (line_account_id IS NULL OR line_account_id = ?) ORDER BY created_at ASC LIMIT 100`
+      : `SELECT * FROM auto_replies WHERE is_active = 1 AND line_account_id IS NULL ORDER BY created_at ASC LIMIT 100`;
     const autoReplyStmt = db.prepare(autoReplyQuery);
     const autoReplies = await (lineAccountId ? autoReplyStmt.bind(lineAccountId) : autoReplyStmt)
       .all<{
@@ -355,6 +513,47 @@ async function handleEvent(
 
         matched = true;
         break;
+      }
+    }
+
+    // Layer 2/3: キーワードマッチしなかった場合、AI応答を試行
+    if (!matched && !replyTokenConsumed && env?.AI) {
+      try {
+        // ローディングアニメーション表示（「...」を見せてユーザーを待たせない）
+        try {
+          await lineClient.showLoadingAnimation(userId, 20);
+          console.log('Loading animation sent successfully');
+        } catch (loadErr) {
+          console.error('Loading animation error:', loadErr instanceof Error ? loadErr.message : String(loadErr));
+        }
+
+        const aiResult = await generateAiResponse(
+          env.AI,
+          db,
+          friend.id,
+          (friend as { score?: number }).score ?? 0,
+          (friend as { created_at?: string }).created_at ?? '',
+          incomingText,
+          env.AI_SYSTEM_PROMPT || undefined,
+        );
+
+        // Flex Message カード形式で送信
+        const flexJson = buildAiFlexJson(aiResult.text);
+        await lineClient.replyMessage(event.replyToken, [buildMessage('flex', flexJson)]);
+        replyTokenConsumed = true;
+        matched = true;
+
+        // AI応答ログ保存
+        const aiLogId = crypto.randomUUID();
+        await db
+          .prepare(
+            `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, created_at)
+             VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, 'reply', ?)`,
+          )
+          .bind(aiLogId, friend.id, `[${aiResult.layer}${aiResult.model ? ':' + aiResult.model.split('/').pop() : ''}] ${aiResult.text}`, jstNow())
+          .run();
+      } catch (err) {
+        console.error('AI response failed:', err);
       }
     }
 

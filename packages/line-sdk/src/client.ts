@@ -88,6 +88,13 @@ export class LineClient {
     await this.request('/message/reply', body);
   }
 
+  // ─── Loading Animation ────────────────────────────────────────────────────
+
+  /** Show "..." typing indicator to user (5-60 seconds) */
+  async showLoadingAnimation(chatId: string, loadingSeconds = 20): Promise<void> {
+    await this.request('/chat/loading/start', { chatId, loadingSeconds });
+  }
+
   // ─── Rich Menu ────────────────────────────────────────────────────────────
 
   async getRichMenuList(): Promise<{ richmenus: RichMenuObject[] }> {

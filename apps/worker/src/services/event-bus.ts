@@ -1,6 +1,35 @@
 import { extractFlexAltText } from '../utils/flex-alt-text.js';
 
 /**
+ * SSRF 対策: URL が安全な外部 HTTPS であることを検証
+ */
+function isSafeUrl(urlStr: string): boolean {
+  try {
+    const url = new URL(urlStr);
+    if (url.protocol !== 'https:') return false;
+    const host = url.hostname.toLowerCase();
+    // プライベート/ループバック/メタデータ IP を拒否
+    if (
+      host === 'localhost' ||
+      host === '[::1]' ||
+      /^127\./.test(host) ||
+      /^10\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^169\.254\./.test(host) ||
+      /^0\./.test(host) ||
+      host.endsWith('.local') ||
+      host.endsWith('.internal')
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * イベントバス — システム内イベントの発火と処理
  *
  * イベント発生時に以下を実行:
@@ -116,7 +145,11 @@ async function fireOutgoingWebhooks(
           headers['X-Webhook-Signature'] = hexSignature;
         }
 
-        await fetch(wh.url, { method: 'POST', headers, body });
+        if (!isSafeUrl(wh.url)) {
+          console.warn(`Webhook ${wh.id} blocked: unsafe URL ${wh.url}`);
+        } else {
+          await fetch(wh.url, { method: 'POST', headers, body });
+        }
       } catch (err) {
         console.error(`送信Webhook ${wh.id} への通知失敗:`, err);
       }
@@ -286,12 +319,14 @@ async function executeAction(
 
     case 'send_webhook': {
       const url = action.params.url;
-      if (url) {
+      if (url && isSafeUrl(url)) {
         await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ friendId, ...payload.eventData }),
         });
+      } else if (url) {
+        console.warn(`Automation send_webhook blocked: unsafe URL ${url}`);
       }
       break;
     }

@@ -7,9 +7,23 @@ import {
   createAccountMigration,
   updateAccountMigration,
 } from '@line-crm/db';
+import { testAiResponse } from '../services/ai-response.js';
 import type { Env } from '../index.js';
 
 const health = new Hono<Env>();
+
+// ========== AI テスト（デバッグ用） ==========
+
+health.get('/api/ai-test', async (c) => {
+  const message = c.req.query('q') || 'こんにちは';
+  try {
+    const result = await testAiResponse(c.env.AI, message);
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    return c.json({ success: false, error: errMsg }, 500);
+  }
+});
 
 // ========== アカウントヘルス ==========
 

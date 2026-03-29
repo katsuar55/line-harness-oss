@@ -50,6 +50,10 @@ images.post('/api/images', async (c) => {
       return c.json({ success: false, error: `Unsupported image type: ${mimeType}. Allowed: ${allowedTypes.join(', ')}` }, 400);
     }
 
+    if (!c.env.IMAGES) {
+      return c.json({ success: false, error: 'Image storage is not configured' }, 503);
+    }
+
     const ext = mimeType.split('/')[1] === 'jpeg' ? 'jpg' : mimeType.split('/')[1];
     const id = crypto.randomUUID();
     const key = `${id}.${ext}`;
@@ -74,6 +78,9 @@ images.post('/api/images', async (c) => {
 
 // GET /images/:key — serve image (public, no auth)
 images.get('/images/:key', async (c) => {
+  if (!c.env.IMAGES) {
+    return c.json({ success: false, error: 'Image storage is not configured' }, 503);
+  }
   const key = c.req.param('key');
   const object = await c.env.IMAGES.get(key);
 
@@ -92,6 +99,9 @@ images.get('/images/:key', async (c) => {
 // DELETE /api/images/:key — delete image
 images.delete('/api/images/:key', async (c) => {
   try {
+    if (!c.env.IMAGES) {
+      return c.json({ success: false, error: 'Image storage is not configured' }, 503);
+    }
     const key = c.req.param('key');
     await c.env.IMAGES.delete(key);
     return c.json({ success: true, data: null });

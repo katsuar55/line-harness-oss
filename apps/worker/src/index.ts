@@ -41,7 +41,8 @@ import { images } from './routes/images.js';
 export type Env = {
   Bindings: {
     DB: D1Database;
-    IMAGES: R2Bucket;
+    IMAGES?: R2Bucket;
+    AI: Ai;
     LINE_CHANNEL_SECRET: string;
     LINE_CHANNEL_ACCESS_TOKEN: string;
     API_KEY: string;
@@ -50,6 +51,8 @@ export type Env = {
     LINE_LOGIN_CHANNEL_ID: string;
     LINE_LOGIN_CHANNEL_SECRET: string;
     WORKER_URL: string;
+    ACCOUNT_NAME?: string;
+    AI_SYSTEM_PROMPT?: string;
     X_HARNESS_URL?: string;  // Optional: X Harness API URL for account linking
   };
   Variables: {

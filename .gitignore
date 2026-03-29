@@ -13,3 +13,5 @@ dist/
 .env.staging
 apps/web/out/
 apps/worker/dist/
+SESSION_HANDOFF.md
+apps/worker/AI_SYSTEM_PROMPT.txt
