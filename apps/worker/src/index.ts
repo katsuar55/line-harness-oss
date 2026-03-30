@@ -53,6 +53,8 @@ export type Env = {
     WORKER_URL: string;
     ACCOUNT_NAME?: string;
     AI_SYSTEM_PROMPT?: string;
+    AI_MODEL_PRIMARY?: string;
+    AI_MODEL_FALLBACK?: string;
     X_HARNESS_URL?: string;  // Optional: X Harness API URL for account linking
   };
   Variables: {
@@ -116,7 +118,7 @@ app.get('/r/:ref', (c) => {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>LINE Harness</title>
+<title>naturism</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Hiragino Sans',system-ui,sans-serif;background:#0d1117;color:#fff;display:flex;justify-content:center;align-items:center;min-height:100vh}
@@ -130,7 +132,7 @@ h1{font-size:28px;font-weight:800;margin-bottom:8px}
 </head>
 <body>
 <div class="card">
-<h1>LINE Harness</h1>
+<h1>naturism</h1>
 <p class="sub">L社 / U社 の無料代替 OSS</p>
 <a href="${target}" class="btn">LINE で体験する</a>
 <p class="note">友だち追加するだけで<br>ステップ配信・フォーム・自動返信を体験できます</p>

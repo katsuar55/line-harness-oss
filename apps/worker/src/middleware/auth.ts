@@ -19,8 +19,7 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/api/integrations/stripe/webhook' ||
     path.match(/^\/api\/webhooks\/incoming\/[^/]+\/receive$/) ||
     path.match(/^\/api\/forms\/[^/]+\/submit$/) ||
-    path.match(/^\/api\/forms\/[^/]+$/) || // GET form definition (public for LIFF)
-    path === '/api/ai-test' // AI diagnostic endpoint
+    path.match(/^\/api\/forms\/[^/]+$/) // GET form definition (public for LIFF)
   ) {
     return next();
   }

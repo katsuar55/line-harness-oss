@@ -186,10 +186,10 @@ export default function Sidebar() {
       <div className="px-6 py-5 border-b border-gray-200">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-sm" style={{ backgroundColor: '#06C755' }}>
-            H
+            n
           </div>
           <div>
-            <p className="text-sm font-bold text-gray-900 leading-tight">LINE Harness</p>
+            <p className="text-sm font-bold text-gray-900 leading-tight">naturism</p>
             <p className="text-xs text-gray-400">管理画面</p>
           </div>
         </div>
@@ -251,7 +251,7 @@ export default function Sidebar() {
           </div>
         )}
         <div className="px-6 py-4 space-y-3">
-        <p className="text-xs text-gray-400">LINE Harness v{process.env.APP_VERSION || '0.0.0'}</p>
+        <p className="text-xs text-gray-400">naturism v{process.env.APP_VERSION || '0.0.0'}</p>
         <button
           onClick={() => {
             localStorage.removeItem('lh_api_key')
@@ -288,8 +288,8 @@ export default function Sidebar() {
           </svg>
         </button>
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg flex items-center justify-center text-white font-bold text-xs" style={{ backgroundColor: '#06C755' }}>H</div>
-          <p className="text-sm font-bold text-gray-900">LINE Harness</p>
+          <div className="w-7 h-7 rounded-lg flex items-center justify-center text-white font-bold text-xs" style={{ backgroundColor: '#06C755' }}>n</div>
+          <p className="text-sm font-bold text-gray-900">naturism</p>
         </div>
       </div>
 

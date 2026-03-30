@@ -18,16 +18,25 @@ function stripThinkingTags(text: string): string {
 /**
  * Workers AI でテキスト生成を試行（モデルフォールバック付き）
  */
+const DEFAULT_MODEL_PRIMARY = '@cf/qwen/qwen3-30b-a3b-fp8';
+const DEFAULT_MODEL_FALLBACK = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+
+/** Cloudflare Workers AI モデル名の形式を検証（@cf/ で始まること） */
+function isValidModelName(name: string): boolean {
+  return name.startsWith('@cf/') && name.length > 4;
+}
+
 async function runAiWithFallback(
   ai: Ai,
   systemPrompt: string,
   userMessage: string,
+  modelPrimary?: string,
+  modelFallback?: string,
 ): Promise<{ text: string; model: string } | null> {
   // モデル優先順位: Qwen3 (日本語強い) → Llama 3.3 (安定)
-  const models = [
-    '@cf/qwen/qwen3-30b-a3b-fp8',
-    '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-  ] as const;
+  const primary = modelPrimary && isValidModelName(modelPrimary) ? modelPrimary : DEFAULT_MODEL_PRIMARY;
+  const fallback = modelFallback && isValidModelName(modelFallback) ? modelFallback : DEFAULT_MODEL_FALLBACK;
+  const models = [primary, fallback];
 
   for (const model of models) {
     try {
@@ -213,6 +222,8 @@ export async function generateAiResponse(
   friendCreatedAt: string,
   userMessage: string,
   systemPromptOverride?: string,
+  modelPrimary?: string,
+  modelFallback?: string,
 ): Promise<AiResponseResult> {
   try {
     // ユーザータグを取得してコンテキストに注入
@@ -229,7 +240,7 @@ export async function generateAiResponse(
     // プロンプトインジェクション対策: 入力を500文字に制限
     const sanitizedMessage = userMessage.slice(0, 500);
 
-    const result = await runAiWithFallback(ai, contextPrompt, sanitizedMessage);
+    const result = await runAiWithFallback(ai, contextPrompt, sanitizedMessage, modelPrimary, modelFallback);
 
     if (result) {
       return { text: result.text, layer: 'ai', model: result.model };
@@ -250,10 +261,12 @@ export async function testAiResponse(
   ai: Ai,
   testMessage: string,
   systemPromptOverride?: string,
+  modelPrimary?: string,
+  modelFallback?: string,
 ): Promise<{ success: boolean; text?: string; model?: string; error?: string }> {
   try {
     const prompt = buildSystemPrompt(systemPromptOverride);
-    const result = await runAiWithFallback(ai, prompt, testMessage);
+    const result = await runAiWithFallback(ai, prompt, testMessage, modelPrimary, modelFallback);
 
     if (result) {
       return { success: true, text: result.text, model: result.model };

@@ -27,4 +27,6 @@ crons = ["*/5 * * * *"]
 
 [vars]
 ACCOUNT_NAME = "naturism"
+AI_MODEL_PRIMARY = "@cf/qwen/qwen3-30b-a3b-fp8"
+AI_MODEL_FALLBACK = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 # AI_SYSTEM_PROMPT is set via: npx wrangler secret put AI_SYSTEM_PROMPT

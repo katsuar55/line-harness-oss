@@ -17,7 +17,7 @@ const health = new Hono<Env>();
 health.get('/api/ai-test', async (c) => {
   const message = c.req.query('q') || 'こんにちは';
   try {
-    const result = await testAiResponse(c.env.AI, message);
+    const result = await testAiResponse(c.env.AI, message, undefined, c.env.AI_MODEL_PRIMARY, c.env.AI_MODEL_FALLBACK);
     return c.json({ success: true, data: result });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);

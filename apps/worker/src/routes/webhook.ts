@@ -535,6 +535,8 @@ async function handleEvent(
           (friend as { created_at?: string }).created_at ?? '',
           incomingText,
           env.AI_SYSTEM_PROMPT || undefined,
+          env.AI_MODEL_PRIMARY || undefined,
+          env.AI_MODEL_FALLBACK || undefined,
         );
 
         // Flex Message カード形式で送信
