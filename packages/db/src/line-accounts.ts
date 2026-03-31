@@ -12,6 +12,7 @@ export interface LineAccount {
   login_channel_id: string | null;
   login_channel_secret: string | null;
   liff_id: string | null;
+  bot_user_id: string | null;
   is_active: number;
   token_expires_at: string | null;
   created_at: string;
@@ -70,8 +71,36 @@ export async function getLineAccountByChannelId(
     .first<LineAccount>();
 }
 
+/**
+ * Look up a LINE account by its bot user ID (the "destination" field in webhook payloads).
+ * Used for O(1) webhook signature verification instead of iterating all accounts.
+ */
+export async function getLineAccountByBotUserId(
+  db: D1Database,
+  botUserId: string,
+): Promise<LineAccount | null> {
+  return db
+    .prepare(`SELECT * FROM line_accounts WHERE bot_user_id = ? AND is_active = 1`)
+    .bind(botUserId)
+    .first<LineAccount>();
+}
+
+/**
+ * Set the bot_user_id for a LINE account (auto-populated from webhook destination field).
+ */
+export async function setLineAccountBotUserId(
+  db: D1Database,
+  accountId: string,
+  botUserId: string,
+): Promise<void> {
+  await db
+    .prepare(`UPDATE line_accounts SET bot_user_id = ?, updated_at = ? WHERE id = ?`)
+    .bind(botUserId, jstNow(), accountId)
+    .run();
+}
+
 export type UpdateLineAccountInput = Partial<
-  Pick<LineAccount, 'name' | 'channel_access_token' | 'channel_secret' | 'is_active' | 'token_expires_at'>
+  Pick<LineAccount, 'name' | 'channel_access_token' | 'channel_secret' | 'is_active' | 'token_expires_at' | 'bot_user_id'>
 >;
 
 export async function updateLineAccount(
@@ -101,6 +130,10 @@ export async function updateLineAccount(
   if (updates.token_expires_at !== undefined) {
     fields.push('token_expires_at = ?');
     values.push(updates.token_expires_at);
+  }
+  if (updates.bot_user_id !== undefined) {
+    fields.push('bot_user_id = ?');
+    values.push(updates.bot_user_id);
   }
 
   if (fields.length === 0) return getLineAccountById(db, id);

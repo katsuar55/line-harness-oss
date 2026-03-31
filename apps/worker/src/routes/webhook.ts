@@ -12,6 +12,8 @@ import {
   completeFriendScenario,
   upsertChatOnMessage,
   getLineAccounts,
+  getLineAccountByBotUserId,
+  setLineAccountBotUserId,
   jstNow,
 } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
@@ -190,31 +192,63 @@ webhook.post('/webhook', async (c) => {
     return c.json({ status: 'ok' }, 200);
   }
 
-  // Multi-account: resolve credentials from DB by destination (channel user ID)
-  // or fall back to environment variables (default account)
+  // Multi-account signature verification:
+  // 1. Use "destination" (bot user ID) from webhook body for O(1) account lookup
+  // 2. Fall back to env-level secret for single-account / unconfigured setups
+  // 3. Legacy fallback: iterate all accounts if destination lookup misses
+  //    (handles accounts that haven't had bot_user_id populated yet)
+  const destination = body.destination;
   let channelSecret = c.env.LINE_CHANNEL_SECRET;
   let channelAccessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
   let matchedAccountId: string | null = null;
 
-  if ((body as { destination?: string }).destination) {
-    const accounts = await getLineAccounts(db);
-    for (const account of accounts) {
-      if (!account.is_active) continue;
-      const isValid = await verifySignature(account.channel_secret, rawBody, signature);
+  if (destination) {
+    // Fast path: direct lookup by bot_user_id (indexed, O(1))
+    const accountByDest = await getLineAccountByBotUserId(db, destination);
+    if (accountByDest) {
+      // Verify signature with the matched account's secret
+      const isValid = await verifySignature(accountByDest.channel_secret, rawBody, signature);
       if (isValid) {
-        channelSecret = account.channel_secret;
-        channelAccessToken = account.channel_access_token;
-        matchedAccountId = account.id;
-        break;
+        channelSecret = accountByDest.channel_secret;
+        channelAccessToken = accountByDest.channel_access_token;
+        matchedAccountId = accountByDest.id;
+      } else {
+        // Signature mismatch with the account we found by destination — reject immediately.
+        // This prevents an attacker from spoofing the destination field.
+        console.error('Signature mismatch for destination:', destination);
+        return c.json({ status: 'ok' }, 200);
+      }
+    } else {
+      // Slow path: bot_user_id not yet populated in DB. Iterate accounts to find a match,
+      // then auto-populate bot_user_id for future O(1) lookups.
+      const accounts = await getLineAccounts(db);
+      for (const account of accounts) {
+        if (!account.is_active) continue;
+        const isValid = await verifySignature(account.channel_secret, rawBody, signature);
+        if (isValid) {
+          channelSecret = account.channel_secret;
+          channelAccessToken = account.channel_access_token;
+          matchedAccountId = account.id;
+          // Auto-populate bot_user_id so future lookups are O(1)
+          if (!account.bot_user_id) {
+            c.executionCtx.waitUntil(
+              setLineAccountBotUserId(db, account.id, destination),
+            );
+          }
+          break;
+        }
       }
     }
   }
 
-  // Verify with resolved secret
-  const valid = await verifySignature(channelSecret, rawBody, signature);
-  if (!valid) {
-    console.error('Invalid LINE signature');
-    return c.json({ status: 'ok' }, 200);
+  // Final signature verification with the resolved secret
+  // (skipped if we already verified against a DB account above)
+  if (!matchedAccountId) {
+    const valid = await verifySignature(channelSecret, rawBody, signature);
+    if (!valid) {
+      console.error('Invalid LINE signature');
+      return c.json({ status: 'ok' }, 200);
+    }
   }
 
   const lineClient = new LineClient(channelAccessToken);
