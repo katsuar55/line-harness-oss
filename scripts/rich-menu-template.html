@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { width: 2500px; height: 843px; overflow: hidden; font-family: 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic', sans-serif; }
+.grid { display: grid; grid-template-columns: 833px 834px 833px; width: 2500px; height: 843px; }
+.cell {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  color: #fff; text-align: center; gap: 24px;
+  border-right: 2px solid rgba(255,255,255,0.25);
+}
+.cell:last-child { border-right: none; }
+.icon { font-size: 96px; line-height: 1; }
+.label { font-size: 56px; font-weight: 700; letter-spacing: 3px; }
+.sub { font-size: 32px; opacity: 0.8; letter-spacing: 1px; }
+.c1 { background: linear-gradient(160deg, #07d458 0%, #06C755 100%); }
+.c2 { background: linear-gradient(160deg, #06C755 0%, #05b34e 100%); }
+.c3 { background: linear-gradient(160deg, #05b34e 0%, #049f45 100%); }
+</style></head>
+<body>
+<div class="grid">
+  <div class="cell c1">
+    <span class="icon">💊</span>
+    <span class="label">商品を見る</span>
+    <span class="sub">Blue・Pink・Premium</span>
+  </div>
+  <div class="cell c2">
+    <span class="icon">🤖</span>
+    <span class="label">AI相談</span>
+    <span class="sub">何でも聞いてね</span>
+  </div>
+  <div class="cell c3">
+    <span class="icon">🛒</span>
+    <span class="label">購入する</span>
+    <span class="sub">公式ストアへ</span>
+  </div>
+</div>
+</body></html>

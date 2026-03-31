@@ -126,6 +126,30 @@ export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<
     }
   }
 
+  // Cloudflare分散レート制限（全エッジロケーション共有）— in-memoryより先に評価
+  const env = c.env;
+  if (isUnauthenticatedPath(path) && env.WEBHOOK_RATE_LIMITER) {
+    const ip = getClientIp(c);
+    const { success } = await env.WEBHOOK_RATE_LIMITER.limit({ key: ip });
+    if (!success) {
+      return c.json(
+        { success: false, error: 'Too many requests. Please try again later.' },
+        { status: 429, headers: { 'Retry-After': '10' } },
+      );
+    }
+  } else if (!isUnauthenticatedPath(path) && env.API_RATE_LIMITER) {
+    const authHeader = c.req.header('Authorization');
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7, 23) : getClientIp(c);
+    const { success } = await env.API_RATE_LIMITER.limit({ key: token });
+    if (!success) {
+      return c.json(
+        { success: false, error: 'Too many requests. Please try again later.' },
+        { status: 429, headers: { 'Retry-After': '10' } },
+      );
+    }
+  }
+
+  // フォールバック: in-memory sliding window（コールドスタート後の瞬間バーストを防ぐ）
   const result = check(key, max, windowMs);
 
   if (!result.ok) {

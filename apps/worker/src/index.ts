@@ -56,6 +56,8 @@ export type Env = {
     AI_MODEL_PRIMARY?: string;
     AI_MODEL_FALLBACK?: string;
     X_HARNESS_URL?: string;  // Optional: X Harness API URL for account linking
+    WEBHOOK_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
+    API_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
