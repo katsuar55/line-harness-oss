@@ -17,10 +17,9 @@ binding = "DB"
 database_name = "naturism-line-crm"
 database_id = "f736c7fa-1c19-4279-b03d-3af3a71b7fca"
 
-# R2 is disabled — enable in Cloudflare Dashboard first, then uncomment:
-# [[r2_buckets]]
-# binding = "IMAGES"
-# bucket_name = "naturism-line-crm-images"
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "naturism-line-crm-images"
 
 [triggers]
 crons = ["*/5 * * * *"]
