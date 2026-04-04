@@ -11,25 +11,9 @@ import {
   jstNow,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { verifyShopifySignature } from '../utils/shopify-hmac.js';
 
 const shopify = new Hono<Env>();
-
-// ========== Shopify HMAC-SHA256 署名検証 ==========
-
-async function verifyShopifySignature(secret: string, rawBody: string, hmacHeader: string): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(rawBody));
-  // Shopifyはbase64エンコード（Stripeのhexとは異なる）
-  const computedHmac = btoa(String.fromCharCode(...new Uint8Array(sig)));
-  return computedHmac === hmacHeader;
-}
 
 // ========== Shopify Webhookレシーバー ==========
 
