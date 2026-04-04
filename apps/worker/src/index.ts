@@ -29,6 +29,7 @@ import { templates } from './routes/templates.js';
 import { chats } from './routes/chats.js';
 import { notifications } from './routes/notifications.js';
 import { stripe } from './routes/stripe.js';
+import { shopify as shopifyRoutes } from './routes/shopify.js';
 import { health } from './routes/health.js';
 import { automations } from './routes/automations.js';
 import { richMenus } from './routes/rich-menus.js';
@@ -56,6 +57,10 @@ export type Env = {
     AI_MODEL_PRIMARY?: string;
     AI_MODEL_FALLBACK?: string;
     X_HARNESS_URL?: string;  // Optional: X Harness API URL for account linking
+    SHOPIFY_WEBHOOK_SECRET?: string;
+    SHOPIFY_STORE_DOMAIN?: string;
+    SHOPIFY_CLIENT_ID?: string;
+    SHOPIFY_CLIENT_SECRET?: string;
     WEBHOOK_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
     API_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
   };
@@ -97,6 +102,7 @@ app.route('/', templates);
 app.route('/', chats);
 app.route('/', notifications);
 app.route('/', stripe);
+app.route('/', shopifyRoutes);
 app.route('/', health);
 app.route('/', automations);
 app.route('/', richMenus);
