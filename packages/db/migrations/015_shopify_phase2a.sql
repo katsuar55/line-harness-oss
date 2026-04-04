@@ -140,6 +140,21 @@ CREATE INDEX IF NOT EXISTS idx_coupon_assignments_friend ON shopify_coupon_assig
 -- ===========================================
 -- 5. 会員ランク (Member Ranks)
 -- ===========================================
+
+-- ランクシステム設定（更新間隔・計算期間）
+CREATE TABLE IF NOT EXISTS rank_settings (
+  id                     TEXT PRIMARY KEY DEFAULT 'default',
+  update_interval_days   INTEGER NOT NULL DEFAULT 30,
+  calculation_period_months INTEGER NOT NULL DEFAULT 12,
+  next_update_at         TEXT,
+  metadata               TEXT DEFAULT '{}',
+  created_at             TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at             TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+INSERT OR IGNORE INTO rank_settings (id, update_interval_days, calculation_period_months)
+VALUES ('default', 30, 12);
+
 CREATE TABLE IF NOT EXISTS member_ranks (
   id               TEXT PRIMARY KEY,
   name             TEXT NOT NULL UNIQUE,
@@ -157,6 +172,19 @@ CREATE TABLE IF NOT EXISTS member_ranks (
 
 CREATE INDEX IF NOT EXISTS idx_member_ranks_sort ON member_ranks(sort_order);
 
+-- ランク×クーポン紐付け（定期報酬 / レベルアップ報酬）
+CREATE TABLE IF NOT EXISTS rank_coupon_rewards (
+  id          TEXT PRIMARY KEY,
+  rank_id     TEXT NOT NULL REFERENCES member_ranks(id) ON DELETE CASCADE,
+  coupon_id   TEXT NOT NULL REFERENCES shopify_coupons(id) ON DELETE CASCADE,
+  reward_type TEXT NOT NULL DEFAULT 'periodic',
+  metadata    TEXT DEFAULT '{}',
+  created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_rank_coupon_rewards_rank ON rank_coupon_rewards(rank_id);
+CREATE INDEX IF NOT EXISTS idx_rank_coupon_rewards_type ON rank_coupon_rewards(rank_id, reward_type);
+
 CREATE TABLE IF NOT EXISTS friend_ranks (
   id            TEXT PRIMARY KEY,
   friend_id     TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
@@ -172,11 +200,31 @@ CREATE TABLE IF NOT EXISTS friend_ranks (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_friend_ranks_friend ON friend_ranks(friend_id);
 CREATE INDEX IF NOT EXISTS idx_friend_ranks_rank ON friend_ranks(rank_id);
 
--- デフォルトランク（管理画面で後から変更可能）
+-- デフォルトランク（naturism実運用値: DMMチャットブースト設定に準拠）
 INSERT OR IGNORE INTO member_ranks (id, name, min_total_spent, min_orders_count, color, sort_order, benefits_json)
 VALUES
   ('rank_regular',  'レギュラー', 0,     0, '#9E9E9E', 1, '[]'),
-  ('rank_bronze',   'ブロンズ',   5000,  2, '#CD7F32', 2, '["birthday_coupon"]'),
-  ('rank_silver',   'シルバー',   15000, 5, '#C0C0C0', 3, '["birthday_coupon","free_shipping"]'),
-  ('rank_gold',     'ゴールド',   50000, 10, '#FFD700', 4, '["birthday_coupon","free_shipping","early_access"]'),
-  ('rank_platinum', 'プラチナ',   100000, 20, '#E5E4E2', 5, '["birthday_coupon","free_shipping","early_access","vip_support"]');
+  ('rank_bronze',   'ブロンズ',   1,     0, '#CD7F32', 2, '["coupon_2pct"]'),
+  ('rank_silver',   'シルバー',   12000, 0, '#C0C0C0', 3, '["coupon_4pct"]'),
+  ('rank_gold',     'ゴールド',   24000, 0, '#FFD700', 4, '["coupon_6pct"]'),
+  ('rank_platinum', 'プラチナ',   45000, 0, '#E5E4E2', 5, '["coupon_8pct"]');
+
+-- デフォルトクーポン（ランク報酬用）
+INSERT OR IGNORE INTO shopify_coupons (id, code, title, discount_type, discount_value, status)
+VALUES
+  ('coupon_bronze',   'BRONZE-REWARD',   'ブロンズ感謝クーポン', 'percentage', 2, 'active'),
+  ('coupon_silver',   'SILVER-REWARD',   'シルバー感謝クーポン', 'percentage', 4, 'active'),
+  ('coupon_gold',     'GOLD-REWARD',     'ゴールド感謝クーポン', 'percentage', 6, 'active'),
+  ('coupon_platinum', 'PLATINUM-REWARD', 'プラチナ感謝クーポン', 'percentage', 8, 'active');
+
+-- ランク×クーポン紐付け（定期報酬）
+INSERT OR IGNORE INTO rank_coupon_rewards (id, rank_id, coupon_id, reward_type)
+VALUES
+  ('rcr_bronze_periodic',   'rank_bronze',   'coupon_bronze',   'periodic'),
+  ('rcr_silver_periodic',   'rank_silver',   'coupon_silver',   'periodic'),
+  ('rcr_gold_periodic',     'rank_gold',     'coupon_gold',     'periodic'),
+  ('rcr_platinum_periodic', 'rank_platinum', 'coupon_platinum', 'periodic'),
+  ('rcr_bronze_levelup',    'rank_bronze',   'coupon_bronze',   'levelup'),
+  ('rcr_silver_levelup',    'rank_silver',   'coupon_silver',   'levelup'),
+  ('rcr_gold_levelup',      'rank_gold',     'coupon_gold',     'levelup'),
+  ('rcr_platinum_levelup',  'rank_platinum', 'coupon_platinum', 'levelup');
