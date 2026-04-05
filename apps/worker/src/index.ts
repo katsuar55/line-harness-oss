@@ -41,6 +41,7 @@ import { staff } from './routes/staff.js';
 import { images } from './routes/images.js';
 import { abTests } from './routes/ab-tests.js';
 import { shopifyProducts } from './routes/shopify-products.js';
+import { analyticsRoutes } from './routes/analytics.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 
 export type Env = {
@@ -118,6 +119,7 @@ app.route('/', staff);
 app.route('/', images);
 app.route('/', abTests);
 app.route('/', shopifyProducts);
+app.route('/api/analytics', analyticsRoutes);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
