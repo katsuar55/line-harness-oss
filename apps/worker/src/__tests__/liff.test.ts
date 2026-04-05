@@ -65,6 +65,56 @@ vi.mock('@line-crm/db', async (importOriginal) => {
     }),
     getLineAccounts: vi.fn(async () => []),
     jstNow: vi.fn(() => '2025-01-01T09:00:00+09:00'),
+    getShopifyOrders: vi.fn(async (_db: unknown, filters?: { friendId?: string }) => {
+      if (filters?.friendId === 'friend-1') {
+        return [
+          {
+            id: 'order-1',
+            shopify_order_id: 'shopify-1001',
+            friend_id: 'friend-1',
+            order_number: 1001,
+            total_price: 3980,
+            currency: 'JPY',
+            financial_status: 'paid',
+            fulfillment_status: 'fulfilled',
+            line_items: JSON.stringify([{ name: 'naturism サプリA', quantity: 1, price: 3980 }]),
+            created_at: '2025-12-01T10:00:00+09:00',
+          },
+          {
+            id: 'order-2',
+            shopify_order_id: 'shopify-1002',
+            friend_id: 'friend-1',
+            order_number: 1002,
+            total_price: 7960,
+            currency: 'JPY',
+            financial_status: 'paid',
+            fulfillment_status: 'unfulfilled',
+            line_items: JSON.stringify([{ name: 'naturism サプリB', quantity: 2, price: 3980 }]),
+            created_at: '2025-12-15T10:00:00+09:00',
+          },
+        ];
+      }
+      return [];
+    }),
+    getShopifyOrderById: vi.fn(async (_db: unknown, id: string) => {
+      if (id === 'order-1') {
+        return {
+          id: 'order-1',
+          shopify_order_id: 'shopify-1001',
+          friend_id: 'friend-1',
+          order_number: 1001,
+          total_price: 3980,
+          currency: 'JPY',
+          financial_status: 'paid',
+          fulfillment_status: 'fulfilled',
+          line_items: JSON.stringify([{ name: 'naturism サプリA', quantity: 1, price: 3980 }]),
+          tags: 'vip',
+          created_at: '2025-12-01T10:00:00+09:00',
+          updated_at: '2025-12-01T10:00:00+09:00',
+        };
+      }
+      return null;
+    }),
     // Stubs to prevent import errors
     getStaffByApiKey: vi.fn(async () => null),
     getAutoReplies: vi.fn(async () => []),
@@ -295,6 +345,181 @@ describe('LIFF Routes', () => {
       expect(res.status).toBe(400);
       const body = (await res.json()) as { success: boolean; error: string };
       expect(body.error).toBe('idToken is required');
+    });
+  });
+
+  // =========================================================================
+  // POST /api/liff/orders — Purchase History
+  // =========================================================================
+
+  describe('POST /api/liff/orders', () => {
+    it('returns 400 when lineUserId is missing', async () => {
+      const res = await app.request('/api/liff/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      }, env);
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body.error).toBe('lineUserId is required');
+    });
+
+    it('returns 404 when friend not found', async () => {
+      const res = await app.request('/api/liff/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_NONEXISTENT' }),
+      }, env);
+      expect(res.status).toBe(404);
+    });
+
+    it('returns orders for existing user', async () => {
+      const res = await app.request('/api/liff/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_EXISTING' }),
+      }, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        success: boolean;
+        data: Array<{
+          id: string;
+          orderNumber: number;
+          totalPrice: number;
+          lineItems: Array<{ name: string; quantity: number; price: number }>;
+        }>;
+        meta: { total: number; limit: number; offset: number };
+      };
+      expect(body.success).toBe(true);
+      expect(body.data).toHaveLength(2);
+      expect(body.data[0].orderNumber).toBe(1001);
+      expect(body.data[0].lineItems[0].name).toBe('naturism サプリA');
+      expect(body.meta.limit).toBe(20);
+      expect(body.meta.offset).toBe(0);
+    });
+
+    it('respects limit and offset params', async () => {
+      const res = await app.request('/api/liff/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_EXISTING', limit: 5, offset: 10 }),
+      }, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { meta: { limit: number; offset: number } };
+      expect(body.meta.limit).toBe(5);
+      expect(body.meta.offset).toBe(10);
+    });
+
+    it('caps limit at 100', async () => {
+      const res = await app.request('/api/liff/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_EXISTING', limit: 500 }),
+      }, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { meta: { limit: number } };
+      expect(body.meta.limit).toBe(100);
+    });
+  });
+
+  // =========================================================================
+  // POST /api/liff/orders/:id — Order Detail
+  // =========================================================================
+
+  describe('POST /api/liff/orders/:id', () => {
+    it('returns 400 when lineUserId is missing', async () => {
+      const res = await app.request('/api/liff/orders/order-1', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      }, env);
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 when friend not found', async () => {
+      const res = await app.request('/api/liff/orders/order-1', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_NONEXISTENT' }),
+      }, env);
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 404 when order does not belong to user', async () => {
+      const res = await app.request('/api/liff/orders/order-999', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_EXISTING' }),
+      }, env);
+      expect(res.status).toBe(404);
+    });
+
+    it('returns order detail for valid owner', async () => {
+      const res = await app.request('/api/liff/orders/order-1', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_EXISTING' }),
+      }, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        success: boolean;
+        data: {
+          id: string;
+          shopifyOrderId: string;
+          orderNumber: number;
+          totalPrice: number;
+          tags: string;
+          lineItems: Array<{ name: string }>;
+        };
+      };
+      expect(body.success).toBe(true);
+      expect(body.data.shopifyOrderId).toBe('shopify-1001');
+      expect(body.data.tags).toBe('vip');
+      expect(body.data.lineItems).toHaveLength(1);
+    });
+  });
+
+  // =========================================================================
+  // POST /api/liff/orders-summary — Purchase Summary
+  // =========================================================================
+
+  describe('POST /api/liff/orders-summary', () => {
+    it('returns 400 when lineUserId is missing', async () => {
+      const res = await app.request('/api/liff/orders-summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      }, env);
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 when friend not found', async () => {
+      const res = await app.request('/api/liff/orders-summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_NONEXISTENT' }),
+      }, env);
+      expect(res.status).toBe(404);
+    });
+
+    it('returns summary for existing user', async () => {
+      const res = await app.request('/api/liff/orders-summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_EXISTING' }),
+      }, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        success: boolean;
+        data: {
+          orderCount: number;
+          totalSpent: number;
+          lastOrderAt: string | null;
+        };
+      };
+      expect(body.success).toBe(true);
+      expect(typeof body.data.orderCount).toBe('number');
+      expect(typeof body.data.totalSpent).toBe('number');
     });
   });
 });

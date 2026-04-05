@@ -11,6 +11,8 @@ import {
   getLineAccountByChannelId,
   getLineAccounts,
   jstNow,
+  getShopifyOrders,
+  getShopifyOrderById,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
 
@@ -1053,6 +1055,170 @@ async function resolveXHarnessToken(
     }
   } catch {
     return null;
+  }
+}
+
+// ─── Purchase History (LIFF) ──────────────────────────────────
+
+/**
+ * POST /api/liff/orders — get purchase history for a LINE user
+ *
+ * Body: { lineUserId: string, limit?: number, offset?: number }
+ */
+liffRoutes.post('/api/liff/orders', async (c) => {
+  try {
+    const body = await c.req.json<{ lineUserId: string; limit?: number; offset?: number }>();
+    if (!body.lineUserId) {
+      return c.json({ success: false, error: 'lineUserId is required' }, 400);
+    }
+
+    const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
+    if (!friend) {
+      return c.json({ success: false, error: 'Friend not found' }, 404);
+    }
+
+    const limit = Math.min(body.limit ?? 20, 100);
+    const offset = body.offset ?? 0;
+
+    const orders = await getShopifyOrders(c.env.DB, {
+      friendId: friend.id,
+      limit,
+      offset,
+    });
+
+    // Count total for pagination
+    const countResult = await c.env.DB
+      .prepare(`SELECT COUNT(*) as total FROM shopify_orders WHERE friend_id = ?`)
+      .bind(friend.id)
+      .first<{ total: number }>();
+    const total = countResult?.total ?? 0;
+
+    // Parse line_items JSON for each order
+    const formatted = orders.map((o) => ({
+      id: o.id,
+      orderNumber: o.order_number,
+      totalPrice: o.total_price,
+      currency: o.currency,
+      financialStatus: o.financial_status,
+      fulfillmentStatus: o.fulfillment_status,
+      lineItems: parseLineItems(o.line_items as string | null),
+      createdAt: o.created_at,
+    }));
+
+    return c.json({
+      success: true,
+      data: formatted,
+      meta: { total, limit, offset },
+    });
+  } catch (err) {
+    console.error('POST /api/liff/orders error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/orders/:id — get single order detail
+ *
+ * Body: { lineUserId: string }
+ */
+liffRoutes.post('/api/liff/orders/:id', async (c) => {
+  try {
+    const orderId = c.req.param('id');
+    const body = await c.req.json<{ lineUserId: string }>();
+    if (!body.lineUserId) {
+      return c.json({ success: false, error: 'lineUserId is required' }, 400);
+    }
+
+    const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
+    if (!friend) {
+      return c.json({ success: false, error: 'Friend not found' }, 404);
+    }
+
+    const order = await getShopifyOrderById(c.env.DB, orderId);
+    if (!order || order.friend_id !== friend.id) {
+      return c.json({ success: false, error: 'Order not found' }, 404);
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        id: order.id,
+        shopifyOrderId: order.shopify_order_id,
+        orderNumber: order.order_number,
+        totalPrice: order.total_price,
+        currency: order.currency,
+        financialStatus: order.financial_status,
+        fulfillmentStatus: order.fulfillment_status,
+        lineItems: parseLineItems(order.line_items as string | null),
+        tags: order.tags,
+        createdAt: order.created_at,
+        updatedAt: order.updated_at,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/liff/orders/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/orders-summary — purchase summary for a LINE user
+ *
+ * Body: { lineUserId: string }
+ */
+liffRoutes.post('/api/liff/orders-summary', async (c) => {
+  try {
+    const body = await c.req.json<{ lineUserId: string }>();
+    if (!body.lineUserId) {
+      return c.json({ success: false, error: 'lineUserId is required' }, 400);
+    }
+
+    const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
+    if (!friend) {
+      return c.json({ success: false, error: 'Friend not found' }, 404);
+    }
+
+    const summary = await c.env.DB
+      .prepare(
+        `SELECT
+          COUNT(*) as order_count,
+          COALESCE(SUM(CASE WHEN financial_status = 'paid' THEN total_price ELSE 0 END), 0) as total_spent,
+          MAX(created_at) as last_order_at
+        FROM shopify_orders
+        WHERE friend_id = ?`,
+      )
+      .bind(friend.id)
+      .first<{ order_count: number; total_spent: number; last_order_at: string | null }>();
+
+    // Get member rank from shopify_customers if linked
+    const customer = await c.env.DB
+      .prepare(`SELECT orders_count, total_spent FROM shopify_customers WHERE friend_id = ?`)
+      .bind(friend.id)
+      .first<{ orders_count: number | null; total_spent: number | null }>();
+
+    return c.json({
+      success: true,
+      data: {
+        orderCount: summary?.order_count ?? 0,
+        totalSpent: summary?.total_spent ?? 0,
+        lastOrderAt: summary?.last_order_at ?? null,
+        shopifyOrdersCount: customer?.orders_count ?? null,
+        shopifyTotalSpent: customer?.total_spent ?? null,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/liff/orders-summary error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/** Parse line_items JSON safely */
+function parseLineItems(raw: string | null): Array<{ name: string; quantity: number; price: number }> {
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
   }
 }
 
