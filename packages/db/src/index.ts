@@ -24,6 +24,8 @@ export * from './ad-platforms';
 export * from './staff';
 export * from './shopify';
 export * from './shopify-phase2a';
+export * from './ab-tests';
+export * from './shopify-products';
 
 /**
  * Thin wrapper around D1Database.

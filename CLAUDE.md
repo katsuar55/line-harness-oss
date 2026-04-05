@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+<!-- brain_notebook_id: bb76696f-4e1f-47c7-b328-801d3c55aa37 -->
+
 ## プロジェクト概要
 
 LINE Harness OSS — LINE公式アカウントの完全オープンソース CRM/マーケティング自動化ツール。

@@ -16,6 +16,7 @@ not_found_handling = "single-page-application"
 binding = "DB"
 database_name = "naturism-line-crm"
 database_id = "f736c7fa-1c19-4279-b03d-3af3a71b7fca"
+migrations_dir = "../../packages/db/migrations"
 
 [[r2_buckets]]
 binding = "IMAGES"

@@ -39,6 +39,9 @@ import { forms } from './routes/forms.js';
 import { adPlatforms } from './routes/ad-platforms.js';
 import { staff } from './routes/staff.js';
 import { images } from './routes/images.js';
+import { abTests } from './routes/ab-tests.js';
+import { shopifyProducts } from './routes/shopify-products.js';
+import { processScheduledAbTests } from './services/ab-test.js';
 
 export type Env = {
   Bindings: {
@@ -113,6 +116,8 @@ app.route('/', forms);
 app.route('/', adPlatforms);
 app.route('/', staff);
 app.route('/', images);
+app.route('/', abTests);
+app.route('/', shopifyProducts);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
@@ -191,6 +196,7 @@ async function scheduled(
       processStepDeliveries(env.DB, lineClient, env.WORKER_URL),
       processScheduledBroadcasts(env.DB, lineClient, env.WORKER_URL),
       processReminderDeliveries(env.DB, lineClient),
+      processScheduledAbTests(env.DB, lineClient, env.WORKER_URL),
     );
   }
   jobs.push(checkAccountHealth(env.DB));
