@@ -44,6 +44,7 @@ import { abTests } from './routes/ab-tests.js';
 import { shopifyProducts } from './routes/shopify-products.js';
 import { analyticsRoutes } from './routes/analytics.js';
 import { liffPortal } from './routes/liff-portal.js';
+import { liffPages } from './routes/liff-pages.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 
 export type Env = {
@@ -125,6 +126,7 @@ app.route('/', abTests);
 app.route('/', shopifyProducts);
 app.route('/api/analytics', analyticsRoutes);
 app.route('/', liffPortal);
+app.route('/', liffPages);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
