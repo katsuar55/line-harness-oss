@@ -11,7 +11,9 @@ import {
   upsertIntakeReminder,
   createReferralLink,
   getReferralLink,
+  getReferralLinkByRefCode,
   getReferralStats,
+  createReferralReward,
   createRecommendationResult,
   upsertHealthLog,
   getHealthLogs,
@@ -606,6 +608,73 @@ liffPortal.post('/api/liff/referral/stats', async (c) => {
     });
   } catch (err) {
     console.error('POST /api/liff/referral/stats error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/referral/claim — 紹介成立処理
+ *
+ * LIFF起動時に ?ref=xxx パラメータがあれば呼び出される。
+ * - 紹介リンク(refCode)から紹介者(referrer)を特定
+ * - 自分自身を紹介できない
+ * - 同じペアの重複記録を防止
+ * - referral_rewards に記録
+ */
+liffPortal.post('/api/liff/referral/claim', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const { refCode } = await c.req.json<{ refCode: string }>();
+    if (!refCode || typeof refCode !== 'string') {
+      return c.json({ success: false, error: 'refCode is required' }, 400);
+    }
+
+    // 紹介リンクを取得
+    const link = await getReferralLinkByRefCode(c.env.DB, refCode);
+    if (!link) {
+      return c.json({ success: false, error: 'Invalid or inactive referral code' }, 400);
+    }
+
+    // 自己紹介防止
+    if (link.friend_id === user.friendId) {
+      return c.json({ success: false, error: 'Cannot refer yourself' }, 400);
+    }
+
+    // 重複チェック
+    const existing = await c.env.DB
+      .prepare(
+        'SELECT id FROM referral_rewards WHERE referrer_friend_id = ? AND referred_friend_id = ?',
+      )
+      .bind(link.friend_id, user.friendId)
+      .first<{ id: string }>();
+
+    if (existing) {
+      return c.json({
+        success: true,
+        data: { alreadyClaimed: true, rewardId: existing.id },
+      });
+    }
+
+    // 紹介成立記録
+    const reward = await createReferralReward(c.env.DB, {
+      referrerFriendId: link.friend_id,
+      referredFriendId: user.friendId,
+      referrerCouponId: link.referrer_coupon_id ?? undefined,
+      referredCouponId: link.referred_coupon_id ?? undefined,
+    });
+
+    return c.json({
+      success: true,
+      data: {
+        alreadyClaimed: false,
+        rewardId: reward.id,
+        status: reward.status,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/liff/referral/claim error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

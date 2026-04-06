@@ -62,6 +62,7 @@ function portalPage(liffId: string, apiBase: string): string {
   <nav class="bg-white border-b sticky top-[52px] z-40">
     <div class="max-w-lg mx-auto flex">
       <button onclick="switchTab('home')" id="tab-home" class="flex-1 py-3 text-xs font-medium text-center tab-active">マイページ</button>
+      <button onclick="switchTab('quiz')" id="tab-quiz" class="flex-1 py-3 text-xs font-medium text-center tab-inactive">診断</button>
       <button onclick="switchTab('intake')" id="tab-intake" class="flex-1 py-3 text-xs font-medium text-center tab-inactive">服用記録</button>
       <button onclick="switchTab('health')" id="tab-health" class="flex-1 py-3 text-xs font-medium text-center tab-inactive">体調</button>
       <button onclick="switchTab('shop')" id="tab-shop" class="flex-1 py-3 text-xs font-medium text-center tab-inactive">ストア</button>
@@ -140,6 +141,49 @@ function portalPage(liffId: string, apiBase: string): string {
       </div>
     </div>
 
+    <!-- ===== QUIZ Section ===== -->
+    <div id="section-quiz" class="section space-y-4">
+      <!-- Quiz Intro -->
+      <div id="quiz-intro" class="card p-6 text-center">
+        <div class="text-4xl mb-3">💊</div>
+        <h2 class="text-lg font-bold text-gray-800 mb-2">あなたにぴったりの naturism は？</h2>
+        <p class="text-sm text-gray-500 mb-4">8つの質問に答えるだけで、最適な商品をご提案します。</p>
+        <button onclick="startQuiz()" class="btn-primary px-8 py-3 rounded-xl text-sm font-bold shadow-md">診断スタート</button>
+      </div>
+
+      <!-- Quiz Steps (hidden until started) -->
+      <div id="quiz-steps" class="card p-5" style="display:none;">
+        <div class="flex items-center justify-between mb-4">
+          <p class="text-xs text-gray-400" id="quiz-progress">Q1 / 8</p>
+          <div class="flex-1 mx-3 bg-gray-100 rounded-full h-1.5 overflow-hidden">
+            <div id="quiz-progress-bar" class="bg-green-500 h-1.5 transition-all duration-300" style="width:12.5%"></div>
+          </div>
+        </div>
+        <p class="text-sm font-bold text-gray-800 mb-4" id="quiz-question"></p>
+        <div id="quiz-options" class="space-y-2"></div>
+      </div>
+
+      <!-- Quiz Result (hidden until complete) -->
+      <div id="quiz-result" style="display:none;">
+        <div class="card p-6 text-center">
+          <p class="text-xs text-green-600 font-bold mb-2">あなたにおすすめ</p>
+          <div class="text-4xl mb-2" id="result-emoji"></div>
+          <h3 class="text-xl font-bold text-gray-800 mb-1" id="result-name"></h3>
+          <p class="text-sm text-green-600 font-bold mb-3" id="result-price"></p>
+          <p class="text-xs text-gray-600 leading-relaxed mb-4" id="result-reason"></p>
+          <div class="flex gap-2">
+            <a id="result-store-link" href="#" target="_blank" class="flex-1 btn-primary py-3 rounded-xl text-sm font-bold text-center block">商品を見る</a>
+            <button onclick="retryQuiz()" class="flex-1 py-3 rounded-xl text-sm font-bold border border-gray-300 text-gray-600">もう一度</button>
+          </div>
+        </div>
+        <!-- Score Breakdown -->
+        <div class="card p-4 mt-4">
+          <p class="text-xs text-gray-500 font-bold mb-3">スコア内訳</p>
+          <div id="result-scores" class="space-y-2"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- ===== SHOP Section ===== -->
     <div id="section-shop" class="section space-y-4">
       <!-- Products -->
@@ -193,6 +237,8 @@ async function initLiff() {
         '<img src="' + profile.pictureUrl + '" class="w-8 h-8 rounded-full">';
     }
     await Promise.all([loadRank(), loadTip(), loadCoupons()]);
+    // 紹介リンク経由チェック（?ref=xxx）
+    checkReferralParam();
     document.getElementById('loading').style.display = 'none';
   } catch (err) {
     console.error('LIFF init error:', err);
@@ -301,6 +347,8 @@ function loadDemoData() {
     '<p class="text-sm text-green-600 font-bold">\xa56,415</p></div><p class="text-xs text-gray-400">2026-03-28</p></div>' +
     '<div class="py-2"><div class="flex justify-between items-center"><p class="text-sm font-bold">#1035</p>' +
     '<p class="text-sm text-green-600 font-bold">\xa52,830</p></div><p class="text-xs text-gray-400">2026-03-01</p></div>';
+
+  // Quiz (demo keeps intro visible, no special demo data needed)
 
   // Fulfillments
   document.getElementById('fulfillments-card').innerHTML =
@@ -523,6 +571,202 @@ async function loadShopData() {
       fel.innerHTML = '<p class="text-xs text-gray-400">配送情報はありません</p>';
     }
   } catch { /* ignore */ }
+}
+
+// ─── Referral Claim (auto-detect ?ref= param) ───
+function checkReferralParam() {
+  try {
+    var params = new URLSearchParams(window.location.search);
+    var ref = params.get('ref');
+    if (!ref) return;
+    // Clean URL (remove ref param)
+    var url = new URL(window.location.href);
+    url.searchParams.delete('ref');
+    window.history.replaceState({}, '', url.toString());
+    // Claim referral (non-blocking)
+    api('/api/liff/referral/claim', { refCode: ref }).then(function(res) {
+      if (res.success && res.data && !res.data.alreadyClaimed) {
+        showToast('紹介リンクが適用されました!');
+      }
+    }).catch(function() {});
+  } catch(e) { /* ignore */ }
+}
+
+// ─── QUIZ Engine (client-side) ───
+var QUIZ_QUESTIONS = [
+  { id: 'q1', text: 'naturismを試すのは初めてですか？', options: [
+    { label: '初めてです', scores: { blue: 3, pink: 0, premium: 0 } },
+    { label: '飲んだことがあります', scores: { blue: 0, pink: 1, premium: 1 } },
+    { label: '今飲んでいて、別の種類を検討中', scores: { blue: 0, pink: 0, premium: 2 } },
+  ]},
+  { id: 'q2', text: '普段の食事で一番多いのは？', options: [
+    { label: '揚げ物・脂っこい料理が多い', scores: { blue: 3, pink: 0, premium: 0 } },
+    { label: 'ご飯・パン・麺類など炭水化物が中心', scores: { blue: 0, pink: 0, premium: 3 } },
+    { label: 'バランスよく食べている', scores: { blue: 0, pink: 2, premium: 0 } },
+    { label: '外食やコンビニが中心で偏りがち', scores: { blue: 0, pink: 1, premium: 2 } },
+  ]},
+  { id: 'q3', text: '一週間でスイーツやお菓子を食べる頻度は？', options: [
+    { label: 'ほぼ毎日', scores: { blue: 0, pink: 0, premium: 3 } },
+    { label: '週3〜4回', scores: { blue: 0, pink: 0, premium: 2 } },
+    { label: '週1〜2回', scores: { blue: 1, pink: 1, premium: 0 } },
+    { label: 'ほとんど食べない', scores: { blue: 2, pink: 0, premium: 0 } },
+  ]},
+  { id: 'q4', text: '美容面で気になることはありますか？', options: [
+    { label: '肌のハリやツヤが気になる', scores: { blue: 0, pink: 3, premium: 0 } },
+    { label: '消化が重い・胃もたれしやすい', scores: { blue: 0, pink: 3, premium: 0 } },
+    { label: '特に気にならない', scores: { blue: 2, pink: 0, premium: 0 } },
+    { label: '全体的にケアしたい', scores: { blue: 0, pink: 0, premium: 2 } },
+  ]},
+  { id: 'q5', text: '体型管理への本気度は？', options: [
+    { label: '本格的に取り組みたい', scores: { blue: 0, pink: 0, premium: 3 } },
+    { label: '少し意識している程度', scores: { blue: 0, pink: 2, premium: 0 } },
+    { label: 'まずは気軽に始めたい', scores: { blue: 3, pink: 0, premium: 0 } },
+    { label: '食事制限なしで何かしたい', scores: { blue: 2, pink: 1, premium: 0 } },
+  ]},
+  { id: 'q6', text: 'アレルギーで気になるものはありますか？', options: [
+    { label: 'オレンジ・キウイ・バナナ・大豆・ゴマ等にアレルギーがある', scores: { blue: 5, pink: 0, premium: 0 }, excludes: ['pink','premium'] },
+    { label: '特にない', scores: { blue: 0, pink: 0, premium: 0 } },
+    { label: 'よくわからない', scores: { blue: 1, pink: 0, premium: 0 } },
+  ]},
+  { id: 'q7', text: '1日あたりの予算はどのくらいをイメージしていますか？', options: [
+    { label: '¥60〜70くらい（コーヒー1杯分）', scores: { blue: 3, pink: 0, premium: 0 } },
+    { label: '¥70〜100くらい', scores: { blue: 0, pink: 3, premium: 0 } },
+    { label: '¥100〜150くらい、しっかり投資したい', scores: { blue: 0, pink: 0, premium: 3 } },
+    { label: '良いものなら価格は気にしない', scores: { blue: 0, pink: 0, premium: 2 } },
+  ]},
+  { id: 'q8', text: 'naturismに一番期待することは？', options: [
+    { label: '毎日の食事のお供としてシンプルに始めたい', scores: { blue: 3, pink: 0, premium: 0 } },
+    { label: '美容と食事ケアを両立したい', scores: { blue: 0, pink: 3, premium: 0 } },
+    { label: '炭水化物や糖質が気になる食生活を本格サポートしてほしい', scores: { blue: 0, pink: 0, premium: 3 } },
+    { label: '食べることを我慢せず、できることから始めたい', scores: { blue: 2, pink: 1, premium: 0 } },
+  ]},
+];
+
+var QUIZ_PRODUCTS = {
+  blue: { name: 'naturism Blue', emoji: '\\u{1F499}', price: '\\u00a564/日〜', components: 8, reason: '脂質カットに特化したエントリーモデル。11年以上のロングセラーで、シンプルに始めたい方に最適です。', storeUrl: 'https://naturism-diet.com' },
+  pink: { name: 'KOSO in naturism Pink', emoji: '\\u{1F497}', price: '\\u00a575/日〜', components: 10, reason: 'Blueの8成分に加え、穀物麹由来の活きた酵素360mgを配合。食事ケアと美容を両立したい方のためにデザインされています。', storeUrl: 'https://naturism-diet.com' },
+  premium: { name: 'naturism Premium', emoji: '\\u{1FA76}', price: '\\u00a5149/日〜', components: 16, reason: '全16成分配合のフラッグシップ。白インゲン豆324mg・サラシア・ブラックジンジャーなど糖質対応成分を含む機能性表示食品です。', storeUrl: 'https://naturism-diet.com' },
+};
+
+var quizCurrentStep = 0;
+var quizAnswers = {};
+var quizExcluded = [];
+
+function startQuiz() {
+  quizCurrentStep = 0;
+  quizAnswers = {};
+  quizExcluded = [];
+  document.getElementById('quiz-intro').style.display = 'none';
+  document.getElementById('quiz-result').style.display = 'none';
+  document.getElementById('quiz-steps').style.display = 'block';
+  renderQuizStep();
+}
+
+function retryQuiz() {
+  startQuiz();
+}
+
+function renderQuizStep() {
+  var q = QUIZ_QUESTIONS[quizCurrentStep];
+  document.getElementById('quiz-progress').textContent = 'Q' + (quizCurrentStep + 1) + ' / ' + QUIZ_QUESTIONS.length;
+  document.getElementById('quiz-progress-bar').style.width = ((quizCurrentStep + 1) / QUIZ_QUESTIONS.length * 100) + '%';
+  document.getElementById('quiz-question').textContent = q.text;
+
+  var optHtml = '';
+  for (var i = 0; i < q.options.length; i++) {
+    var opt = q.options[i];
+    optHtml += '<button onclick="selectQuizOption(' + quizCurrentStep + ',' + i + ')" class="w-full text-left px-4 py-3 rounded-xl border border-gray-200 text-sm text-gray-700 hover:border-green-400 hover:bg-green-50 transition-colors active:bg-green-100">' + opt.label + '</button>';
+  }
+  document.getElementById('quiz-options').innerHTML = optHtml;
+}
+
+function selectQuizOption(stepIdx, optIdx) {
+  var q = QUIZ_QUESTIONS[stepIdx];
+  var opt = q.options[optIdx];
+  quizAnswers[q.id] = opt.label;
+
+  // Track excludes
+  if (opt.excludes) {
+    for (var e = 0; e < opt.excludes.length; e++) {
+      if (quizExcluded.indexOf(opt.excludes[e]) === -1) quizExcluded.push(opt.excludes[e]);
+    }
+  }
+
+  // Highlight selected
+  var btns = document.getElementById('quiz-options').querySelectorAll('button');
+  for (var b = 0; b < btns.length; b++) {
+    btns[b].className = btns[b].className.replace('border-green-500 bg-green-50 font-bold', 'border-gray-200');
+  }
+  btns[optIdx].className = btns[optIdx].className.replace('border-gray-200', 'border-green-500 bg-green-50 font-bold');
+
+  // Auto advance after short delay
+  setTimeout(function() {
+    if (quizCurrentStep < QUIZ_QUESTIONS.length - 1) {
+      quizCurrentStep++;
+      renderQuizStep();
+    } else {
+      finishQuiz();
+    }
+  }, 300);
+}
+
+function finishQuiz() {
+  // Score calculation (mirrors quiz-engine.ts)
+  var scores = { blue: 0, pink: 0, premium: 0 };
+  for (var i = 0; i < QUIZ_QUESTIONS.length; i++) {
+    var q = QUIZ_QUESTIONS[i];
+    var label = quizAnswers[q.id];
+    if (!label) continue;
+    for (var j = 0; j < q.options.length; j++) {
+      if (q.options[j].label === label) {
+        var s = q.options[j].scores;
+        scores.blue += s.blue || 0;
+        scores.pink += s.pink || 0;
+        scores.premium += s.premium || 0;
+        break;
+      }
+    }
+  }
+
+  // Zero out excluded
+  for (var e = 0; e < quizExcluded.length; e++) {
+    scores[quizExcluded[e]] = 0;
+  }
+
+  // Find winner (tie-break: blue > pink > premium)
+  var winner = 'blue';
+  var winScore = scores.blue;
+  if (scores.pink > winScore) { winner = 'pink'; winScore = scores.pink; }
+  if (scores.premium > winScore) { winner = 'premium'; winScore = scores.premium; }
+
+  var product = QUIZ_PRODUCTS[winner];
+
+  // Display result
+  document.getElementById('quiz-steps').style.display = 'none';
+  document.getElementById('quiz-result').style.display = 'block';
+  document.getElementById('result-emoji').textContent = product.emoji;
+  document.getElementById('result-name').textContent = product.name;
+  document.getElementById('result-price').textContent = product.price + '（' + product.components + '成分）';
+  document.getElementById('result-reason').textContent = product.reason;
+  document.getElementById('result-store-link').href = product.storeUrl;
+
+  // Score bars
+  var maxScore = Math.max(scores.blue, scores.pink, scores.premium, 1);
+  var colors = { blue: '#3B82F6', pink: '#EC4899', premium: '#6B7280' };
+  var names = { blue: 'Blue', pink: 'Pink', premium: 'Premium' };
+  var barsHtml = '';
+  for (var key in scores) {
+    var pct = Math.round(scores[key] / maxScore * 100);
+    barsHtml += '<div class="flex items-center gap-2"><span class="text-xs w-16 text-gray-500">' + names[key] + '</span>' +
+      '<div class="flex-1 bg-gray-100 rounded-full h-2 overflow-hidden"><div class="h-2 rounded-full transition-all duration-500" style="width:' + pct + '%;background:' + colors[key] + '"></div></div>' +
+      '<span class="text-xs text-gray-500 w-6 text-right">' + scores[key] + '</span></div>';
+  }
+  document.getElementById('result-scores').innerHTML = barsHtml;
+
+  // Submit to server (non-blocking)
+  if (!isDemo && idToken) {
+    api('/api/liff/quiz/submit', { answers: quizAnswers }).catch(function() {});
+  }
 }
 
 // ─── Init ───

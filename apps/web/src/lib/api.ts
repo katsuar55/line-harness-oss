@@ -508,4 +508,30 @@ export const api = {
     regenerateKey: (id: string) =>
       fetchApi<ApiResponse<{ apiKey: string }>>(`/api/staff/${id}/regenerate-key`, { method: 'POST' }),
   },
+  tips: {
+    list: (params?: { limit?: number; offset?: number }) => {
+      const query: Record<string, string> = {}
+      if (params?.limit) query.limit = String(params.limit)
+      if (params?.offset) query.offset = String(params.offset)
+      return fetchApi<ApiResponse<{ tips: Array<{ id: string; tip_date: string; category: string; title: string; content: string; image_url: string | null; source: string; created_at: string }>; total: number; limit: number; offset: number }>>(
+        '/api/tips?' + new URLSearchParams(query),
+      )
+    },
+    get: (id: string) =>
+      fetchApi<ApiResponse<{ id: string; tip_date: string; category: string; title: string; content: string; image_url: string | null; source: string; created_at: string }>>(
+        `/api/tips/${id}`,
+      ),
+    create: (data: { tipDate: string; category: string; title: string; content: string; imageUrl?: string }) =>
+      fetchApi<ApiResponse<{ id: string; tip_date: string }>>('/api/tips', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: { category?: string; title?: string; content?: string; imageUrl?: string }) =>
+      fetchApi<ApiResponse<{ id: string }>>(`/api/tips/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<{ deleted: string }>>(`/api/tips/${id}`, { method: 'DELETE' }),
+  },
 }

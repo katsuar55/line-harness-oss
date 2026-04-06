@@ -45,7 +45,9 @@ import { shopifyProducts } from './routes/shopify-products.js';
 import { analyticsRoutes } from './routes/analytics.js';
 import { liffPortal } from './routes/liff-portal.js';
 import { liffPages } from './routes/liff-pages.js';
+import { tips } from './routes/tips.js';
 import { processScheduledAbTests } from './services/ab-test.js';
+import { processIntakeReminders } from './services/intake-reminder.js';
 
 export type Env = {
   Bindings: {
@@ -127,6 +129,7 @@ app.route('/', shopifyProducts);
 app.route('/api/analytics', analyticsRoutes);
 app.route('/', liffPortal);
 app.route('/', liffPages);
+app.route('/', tips);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
@@ -206,6 +209,7 @@ async function scheduled(
       processScheduledBroadcasts(env.DB, lineClient, env.WORKER_URL),
       processReminderDeliveries(env.DB, lineClient),
       processScheduledAbTests(env.DB, lineClient, env.WORKER_URL),
+      processIntakeReminders(env.DB, lineClient),
     );
   }
   jobs.push(checkAccountHealth(env.DB));
