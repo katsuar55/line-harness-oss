@@ -176,8 +176,11 @@ let idToken = null;
 let selectedCondition = null;
 
 // ─── LIFF Init ───
+let isDemo = false;
+
 async function initLiff() {
   try {
+    if (!LIFF_ID) throw new Error('LIFF_ID not configured');
     await liff.init({ liffId: LIFF_ID });
     if (!liff.isLoggedIn()) {
       liff.login();
@@ -189,14 +192,122 @@ async function initLiff() {
       document.getElementById('user-avatar').innerHTML =
         '<img src="' + profile.pictureUrl + '" class="w-8 h-8 rounded-full">';
     }
-    // Load initial data
     await Promise.all([loadRank(), loadTip(), loadCoupons()]);
     document.getElementById('loading').style.display = 'none';
   } catch (err) {
     console.error('LIFF init error:', err);
-    document.getElementById('loading').innerHTML =
-      '<div class="text-center"><p class="text-red-500 text-sm">読み込みに失敗しました</p><button onclick="location.reload()" class="mt-2 text-green-600 text-sm underline">再読み込み</button></div>';
+    // Demo mode: show UI with sample data for browser preview
+    isDemo = true;
+    loadDemoData();
+    document.getElementById('loading').style.display = 'none';
   }
+}
+
+function loadDemoData() {
+  // Demo banner
+  var banner = document.createElement('div');
+  banner.className = 'bg-yellow-50 border border-yellow-200 rounded-lg p-2 text-center text-xs text-yellow-700 mx-4 mt-2';
+  banner.textContent = 'DEMO MODE - LINE\u30a2\u30d7\u30ea\u5185\u3067\u958b\u304f\u3068\u5b9f\u30c7\u30fc\u30bf\u304c\u8868\u793a\u3055\u308c\u307e\u3059';
+  document.querySelector('nav').after(banner);
+
+  // Avatar
+  document.getElementById('user-avatar').innerHTML =
+    '<div class="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center text-white text-xs font-bold">D</div>';
+
+  // Rank
+  document.getElementById('rank-card').innerHTML =
+    '<div class="flex items-center gap-3 mb-3">' +
+    '<div class="w-12 h-12 rounded-full flex items-center justify-center text-2xl" style="background:#C0C0C020">Ag</div>' +
+    '<div><p class="text-sm font-bold text-gray-800">Silver</p>' +
+    '<p class="text-xs text-gray-500">\u7d2f\u8a08 \xa515,000</p></div></div>' +
+    '<div class="bg-gray-100 rounded-full h-2 overflow-hidden"><div class="bg-green-500 h-2 progress-bar" style="width:25%"></div></div>' +
+    '<p class="text-xs text-gray-400 mt-1">\u6b21\u306e\u30e9\u30f3\u30af Gold \u307e\u3067\u3042\u3068 \xa59,000</p>';
+
+  // Tip
+  document.getElementById('tip-card').innerHTML =
+    '<p class="text-xs text-green-600 font-bold mb-1">Today\\\'s Tip</p>' +
+    '<p class="text-sm font-bold text-gray-800">\u6c34\u5206\u88dc\u7d66\u306e\u30b3\u30c4</p>' +
+    '<p class="text-xs text-gray-600 mt-1">\u3053\u307e\u3081\u306a\u6c34\u5206\u88dc\u7d66\u304c\u5927\u5207\u3067\u3059\u3002\u98df\u4e8b\u306e30\u5206\u524d\u306b\u30b3\u30c3\u30d7\u4e00\u676f\u306e\u6c34\u3092\u98f2\u3080\u3068\u3001\u6d88\u5316\u3092\u30b5\u30dd\u30fc\u30c8\u3057\u307e\u3059\u3002</p>';
+
+  // Coupons
+  document.getElementById('coupons-card').innerHTML =
+    '<p class="text-xs text-gray-500 font-bold mb-2">\u30af\u30fc\u30dd\u30f3</p>' +
+    '<div class="flex items-center justify-between py-2 border-b">' +
+    '<div><p class="text-sm font-bold text-green-600">WELCOME500</p>' +
+    '<p class="text-xs text-gray-500">500\u5186OFF (\u521d\u56de\u9650\u5b9a)</p></div>' +
+    '<p class="text-xs text-gray-400">~2026-12-31</p></div>' +
+    '<div class="flex items-center justify-between py-2">' +
+    '<div><p class="text-sm font-bold text-green-600">SILVER10</p>' +
+    '<p class="text-xs text-gray-500">10%OFF (\u30b7\u30eb\u30d0\u30fc\u7279\u5178)</p></div>' +
+    '<p class="text-xs text-gray-400">~2026-06-30</p></div>';
+
+  // Referral
+  document.getElementById('referral-card').innerHTML =
+    '<p class="text-xs text-gray-500 font-bold mb-2">\u53cb\u3060\u3061\u7d39\u4ecb</p>' +
+    '<p class="text-sm text-gray-700">\u7d39\u4ecb\u30ea\u30f3\u30af\u3092\u5171\u6709\u3057\u3066\u304a\u4e92\u3044\u306b\u30af\u30fc\u30dd\u30f3\u3092\u30b2\u30c3\u30c8!</p>' +
+    '<div class="mt-2 flex items-center gap-2"><span class="bg-gray-100 px-3 py-1 rounded text-xs font-mono">ref-a1b2c3d4</span>' +
+    '<button class="text-xs text-green-600 font-bold">\u30b3\u30d4\u30fc</button></div>';
+
+  // Streak (intake)
+  document.getElementById('streak-card').innerHTML =
+    '<div class="text-4xl mb-2 streak-fire">&#x2B50;</div>' +
+    '<p class="text-3xl font-bold text-gray-800">5<span class="text-sm text-gray-500 ml-1">\u65e5\u9023\u7d9a</span></p>' +
+    '<div class="flex justify-center gap-6 mt-3 text-xs text-gray-500">' +
+    '<div>\u6700\u9577 <span class="font-bold text-gray-800">12\u65e5</span></div>' +
+    '<div>\u7d2f\u8a08 <span class="font-bold text-gray-800">45\u65e5</span></div></div>';
+
+  // Reminder
+  document.getElementById('reminder-card').innerHTML =
+    '<div class="flex items-center justify-between">' +
+    '<div><p class="text-sm font-bold text-gray-700">\u671d\u30ea\u30de\u30a4\u30f3\u30c9</p>' +
+    '<p class="text-xs text-gray-500">08:00 \u306b\u30d7\u30c3\u30b7\u30e5\u901a\u77e5</p></div>' +
+    '<div class="w-10 h-6 bg-green-500 rounded-full relative"><div class="w-5 h-5 bg-white rounded-full absolute right-0.5 top-0.5 shadow"></div></div></div>';
+
+  // Health summary
+  document.getElementById('health-summary').innerHTML =
+    '<p class="text-xs text-gray-500 font-bold mb-2">\u76f4\u8fd17\u65e5\u9593</p>' +
+    '<div class="grid grid-cols-3 gap-2 text-center">' +
+    '<div class="bg-green-50 rounded-lg p-2"><p class="text-lg font-bold text-green-600">4</p><p class="text-xs text-gray-500">\u826f\u3044</p></div>' +
+    '<div class="bg-yellow-50 rounded-lg p-2"><p class="text-lg font-bold text-yellow-600">2</p><p class="text-xs text-gray-500">\u666e\u901a</p></div>' +
+    '<div class="bg-red-50 rounded-lg p-2"><p class="text-lg font-bold text-red-600">1</p><p class="text-xs text-gray-500">\u60aa\u3044</p></div></div>' +
+    '<p class="text-xs text-gray-500 mt-2">\u6700\u65b0\u4f53\u91cd: 58.5kg</p>';
+
+  // Products
+  document.getElementById('products-card').innerHTML =
+    '<p class="text-xs text-gray-500 font-bold mb-3">\u5546\u54c1\u30e9\u30a4\u30f3\u30ca\u30c3\u30d7</p>' +
+    '<div class="flex items-center gap-3 py-3 border-b">' +
+    '<div class="w-16 h-16 rounded-lg bg-blue-50 flex items-center justify-center text-2xl">B</div>' +
+    '<div class="flex-1"><p class="text-sm font-bold text-gray-800">naturism Blue</p>' +
+    '<p class="text-xs text-gray-500">8\u6210\u5206\u30fb\u8102\u8cea\u30ab\u30c3\u30c8\u7279\u5316</p>' +
+    '<p class="text-sm text-green-600 font-bold">\xa52,376</p></div>' +
+    '<span class="text-xs text-green-600 border border-green-600 px-3 py-1 rounded-full">\u8cfc\u5165</span></div>' +
+    '<div class="flex items-center gap-3 py-3 border-b">' +
+    '<div class="w-16 h-16 rounded-lg bg-pink-50 flex items-center justify-center text-2xl">P</div>' +
+    '<div class="flex-1"><p class="text-sm font-bold text-gray-800">KOSO in naturism Pink</p>' +
+    '<p class="text-xs text-gray-500">10\u6210\u5206\u30fb\u7f8e\u5bb9+\u98df\u4e8b\u30b1\u30a2</p>' +
+    '<p class="text-sm text-green-600 font-bold">\xa52,830</p></div>' +
+    '<span class="text-xs text-green-600 border border-green-600 px-3 py-1 rounded-full">\u8cfc\u5165</span></div>' +
+    '<div class="flex items-center gap-3 py-3">' +
+    '<div class="w-16 h-16 rounded-lg bg-gray-50 flex items-center justify-center text-2xl">Pr</div>' +
+    '<div class="flex-1"><p class="text-sm font-bold text-gray-800">naturism Premium</p>' +
+    '<p class="text-xs text-gray-500">16\u6210\u5206\u30fb\u6a5f\u80fd\u6027\u8868\u793a\u98df\u54c1</p>' +
+    '<p class="text-sm text-green-600 font-bold">\xa55,590</p></div>' +
+    '<span class="text-xs text-green-600 border border-green-600 px-3 py-1 rounded-full">\u8cfc\u5165</span></div>';
+
+  // Orders
+  document.getElementById('orders-card').innerHTML =
+    '<p class="text-xs text-gray-500 font-bold mb-2">\u6700\u8fd1\u306e\u6ce8\u6587</p>' +
+    '<div class="py-2 border-b"><div class="flex justify-between items-center"><p class="text-sm font-bold">#1042</p>' +
+    '<p class="text-sm text-green-600 font-bold">\xa56,415</p></div><p class="text-xs text-gray-400">2026-03-28</p></div>' +
+    '<div class="py-2"><div class="flex justify-between items-center"><p class="text-sm font-bold">#1035</p>' +
+    '<p class="text-sm text-green-600 font-bold">\xa52,830</p></div><p class="text-xs text-gray-400">2026-03-01</p></div>';
+
+  // Fulfillments
+  document.getElementById('fulfillments-card').innerHTML =
+    '<p class="text-xs text-gray-500 font-bold mb-2">\u914d\u9001\u72b6\u6cc1</p>' +
+    '<div class="py-2"><div class="flex justify-between"><p class="text-sm">#1042</p>' +
+    '<span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">delivered</span></div>' +
+    '<p class="text-xs text-blue-500">\u30e4\u30de\u30c8\u904b\u8f38 1234-5678-9012</p></div>';
 }
 
 // ─── API Helper ───
@@ -306,6 +417,7 @@ async function loadIntakeData() {
 }
 
 async function logIntake() {
+  if (isDemo) { showToast('DEMO: 記録しました! (連続6日)'); return; }
   try {
     const { data } = await api('/api/liff/intake', { productName: 'naturism' });
     if (data) {
@@ -342,6 +454,7 @@ function setCondition(cond) {
 }
 
 async function saveHealthLog() {
+  if (isDemo) { showToast('DEMO: 体調を記録しました'); return; }
   var weight = parseFloat(document.getElementById('weight-input').value);
   var note = document.getElementById('health-note').value;
   try {
