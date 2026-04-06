@@ -8,6 +8,7 @@ import { processReminderDeliveries } from './services/reminder-delivery.js';
 import { checkAccountHealth } from './services/ban-monitor.js';
 import { refreshLineAccessTokens } from './services/token-refresh.js';
 import { authMiddleware } from './middleware/auth.js';
+import { liffAuthMiddleware } from './middleware/liff-auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
 import { friends } from './routes/friends.js';
@@ -42,6 +43,7 @@ import { images } from './routes/images.js';
 import { abTests } from './routes/ab-tests.js';
 import { shopifyProducts } from './routes/shopify-products.js';
 import { analyticsRoutes } from './routes/analytics.js';
+import { liffPortal } from './routes/liff-portal.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 
 export type Env = {
@@ -71,6 +73,7 @@ export type Env = {
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
+    liffUser: { lineUserId: string; friendId: string };
   };
 };
 
@@ -84,6 +87,7 @@ app.use('*', rateLimitMiddleware);
 
 // Auth middleware — skips /webhook and /docs automatically
 app.use('*', authMiddleware);
+app.use('/api/liff/*', liffAuthMiddleware);
 
 // Mount route groups — MVP & Round 2
 app.route('/', webhook);
@@ -120,6 +124,7 @@ app.route('/', images);
 app.route('/', abTests);
 app.route('/', shopifyProducts);
 app.route('/api/analytics', analyticsRoutes);
+app.route('/', liffPortal);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {

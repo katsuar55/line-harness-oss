@@ -27,6 +27,7 @@ export * from './shopify-phase2a';
 export * from './ab-tests';
 export * from './shopify-products';
 export * from './analytics';
+export * from './liff-portal';
 
 /**
  * Thin wrapper around D1Database.
