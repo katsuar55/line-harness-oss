@@ -105,4 +105,38 @@ describe('Dashboard API', () => {
     const res = await app.request('http://localhost/api/dashboard/summary', {}, { DB: mockD1() });
     expect(res.status).toBe(401);
   });
+
+  it('GET /api/dashboard/intake-rate returns rate trend', async () => {
+    const app = createApp();
+    const res = await req(app, '/api/dashboard/intake-rate?days=30');
+    expect(res.status).toBe(200);
+    const json = await res.json() as { success: boolean; data: { days: number; totalFollowing: number; trend: unknown[] } };
+    expect(json.success).toBe(true);
+    expect(json.data.days).toBe(30);
+    expect(typeof json.data.totalFollowing).toBe('number');
+    expect(Array.isArray(json.data.trend)).toBe(true);
+  });
+
+  it('GET /api/dashboard/health-score returns score trend', async () => {
+    const app = createApp();
+    const res = await req(app, '/api/dashboard/health-score?days=14');
+    expect(res.status).toBe(200);
+    const json = await res.json() as { success: boolean; data: { days: number; trend: unknown[] } };
+    expect(json.success).toBe(true);
+    expect(json.data.days).toBe(14);
+    expect(Array.isArray(json.data.trend)).toBe(true);
+  });
+
+  it('GET /api/dashboard/referral-funnel returns funnel data', async () => {
+    const app = createApp();
+    const res = await req(app, '/api/dashboard/referral-funnel');
+    expect(res.status).toBe(200);
+    const json = await res.json() as { success: boolean; data: { funnel: Array<{ stage: string; label: string; count: number }>; conversionRates: Record<string, number> } };
+    expect(json.success).toBe(true);
+    expect(json.data.funnel).toHaveLength(3);
+    expect(json.data.funnel[0].stage).toBe('referral_link');
+    expect(json.data.funnel[1].stage).toBe('friend_added');
+    expect(json.data.funnel[2].stage).toBe('purchased');
+    expect(typeof json.data.conversionRates.overall).toBe('number');
+  });
 });

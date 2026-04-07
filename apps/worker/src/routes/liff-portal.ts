@@ -512,7 +512,7 @@ liffPortal.post('/api/liff/health/log', async (c) => {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    const { logDate, weight, condition, skinCondition, meals, sleepHours, note } =
+    const { logDate, weight, condition, skinCondition, meals, sleepHours, note, bowelForm, bowelCount, mood } =
       await c.req.json<{
         logDate?: string;
         weight?: number;
@@ -521,6 +521,9 @@ liffPortal.post('/api/liff/health/log', async (c) => {
         meals?: Record<string, string>;
         sleepHours?: number;
         note?: string;
+        bowelForm?: string;
+        bowelCount?: number;
+        mood?: string;
       }>();
 
     // Validate logDate format
@@ -540,6 +543,13 @@ liffPortal.post('/api/liff/health/log', async (c) => {
       safeLogDate = logDate;
     }
 
+    // Validate new fields
+    const validBowelForms = ['hard', 'normal', 'soft'];
+    const validMoods = ['great', 'good', 'normal', 'bad', 'terrible'];
+    const safeBowelForm = bowelForm && validBowelForms.includes(bowelForm) ? bowelForm : undefined;
+    const safeBowelCount = typeof bowelCount === 'number' && bowelCount >= 0 && bowelCount <= 10 ? bowelCount : undefined;
+    const safeMood = mood && validMoods.includes(mood) ? mood : undefined;
+
     const result = await upsertHealthLog(c.env.DB, {
       friendId: user.friendId,
       logDate: safeLogDate,
@@ -549,6 +559,9 @@ liffPortal.post('/api/liff/health/log', async (c) => {
       meals,
       sleepHours,
       note: validateNote(note),
+      bowelForm: safeBowelForm,
+      bowelCount: safeBowelCount,
+      mood: safeMood,
     });
 
     return c.json({ success: true, data: result });

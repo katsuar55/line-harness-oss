@@ -81,11 +81,11 @@ vi.mock('@line-crm/db', async (importOriginal) => {
     getLatestRecommendation: vi.fn(async () => null),
     upsertHealthLog: vi.fn(async () => ({ id: 'hl-1', log_date: '2026-04-06' })),
     getHealthLogs: vi.fn(async () => [
-      { id: 'hl-1', log_date: '2026-04-06', weight: 58.5, condition: 'good', skin_condition: 'good', meals: '{"breakfast":"yogurt"}', sleep_hours: 7, note: null },
+      { id: 'hl-1', log_date: '2026-04-06', weight: 58.5, condition: 'good', skin_condition: 'good', meals: '{"breakfast":"yogurt"}', sleep_hours: 7, note: null, bowel_form: 'normal', bowel_count: 2, mood: 'good' },
     ]),
     getHealthTrends: vi.fn(async () => [
-      { log_date: '2026-04-05', weight: 58.8, condition: 'normal', sleep_hours: 6.5 },
-      { log_date: '2026-04-06', weight: 58.5, condition: 'good', sleep_hours: 7 },
+      { log_date: '2026-04-05', weight: 58.8, condition: 'normal', skin_condition: 'normal', sleep_hours: 6.5, bowel_form: 'hard', bowel_count: 1, mood: 'normal' },
+      { log_date: '2026-04-06', weight: 58.5, condition: 'good', skin_condition: 'good', sleep_hours: 7, bowel_form: 'normal', bowel_count: 2, mood: 'good' },
     ]),
     getHealthSummary: vi.fn(async () => ({ totalLogs: 5, avgWeight: 58.6, goodDays: 3, normalDays: 1, badDays: 1, latestWeight: 58.5 })),
     enrollAmbassador: vi.fn(async () => ({ id: 'amb-1', status: 'active' })),
@@ -289,6 +289,39 @@ describe('LIFF Portal Routes', () => {
       expect(res.status).toBe(200);
       const json = await res.json() as { data: { log_date: string } };
       expect(json.data.log_date).toBe('2026-04-06');
+    });
+
+    it('accepts new fields: bowelForm, bowelCount, mood', async () => {
+      const res = await post(app, '/api/liff/health/log', {
+        lineUserId: 'U_EXISTING',
+        weight: 57.8,
+        skinCondition: 'good',
+        bowelForm: 'normal',
+        bowelCount: 2,
+        mood: 'great',
+        sleepHours: 7.5,
+        note: '朝ヨガした',
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { log_date: string } };
+      expect(json.data.log_date).toBe('2026-04-06');
+    });
+
+    it('ignores invalid bowelForm values', async () => {
+      const res = await post(app, '/api/liff/health/log', {
+        lineUserId: 'U_EXISTING',
+        bowelForm: 'invalid_value',
+        mood: 'also_invalid',
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('clamps bowelCount to 0-10 range', async () => {
+      const res = await post(app, '/api/liff/health/log', {
+        lineUserId: 'U_EXISTING',
+        bowelCount: 99,
+      });
+      expect(res.status).toBe(200);
     });
 
     it('rejects invalid logDate format', async () => {

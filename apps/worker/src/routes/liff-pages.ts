@@ -31,6 +31,7 @@ function portalPage(liffId: string, apiBase: string): string {
   <title>naturism マイページ</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap');
     body { font-family: 'Noto Sans JP', system-ui, sans-serif; background: #f8f9fa; }
@@ -167,31 +168,151 @@ function portalPage(liffId: string, apiBase: string): string {
 
     <!-- ===== HEALTH Section ===== -->
     <div id="section-health" class="section space-y-4">
-      <!-- Summary -->
-      <div id="health-summary" class="card p-4">
-        <div class="skeleton h-24 rounded-lg"></div>
+      <!-- Sub-tabs: Record / Graph -->
+      <div class="flex bg-gray-100 rounded-xl p-1">
+        <button onclick="switchHealthView('record')" id="htab-record" class="flex-1 py-2 text-xs font-bold rounded-lg bg-white shadow text-green-600">記録する</button>
+        <button onclick="switchHealthView('graph')" id="htab-graph" class="flex-1 py-2 text-xs font-bold rounded-lg text-gray-400">グラフ</button>
       </div>
-      <!-- Log Form -->
-      <div class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3">今日の記録</h3>
-        <div class="space-y-3">
-          <div>
-            <label class="text-xs text-gray-500">体重 (kg)</label>
-            <input type="number" id="weight-input" step="0.1" min="30" max="200" class="w-full mt-1 p-2 border rounded-lg text-sm" placeholder="例: 58.5">
+
+      <!-- ─── Record View ─── -->
+      <div id="health-record-view">
+        <!-- Today's Quick Input Card -->
+        <div class="card p-4 space-y-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-bold text-gray-700">今日の記録</h3>
+            <span id="health-date-label" class="text-xs text-gray-400"></span>
           </div>
+
+          <!-- Weight with stepper -->
           <div>
-            <label class="text-xs text-gray-500">体調</label>
-            <div class="flex gap-2 mt-1">
-              <button onclick="setCondition('good')" data-cond="good" class="cond-btn flex-1 py-2 rounded-lg text-sm border">良い</button>
-              <button onclick="setCondition('normal')" data-cond="normal" class="cond-btn flex-1 py-2 rounded-lg text-sm border">普通</button>
-              <button onclick="setCondition('bad')" data-cond="bad" class="cond-btn flex-1 py-2 rounded-lg text-sm border">悪い</button>
+            <label class="text-xs text-gray-500 mb-1 block">体重</label>
+            <div class="flex items-center gap-2">
+              <button onclick="adjustWeight(-0.1)" class="w-10 h-10 rounded-full bg-gray-100 text-lg font-bold text-gray-600 active:bg-gray-200">−</button>
+              <input type="number" id="weight-input" step="0.1" min="30" max="200" class="flex-1 text-center text-xl font-bold p-2 border rounded-xl" placeholder="--.-">
+              <button onclick="adjustWeight(0.1)" class="w-10 h-10 rounded-full bg-gray-100 text-lg font-bold text-gray-600 active:bg-gray-200">＋</button>
+              <span class="text-sm text-gray-400">kg</span>
             </div>
           </div>
+
+          <!-- Mood (5-level face icons) -->
           <div>
-            <label class="text-xs text-gray-500">メモ</label>
-            <input type="text" id="health-note" maxlength="500" class="w-full mt-1 p-2 border rounded-lg text-sm" placeholder="自由記入">
+            <label class="text-xs text-gray-500 mb-1 block">今日の気分</label>
+            <div class="flex gap-2 justify-center">
+              <button onclick="setMood('great')" data-mood="great" class="mood-btn flex flex-col items-center p-2 rounded-xl border-2 border-transparent transition-all">
+                <span class="text-2xl">😆</span><span class="text-[10px] mt-0.5 text-gray-400">最高</span>
+              </button>
+              <button onclick="setMood('good')" data-mood="good" class="mood-btn flex flex-col items-center p-2 rounded-xl border-2 border-transparent transition-all">
+                <span class="text-2xl">😊</span><span class="text-[10px] mt-0.5 text-gray-400">良い</span>
+              </button>
+              <button onclick="setMood('normal')" data-mood="normal" class="mood-btn flex flex-col items-center p-2 rounded-xl border-2 border-transparent transition-all">
+                <span class="text-2xl">😐</span><span class="text-[10px] mt-0.5 text-gray-400">普通</span>
+              </button>
+              <button onclick="setMood('bad')" data-mood="bad" class="mood-btn flex flex-col items-center p-2 rounded-xl border-2 border-transparent transition-all">
+                <span class="text-2xl">😞</span><span class="text-[10px] mt-0.5 text-gray-400">悪い</span>
+              </button>
+              <button onclick="setMood('terrible')" data-mood="terrible" class="mood-btn flex flex-col items-center p-2 rounded-xl border-2 border-transparent transition-all">
+                <span class="text-2xl">😫</span><span class="text-[10px] mt-0.5 text-gray-400">最悪</span>
+              </button>
+            </div>
           </div>
-          <button onclick="saveHealthLog()" class="btn-primary w-full py-3 rounded-lg text-sm font-bold">記録を保存</button>
+
+          <!-- Skin condition (3-level) -->
+          <div>
+            <label class="text-xs text-gray-500 mb-1 block">肌の調子</label>
+            <div class="flex gap-2">
+              <button onclick="setSkin('good')" data-skin="good" class="skin-btn flex-1 py-2.5 rounded-xl text-sm border-2 border-transparent bg-gray-50 transition-all">✨ 良い</button>
+              <button onclick="setSkin('normal')" data-skin="normal" class="skin-btn flex-1 py-2.5 rounded-xl text-sm border-2 border-transparent bg-gray-50 transition-all">😊 普通</button>
+              <button onclick="setSkin('bad')" data-skin="bad" class="skin-btn flex-1 py-2.5 rounded-xl text-sm border-2 border-transparent bg-gray-50 transition-all">😢 荒れ気味</button>
+            </div>
+          </div>
+
+          <!-- Bowel (cute icons + count) -->
+          <div>
+            <label class="text-xs text-gray-500 mb-1 block">お通じ</label>
+            <div class="flex gap-3 items-end">
+              <div class="flex gap-2 flex-1">
+                <button onclick="setBowel('hard')" data-bowel="hard" class="bowel-btn flex-1 py-2.5 rounded-xl text-sm border-2 border-transparent bg-gray-50 transition-all">
+                  <span class="block text-lg">🫘</span><span class="text-[10px] text-gray-400">コロコロ</span>
+                </button>
+                <button onclick="setBowel('normal')" data-bowel="normal" class="bowel-btn flex-1 py-2.5 rounded-xl text-sm border-2 border-transparent bg-gray-50 transition-all">
+                  <span class="block text-lg">🍀</span><span class="text-[10px] text-gray-400">ふつう</span>
+                </button>
+                <button onclick="setBowel('soft')" data-bowel="soft" class="bowel-btn flex-1 py-2.5 rounded-xl text-sm border-2 border-transparent bg-gray-50 transition-all">
+                  <span class="block text-lg">💧</span><span class="text-[10px] text-gray-400">ゆるい</span>
+                </button>
+              </div>
+              <div class="flex items-center gap-1">
+                <button onclick="adjustBowelCount(-1)" class="w-8 h-8 rounded-full bg-gray-100 text-sm font-bold text-gray-600">−</button>
+                <span id="bowel-count-display" class="text-lg font-bold w-6 text-center">0</span>
+                <button onclick="adjustBowelCount(1)" class="w-8 h-8 rounded-full bg-gray-100 text-sm font-bold text-gray-600">＋</button>
+                <span class="text-xs text-gray-400">回</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sleep (slider) -->
+          <div>
+            <label class="text-xs text-gray-500 mb-1 block">睡眠時間</label>
+            <div class="flex items-center gap-3">
+              <span class="text-xs text-gray-400">4h</span>
+              <input type="range" id="sleep-slider" min="4" max="12" step="0.5" value="7" class="flex-1 accent-green-500" oninput="updateSleepDisplay()">
+              <span class="text-xs text-gray-400">12h</span>
+              <span id="sleep-display" class="text-sm font-bold text-green-600 w-12 text-center">7.0h</span>
+            </div>
+          </div>
+
+          <!-- Note -->
+          <div>
+            <label class="text-xs text-gray-500 mb-1 block">メモ（任意）</label>
+            <input type="text" id="health-note" maxlength="500" class="w-full p-2.5 border rounded-xl text-sm" placeholder="生理中、飲み会、旅行中 など...">
+          </div>
+
+          <!-- Save Button -->
+          <button onclick="saveHealthLog()" class="btn-primary w-full py-3.5 rounded-xl text-sm font-bold shadow-md">
+            記録を保存 ✏️
+          </button>
+        </div>
+      </div>
+
+      <!-- ─── Graph View ─── -->
+      <div id="health-graph-view" style="display:none;" class="space-y-4">
+        <!-- Period Selector -->
+        <div class="flex gap-1 bg-gray-100 rounded-xl p-1">
+          <button onclick="loadGraph(7)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-lg" data-days="7">1W</button>
+          <button onclick="loadGraph(30)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-lg bg-white shadow font-bold text-green-600" data-days="30">1M</button>
+          <button onclick="loadGraph(90)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-lg" data-days="90">3M</button>
+          <button onclick="loadGraph(180)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-lg" data-days="180">6M</button>
+          <button onclick="loadGraph(365)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-lg" data-days="365">1Y</button>
+        </div>
+
+        <!-- Weight Chart -->
+        <div class="card p-4">
+          <h4 class="text-xs font-bold text-gray-500 mb-2">体重の推移</h4>
+          <div style="position:relative;height:200px;">
+            <canvas id="weight-chart"></canvas>
+          </div>
+          <div id="weight-change" class="text-center mt-2"></div>
+        </div>
+
+        <!-- Condition Overview -->
+        <div class="card p-4">
+          <h4 class="text-xs font-bold text-gray-500 mb-2">コンディション推移</h4>
+          <div style="position:relative;height:160px;">
+            <canvas id="condition-chart"></canvas>
+          </div>
+        </div>
+
+        <!-- Sleep Chart -->
+        <div class="card p-4">
+          <h4 class="text-xs font-bold text-gray-500 mb-2">睡眠時間</h4>
+          <div style="position:relative;height:160px;">
+            <canvas id="sleep-chart"></canvas>
+          </div>
+        </div>
+
+        <!-- Summary Stats -->
+        <div id="health-stats" class="card p-4">
+          <div class="skeleton h-20 rounded-lg"></div>
         </div>
       </div>
     </div>
@@ -273,6 +394,8 @@ const LIFF_ID = '${escapeHtml(liffId)}';
 const API_BASE = '${escapeHtml(apiBase)}';
 let idToken = null;
 let selectedCondition = null;
+
+function esc(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 // ─── LIFF Init ───
 let isDemo = false;
@@ -380,14 +503,16 @@ function loadDemoData() {
 
   // Reminders (demo: initReminder()で設定)
 
-  // Health summary
-  document.getElementById('health-summary').innerHTML =
-    '<p class="text-xs text-gray-500 font-bold mb-2">\u76f4\u8fd17\u65e5\u9593</p>' +
-    '<div class="grid grid-cols-3 gap-2 text-center">' +
-    '<div class="bg-green-50 rounded-lg p-2"><p class="text-lg font-bold text-green-600">4</p><p class="text-xs text-gray-500">\u826f\u3044</p></div>' +
-    '<div class="bg-yellow-50 rounded-lg p-2"><p class="text-lg font-bold text-yellow-600">2</p><p class="text-xs text-gray-500">\u666e\u901a</p></div>' +
-    '<div class="bg-red-50 rounded-lg p-2"><p class="text-lg font-bold text-red-600">1</p><p class="text-xs text-gray-500">\u60aa\u3044</p></div></div>' +
-    '<p class="text-xs text-gray-500 mt-2">\u6700\u65b0\u4f53\u91cd: 58.5kg</p>';
+  // Health demo: populate health-stats (graph view summary)
+  var hStatsEl = document.getElementById('health-stats');
+  if (hStatsEl) {
+    hStatsEl.innerHTML =
+      '<h4 class="text-xs font-bold text-gray-500 mb-3">\u671f\u9593\u30b5\u30de\u30ea\u30fc\uff087\u65e5\u9593\uff09</h4>' +
+      '<div class="grid grid-cols-3 gap-2 text-center">' +
+      '<div class="bg-green-50 rounded-lg p-2"><p class="text-lg font-bold text-green-600">4</p><p class="text-xs text-gray-500">\u826f\u3044</p></div>' +
+      '<div class="bg-yellow-50 rounded-lg p-2"><p class="text-lg font-bold text-yellow-600">2</p><p class="text-xs text-gray-500">\u666e\u901a</p></div>' +
+      '<div class="bg-red-50 rounded-lg p-2"><p class="text-lg font-bold text-red-600">1</p><p class="text-xs text-gray-500">\u60aa\u3044</p></div></div>';
+  }
 
   // Products
   document.getElementById('products-card').innerHTML =
@@ -474,11 +599,11 @@ async function loadRank() {
     if (data.currentRank) {
       const pct = data.progressPercent || 0;
       el.innerHTML = '<div class="flex items-center gap-3 mb-3">' +
-        '<div class="w-12 h-12 rounded-full flex items-center justify-center text-2xl" style="background:' + (data.currentRank.color || '#ccc') + '20">' + (data.currentRank.icon || '') + '</div>' +
-        '<div><p class="text-sm font-bold text-gray-800">' + data.currentRank.name + '</p>' +
+        '<div class="w-12 h-12 rounded-full flex items-center justify-center text-2xl" style="background:' + esc(data.currentRank.color || '#ccc') + '20">' + esc(data.currentRank.icon || '') + '</div>' +
+        '<div><p class="text-sm font-bold text-gray-800">' + esc(data.currentRank.name) + '</p>' +
         '<p class="text-xs text-gray-500">累計 ¥' + Number(data.totalSpent).toLocaleString() + '</p></div></div>' +
         '<div class="bg-gray-100 rounded-full h-2 overflow-hidden"><div class="bg-green-500 h-2 progress-bar" style="width:' + pct + '%"></div></div>' +
-        (data.nextRank ? '<p class="text-xs text-gray-400 mt-1">次のランク ' + data.nextRank.name + ' まであと ¥' + Number(data.nextRank.remaining).toLocaleString() + '</p>' : '<p class="text-xs text-green-600 mt-1">最高ランク達成!</p>');
+        (data.nextRank ? '<p class="text-xs text-gray-400 mt-1">次のランク ' + esc(data.nextRank.name) + ' まであと ¥' + Number(data.nextRank.remaining).toLocaleString() + '</p>' : '<p class="text-xs text-green-600 mt-1">最高ランク達成!</p>');
     } else {
       el.innerHTML = '<p class="text-sm text-gray-500">まだ購入履歴がありません</p>';
     }
@@ -492,8 +617,8 @@ async function loadTip() {
     const el = document.getElementById('tip-card');
     if (data) {
       el.innerHTML = '<p class="text-xs text-green-600 font-bold mb-1">Today\\'s Tip</p>' +
-        '<p class="text-sm font-bold text-gray-800">' + data.title + '</p>' +
-        '<p class="text-xs text-gray-600 mt-1">' + data.content + '</p>';
+        '<p class="text-sm font-bold text-gray-800">' + esc(data.title) + '</p>' +
+        '<p class="text-xs text-gray-600 mt-1">' + esc(data.content) + '</p>';
     } else {
       el.innerHTML = '<p class="text-xs text-gray-400">今日のTipはまだありません</p>';
     }
@@ -509,9 +634,9 @@ async function loadCoupons() {
       el.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">クーポン</p>' +
         data.coupons.map(function(cp) {
           return '<div class="flex items-center justify-between py-2 border-b last:border-0">' +
-            '<div><p class="text-sm font-bold text-green-600">' + cp.code + '</p>' +
-            '<p class="text-xs text-gray-500">' + cp.title + '</p></div>' +
-            '<p class="text-xs text-gray-400">' + (cp.expiresAt ? '~' + cp.expiresAt.slice(0, 10) : '') + '</p></div>';
+            '<div><p class="text-sm font-bold text-green-600">' + esc(cp.code) + '</p>' +
+            '<p class="text-xs text-gray-500">' + esc(cp.title) + '</p></div>' +
+            '<p class="text-xs text-gray-400">' + (cp.expiresAt ? '~' + esc(cp.expiresAt.slice(0, 10)) : '') + '</p></div>';
         }).join('');
     } else {
       el.innerHTML = '<p class="text-xs text-gray-400">利用可能なクーポンはありません</p>';
@@ -630,11 +755,11 @@ function renderReminders() {
   el.innerHTML = remindersData.map(function(r) {
     var activeClass = r.isActive ? 'bg-green-500' : 'bg-gray-300';
     var knobPos = r.isActive ? 'right:2px' : 'left:2px';
-    return '<div class="flex items-center gap-2 p-2 bg-gray-50 rounded-lg" data-rid="' + r.id + '">' +
+    return '<div class="flex items-center gap-2 p-2 bg-gray-50 rounded-lg" data-rid="' + esc(r.id) + '">' +
       '<div class="flex-1">' +
-      '<p class="text-xs font-bold text-gray-700">' + (r.label || '未設定') + '</p>' +
-      '<input type="time" value="' + r.reminderTime + '" class="text-lg font-bold text-gray-800 bg-transparent border-none p-0" ' +
-      'onchange="updateReminderTime(\\'' + r.id + '\\', this.value)">' +
+      '<p class="text-xs font-bold text-gray-700">' + esc(r.label || '未設定') + '</p>' +
+      '<input type="time" value="' + esc(r.reminderTime) + '" class="text-lg font-bold text-gray-800 bg-transparent border-none p-0" ' +
+      'onchange="updateReminderTime(\\'' + esc(r.id) + '\\', this.value)">' +
       '</div>' +
       '<button onclick="toggleReminderById(\\'' + r.id + '\\')" class="w-10 h-6 ' + activeClass + ' rounded-full relative transition-colors">' +
       '<div class="w-5 h-5 bg-white rounded-full absolute top-0.5 shadow" style="' + knobPos + '"></div></button>' +
@@ -727,50 +852,203 @@ async function deleteReminderById(id) {
 }
 
 // ─── HEALTH Section ───
+var selectedMood = null;
+var selectedSkin = null;
+var selectedBowel = null;
+var bowelCount = 0;
+var healthCharts = {};
+
+function switchHealthView(view) {
+  document.getElementById('health-record-view').style.display = view === 'record' ? 'block' : 'none';
+  document.getElementById('health-graph-view').style.display = view === 'graph' ? 'block' : 'none';
+  document.getElementById('htab-record').className = 'flex-1 py-2 text-xs font-bold rounded-lg ' + (view === 'record' ? 'bg-white shadow text-green-600' : 'text-gray-400');
+  document.getElementById('htab-graph').className = 'flex-1 py-2 text-xs font-bold rounded-lg ' + (view === 'graph' ? 'bg-white shadow text-green-600' : 'text-gray-400');
+  if (view === 'graph') loadGraph(30);
+}
+
 async function loadHealthData() {
+  document.getElementById('health-date-label').textContent = new Date().toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' });
+  // Load today's existing record if any
   try {
-    const { data } = await api('/api/liff/health/summary');
-    const el = document.getElementById('health-summary');
-    if (data) {
-      el.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">直近7日間</p>' +
-        '<div class="grid grid-cols-3 gap-2 text-center">' +
-        '<div class="bg-green-50 rounded-lg p-2"><p class="text-lg font-bold text-green-600">' + data.goodDays + '</p><p class="text-xs text-gray-500">良い</p></div>' +
-        '<div class="bg-yellow-50 rounded-lg p-2"><p class="text-lg font-bold text-yellow-600">' + data.normalDays + '</p><p class="text-xs text-gray-500">普通</p></div>' +
-        '<div class="bg-red-50 rounded-lg p-2"><p class="text-lg font-bold text-red-600">' + data.badDays + '</p><p class="text-xs text-gray-500">悪い</p></div></div>' +
-        (data.latestWeight ? '<p class="text-xs text-gray-500 mt-2">最新体重: ' + data.latestWeight + 'kg</p>' : '');
+    var { data } = await api('/api/liff/health/logs', { days: 1 });
+    if (data && data.logs && data.logs.length > 0) {
+      var today = data.logs[0];
+      if (today.weight) document.getElementById('weight-input').value = today.weight;
+      if (today.mood) setMood(today.mood);
+      if (today.skin_condition) setSkin(today.skin_condition);
+      if (today.bowel_form) setBowel(today.bowel_form);
+      if (today.bowel_count) { bowelCount = today.bowel_count; document.getElementById('bowel-count-display').textContent = bowelCount; }
+      if (today.sleep_hours) { document.getElementById('sleep-slider').value = today.sleep_hours; updateSleepDisplay(); }
+      if (today.note) document.getElementById('health-note').value = today.note;
     }
   } catch { /* ignore */ }
 }
 
-function setCondition(cond) {
-  selectedCondition = cond;
-  document.querySelectorAll('.cond-btn').forEach(function(b) {
-    b.className = b.className.replace('bg-green-500 text-white', '').replace('bg-yellow-500 text-white', '').replace('bg-red-500 text-white', '') + ' bg-white';
+function adjustWeight(delta) {
+  var el = document.getElementById('weight-input');
+  var v = parseFloat(el.value) || 55.0;
+  v = Math.round((v + delta) * 10) / 10;
+  if (v >= 30 && v <= 200) el.value = v.toFixed(1);
+}
+
+function setMood(mood) {
+  selectedMood = mood;
+  document.querySelectorAll('.mood-btn').forEach(function(b) {
+    var active = b.getAttribute('data-mood') === mood;
+    b.style.borderColor = active ? '#06C755' : 'transparent';
+    b.style.background = active ? '#f0fdf4' : 'transparent';
   });
-  var btn = document.querySelector('[data-cond="' + cond + '"]');
-  var colors = { good: 'bg-green-500 text-white', normal: 'bg-yellow-500 text-white', bad: 'bg-red-500 text-white' };
-  btn.className = btn.className.replace('bg-white', '') + ' ' + colors[cond];
+}
+
+function setSkin(skin) {
+  selectedSkin = skin;
+  var colors = { good: '#06C755', normal: '#eab308', bad: '#ef4444' };
+  document.querySelectorAll('.skin-btn').forEach(function(b) {
+    var active = b.getAttribute('data-skin') === skin;
+    b.style.borderColor = active ? (colors[skin] || '#06C755') : 'transparent';
+    b.style.background = active ? '#f9fafb' : '#f9fafb';
+    b.style.fontWeight = active ? '700' : '400';
+  });
+}
+
+function setBowel(form) {
+  selectedBowel = form;
+  document.querySelectorAll('.bowel-btn').forEach(function(b) {
+    var active = b.getAttribute('data-bowel') === form;
+    b.style.borderColor = active ? '#06C755' : 'transparent';
+    b.style.background = active ? '#f0fdf4' : '#f9fafb';
+  });
+  if (bowelCount === 0) { bowelCount = 1; document.getElementById('bowel-count-display').textContent = '1'; }
+}
+
+function adjustBowelCount(delta) {
+  bowelCount = Math.max(0, Math.min(10, bowelCount + delta));
+  document.getElementById('bowel-count-display').textContent = bowelCount;
+  if (bowelCount === 0) { selectedBowel = null; document.querySelectorAll('.bowel-btn').forEach(function(b) { b.style.borderColor = 'transparent'; b.style.background = '#f9fafb'; }); }
+}
+
+function updateSleepDisplay() {
+  var v = parseFloat(document.getElementById('sleep-slider').value);
+  document.getElementById('sleep-display').textContent = v.toFixed(1) + 'h';
 }
 
 async function saveHealthLog() {
   if (isDemo) { showToast('DEMO: 体調を記録しました'); return; }
   var weight = parseFloat(document.getElementById('weight-input').value);
+  var sleepHours = parseFloat(document.getElementById('sleep-slider').value);
   var note = document.getElementById('health-note').value;
   try {
     await api('/api/liff/health/log', {
       weight: isNaN(weight) ? undefined : weight,
-      condition: selectedCondition,
+      condition: selectedMood === 'great' || selectedMood === 'good' ? 'good' : selectedMood === 'normal' ? 'normal' : selectedMood ? 'bad' : undefined,
+      skinCondition: selectedSkin || undefined,
+      sleepHours: sleepHours || undefined,
+      bowelForm: selectedBowel || undefined,
+      bowelCount: bowelCount > 0 ? bowelCount : undefined,
+      mood: selectedMood || undefined,
       note: note || undefined,
     });
-    showToast('体調を記録しました');
-    loadHealthData();
-    document.getElementById('weight-input').value = '';
-    document.getElementById('health-note').value = '';
-    selectedCondition = null;
-    document.querySelectorAll('.cond-btn').forEach(function(b) {
-      b.className = b.className.replace('bg-green-500 text-white', '').replace('bg-yellow-500 text-white', '').replace('bg-red-500 text-white', '') + ' bg-white';
-    });
+    showToast('記録しました！');
   } catch { showToast('記録に失敗しました'); }
+}
+
+// ─── Graph functions ───
+async function loadGraph(days) {
+  // Update period button styles
+  document.querySelectorAll('.graph-period-btn').forEach(function(b) {
+    var d = parseInt(b.getAttribute('data-days'));
+    b.className = 'graph-period-btn flex-1 py-1.5 text-xs rounded-lg ' + (d === days ? 'bg-white shadow font-bold text-green-600' : 'text-gray-400');
+  });
+
+  try {
+    var { data } = await api('/api/liff/health/trends', { days: days });
+    if (!data || !data.trends) return;
+    var trends = data.trends;
+    var labels = trends.map(function(t) { return t.log_date.slice(5); });
+
+    // Weight chart
+    renderLineChart('weight-chart', 'weightChart', labels,
+      trends.map(function(t) { return t.weight; }),
+      'rgba(6,199,85,1)', 'rgba(6,199,85,0.1)', 'kg');
+
+    // Show weight change
+    var weights = trends.filter(function(t) { return t.weight !== null; });
+    var wcEl = document.getElementById('weight-change');
+    if (weights.length >= 2) {
+      var diff = weights[weights.length - 1].weight - weights[0].weight;
+      var sign = diff > 0 ? '+' : '';
+      var color = diff < 0 ? 'text-green-600' : diff > 0 ? 'text-red-500' : 'text-gray-500';
+      wcEl.innerHTML = '<span class="text-xs ' + color + '">' + sign + diff.toFixed(1) + 'kg（期間中の変化）</span>';
+    } else { wcEl.innerHTML = ''; }
+
+    // Condition chart (mood mapped to numbers: great=5,good=4,normal=3,bad=2,terrible=1)
+    var moodMap = { great: 5, good: 4, normal: 3, bad: 2, terrible: 1 };
+    var condMap = { good: 4, normal: 3, bad: 2 };
+    renderBarChart('condition-chart', 'condChart', labels, [
+      { label: '気分', data: trends.map(function(t) { return t.mood ? moodMap[t.mood] : null; }), color: 'rgba(6,199,85,0.7)' },
+      { label: '肌', data: trends.map(function(t) { return t.skin_condition ? condMap[t.skin_condition] : null; }), color: 'rgba(168,85,247,0.7)' },
+    ]);
+
+    // Sleep chart
+    renderLineChart('sleep-chart', 'sleepChart', labels,
+      trends.map(function(t) { return t.sleep_hours; }),
+      'rgba(59,130,246,1)', 'rgba(59,130,246,0.1)', 'h');
+
+    // Stats summary
+    renderHealthStats(trends, days);
+  } catch { /* ignore */ }
+}
+
+function renderLineChart(canvasId, chartKey, labels, data, borderColor, bgColor, unit) {
+  if (healthCharts[chartKey]) healthCharts[chartKey].destroy();
+  var ctx = document.getElementById(canvasId).getContext('2d');
+  healthCharts[chartKey] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{ data: data, borderColor: borderColor, backgroundColor: bgColor, fill: true, tension: 0.3, pointRadius: data.length > 60 ? 0 : 3, borderWidth: 2, spanGaps: true }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: function(c) { return c.parsed.y + unit; } } } },
+      scales: { x: { ticks: { maxTicksLimit: 7, font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } }
+    }
+  });
+}
+
+function renderBarChart(canvasId, chartKey, labels, datasets) {
+  if (healthCharts[chartKey]) healthCharts[chartKey].destroy();
+  var ctx = document.getElementById(canvasId).getContext('2d');
+  healthCharts[chartKey] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: datasets.map(function(ds) {
+        return { label: ds.label, data: ds.data, backgroundColor: ds.color, borderRadius: 3, barPercentage: 0.6 };
+      })
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 7, font: { size: 10 } } },
+        y: { min: 0, max: 5, ticks: { stepSize: 1, font: { size: 10 }, callback: function(v) { return ['','最悪','悪い','普通','良い','最高'][v] || ''; } } }
+      }
+    }
+  });
+}
+
+function renderHealthStats(trends, days) {
+  var el = document.getElementById('health-stats');
+  var weights = trends.filter(function(t) { return t.weight !== null; });
+  var sleeps = trends.filter(function(t) { return t.sleep_hours !== null; });
+  var avgW = weights.length > 0 ? (weights.reduce(function(s, t) { return s + t.weight; }, 0) / weights.length).toFixed(1) : '--';
+  var avgS = sleeps.length > 0 ? (sleeps.reduce(function(s, t) { return s + t.sleep_hours; }, 0) / sleeps.length).toFixed(1) : '--';
+  el.innerHTML = '<h4 class="text-xs font-bold text-gray-500 mb-3">期間サマリー（' + days + '日間）</h4>' +
+    '<div class="grid grid-cols-3 gap-3 text-center">' +
+    '<div class="bg-green-50 rounded-xl p-3"><p class="text-lg font-bold text-green-600">' + trends.length + '</p><p class="text-[10px] text-gray-500">記録日数</p></div>' +
+    '<div class="bg-blue-50 rounded-xl p-3"><p class="text-lg font-bold text-blue-600">' + avgW + '<span class="text-xs">kg</span></p><p class="text-[10px] text-gray-500">平均体重</p></div>' +
+    '<div class="bg-purple-50 rounded-xl p-3"><p class="text-lg font-bold text-purple-600">' + avgS + '<span class="text-xs">h</span></p><p class="text-[10px] text-gray-500">平均睡眠</p></div></div>';
 }
 
 // ─── REFERRAL + Sharing ───
@@ -831,7 +1109,7 @@ async function loadRanking() {
       var medal = r.rank === 1 ? '&#x1F947;' : r.rank === 2 ? '&#x1F948;' : r.rank === 3 ? '&#x1F949;' : r.rank + '.';
       html += '<div class="flex items-center gap-3 py-2 border-b last:border-0">' +
         '<span class="text-sm w-8 text-center">' + medal + '</span>' +
-        '<span class="text-sm text-gray-800 flex-1">' + r.displayName + '</span>' +
+        '<span class="text-sm text-gray-800 flex-1">' + esc(r.displayName) + '</span>' +
         '<span class="text-sm font-bold text-green-600">' + r.referralCount + '人</span></div>';
     });
     el.innerHTML = html;
@@ -896,10 +1174,10 @@ async function loadShopData() {
         pel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-3">商品ラインナップ</p>' +
           data.products.map(function(p) {
             return '<div class="flex items-center gap-3 py-3 border-b last:border-0">' +
-              (p.imageUrl ? '<img src="' + p.imageUrl + '" class="w-16 h-16 rounded-lg object-cover">' : '<div class="w-16 h-16 rounded-lg bg-gray-100"></div>') +
-              '<div class="flex-1"><p class="text-sm font-bold text-gray-800">' + p.title + '</p>' +
+              (p.imageUrl ? '<img src="' + esc(p.imageUrl) + '" class="w-16 h-16 rounded-lg object-cover">' : '<div class="w-16 h-16 rounded-lg bg-gray-100"></div>') +
+              '<div class="flex-1"><p class="text-sm font-bold text-gray-800">' + esc(p.title) + '</p>' +
               '<p class="text-sm text-green-600 font-bold">¥' + Number(p.price).toLocaleString() + '</p></div>' +
-              '<a href="' + p.storeUrl + '" target="_blank" class="text-xs text-green-600 border border-green-600 px-3 py-1 rounded-full">購入</a></div>';
+              '<a href="' + esc(p.storeUrl) + '" target="_blank" class="text-xs text-green-600 border border-green-600 px-3 py-1 rounded-full">購入</a></div>';
           }).join('');
       }
       // Orders
@@ -908,9 +1186,9 @@ async function loadShopData() {
         oel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">最近の注文</p>' +
           data.recentOrders.map(function(o) {
             return '<div class="py-2 border-b last:border-0">' +
-              '<div class="flex justify-between items-center"><p class="text-sm font-bold">#' + o.orderNumber + '</p>' +
+              '<div class="flex justify-between items-center"><p class="text-sm font-bold">#' + esc(o.orderNumber) + '</p>' +
               '<p class="text-sm text-green-600 font-bold">¥' + Number(o.totalPrice).toLocaleString() + '</p></div>' +
-              '<p class="text-xs text-gray-400">' + (o.createdAt || '').slice(0, 10) + '</p></div>';
+              '<p class="text-xs text-gray-400">' + esc((o.createdAt || '').slice(0, 10)) + '</p></div>';
           }).join('');
       } else {
         oel.innerHTML = '<p class="text-xs text-gray-400">まだ注文がありません</p>';
@@ -926,9 +1204,9 @@ async function loadShopData() {
       fel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">配送状況</p>' +
         data.fulfillments.slice(0, 3).map(function(f) {
           return '<div class="py-2 border-b last:border-0">' +
-            '<div class="flex justify-between"><p class="text-sm">#' + f.orderNumber + '</p>' +
-            '<span class="text-xs px-2 py-0.5 rounded-full ' + (f.status === 'delivered' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700') + '">' + (f.status || 'in_transit') + '</span></div>' +
-            (f.trackingUrl ? '<a href="' + f.trackingUrl + '" target="_blank" class="text-xs text-blue-500 underline">追跡する</a>' : '') + '</div>';
+            '<div class="flex justify-between"><p class="text-sm">#' + esc(f.orderNumber) + '</p>' +
+            '<span class="text-xs px-2 py-0.5 rounded-full ' + (f.status === 'delivered' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700') + '">' + esc(f.status || 'in_transit') + '</span></div>' +
+            (f.trackingUrl ? '<a href="' + esc(f.trackingUrl) + '" target="_blank" class="text-xs text-blue-500 underline">追跡する</a>' : '') + '</div>';
         }).join('');
     } else {
       fel.innerHTML = '<p class="text-xs text-gray-400">配送情報はありません</p>';

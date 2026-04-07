@@ -599,6 +599,9 @@ export async function upsertHealthLog(
     meals?: Record<string, string>;
     sleepHours?: number;
     note?: string;
+    bowelForm?: string;
+    bowelCount?: number;
+    mood?: string;
   },
 ): Promise<{ id: string; log_date: string }> {
   const now = jstNow();
@@ -617,7 +620,10 @@ export async function upsertHealthLog(
          skin_condition = COALESCE(?, skin_condition),
          meals = COALESCE(?, meals),
          sleep_hours = COALESCE(?, sleep_hours),
-         note = COALESCE(?, note)
+         note = COALESCE(?, note),
+         bowel_form = COALESCE(?, bowel_form),
+         bowel_count = COALESCE(?, bowel_count),
+         mood = COALESCE(?, mood)
          WHERE id = ?`,
       )
       .bind(
@@ -627,6 +633,9 @@ export async function upsertHealthLog(
         data.meals ? JSON.stringify(data.meals) : null,
         data.sleepHours ?? null,
         data.note ?? null,
+        data.bowelForm ?? null,
+        data.bowelCount ?? null,
+        data.mood ?? null,
         existing.id,
       )
       .run();
@@ -636,8 +645,8 @@ export async function upsertHealthLog(
 
   const result = await db
     .prepare(
-      `INSERT INTO health_logs (friend_id, log_date, weight, condition, skin_condition, meals, sleep_hours, note, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, log_date`,
+      `INSERT INTO health_logs (friend_id, log_date, weight, condition, skin_condition, meals, sleep_hours, note, bowel_form, bowel_count, mood, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, log_date`,
     )
     .bind(
       data.friendId,
@@ -648,6 +657,9 @@ export async function upsertHealthLog(
       data.meals ? JSON.stringify(data.meals) : null,
       data.sleepHours ?? null,
       data.note ?? null,
+      data.bowelForm ?? null,
+      data.bowelCount ?? null,
+      data.mood ?? null,
       now,
     )
     .first<{ id: string; log_date: string }>();
@@ -660,40 +672,40 @@ export async function getHealthLogs(
   db: D1Database,
   friendId: string,
   days: number = 30,
-): Promise<Array<{ id: string; log_date: string; weight: number | null; condition: string | null; skin_condition: string | null; meals: string | null; sleep_hours: number | null; note: string | null }>> {
+): Promise<Array<{ id: string; log_date: string; weight: number | null; condition: string | null; skin_condition: string | null; meals: string | null; sleep_hours: number | null; note: string | null; bowel_form: string | null; bowel_count: number | null; mood: string | null }>> {
   const now = jstNow();
   const since = new Date(new Date(now).getTime() - days * 86400000).toISOString().slice(0, 10);
 
   const { results } = await db
     .prepare(
-      `SELECT id, log_date, weight, condition, skin_condition, meals, sleep_hours, note
+      `SELECT id, log_date, weight, condition, skin_condition, meals, sleep_hours, note, bowel_form, bowel_count, mood
        FROM health_logs WHERE friend_id = ? AND log_date >= ?
        ORDER BY log_date DESC`,
     )
     .bind(friendId, since)
     .all();
 
-  return results as Array<{ id: string; log_date: string; weight: number | null; condition: string | null; skin_condition: string | null; meals: string | null; sleep_hours: number | null; note: string | null }>;
+  return results as Array<{ id: string; log_date: string; weight: number | null; condition: string | null; skin_condition: string | null; meals: string | null; sleep_hours: number | null; note: string | null; bowel_form: string | null; bowel_count: number | null; mood: string | null }>;
 }
 
 export async function getHealthTrends(
   db: D1Database,
   friendId: string,
   days: number = 30,
-): Promise<Array<{ log_date: string; weight: number | null; condition: string | null; sleep_hours: number | null }>> {
+): Promise<Array<{ log_date: string; weight: number | null; condition: string | null; skin_condition: string | null; sleep_hours: number | null; bowel_form: string | null; bowel_count: number | null; mood: string | null }>> {
   const now = jstNow();
   const since = new Date(new Date(now).getTime() - days * 86400000).toISOString().slice(0, 10);
 
   const { results } = await db
     .prepare(
-      `SELECT log_date, weight, condition, sleep_hours
+      `SELECT log_date, weight, condition, skin_condition, sleep_hours, bowel_form, bowel_count, mood
        FROM health_logs WHERE friend_id = ? AND log_date >= ?
        ORDER BY log_date ASC`,
     )
     .bind(friendId, since)
     .all();
 
-  return results as Array<{ log_date: string; weight: number | null; condition: string | null; sleep_hours: number | null }>;
+  return results as Array<{ log_date: string; weight: number | null; condition: string | null; skin_condition: string | null; sleep_hours: number | null; bowel_form: string | null; bowel_count: number | null; mood: string | null }>;
 }
 
 export async function getHealthSummary(

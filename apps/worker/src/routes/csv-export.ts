@@ -4,6 +4,15 @@ import type { Env } from '../index.js';
 
 const csvExport = new Hono<Env>();
 
+// ─── Role Guard: owner/admin only ───
+csvExport.use('/api/export/*', async (c, next) => {
+  const staff = c.get('staff') as { role: string } | undefined;
+  if (!staff || (staff.role !== 'owner' && staff.role !== 'admin')) {
+    return c.json({ success: false, error: 'Forbidden: owner or admin role required' }, 403);
+  }
+  return next();
+});
+
 // ─── CSV Helpers ───
 function toCsv(headers: string[], rows: Array<Record<string, unknown>>): string {
   const escape = (val: unknown): string => {
@@ -260,6 +269,127 @@ csvExport.get('/api/export/ranks', async (c) => {
     return csvResponse(c as never, `ranks_${jstNow().slice(0, 10)}.csv`, csv);
   } catch (err) {
     console.error('GET /api/export/ranks error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/export/friends-by-tag?tag=xxx — タグ別友だちリストCSV
+ */
+csvExport.get('/api/export/friends-by-tag', async (c) => {
+  try {
+    const tagName = c.req.query('tag');
+    if (!tagName) {
+      return c.json({ success: false, error: 'tag query parameter required' }, 400);
+    }
+
+    const { results } = await c.env.DB
+      .prepare(
+        `SELECT f.id, f.line_user_id, f.display_name, f.gender, f.birthday,
+                f.is_following, f.created_at
+         FROM friends f
+         INNER JOIN friend_tags ft ON ft.friend_id = f.id
+         INNER JOIN tags t ON t.id = ft.tag_id
+         WHERE t.name = ?
+         ORDER BY f.created_at DESC
+         LIMIT 10000`,
+      )
+      .bind(tagName)
+      .all();
+
+    const csv = toCsv(
+      ['id', 'line_user_id', 'display_name', 'gender', 'birthday', 'is_following', 'created_at'],
+      results as Array<Record<string, unknown>>,
+    );
+
+    const safeTag = tagName.replace(/[^a-zA-Z0-9_\-\u3040-\u30FF\u4E00-\u9FFF]/g, '_');
+    return csvResponse(c as never, `friends_tag_${safeTag}_${jstNow().slice(0, 10)}.csv`, csv);
+  } catch (err) {
+    console.error('GET /api/export/friends-by-tag error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/export/tips — 日替わりTips一覧CSV
+ */
+csvExport.get('/api/export/tips', async (c) => {
+  try {
+    const { results } = await c.env.DB
+      .prepare(
+        `SELECT id, tip_date, category, title, content, source, created_at
+         FROM daily_tips
+         ORDER BY tip_date DESC
+         LIMIT 10000`,
+      )
+      .all();
+
+    const csv = toCsv(
+      ['id', 'tip_date', 'category', 'title', 'content', 'source', 'created_at'],
+      results as Array<Record<string, unknown>>,
+    );
+
+    return csvResponse(c as never, `tips_${jstNow().slice(0, 10)}.csv`, csv);
+  } catch (err) {
+    console.error('GET /api/export/tips error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/export/quiz-results — 診断クイズ結果一覧CSV
+ */
+csvExport.get('/api/export/quiz-results', async (c) => {
+  try {
+    const { results } = await c.env.DB
+      .prepare(
+        `SELECT rr.id, rr.quiz_answers, rr.recommended_product,
+                rr.score_breakdown, rr.created_at,
+                f.display_name
+         FROM recommendation_results rr
+         LEFT JOIN friends f ON f.id = rr.friend_id
+         ORDER BY rr.created_at DESC
+         LIMIT 10000`,
+      )
+      .all();
+
+    const csv = toCsv(
+      ['id', 'display_name', 'recommended_product', 'quiz_answers', 'score_breakdown', 'created_at'],
+      results as Array<Record<string, unknown>>,
+    );
+
+    return csvResponse(c as never, `quiz_results_${jstNow().slice(0, 10)}.csv`, csv);
+  } catch (err) {
+    console.error('GET /api/export/quiz-results error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/export/shipping — 配送状況一覧CSV
+ */
+csvExport.get('/api/export/shipping', async (c) => {
+  try {
+    const { results } = await c.env.DB
+      .prepare(
+        `SELECT so.id, so.order_number, so.fulfillment_status,
+                so.total_price, so.financial_status, so.created_at,
+                f.display_name, f.line_user_id
+         FROM shopify_orders so
+         LEFT JOIN friends f ON f.id = so.friend_id
+         ORDER BY so.created_at DESC
+         LIMIT 10000`,
+      )
+      .all();
+
+    const csv = toCsv(
+      ['id', 'order_number', 'display_name', 'fulfillment_status', 'financial_status', 'total_price', 'created_at'],
+      results as Array<Record<string, unknown>>,
+    );
+
+    return csvResponse(c as never, `shipping_${jstNow().slice(0, 10)}.csv`, csv);
+  } catch (err) {
+    console.error('GET /api/export/shipping error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
