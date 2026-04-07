@@ -46,6 +46,8 @@ import { analyticsRoutes } from './routes/analytics.js';
 import { liffPortal } from './routes/liff-portal.js';
 import { liffPages } from './routes/liff-pages.js';
 import { tips } from './routes/tips.js';
+import { ambassadors } from './routes/ambassadors.js';
+import { csvExport } from './routes/csv-export.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 import { processIntakeReminders } from './services/intake-reminder.js';
 
@@ -130,6 +132,8 @@ app.route('/api/analytics', analyticsRoutes);
 app.route('/', liffPortal);
 app.route('/', liffPages);
 app.route('/', tips);
+app.route('/', ambassadors);
+app.route('/', csvExport);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
