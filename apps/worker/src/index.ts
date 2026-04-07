@@ -49,8 +49,10 @@ import { tips } from './routes/tips.js';
 import { ambassadors } from './routes/ambassadors.js';
 import { csvExport } from './routes/csv-export.js';
 import { dashboard } from './routes/dashboard.js';
+import { reminderMessages } from './routes/reminder-messages.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 import { processIntakeReminders } from './services/intake-reminder.js';
+import { processWeeklyReports } from './services/weekly-report.js';
 
 export type Env = {
   Bindings: {
@@ -136,6 +138,7 @@ app.route('/', tips);
 app.route('/', ambassadors);
 app.route('/', csvExport);
 app.route('/', dashboard);
+app.route('/', reminderMessages);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
@@ -215,7 +218,8 @@ async function scheduled(
       processScheduledBroadcasts(env.DB, lineClient, env.WORKER_URL),
       processReminderDeliveries(env.DB, lineClient),
       processScheduledAbTests(env.DB, lineClient, env.WORKER_URL),
-      processIntakeReminders(env.DB, lineClient),
+      processIntakeReminders(env.DB, lineClient, env.LIFF_URL),
+      processWeeklyReports(env.DB, lineClient),
     );
   }
   jobs.push(checkAccountHealth(env.DB));

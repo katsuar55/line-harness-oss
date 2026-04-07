@@ -24,6 +24,12 @@ vi.mock('@line-crm/db', async (importOriginal) => {
       totalDays: 30,
     })),
     jstNow: vi.fn(() => '2026-04-07T08:05:00+09:00'),
+    pickReminderMessage: vi.fn(async () => ({
+      id: 'rm-m001',
+      message: 'おはようございます！朝の1粒で今日も元気にスタート。',
+      category: 'motivation',
+    })),
+    logReminderMessage: vi.fn(async () => undefined),
   };
 });
 

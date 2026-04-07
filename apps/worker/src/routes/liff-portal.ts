@@ -9,6 +9,11 @@ import {
   getIntakeLogs,
   getIntakeStreak,
   upsertIntakeReminder,
+  addIntakeReminder,
+  updateIntakeReminder,
+  deleteIntakeReminder,
+  getIntakeReminders,
+  getIntakeReminder,
   createReferralLink,
   getReferralLink,
   getReferralLinkByRefCode,
@@ -360,6 +365,137 @@ liffPortal.post('/api/liff/intake/reminder', async (c) => {
     });
   } catch (err) {
     console.error('POST /api/liff/intake/reminder error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/liff/intake/reminder — リマインダー設定取得
+ */
+liffPortal.get('/api/liff/intake/reminder', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const reminder = await getIntakeReminder(c.env.DB, user.friendId);
+
+    return c.json({
+      success: true,
+      data: reminder
+        ? { reminderTime: reminder.reminder_time, isActive: Boolean(reminder.is_active) }
+        : null,
+    });
+  } catch (err) {
+    console.error('GET /api/liff/intake/reminder error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ── 複数リマインダー管理API ──
+
+/**
+ * GET /api/liff/intake/reminders — 全リマインダー一覧取得
+ */
+liffPortal.get('/api/liff/intake/reminders', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const reminders = await getIntakeReminders(c.env.DB, user.friendId);
+    return c.json({
+      success: true,
+      data: reminders.map((r) => ({
+        id: r.id,
+        label: r.label,
+        reminderTime: r.reminder_time,
+        isActive: Boolean(r.is_active),
+      })),
+    });
+  } catch (err) {
+    console.error('GET /api/liff/intake/reminders error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/intake/reminders/add — リマインダー追加（最大5件）
+ */
+liffPortal.post('/api/liff/intake/reminders/add', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const { label, reminderTime } = await c.req.json<{ label?: string; reminderTime?: string }>();
+
+    if (reminderTime && !TIME_RE.test(reminderTime)) {
+      return c.json({ success: false, error: 'Invalid time format. Use HH:MM' }, 400);
+    }
+
+    const result = await addIntakeReminder(c.env.DB, {
+      friendId: user.friendId,
+      label,
+      reminderTime,
+    });
+
+    return c.json({
+      success: true,
+      data: { id: result.id, label: result.label, reminderTime: result.reminder_time, isActive: Boolean(result.is_active) },
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === 'MAX_REMINDERS_REACHED') {
+      return c.json({ success: false, error: 'リマインダーは最大5件までです' }, 400);
+    }
+    console.error('POST /api/liff/intake/reminders/add error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * PUT /api/liff/intake/reminders/:id — リマインダー更新
+ */
+liffPortal.put('/api/liff/intake/reminders/:id', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const reminderId = c.req.param('id');
+    const { label, reminderTime, isActive } = await c.req.json<{ label?: string; reminderTime?: string; isActive?: boolean }>();
+
+    if (reminderTime && !TIME_RE.test(reminderTime)) {
+      return c.json({ success: false, error: 'Invalid time format. Use HH:MM' }, 400);
+    }
+
+    const result = await updateIntakeReminder(c.env.DB, {
+      id: reminderId,
+      friendId: user.friendId,
+      label,
+      reminderTime,
+      isActive,
+    });
+
+    return c.json({
+      success: true,
+      data: { id: result.id, label: result.label, reminderTime: result.reminder_time, isActive: Boolean(result.is_active) },
+    });
+  } catch (err) {
+    console.error('PUT /api/liff/intake/reminders/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * DELETE /api/liff/intake/reminders/:id — リマインダー削除
+ */
+liffPortal.delete('/api/liff/intake/reminders/:id', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const reminderId = c.req.param('id');
+    await deleteIntakeReminder(c.env.DB, reminderId, user.friendId);
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('DELETE /api/liff/intake/reminders/:id error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -799,6 +935,117 @@ liffPortal.get('/api/liff/tips/today', async (c) => {
     return c.json({ success: true, data: tip });
   } catch (err) {
     console.error('GET /api/liff/tips/today error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ── 紹介ランキング ──
+
+/**
+ * マスク処理: 「田中太郎」→「田○太○」（1文字おき伏字）
+ */
+function maskDisplayName(name: string | null): string {
+  if (!name) return '匿名';
+  const chars = [...name]; // Unicode-safe split
+  return chars.map((ch, i) => (i % 2 === 1 ? '○' : ch)).join('');
+}
+
+liffPortal.get('/api/liff/referral/ranking', async (c) => {
+  try {
+    const limit = Math.min(Math.max(1, Number(c.req.query('limit')) || 10), 50);
+
+    const { results } = await c.env.DB
+      .prepare(
+        `SELECT
+           rr.referrer_id,
+           f.display_name,
+           COUNT(*) as referral_count
+         FROM referral_rewards rr
+         JOIN friends f ON f.id = rr.referrer_id
+         WHERE rr.reward_type = 'referrer'
+         GROUP BY rr.referrer_id
+         ORDER BY referral_count DESC
+         LIMIT ?`,
+      )
+      .bind(limit)
+      .all<{ referrer_id: string; display_name: string | null; referral_count: number }>();
+
+    const ranking = results.map((r, i) => ({
+      rank: i + 1,
+      displayName: maskDisplayName(r.display_name),
+      referralCount: r.referral_count,
+    }));
+
+    return c.json({ success: true, data: ranking });
+  } catch (err) {
+    console.error('GET /api/liff/referral/ranking error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ── プロフィール更新（gender/birthday） ──
+
+const VALID_GENDERS = ['male', 'female', 'other', 'unspecified'];
+
+liffPortal.put('/api/liff/profile', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const body = await c.req.json<{ gender?: string; birthday?: string }>();
+    const updates: string[] = [];
+    const values: (string | null)[] = [];
+
+    if (body.gender !== undefined) {
+      if (!VALID_GENDERS.includes(body.gender)) {
+        return c.json({ success: false, error: `gender must be one of: ${VALID_GENDERS.join(', ')}` }, 400);
+      }
+      updates.push('gender = ?');
+      values.push(body.gender);
+    }
+
+    if (body.birthday !== undefined) {
+      if (body.birthday && !/^\d{4}-\d{2}-\d{2}$/.test(body.birthday)) {
+        return c.json({ success: false, error: 'birthday must be YYYY-MM-DD format' }, 400);
+      }
+      updates.push('birthday = ?');
+      values.push(body.birthday || null);
+    }
+
+    if (updates.length === 0) {
+      return c.json({ success: false, error: 'No fields to update' }, 400);
+    }
+
+    const { jstNow: jst } = await import('@line-crm/db');
+    updates.push('updated_at = ?');
+    values.push(jst());
+    values.push(user.friendId);
+
+    await c.env.DB
+      .prepare(`UPDATE friends SET ${updates.join(', ')} WHERE id = ?`)
+      .bind(...values)
+      .run();
+
+    return c.json({ success: true, message: 'Profile updated' });
+  } catch (err) {
+    console.error('PUT /api/liff/profile error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+liffPortal.get('/api/liff/profile', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const friend = await c.env.DB
+      .prepare('SELECT display_name, gender, birthday FROM friends WHERE id = ?')
+      .bind(user.friendId)
+      .first<{ display_name: string | null; gender: string | null; birthday: string | null }>();
+
+    return c.json({ success: true, data: friend || {} });
+  } catch (err) {
+    console.error('GET /api/liff/profile error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

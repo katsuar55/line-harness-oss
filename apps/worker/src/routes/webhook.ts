@@ -364,6 +364,25 @@ async function handleEvent(
       }
     }
 
+    // デフォルト朝リマインド自動設定（08:00、有効状態）
+    try {
+      const existingReminder = await db
+        .prepare('SELECT id FROM intake_reminders WHERE friend_id = ?')
+        .bind(friend.id)
+        .first<{ id: string }>();
+      if (!existingReminder) {
+        await db
+          .prepare(
+            `INSERT INTO intake_reminders (id, friend_id, reminder_time, timezone, reminder_type, is_active, created_at, updated_at)
+             VALUES (?, ?, '08:00', 'Asia/Tokyo', 'morning', 1, ?, ?)`,
+          )
+          .bind(crypto.randomUUID(), friend.id, jstNow(), jstNow())
+          .run();
+      }
+    } catch (err) {
+      console.error('Failed to set default reminder for', friend.id, err);
+    }
+
     // イベントバス発火: friend_add（replyToken は Step 0 で使用済みの可能性あり）
     await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name } }, lineAccessToken, lineAccountId);
     return;
@@ -375,6 +394,67 @@ async function handleEvent(
     if (!userId) return;
 
     await updateFriendFollowStatus(db, userId, false);
+    return;
+  }
+
+  // ── Postback イベント処理 ──
+  if (event.type === 'postback') {
+    const userId = event.source.type === 'user' ? event.source.userId : undefined;
+    if (!userId) return;
+
+    const data = (event as { postback?: { data?: string } }).postback?.data ?? '';
+    const params = new URLSearchParams(data);
+    const action = params.get('action');
+
+    if (action === 'daily_tip') {
+      const friend = await getFriendByLineUserId(db, userId);
+      if (!friend) return;
+
+      try {
+        const { getTodayTip } = await import('@line-crm/db');
+        const tip = await getTodayTip(db);
+
+        if (tip) {
+          const tipFlex = {
+            type: 'bubble',
+            size: 'kilo',
+            header: {
+              type: 'box', layout: 'horizontal',
+              backgroundColor: '#06C755', paddingAll: '12px',
+              contents: [
+                { type: 'text', text: '\u{1F331}', size: 'sm', flex: 0 },
+                { type: 'text', text: '\u4eca\u65e5\u306e\u30d2\u30f3\u30c8',
+                  size: 'xs', color: '#ffffff', weight: 'bold',
+                  gravity: 'center', margin: 'sm' },
+                { type: 'filler' },
+                { type: 'text', text: tip.category || '',
+                  size: 'xxs', color: '#d1fae5', gravity: 'center' },
+              ],
+            },
+            body: {
+              type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+              contents: [
+                { type: 'text', text: tip.title, weight: 'bold', size: 'md',
+                  color: '#1e293b', wrap: true },
+                { type: 'text', text: tip.content, size: 'sm',
+                  color: '#475569', wrap: true },
+              ],
+            },
+          };
+          await lineClient.replyMessage(event.replyToken, [
+            buildMessage('flex', JSON.stringify(tipFlex)),
+          ]);
+        } else {
+          await lineClient.replyMessage(event.replyToken, [
+            buildMessage('text', '\u4eca\u65e5\u306e\u30d2\u30f3\u30c8\u306f\u307e\u3060\u767b\u9332\u3055\u308c\u3066\u3044\u307e\u305b\u3093\u3002\u307e\u305f\u660e\u65e5\u30c1\u30a7\u30c3\u30af\u3057\u3066\u304f\u3060\u3055\u3044\u306d\uff01'),
+          ]);
+        }
+      } catch (err) {
+        console.error('Daily tip postback error:', err);
+      }
+      return;
+    }
+
     return;
   }
 

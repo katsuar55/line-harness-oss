@@ -88,9 +88,33 @@ function portalPage(liffId: string, apiBase: string): string {
         <div class="skeleton h-16 rounded-lg"></div>
       </div>
 
-      <!-- Referral -->
+      <!-- Referral + Sharing -->
       <div id="referral-card" class="card p-4">
         <div class="skeleton h-16 rounded-lg"></div>
+      </div>
+
+      <!-- Referral Ranking -->
+      <div id="ranking-card" class="card p-4" style="display:none;"></div>
+
+      <!-- Profile (gender/birthday) -->
+      <div id="profile-card" class="card p-4">
+        <p class="text-xs text-gray-500 font-bold mb-3">プロフィール</p>
+        <div class="space-y-3">
+          <div>
+            <label class="text-xs text-gray-500">性別</label>
+            <div class="flex gap-2 mt-1">
+              <button onclick="setGender('male')" data-gender="male" class="gender-btn flex-1 py-2 rounded-lg text-xs border">男性</button>
+              <button onclick="setGender('female')" data-gender="female" class="gender-btn flex-1 py-2 rounded-lg text-xs border">女性</button>
+              <button onclick="setGender('other')" data-gender="other" class="gender-btn flex-1 py-2 rounded-lg text-xs border">その他</button>
+              <button onclick="setGender('unspecified')" data-gender="unspecified" class="gender-btn flex-1 py-2 rounded-lg text-xs border">未回答</button>
+            </div>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">誕生日</label>
+            <input type="date" id="birthday-input" class="w-full mt-1 p-2 border rounded-lg text-sm" min="1920-01-01" max="2020-12-31">
+          </div>
+          <button onclick="saveProfile()" class="btn-primary w-full py-2.5 rounded-lg text-xs font-bold">保存</button>
+        </div>
       </div>
     </div>
 
@@ -100,14 +124,45 @@ function portalPage(liffId: string, apiBase: string): string {
       <div id="streak-card" class="card p-4 text-center">
         <div class="skeleton h-32 rounded-lg"></div>
       </div>
+      <!-- Product Select -->
+      <div class="card p-4">
+        <p class="text-xs text-gray-500 font-bold mb-2">商品を選択</p>
+        <div class="flex gap-2">
+          <button onclick="selectProduct('Blue')" data-product="Blue" class="product-btn flex-1 py-2 rounded-lg text-xs border bg-blue-50 text-blue-700 font-bold border-blue-300">Blue</button>
+          <button onclick="selectProduct('Pink')" data-product="Pink" class="product-btn flex-1 py-2 rounded-lg text-xs border">Pink</button>
+          <button onclick="selectProduct('Premium')" data-product="Premium" class="product-btn flex-1 py-2 rounded-lg text-xs border">Premium</button>
+        </div>
+      </div>
       <!-- Log Button -->
-      <button onclick="logIntake()" class="btn-primary w-full py-4 rounded-xl text-lg font-bold shadow-md">
+      <button onclick="logIntake()" id="intake-btn" class="btn-primary w-full py-4 rounded-xl text-lg font-bold shadow-md">
         服用を記録する
       </button>
-      <!-- Reminder -->
-      <div id="reminder-card" class="card p-4">
-        <div class="skeleton h-12 rounded-lg"></div>
+      <!-- Calendar View -->
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-3">
+          <button onclick="calendarPrev()" class="text-gray-400 text-lg px-2">&lt;</button>
+          <p class="text-sm font-bold text-gray-700" id="calendar-month"></p>
+          <button onclick="calendarNext()" class="text-gray-400 text-lg px-2">&gt;</button>
+        </div>
+        <div class="grid grid-cols-7 gap-1 text-center text-xs" id="calendar-grid">
+          <span class="text-gray-400">日</span><span class="text-gray-400">月</span><span class="text-gray-400">火</span>
+          <span class="text-gray-400">水</span><span class="text-gray-400">木</span><span class="text-gray-400">金</span><span class="text-gray-400">土</span>
+        </div>
+        <div class="grid grid-cols-7 gap-1 text-center text-xs mt-1" id="calendar-days"></div>
       </div>
+      <!-- Reminders (複数設定対応) -->
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <p class="text-sm font-bold text-gray-700">リマインド通知</p>
+            <p class="text-xs text-gray-400">毎日LINEにお知らせ（最大5件）</p>
+          </div>
+          <button onclick="addReminderSlot()" class="text-xs font-bold text-green-600 border border-green-600 px-3 py-1.5 rounded-lg">＋ 追加</button>
+        </div>
+        <div id="reminders-list" class="space-y-2"></div>
+      </div>
+      <!-- Confetti overlay -->
+      <div id="confetti-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:9999;"></div>
     </div>
 
     <!-- ===== HEALTH Section ===== -->
@@ -236,7 +291,7 @@ async function initLiff() {
       document.getElementById('user-avatar').innerHTML =
         '<img src="' + profile.pictureUrl + '" class="w-8 h-8 rounded-full">';
     }
-    await Promise.all([loadRank(), loadTip(), loadCoupons()]);
+    await Promise.all([loadRank(), loadTip(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile()]);
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
     document.getElementById('loading').style.display = 'none';
@@ -290,9 +345,30 @@ function loadDemoData() {
   // Referral
   document.getElementById('referral-card').innerHTML =
     '<p class="text-xs text-gray-500 font-bold mb-2">\u53cb\u3060\u3061\u7d39\u4ecb</p>' +
-    '<p class="text-sm text-gray-700">\u7d39\u4ecb\u30ea\u30f3\u30af\u3092\u5171\u6709\u3057\u3066\u304a\u4e92\u3044\u306b\u30af\u30fc\u30dd\u30f3\u3092\u30b2\u30c3\u30c8!</p>' +
-    '<div class="mt-2 flex items-center gap-2"><span class="bg-gray-100 px-3 py-1 rounded text-xs font-mono">ref-a1b2c3d4</span>' +
-    '<button class="text-xs text-green-600 font-bold">\u30b3\u30d4\u30fc</button></div>';
+    '<p class="text-sm text-gray-700 mb-2">\u30ea\u30f3\u30af\u3092\u5171\u6709\u3057\u3066\u304a\u30c8\u30af\u306b\u30af\u30fc\u30dd\u30f3\u30b2\u30c3\u30c8!</p>' +
+    '<div class="bg-gray-50 rounded-lg p-2 flex items-center gap-2 mb-3">' +
+    '<span class="text-xs font-mono text-gray-600 truncate flex-1" id="ref-url">https://example.com/liff/portal?ref=demo123</span>' +
+    '<button onclick="copyRefLink()" class="text-xs text-green-600 font-bold whitespace-nowrap">\u30b3\u30d4\u30fc</button></div>' +
+    '<div class="flex gap-2">' +
+    '<button onclick="shareRefLine()" class="flex-1 py-2 rounded-lg text-xs font-bold text-white" style="background:#06C755">LINE\u3067\u9001\u308b</button></div>' +
+    '<p class="text-xs text-gray-500 mt-3">\u7d39\u4ecb\u5b9f\u7e3e: <span class="font-bold text-green-600">3\u4eba</span></p>';
+
+  // Ranking
+  document.getElementById('ranking-card').style.display = 'block';
+  document.getElementById('ranking-card').innerHTML =
+    '<p class="text-xs text-gray-500 font-bold mb-3">\u7d39\u4ecb\u30e9\u30f3\u30ad\u30f3\u30b0 TOP10</p>' +
+    '<div class="flex items-center gap-3 py-2 border-b"><span class="text-sm w-8 text-center">&#x1F947;</span><span class="text-sm text-gray-800 flex-1">\u7530\u25cb\u592a\u25cb</span><span class="text-sm font-bold text-green-600">8\u4eba</span></div>' +
+    '<div class="flex items-center gap-3 py-2 border-b"><span class="text-sm w-8 text-center">&#x1F948;</span><span class="text-sm text-gray-800 flex-1">\u5c71\u25cb\u82b1\u25cb</span><span class="text-sm font-bold text-green-600">5\u4eba</span></div>' +
+    '<div class="flex items-center gap-3 py-2"><span class="text-sm w-8 text-center">&#x1F949;</span><span class="text-sm text-gray-800 flex-1">\u4f50\u25cb\u6b21\u25cb</span><span class="text-sm font-bold text-green-600">3\u4eba</span></div>';
+
+  // Calendar demo
+  intakeDatesSet.clear();
+  var today = new Date();
+  for (var i = 0; i < 5; i++) {
+    var d = new Date(today); d.setDate(d.getDate() - i - 1);
+    intakeDatesSet.add(d.toISOString().slice(0, 10));
+  }
+  renderCalendar();
 
   // Streak (intake)
   document.getElementById('streak-card').innerHTML =
@@ -302,12 +378,7 @@ function loadDemoData() {
     '<div>\u6700\u9577 <span class="font-bold text-gray-800">12\u65e5</span></div>' +
     '<div>\u7d2f\u8a08 <span class="font-bold text-gray-800">45\u65e5</span></div></div>';
 
-  // Reminder
-  document.getElementById('reminder-card').innerHTML =
-    '<div class="flex items-center justify-between">' +
-    '<div><p class="text-sm font-bold text-gray-700">\u671d\u30ea\u30de\u30a4\u30f3\u30c9</p>' +
-    '<p class="text-xs text-gray-500">08:00 \u306b\u30d7\u30c3\u30b7\u30e5\u901a\u77e5</p></div>' +
-    '<div class="w-10 h-6 bg-green-500 rounded-full relative"><div class="w-5 h-5 bg-white rounded-full absolute right-0.5 top-0.5 shadow"></div></div></div>';
+  // Reminders (demo: initReminder()で設定)
 
   // Health summary
   document.getElementById('health-summary').innerHTML =
@@ -381,7 +452,7 @@ function switchTab(name) {
   document.getElementById('tab-' + name).className = document.getElementById('tab-' + name).className.replace('tab-inactive', 'tab-active');
 
   // Lazy load section data
-  if (name === 'intake') loadIntakeData();
+  if (name === 'intake') { loadIntakeData(); initReminder(); }
   if (name === 'health') loadHealthData();
   if (name === 'shop') loadShopData();
 }
@@ -449,9 +520,28 @@ async function loadCoupons() {
 }
 
 // ─── INTAKE Section ───
+var selectedProduct = 'Blue';
+var calendarOffset = 0;
+var intakeDatesSet = new Set();
+
+function selectProduct(name) {
+  selectedProduct = name;
+  document.querySelectorAll('.product-btn').forEach(function(b) {
+    var isSelected = b.getAttribute('data-product') === name;
+    b.className = 'product-btn flex-1 py-2 rounded-lg text-xs border ' +
+      (isSelected ? (name === 'Blue' ? 'bg-blue-50 text-blue-700 font-bold border-blue-300' :
+                     name === 'Pink' ? 'bg-pink-50 text-pink-700 font-bold border-pink-300' :
+                     'bg-purple-50 text-purple-700 font-bold border-purple-300') : '');
+  });
+}
+
 async function loadIntakeData() {
   try {
-    const { data } = await api('/api/liff/intake/streak');
+    const [streakRes, logsRes] = await Promise.all([
+      api('/api/liff/intake/streak'),
+      api('/api/liff/intake', { days: 90 }).catch(function() { return { data: null }; }),
+    ]);
+    const data = streakRes.data;
     const el = document.getElementById('streak-card');
     if (data) {
       const fire = data.currentStreak >= 3 ? ' streak-fire' : '';
@@ -461,18 +551,179 @@ async function loadIntakeData() {
         '<div>最長 <span class="font-bold text-gray-800">' + data.longestStreak + '日</span></div>' +
         '<div>累計 <span class="font-bold text-gray-800">' + data.totalDays + '日</span></div></div>';
     }
+    // Update calendar dates
+    intakeDatesSet.clear();
+    if (logsRes.data && Array.isArray(logsRes.data.logs)) {
+      logsRes.data.logs.forEach(function(l) { intakeDatesSet.add(l.intake_date); });
+    }
+    renderCalendar();
   } catch { /* ignore */ }
 }
 
+function renderCalendar() {
+  var now = new Date();
+  now.setMonth(now.getMonth() + calendarOffset);
+  var year = now.getFullYear();
+  var month = now.getMonth();
+  document.getElementById('calendar-month').textContent = year + '年' + (month + 1) + '月';
+  var firstDay = new Date(year, month, 1).getDay();
+  var daysInMonth = new Date(year, month + 1, 0).getDate();
+  var html = '';
+  for (var i = 0; i < firstDay; i++) html += '<span></span>';
+  for (var d = 1; d <= daysInMonth; d++) {
+    var dateStr = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    var isToday = calendarOffset === 0 && d === new Date().getDate() && month === new Date().getMonth();
+    var taken = intakeDatesSet.has(dateStr);
+    html += '<span class="py-1 rounded-full ' +
+      (taken ? 'bg-green-500 text-white font-bold' : isToday ? 'border border-green-500 text-green-600' : 'text-gray-600') +
+      '">' + d + '</span>';
+  }
+  document.getElementById('calendar-days').innerHTML = html;
+}
+
+function calendarPrev() { calendarOffset--; renderCalendar(); }
+function calendarNext() { if (calendarOffset < 0) { calendarOffset++; renderCalendar(); } }
+
+function showConfetti() {
+  var overlay = document.getElementById('confetti-overlay');
+  overlay.style.display = 'block';
+  var colors = ['#06C755', '#f59e0b', '#ec4899', '#3b82f6', '#8b5cf6'];
+  var html = '';
+  for (var i = 0; i < 30; i++) {
+    var x = Math.random() * 100;
+    var delay = Math.random() * 0.5;
+    var color = colors[Math.floor(Math.random() * colors.length)];
+    html += '<div style="position:absolute;left:' + x + '%;top:-10px;width:8px;height:8px;' +
+      'background:' + color + ';border-radius:50%;animation:confetti-fall 1.5s ease-out ' + delay + 's forwards;"></div>';
+  }
+  overlay.innerHTML = '<style>@keyframes confetti-fall{0%{transform:translateY(0) rotate(0);opacity:1}100%{transform:translateY(100vh) rotate(720deg);opacity:0}}</style>' + html;
+  setTimeout(function() { overlay.style.display = 'none'; overlay.innerHTML = ''; }, 2500);
+}
+
 async function logIntake() {
-  if (isDemo) { showToast('DEMO: 記録しました! (連続6日)'); return; }
+  if (isDemo) { showToast('DEMO: 記録しました! (連続6日)'); showConfetti(); return; }
+  var btn = document.getElementById('intake-btn');
+  btn.disabled = true;
+  btn.textContent = '記録中...';
   try {
-    const { data } = await api('/api/liff/intake', { productName: 'naturism' });
+    const { data } = await api('/api/liff/intake', { productName: 'naturism ' + selectedProduct });
     if (data) {
       showToast('記録しました! (連続' + data.streakCount + '日)');
+      showConfetti();
       loadIntakeData();
     }
   } catch { showToast('記録に失敗しました'); }
+  btn.disabled = false;
+  btn.textContent = '服用を記録する';
+}
+
+// ─── Reminders (複数対応) ───
+var remindersData = [];
+var PRESET_LABELS = ['朝食前', '昼食前', '夕食前', '就寝前', 'カスタム'];
+
+function renderReminders() {
+  var el = document.getElementById('reminders-list');
+  if (remindersData.length === 0) {
+    el.innerHTML = '<p class="text-xs text-gray-400 text-center py-2">リマインダーが設定されていません</p>';
+    return;
+  }
+  el.innerHTML = remindersData.map(function(r) {
+    var activeClass = r.isActive ? 'bg-green-500' : 'bg-gray-300';
+    var knobPos = r.isActive ? 'right:2px' : 'left:2px';
+    return '<div class="flex items-center gap-2 p-2 bg-gray-50 rounded-lg" data-rid="' + r.id + '">' +
+      '<div class="flex-1">' +
+      '<p class="text-xs font-bold text-gray-700">' + (r.label || '未設定') + '</p>' +
+      '<input type="time" value="' + r.reminderTime + '" class="text-lg font-bold text-gray-800 bg-transparent border-none p-0" ' +
+      'onchange="updateReminderTime(\\'' + r.id + '\\', this.value)">' +
+      '</div>' +
+      '<button onclick="toggleReminderById(\\'' + r.id + '\\')" class="w-10 h-6 ' + activeClass + ' rounded-full relative transition-colors">' +
+      '<div class="w-5 h-5 bg-white rounded-full absolute top-0.5 shadow" style="' + knobPos + '"></div></button>' +
+      '<button onclick="deleteReminderById(\\'' + r.id + '\\')" class="text-gray-400 text-lg px-1">&times;</button>' +
+      '</div>';
+  }).join('');
+}
+
+async function initReminder() {
+  if (isDemo) {
+    remindersData = [
+      { id: 'demo1', label: '朝食前', reminderTime: '08:00', isActive: true },
+      { id: 'demo2', label: '昼食前', reminderTime: '12:00', isActive: true },
+      { id: 'demo3', label: '夕食前', reminderTime: '18:00', isActive: false },
+    ];
+    renderReminders();
+    return;
+  }
+  try {
+    var res = await apiGet('/api/liff/intake/reminders');
+    remindersData = res.data || [];
+    renderReminders();
+  } catch { /* ignore */ }
+}
+
+async function addReminderSlot() {
+  if (remindersData.length >= 5) { showToast('最大5件までです'); return; }
+  if (isDemo) {
+    remindersData.push({ id: 'demo' + Date.now(), label: PRESET_LABELS[remindersData.length] || 'カスタム', reminderTime: '12:00', isActive: true });
+    renderReminders();
+    showToast('DEMO: 追加しました');
+    return;
+  }
+  var label = PRESET_LABELS[remindersData.length] || 'カスタム';
+  var defaultTime = remindersData.length === 0 ? '08:00' : remindersData.length === 1 ? '12:00' : '18:00';
+  try {
+    var res = await api('/api/liff/intake/reminders/add', { label: label, reminderTime: defaultTime });
+    if (res.success && res.data) {
+      remindersData.push(res.data);
+      renderReminders();
+      showToast(label + ' (' + defaultTime + ') を追加しました');
+    } else {
+      showToast(res.error || '追加に失敗しました');
+    }
+  } catch { showToast('追加に失敗しました'); }
+}
+
+async function updateReminderTime(id, newTime) {
+  if (isDemo) { showToast('DEMO: ' + newTime + ' に変更'); return; }
+  try {
+    await fetch(API_BASE + '/api/liff/intake/reminders/' + id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) },
+      body: JSON.stringify({ reminderTime: newTime }),
+    });
+    var item = remindersData.find(function(r) { return r.id === id; });
+    if (item) item.reminderTime = newTime;
+    showToast(newTime + ' に変更しました');
+  } catch { showToast('変更に失敗しました'); }
+}
+
+async function toggleReminderById(id) {
+  var item = remindersData.find(function(r) { return r.id === id; });
+  if (!item) return;
+  var newActive = !item.isActive;
+  if (isDemo) { item.isActive = newActive; renderReminders(); showToast('DEMO: ' + (newActive ? 'ON' : 'OFF')); return; }
+  try {
+    await fetch(API_BASE + '/api/liff/intake/reminders/' + id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) },
+      body: JSON.stringify({ isActive: newActive }),
+    });
+    item.isActive = newActive;
+    renderReminders();
+    showToast(newActive ? 'ONにしました' : 'OFFにしました');
+  } catch { showToast('変更に失敗しました'); }
+}
+
+async function deleteReminderById(id) {
+  if (isDemo) { remindersData = remindersData.filter(function(r) { return r.id !== id; }); renderReminders(); showToast('DEMO: 削除しました'); return; }
+  try {
+    await fetch(API_BASE + '/api/liff/intake/reminders/' + id, {
+      method: 'DELETE',
+      headers: idToken ? { Authorization: 'Bearer ' + idToken } : {},
+    });
+    remindersData = remindersData.filter(function(r) { return r.id !== id; });
+    renderReminders();
+    showToast('削除しました');
+  } catch { showToast('削除に失敗しました'); }
 }
 
 // ─── HEALTH Section ───
@@ -520,6 +771,118 @@ async function saveHealthLog() {
       b.className = b.className.replace('bg-green-500 text-white', '').replace('bg-yellow-500 text-white', '').replace('bg-red-500 text-white', '') + ' bg-white';
     });
   } catch { showToast('記録に失敗しました'); }
+}
+
+// ─── REFERRAL + Sharing ───
+async function loadReferralCard() {
+  try {
+    const [genRes, statsRes] = await Promise.all([
+      api('/api/liff/referral/generate'),
+      api('/api/liff/referral/stats'),
+    ]);
+    var refCode = genRes.data ? genRes.data.refCode : null;
+    var stats = statsRes.data || {};
+    var el = document.getElementById('referral-card');
+    if (!refCode) {
+      el.innerHTML = '<p class="text-xs text-gray-400">紹介リンクを取得できませんでした</p>';
+      return;
+    }
+    var shareUrl = window.location.origin + '/liff/portal?ref=' + refCode;
+    el.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">友だち紹介</p>' +
+      '<p class="text-sm text-gray-700 mb-2">リンクを共有しておトクにクーポンゲット!</p>' +
+      '<div class="bg-gray-50 rounded-lg p-2 flex items-center gap-2 mb-3">' +
+      '<span class="text-xs font-mono text-gray-600 truncate flex-1" id="ref-url">' + shareUrl + '</span>' +
+      '<button onclick="copyRefLink()" class="text-xs text-green-600 font-bold whitespace-nowrap">コピー</button></div>' +
+      '<div class="flex gap-2">' +
+      '<button onclick="shareRefLine()" class="flex-1 py-2 rounded-lg text-xs font-bold text-white" style="background:#06C755">LINEで送る</button>' +
+      '</div>' +
+      (stats.totalReferrals > 0 ? '<p class="text-xs text-gray-500 mt-3">紹介実績: <span class="font-bold text-green-600">' + stats.totalReferrals + '人</span></p>' : '');
+  } catch { /* ignore */ }
+}
+
+function copyRefLink() {
+  var url = document.getElementById('ref-url').textContent;
+  navigator.clipboard.writeText(url).then(function() { showToast('コピーしました!'); });
+}
+
+function shareRefLine() {
+  if (typeof liff !== 'undefined' && liff.isApiAvailable && liff.isApiAvailable('shareTargetPicker')) {
+    var url = document.getElementById('ref-url').textContent;
+    liff.shareTargetPicker([{
+      type: 'text',
+      text: 'naturismを一緒に始めませんか? 紹介リンクからお互い500円OFFクーポンがもらえます!\\n' + url,
+    }]).then(function(res) {
+      if (res) showToast('送信しました!');
+    }).catch(function() { showToast('送信できませんでした'); });
+  } else {
+    copyRefLink();
+  }
+}
+
+// ─── Ranking ───
+async function loadRanking() {
+  try {
+    const { data } = await apiGet('/api/liff/referral/ranking');
+    var el = document.getElementById('ranking-card');
+    if (!data || data.length === 0) { el.style.display = 'none'; return; }
+    el.style.display = 'block';
+    var html = '<p class="text-xs text-gray-500 font-bold mb-3">紹介ランキング TOP10</p>';
+    data.forEach(function(r) {
+      var medal = r.rank === 1 ? '&#x1F947;' : r.rank === 2 ? '&#x1F948;' : r.rank === 3 ? '&#x1F949;' : r.rank + '.';
+      html += '<div class="flex items-center gap-3 py-2 border-b last:border-0">' +
+        '<span class="text-sm w-8 text-center">' + medal + '</span>' +
+        '<span class="text-sm text-gray-800 flex-1">' + r.displayName + '</span>' +
+        '<span class="text-sm font-bold text-green-600">' + r.referralCount + '人</span></div>';
+    });
+    el.innerHTML = html;
+  } catch { /* ignore */ }
+}
+
+// ─── Profile (gender/birthday) ───
+var selectedGender = null;
+
+function setGender(g) {
+  selectedGender = g;
+  document.querySelectorAll('.gender-btn').forEach(function(b) {
+    var isSelected = b.getAttribute('data-gender') === g;
+    b.className = 'gender-btn flex-1 py-2 rounded-lg text-xs border ' +
+      (isSelected ? 'bg-green-500 text-white font-bold' : '');
+  });
+}
+
+async function loadProfile() {
+  try {
+    const { data } = await apiGet('/api/liff/profile');
+    if (!data) return;
+    if (data.gender) {
+      setGender(data.gender);
+    }
+    if (data.birthday) {
+      document.getElementById('birthday-input').value = data.birthday;
+    }
+  } catch { /* ignore */ }
+}
+
+async function saveProfile() {
+  if (isDemo) { showToast('DEMO: プロフィールを保存しました'); return; }
+  var birthday = document.getElementById('birthday-input').value;
+  var body = {};
+  if (selectedGender) body.gender = selectedGender;
+  if (birthday) body.birthday = birthday;
+  if (!body.gender && !body.birthday) { showToast('変更項目がありません'); return; }
+  try {
+    var res = await fetch(API_BASE + '/api/liff/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) },
+      body: JSON.stringify(body),
+    });
+    var json = await res.json();
+    if (json.success) {
+      showToast('プロフィールを保存しました');
+    } else {
+      showToast(json.error || '保存に失敗しました');
+    }
+  } catch { showToast('保存に失敗しました'); }
 }
 
 // ─── SHOP Section ───

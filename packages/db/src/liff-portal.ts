@@ -147,6 +147,135 @@ export async function getIntakeStreak(
 
 // ===== Intake Reminders =====
 
+/**
+ * リマインダーを追加（1ユーザー最大5件）
+ */
+export async function addIntakeReminder(
+  db: D1Database,
+  data: {
+    friendId: string;
+    label?: string;
+    reminderTime?: string;
+    timezone?: string;
+  },
+): Promise<{ id: string; label: string; reminder_time: string; is_active: number }> {
+  const now = jstNow();
+
+  // 最大5件チェック
+  const countResult = await db
+    .prepare('SELECT COUNT(*) as cnt FROM intake_reminders WHERE friend_id = ?')
+    .bind(data.friendId)
+    .first<{ cnt: number }>();
+  if (countResult && countResult.cnt >= 5) {
+    throw new Error('MAX_REMINDERS_REACHED');
+  }
+
+  const id = crypto.randomUUID();
+  await db
+    .prepare(
+      `INSERT INTO intake_reminders (id, friend_id, label, reminder_time, timezone, is_active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+    )
+    .bind(
+      id,
+      data.friendId,
+      data.label ?? '朝食前',
+      data.reminderTime ?? '08:00',
+      data.timezone ?? 'Asia/Tokyo',
+      now,
+      now,
+    )
+    .run();
+
+  return { id, label: data.label ?? '朝食前', reminder_time: data.reminderTime ?? '08:00', is_active: 1 };
+}
+
+/**
+ * リマインダー更新（ID指定）
+ */
+export async function updateIntakeReminder(
+  db: D1Database,
+  data: {
+    id: string;
+    friendId: string;
+    label?: string;
+    reminderTime?: string;
+    isActive?: boolean;
+  },
+): Promise<{ id: string; label: string; reminder_time: string; is_active: number }> {
+  const now = jstNow();
+  await db
+    .prepare(
+      `UPDATE intake_reminders SET
+       label = COALESCE(?, label),
+       reminder_time = COALESCE(?, reminder_time),
+       is_active = COALESCE(?, is_active),
+       updated_at = ?
+       WHERE id = ? AND friend_id = ?`,
+    )
+    .bind(
+      data.label ?? null,
+      data.reminderTime ?? null,
+      data.isActive !== undefined ? (data.isActive ? 1 : 0) : null,
+      now,
+      data.id,
+      data.friendId,
+    )
+    .run();
+
+  const result = await db
+    .prepare('SELECT id, label, reminder_time, is_active FROM intake_reminders WHERE id = ?')
+    .bind(data.id)
+    .first<{ id: string; label: string; reminder_time: string; is_active: number }>();
+
+  if (!result) throw new Error('Reminder not found');
+  return result;
+}
+
+/**
+ * リマインダー削除（ID指定）
+ */
+export async function deleteIntakeReminder(
+  db: D1Database,
+  id: string,
+  friendId: string,
+): Promise<void> {
+  await db
+    .prepare('DELETE FROM intake_reminders WHERE id = ? AND friend_id = ?')
+    .bind(id, friendId)
+    .run();
+}
+
+/**
+ * ユーザーの全リマインダー取得
+ */
+export async function getIntakeReminders(
+  db: D1Database,
+  friendId: string,
+): Promise<Array<{ id: string; label: string; reminder_time: string; is_active: number }>> {
+  const { results } = await db
+    .prepare('SELECT id, label, reminder_time, is_active FROM intake_reminders WHERE friend_id = ? ORDER BY reminder_time ASC')
+    .bind(friendId)
+    .all<{ id: string; label: string; reminder_time: string; is_active: number }>();
+  return results;
+}
+
+/**
+ * 後方互換: 単一リマインダー取得（最初の1件を返す）
+ */
+export async function getIntakeReminder(
+  db: D1Database,
+  friendId: string,
+): Promise<{ id: string; reminder_time: string; timezone: string; reminder_type: string; is_active: number; last_sent_at: string | null } | null> {
+  return db
+    .prepare(`SELECT id, reminder_time, timezone, reminder_type, is_active, last_sent_at FROM intake_reminders WHERE friend_id = ? ORDER BY reminder_time ASC LIMIT 1`)
+    .bind(friendId)
+    .first();
+}
+
+/**
+ * 後方互換: upsertIntakeReminder（最初の1件を更新 or 新規作成）
+ */
 export async function upsertIntakeReminder(
   db: D1Database,
   data: {
@@ -159,7 +288,7 @@ export async function upsertIntakeReminder(
 ): Promise<{ id: string; reminder_time: string; is_active: number }> {
   const now = jstNow();
   const existing = await db
-    .prepare(`SELECT id FROM intake_reminders WHERE friend_id = ?`)
+    .prepare(`SELECT id FROM intake_reminders WHERE friend_id = ? ORDER BY created_at ASC LIMIT 1`)
     .bind(data.friendId)
     .first<{ id: string }>();
 
@@ -172,7 +301,7 @@ export async function upsertIntakeReminder(
          reminder_type = COALESCE(?, reminder_type),
          is_active = COALESCE(?, is_active),
          updated_at = ?
-         WHERE friend_id = ?`,
+         WHERE id = ?`,
       )
       .bind(
         data.reminderTime ?? null,
@@ -180,14 +309,14 @@ export async function upsertIntakeReminder(
         data.reminderType ?? null,
         data.isActive !== undefined ? (data.isActive ? 1 : 0) : null,
         now,
-        data.friendId,
+        existing.id,
       )
       .run();
   } else {
     await db
       .prepare(
-        `INSERT INTO intake_reminders (friend_id, reminder_time, timezone, reminder_type, is_active, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO intake_reminders (friend_id, label, reminder_time, timezone, reminder_type, is_active, created_at, updated_at)
+         VALUES (?, '朝食前', ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         data.friendId,
@@ -202,7 +331,7 @@ export async function upsertIntakeReminder(
   }
 
   const result = await db
-    .prepare(`SELECT id, reminder_time, is_active FROM intake_reminders WHERE friend_id = ?`)
+    .prepare(`SELECT id, reminder_time, is_active FROM intake_reminders WHERE friend_id = ? ORDER BY created_at ASC LIMIT 1`)
     .bind(data.friendId)
     .first<{ id: string; reminder_time: string; is_active: number }>();
 
@@ -210,14 +339,66 @@ export async function upsertIntakeReminder(
   return result;
 }
 
-export async function getIntakeReminder(
+// ── メッセージテンプレート ──
+
+/**
+ * 時間帯に応じたメッセージをランダム取得（過去に送ったものを避ける）
+ */
+export async function pickReminderMessage(
   db: D1Database,
   friendId: string,
-): Promise<{ id: string; reminder_time: string; timezone: string; reminder_type: string; is_active: number; last_sent_at: string | null } | null> {
-  return db
-    .prepare(`SELECT id, reminder_time, timezone, reminder_type, is_active, last_sent_at FROM intake_reminders WHERE friend_id = ?`)
-    .bind(friendId)
-    .first();
+  timeSlot: 'morning' | 'noon' | 'evening',
+): Promise<{ id: string; message: string; category: string } | null> {
+  // まず未送信のメッセージを優先取得
+  const unsent = await db
+    .prepare(
+      `SELECT rm.id, rm.message, rm.category
+       FROM reminder_messages rm
+       WHERE rm.is_active = 1
+         AND rm.time_slot IN (?, 'any')
+         AND rm.id NOT IN (
+           SELECT rml.reminder_message_id FROM reminder_message_log rml WHERE rml.friend_id = ?
+         )
+       ORDER BY RANDOM()
+       LIMIT 1`,
+    )
+    .bind(timeSlot, friendId)
+    .first<{ id: string; message: string; category: string }>();
+
+  if (unsent) return unsent;
+
+  // 全メッセージ送信済みの場合: 最も古く送ったものを再利用
+  const oldest = await db
+    .prepare(
+      `SELECT rm.id, rm.message, rm.category
+       FROM reminder_messages rm
+       JOIN reminder_message_log rml ON rml.reminder_message_id = rm.id
+       WHERE rm.is_active = 1
+         AND rm.time_slot IN (?, 'any')
+         AND rml.friend_id = ?
+       ORDER BY rml.sent_at ASC
+       LIMIT 1`,
+    )
+    .bind(timeSlot, friendId)
+    .first<{ id: string; message: string; category: string }>();
+
+  return oldest ?? null;
+}
+
+/**
+ * メッセージ送信履歴を記録
+ */
+export async function logReminderMessage(
+  db: D1Database,
+  friendId: string,
+  messageId: string,
+): Promise<void> {
+  await db
+    .prepare(
+      'INSERT INTO reminder_message_log (id, friend_id, reminder_message_id, sent_at) VALUES (?, ?, ?, ?)',
+    )
+    .bind(crypto.randomUUID(), friendId, messageId, jstNow())
+    .run();
 }
 
 export async function getActiveIntakeReminders(
