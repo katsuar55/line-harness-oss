@@ -89,6 +89,10 @@ vi.mock('@line-crm/db', async (importOriginal) => {
     ]),
     getHealthSummary: vi.fn(async () => ({ totalLogs: 5, avgWeight: 58.6, goodDays: 3, normalDays: 1, badDays: 1, latestWeight: 58.5 })),
     enrollAmbassador: vi.fn(async () => ({ id: 'amb-1', status: 'active' })),
+    submitAmbassadorFeedback: vi.fn(async () => ({ id: 'fb-1' })),
+    getAmbassadorFeedbacks: vi.fn(async () => [
+      { id: 'fb-1', type: 'feedback', category: 'product', content: '美味しいです', rating: 5, created_at: '2026-04-06T10:00:00+09:00' },
+    ]),
     getAmbassador: vi.fn(async (_db: unknown, friendId: string) => {
       if (friendId === 'friend-1') {
         return { id: 'amb-1', status: 'active', tier: 'standard', enrolled_at: '2026-04-01', total_surveys_completed: 2, total_product_tests: 1, feedback_score: 4.5, preferences: '{"survey_ok":true,"product_test_ok":true,"sns_share_ok":false}' };
@@ -452,6 +456,67 @@ describe('LIFF Portal Routes', () => {
       expect(res.status).toBe(200);
       const json = await res.json() as { data: null; message: string };
       expect(json.data).toBeNull();
+    });
+  });
+
+  // ─── Ambassador Feedback ───────────────────────
+  describe('POST /api/liff/ambassador/feedback', () => {
+    it('submits feedback for active ambassador', async () => {
+      const res = await post(app, '/api/liff/ambassador/feedback', {
+        lineUserId: 'U_EXISTING',
+        category: 'product',
+        content: '美味しくて続けやすいです',
+        rating: 5,
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean; data: { id: string } };
+      expect(json.success).toBe(true);
+      expect(json.data.id).toBe('fb-1');
+    });
+
+    it('rejects empty content', async () => {
+      const res = await post(app, '/api/liff/ambassador/feedback', {
+        lineUserId: 'U_EXISTING',
+        content: '',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects content over 2000 chars', async () => {
+      const res = await post(app, '/api/liff/ambassador/feedback', {
+        lineUserId: 'U_EXISTING',
+        content: 'a'.repeat(2001),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects invalid rating', async () => {
+      const res = await post(app, '/api/liff/ambassador/feedback', {
+        lineUserId: 'U_EXISTING',
+        content: 'test',
+        rating: 6,
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects non-ambassador', async () => {
+      const db = await import('@line-crm/db');
+      (db.getAmbassador as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+      const res = await post(app, '/api/liff/ambassador/feedback', {
+        lineUserId: 'U_EXISTING',
+        content: 'test feedback',
+      });
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('POST /api/liff/ambassador/feedbacks', () => {
+    it('returns feedback history', async () => {
+      const res = await post(app, '/api/liff/ambassador/feedbacks', { lineUserId: 'U_EXISTING' });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: Array<{ content: string }> };
+      expect(json.data.length).toBe(1);
+      expect(json.data[0].content).toBe('美味しいです');
     });
   });
 

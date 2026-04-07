@@ -26,6 +26,8 @@ import {
   getHealthSummary,
   enrollAmbassador,
   getAmbassador,
+  submitAmbassadorFeedback,
+  getAmbassadorFeedbacks,
   getTodayTip,
   jstNow,
 } from '@line-crm/db';
@@ -922,6 +924,80 @@ liffPortal.post('/api/liff/ambassador/status', async (c) => {
     });
   } catch (err) {
     console.error('POST /api/liff/ambassador/status error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/ambassador/feedback — フィードバック送信
+ */
+liffPortal.post('/api/liff/ambassador/feedback', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const ambassador = await getAmbassador(c.env.DB, user.friendId);
+    if (!ambassador || ambassador.status !== 'active') {
+      return c.json({ success: false, error: 'Not an active ambassador' }, 403);
+    }
+
+    const body = await c.req.json<{
+      type?: string;
+      category?: string;
+      content: string;
+      rating?: number;
+    }>();
+
+    if (!body.content || body.content.trim().length === 0) {
+      return c.json({ success: false, error: 'Content is required' }, 400);
+    }
+    if (body.content.length > 2000) {
+      return c.json({ success: false, error: 'Content too long (max 2000 chars)' }, 400);
+    }
+    if (body.rating !== undefined && (body.rating < 1 || body.rating > 5)) {
+      return c.json({ success: false, error: 'Rating must be 1-5' }, 400);
+    }
+
+    const validTypes = ['feedback', 'survey', 'product_review'];
+    const validCategories = ['general', 'product', 'service', 'suggestion', 'other'];
+    if (body.type && !validTypes.includes(body.type)) {
+      return c.json({ success: false, error: 'Invalid type' }, 400);
+    }
+    if (body.category && !validCategories.includes(body.category)) {
+      return c.json({ success: false, error: 'Invalid category' }, 400);
+    }
+
+    const result = await submitAmbassadorFeedback(c.env.DB, ambassador.id, user.friendId, {
+      type: body.type,
+      category: body.category,
+      content: body.content.trim(),
+      rating: body.rating,
+    });
+
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    console.error('POST /api/liff/ambassador/feedback error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/ambassador/feedbacks — フィードバック履歴取得
+ */
+liffPortal.post('/api/liff/ambassador/feedbacks', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const ambassador = await getAmbassador(c.env.DB, user.friendId);
+    if (!ambassador) {
+      return c.json({ success: true, data: [] });
+    }
+
+    const feedbacks = await getAmbassadorFeedbacks(c.env.DB, ambassador.id);
+    return c.json({ success: true, data: feedbacks });
+  } catch (err) {
+    console.error('POST /api/liff/ambassador/feedbacks error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

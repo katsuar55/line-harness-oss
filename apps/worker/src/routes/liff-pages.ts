@@ -97,6 +97,45 @@ function portalPage(liffId: string, apiBase: string): string {
       <!-- Referral Ranking -->
       <div id="ranking-card" class="card p-4" style="display:none;"></div>
 
+      <!-- Ambassador Section (visible only for ambassadors) -->
+      <div id="ambassador-section" style="display:none;">
+        <div id="ambassador-status-card" class="card p-4"></div>
+        <div id="ambassador-feedback-card" class="card p-4 mt-3">
+          <p class="text-xs text-gray-500 font-bold mb-3">フィードバック送信</p>
+          <div class="space-y-3">
+            <div>
+              <label class="text-xs text-gray-500">カテゴリ</label>
+              <select id="fb-category" class="w-full mt-1 p-2 border rounded-lg text-sm bg-white">
+                <option value="general">全般</option>
+                <option value="product">商品について</option>
+                <option value="service">サービスについて</option>
+                <option value="suggestion">ご提案</option>
+                <option value="other">その他</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">評価</label>
+              <div class="flex gap-1 mt-1" id="fb-rating-stars">
+                <button onclick="setFbRating(1)" data-star="1" class="text-2xl text-gray-300">&#x2B50;</button>
+                <button onclick="setFbRating(2)" data-star="2" class="text-2xl text-gray-300">&#x2B50;</button>
+                <button onclick="setFbRating(3)" data-star="3" class="text-2xl text-gray-300">&#x2B50;</button>
+                <button onclick="setFbRating(4)" data-star="4" class="text-2xl text-gray-300">&#x2B50;</button>
+                <button onclick="setFbRating(5)" data-star="5" class="text-2xl text-gray-300">&#x2B50;</button>
+              </div>
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">内容</label>
+              <textarea id="fb-content" rows="3" maxlength="2000" class="w-full mt-1 p-2.5 border rounded-xl text-sm" placeholder="商品の感想やご要望をお聞かせください..."></textarea>
+            </div>
+            <button onclick="submitFeedback()" id="fb-submit-btn" class="btn-primary w-full py-2.5 rounded-lg text-xs font-bold">送信する</button>
+          </div>
+        </div>
+        <div id="ambassador-history-card" class="card p-4 mt-3">
+          <p class="text-xs text-gray-500 font-bold mb-2">送信履歴</p>
+          <div id="fb-history"></div>
+        </div>
+      </div>
+
       <!-- Profile (gender/birthday) -->
       <div id="profile-card" class="card p-4">
         <p class="text-xs text-gray-500 font-bold mb-3">プロフィール</p>
@@ -414,7 +453,7 @@ async function initLiff() {
       document.getElementById('user-avatar').innerHTML =
         '<img src="' + profile.pictureUrl + '" class="w-8 h-8 rounded-full">';
     }
-    await Promise.all([loadRank(), loadTip(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile()]);
+    await Promise.all([loadRank(), loadTip(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadAmbassador()]);
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
     document.getElementById('loading').style.display = 'none';
@@ -1113,6 +1152,87 @@ async function loadRanking() {
         '<span class="text-sm font-bold text-green-600">' + r.referralCount + '人</span></div>';
     });
     el.innerHTML = html;
+  } catch { /* ignore */ }
+}
+
+// ─── Ambassador Section ───
+var ambassadorData = null;
+var fbRating = 0;
+
+async function loadAmbassador() {
+  try {
+    const { data } = await api('/api/liff/ambassador/status');
+    if (!data || data.status !== 'active') {
+      document.getElementById('ambassador-section').style.display = 'none';
+      return;
+    }
+    ambassadorData = data;
+    document.getElementById('ambassador-section').style.display = 'block';
+
+    var tierIcons = { standard: '&#x1F331;', bronze: '&#x1F949;', silver: '&#x1F948;', gold: '&#x1F947;', platinum: '&#x1F451;', premium: '&#x2B50;' };
+    var tierNames = { standard: 'スタンダード', bronze: 'ブロンズ', silver: 'シルバー', gold: 'ゴールド', platinum: 'プラチナ', premium: 'プレミアム' };
+    var el = document.getElementById('ambassador-status-card');
+    el.innerHTML = '<div class="flex items-center gap-3 mb-3">' +
+      '<div class="w-12 h-12 rounded-full bg-yellow-50 flex items-center justify-center text-2xl">' + (tierIcons[data.tier] || '&#x1F331;') + '</div>' +
+      '<div><p class="text-sm font-bold text-gray-800">アンバサダー</p>' +
+      '<p class="text-xs text-yellow-600 font-bold">' + esc(tierNames[data.tier] || data.tier) + '</p></div></div>' +
+      '<div class="grid grid-cols-3 gap-2 text-center">' +
+      '<div class="bg-gray-50 rounded-lg p-2"><p class="text-lg font-bold text-gray-800">' + (data.surveysCompleted || 0) + '</p><p class="text-xs text-gray-500">回答数</p></div>' +
+      '<div class="bg-gray-50 rounded-lg p-2"><p class="text-lg font-bold text-gray-800">' + (data.productTests || 0) + '</p><p class="text-xs text-gray-500">商品テスト</p></div>' +
+      '<div class="bg-gray-50 rounded-lg p-2"><p class="text-lg font-bold text-gray-800">' + (data.enrolledAt ? data.enrolledAt.slice(0, 10) : '-') + '</p><p class="text-xs text-gray-500">登録日</p></div></div>';
+
+    loadFeedbackHistory();
+  } catch { /* ignore */ }
+}
+
+function setFbRating(n) {
+  fbRating = n;
+  document.querySelectorAll('#fb-rating-stars button').forEach(function(b) {
+    var star = parseInt(b.getAttribute('data-star'));
+    b.style.opacity = star <= n ? '1' : '0.3';
+  });
+}
+
+async function submitFeedback() {
+  var content = document.getElementById('fb-content').value.trim();
+  if (!content) { showToast('内容を入力してください'); return; }
+  var category = document.getElementById('fb-category').value;
+  var btn = document.getElementById('fb-submit-btn');
+  btn.disabled = true;
+  btn.textContent = '送信中...';
+  try {
+    await api('/api/liff/ambassador/feedback', {
+      category: category,
+      content: content,
+      rating: fbRating > 0 ? fbRating : undefined,
+    });
+    showToast('フィードバックを送信しました!');
+    document.getElementById('fb-content').value = '';
+    setFbRating(0);
+    loadFeedbackHistory();
+  } catch { showToast('送信に失敗しました'); }
+  btn.disabled = false;
+  btn.textContent = '送信する';
+}
+
+async function loadFeedbackHistory() {
+  try {
+    const { data } = await api('/api/liff/ambassador/feedbacks');
+    var el = document.getElementById('fb-history');
+    if (!data || data.length === 0) {
+      el.innerHTML = '<p class="text-xs text-gray-400 text-center py-2">まだフィードバックはありません</p>';
+      return;
+    }
+    el.innerHTML = data.slice(0, 5).map(function(fb) {
+      var stars = fb.rating ? '&#x2B50;'.repeat(fb.rating) : '';
+      var catLabels = { general: '全般', product: '商品', service: 'サービス', suggestion: 'ご提案', other: 'その他' };
+      return '<div class="py-2 border-b last:border-0">' +
+        '<div class="flex justify-between items-center">' +
+        '<span class="text-xs text-gray-500">' + esc(catLabels[fb.category] || fb.category) + '</span>' +
+        '<span class="text-xs text-gray-400">' + esc((fb.created_at || '').slice(0, 10)) + '</span></div>' +
+        (stars ? '<span class="text-xs">' + stars + '</span>' : '') +
+        '<p class="text-xs text-gray-700 mt-1">' + esc(fb.content.length > 100 ? fb.content.slice(0, 100) + '...' : fb.content) + '</p></div>';
+    }).join('');
   } catch { /* ignore */ }
 }
 

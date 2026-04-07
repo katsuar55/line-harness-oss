@@ -872,6 +872,67 @@ export async function getAmbassadorStats(
   };
 }
 
+// ===== Ambassador Feedback =====
+
+export async function submitAmbassadorFeedback(
+  db: D1Database,
+  ambassadorId: string,
+  friendId: string,
+  data: { type?: string; category?: string; content: string; rating?: number },
+): Promise<{ id: string }> {
+  const result = await db
+    .prepare(
+      `INSERT INTO ambassador_feedback (ambassador_id, friend_id, type, category, content, rating)
+       VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+    )
+    .bind(
+      ambassadorId,
+      friendId,
+      data.type || 'feedback',
+      data.category || 'general',
+      data.content,
+      data.rating ?? null,
+    )
+    .first<{ id: string }>();
+
+  if (!result) throw new Error('submitAmbassadorFeedback: INSERT returned null');
+
+  // Update ambassador feedback_score (running average of ratings)
+  if (data.rating) {
+    await db
+      .prepare(
+        `UPDATE ambassadors SET
+         feedback_score = (SELECT AVG(rating) FROM ambassador_feedback WHERE ambassador_id = ? AND rating IS NOT NULL),
+         total_surveys_completed = total_surveys_completed + 1,
+         updated_at = ?
+         WHERE id = ?`,
+      )
+      .bind(ambassadorId, jstNow(), ambassadorId)
+      .run();
+  }
+
+  return result;
+}
+
+export async function getAmbassadorFeedbacks(
+  db: D1Database,
+  ambassadorId: string,
+  limit = 10,
+): Promise<Array<{ id: string; type: string; category: string; content: string; rating: number | null; created_at: string }>> {
+  const { results } = await db
+    .prepare(
+      `SELECT id, type, category, content, rating, created_at
+       FROM ambassador_feedback
+       WHERE ambassador_id = ?
+       ORDER BY created_at DESC
+       LIMIT ?`,
+    )
+    .bind(ambassadorId, limit)
+    .all();
+
+  return results as Array<{ id: string; type: string; category: string; content: string; rating: number | null; created_at: string }>;
+}
+
 // ===== Daily Tips =====
 
 export async function getTodayTip(
