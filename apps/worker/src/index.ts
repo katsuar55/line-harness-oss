@@ -48,6 +48,7 @@ import { liffPages } from './routes/liff-pages.js';
 import { tips } from './routes/tips.js';
 import { ambassadors } from './routes/ambassadors.js';
 import { csvExport } from './routes/csv-export.js';
+import { dashboard } from './routes/dashboard.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 import { processIntakeReminders } from './services/intake-reminder.js';
 
@@ -134,6 +135,7 @@ app.route('/', liffPages);
 app.route('/', tips);
 app.route('/', ambassadors);
 app.route('/', csvExport);
+app.route('/', dashboard);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {

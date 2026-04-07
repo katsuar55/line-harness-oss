@@ -1,0 +1,181 @@
+'use client'
+
+import { useState, useEffect, useCallback } from 'react'
+import { fetchApi } from '@/lib/api'
+import Header from '@/components/layout/header'
+
+interface Summary {
+  friends: { total: number; following: number; newLast7Days: number }
+  orders: { totalOrders: number; totalRevenue: number; ordersLast30Days: number; revenueLast30Days: number }
+  intake: { activeUsers: number; totalLogs: number; logsLast7Days: number }
+  referrals: { total: number }
+}
+
+interface TrendPoint {
+  date: string
+  new_friends?: number
+  unfollowed?: number
+  net?: number
+  orders?: number
+  revenue?: number
+}
+
+function formatYen(n: number): string {
+  return '¥' + n.toLocaleString()
+}
+
+function MiniBarChart({ data, valueKey, color = '#06C755', height = 120 }: {
+  data: TrendPoint[]
+  valueKey: string
+  color?: string
+  height?: number
+}) {
+  if (data.length === 0) return <div className="text-xs text-gray-400 text-center py-8">データなし</div>
+  const values = data.map((d) => (d as Record<string, unknown>)[valueKey] as number || 0)
+  const max = Math.max(...values, 1)
+
+  return (
+    <div className="flex items-end gap-[2px]" style={{ height }}>
+      {values.map((v, i) => {
+        const h = Math.max(2, (v / max) * (height - 20))
+        return (
+          <div key={i} className="flex-1 flex flex-col items-center justify-end group relative">
+            <div
+              className="w-full rounded-t-sm transition-all hover:opacity-80"
+              style={{ height: h, backgroundColor: color, minWidth: 3 }}
+            />
+            <div className="absolute -top-6 bg-gray-800 text-white text-[10px] px-1 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none">
+              {data[i].date?.slice(5)}: {v}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+export default function DashboardPage() {
+  const [summary, setSummary] = useState<Summary | null>(null)
+  const [friendsTrend, setFriendsTrend] = useState<TrendPoint[]>([])
+  const [revenueTrend, setRevenueTrend] = useState<TrendPoint[]>([])
+  const [days, setDays] = useState(30)
+  const [loading, setLoading] = useState(true)
+
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [sumRes, fRes, rRes] = await Promise.all([
+        fetchApi<{ success: boolean; data: Summary }>('/api/dashboard/summary'),
+        fetchApi<{ success: boolean; data: { trend: TrendPoint[] } }>(`/api/dashboard/friends-trend?days=${days}`),
+        fetchApi<{ success: boolean; data: { trend: TrendPoint[] } }>(`/api/dashboard/revenue-trend?days=${days}`),
+      ])
+      if (sumRes.success) setSummary(sumRes.data)
+      if (fRes.success) setFriendsTrend(fRes.data.trend)
+      if (rRes.success) setRevenueTrend(rRes.data.trend)
+    } catch {
+      /* ignore */
+    } finally {
+      setLoading(false)
+    }
+  }, [days])
+
+  useEffect(() => { loadData() }, [loadData])
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <Header />
+      <main className="max-w-6xl mx-auto px-4 py-6">
+        <div className="flex items-center justify-between mb-6">
+          <h1 className="text-2xl font-bold text-gray-900">ダッシュボード</h1>
+          <div className="flex gap-1 bg-white rounded-lg border p-0.5">
+            {[7, 30, 90].map((d) => (
+              <button
+                key={d}
+                onClick={() => setDays(d)}
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                  days === d ? 'bg-green-600 text-white' : 'text-gray-500 hover:bg-gray-50'
+                }`}
+              >
+                {d}日
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {loading && !summary ? (
+          <div className="text-center py-12 text-gray-400">読み込み中...</div>
+        ) : summary ? (
+          <>
+            {/* Summary Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <p className="text-xs text-gray-500">友だち（フォロー中）</p>
+                <p className="text-2xl font-bold text-gray-800">{summary.friends.following.toLocaleString()}</p>
+                <p className="text-xs text-green-600 mt-1">+{summary.friends.newLast7Days} (7日)</p>
+              </div>
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <p className="text-xs text-gray-500">売上（30日）</p>
+                <p className="text-2xl font-bold text-gray-800">{formatYen(summary.orders.revenueLast30Days)}</p>
+                <p className="text-xs text-gray-500 mt-1">{summary.orders.ordersLast30Days}件</p>
+              </div>
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <p className="text-xs text-gray-500">服用記録（7日）</p>
+                <p className="text-2xl font-bold text-gray-800">{summary.intake.logsLast7Days}</p>
+                <p className="text-xs text-gray-500 mt-1">アクティブ {summary.intake.activeUsers}人</p>
+              </div>
+              <div className="bg-white rounded-xl p-4 shadow-sm">
+                <p className="text-xs text-gray-500">紹介成立</p>
+                <p className="text-2xl font-bold text-gray-800">{summary.referrals.total}</p>
+                <p className="text-xs text-gray-500 mt-1">累計</p>
+              </div>
+            </div>
+
+            {/* Charts */}
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="bg-white rounded-xl p-5 shadow-sm">
+                <h3 className="text-sm font-bold text-gray-700 mb-4">友だち増減</h3>
+                <MiniBarChart data={friendsTrend} valueKey="new_friends" color="#06C755" />
+                <div className="flex justify-between text-[10px] text-gray-400 mt-1">
+                  <span>{friendsTrend[0]?.date?.slice(5) || ''}</span>
+                  <span>{friendsTrend[friendsTrend.length - 1]?.date?.slice(5) || ''}</span>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl p-5 shadow-sm">
+                <h3 className="text-sm font-bold text-gray-700 mb-4">売上推移</h3>
+                <MiniBarChart data={revenueTrend} valueKey="revenue" color="#3B82F6" />
+                <div className="flex justify-between text-[10px] text-gray-400 mt-1">
+                  <span>{revenueTrend[0]?.date?.slice(5) || ''}</span>
+                  <span>{revenueTrend[revenueTrend.length - 1]?.date?.slice(5) || ''}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Total Stats */}
+            <div className="mt-4 bg-white rounded-xl p-5 shadow-sm">
+              <h3 className="text-sm font-bold text-gray-700 mb-3">累計</h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div>
+                  <p className="text-gray-500">友だち総数</p>
+                  <p className="font-bold text-gray-800">{summary.friends.total.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500">注文総数</p>
+                  <p className="font-bold text-gray-800">{summary.orders.totalOrders.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500">売上累計</p>
+                  <p className="font-bold text-gray-800">{formatYen(summary.orders.totalRevenue)}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500">服用記録総数</p>
+                  <p className="font-bold text-gray-800">{summary.intake.totalLogs.toLocaleString()}</p>
+                </div>
+              </div>
+            </div>
+          </>
+        ) : null}
+      </main>
+    </div>
+  )
+}

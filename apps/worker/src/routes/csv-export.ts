@@ -39,7 +39,8 @@ csvExport.get('/api/export/friends', async (c) => {
   try {
     const { results } = await c.env.DB
       .prepare(
-        `SELECT f.id, f.line_user_id, f.display_name, f.is_following, f.created_at,
+        `SELECT f.id, f.line_user_id, f.display_name, f.gender, f.birthday,
+                f.is_following, f.first_purchase_date, f.created_at,
                 GROUP_CONCAT(t.name, ';') as tags
          FROM friends f
          LEFT JOIN friend_tags ft ON ft.friend_id = f.id
@@ -51,7 +52,7 @@ csvExport.get('/api/export/friends', async (c) => {
       .all();
 
     const csv = toCsv(
-      ['id', 'line_user_id', 'display_name', 'is_following', 'tags', 'created_at'],
+      ['id', 'line_user_id', 'display_name', 'gender', 'birthday', 'is_following', 'first_purchase_date', 'tags', 'created_at'],
       results as Array<Record<string, unknown>>,
     );
 

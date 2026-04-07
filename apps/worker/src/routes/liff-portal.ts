@@ -657,13 +657,55 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
       });
     }
 
+    // 紹介クーポン定義を取得（LINE CRM内部クーポン）
+    const referrerCoupon = await c.env.DB
+      .prepare('SELECT id, code, discount_value, expires_days FROM referral_coupons WHERE id = ? AND is_active = 1')
+      .bind('ref-coupon-referrer')
+      .first<{ id: string; code: string; discount_value: number; expires_days: number }>();
+    const referredCoupon = await c.env.DB
+      .prepare('SELECT id, code, discount_value, expires_days FROM referral_coupons WHERE id = ? AND is_active = 1')
+      .bind('ref-coupon-referred')
+      .first<{ id: string; code: string; discount_value: number; expires_days: number }>();
+
     // 紹介成立記録
     const reward = await createReferralReward(c.env.DB, {
       referrerFriendId: link.friend_id,
       referredFriendId: user.friendId,
-      referrerCouponId: link.referrer_coupon_id ?? undefined,
-      referredCouponId: link.referred_coupon_id ?? undefined,
+      referrerCouponId: referrerCoupon?.id,
+      referredCouponId: referredCoupon?.id,
     });
+
+    // クーポン自動発行（30日期限）
+    const now = jstNow();
+    const couponResults: { referrer?: string; referred?: string } = {};
+
+    if (referrerCoupon) {
+      const expiresAt = new Date(Date.now() + referrerCoupon.expires_days * 86400000).toISOString();
+      const couponCode = `${referrerCoupon.code}-${reward.id.slice(0, 6).toUpperCase()}`;
+      await c.env.DB
+        .prepare(
+          `INSERT INTO shopify_coupon_assignments (id, coupon_id, friend_id, assigned_at, metadata, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(crypto.randomUUID(), referrerCoupon.id, link.friend_id, now,
+          JSON.stringify({ type: 'referral_reward', code: couponCode, expires_at: expiresAt, reward_id: reward.id }), now)
+        .run();
+      couponResults.referrer = couponCode;
+    }
+
+    if (referredCoupon) {
+      const expiresAt = new Date(Date.now() + referredCoupon.expires_days * 86400000).toISOString();
+      const couponCode = `${referredCoupon.code}-${reward.id.slice(0, 6).toUpperCase()}`;
+      await c.env.DB
+        .prepare(
+          `INSERT INTO shopify_coupon_assignments (id, coupon_id, friend_id, assigned_at, metadata, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(crypto.randomUUID(), referredCoupon.id, user.friendId, now,
+          JSON.stringify({ type: 'referral_reward', code: couponCode, expires_at: expiresAt, reward_id: reward.id }), now)
+        .run();
+      couponResults.referred = couponCode;
+    }
 
     return c.json({
       success: true,
@@ -671,6 +713,7 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
         alreadyClaimed: false,
         rewardId: reward.id,
         status: reward.status,
+        coupons: couponResults,
       },
     });
   } catch (err) {
