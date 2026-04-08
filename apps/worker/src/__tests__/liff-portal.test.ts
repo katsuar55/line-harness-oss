@@ -113,6 +113,9 @@ vi.mock('@line-crm/db', async (importOriginal) => {
       return null;
     }),
     submitSurveyResponse: vi.fn(async () => ({ id: 'srs-1' })),
+    getFriendLanguage: vi.fn(async () => 'ja'),
+    setFriendLanguage: vi.fn(async () => undefined),
+    getTipTranslation: vi.fn(async () => null),
     jstNow: vi.fn(() => '2026-04-06T09:00:00+09:00'),
   };
 });
@@ -165,6 +168,7 @@ function createApp() {
 function mockEnv() {
   return {
     DB: {} as D1Database,
+    AI: {} as Ai,
     WORKER_URL: 'https://test.workers.dev',
     SHOPIFY_STORE_DOMAIN: 'naturism-diet.com',
   };
@@ -580,6 +584,36 @@ describe('LIFF Portal Routes', () => {
         answers: { q1: 3 },
       });
       expect(res.status).toBe(404);
+    });
+  });
+
+  // ─── i18n ───────────────────────────────────
+  describe('POST /api/liff/language', () => {
+    it('returns language preference', async () => {
+      const res = await post(app, '/api/liff/language', { lineUserId: 'U_EXISTING' });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { lang: string } };
+      expect(json.data.lang).toBe('ja');
+    });
+  });
+
+  describe('PUT /api/liff/language', () => {
+    it('updates language preference', async () => {
+      const res = await app.request('/api/liff/language', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_EXISTING', lang: 'en' }),
+      }, mockEnv());
+      expect(res.status).toBe(200);
+    });
+
+    it('rejects invalid language (400)', async () => {
+      const res = await app.request('/api/liff/language', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_EXISTING', lang: 'invalid' }),
+      }, mockEnv());
+      expect(res.status).toBe(400);
     });
   });
 

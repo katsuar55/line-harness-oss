@@ -32,6 +32,9 @@ import {
   getSurveyById,
   submitSurveyResponse,
   getTodayTip,
+  getFriendLanguage,
+  setFriendLanguage,
+  getTipTranslation,
   jstNow,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
@@ -1105,6 +1108,80 @@ liffPortal.get('/api/liff/tips/today', async (c) => {
     return c.json({ success: true, data: tip });
   } catch (err) {
     console.error('GET /api/liff/tips/today error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ═══════════════════════════════════════════════
+// 多言語 (i18n)
+// ═══════════════════════════════════════════════
+
+/**
+ * POST /api/liff/language — 言語設定取得
+ */
+liffPortal.post('/api/liff/language', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+    const lang = await getFriendLanguage(c.env.DB, user.friendId);
+    return c.json({ success: true, data: { lang } });
+  } catch (err) {
+    console.error('POST /api/liff/language error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * PUT /api/liff/language — 言語設定変更
+ */
+liffPortal.put('/api/liff/language', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+    const body = await c.req.json<{ lang: string }>();
+    const validLangs = ['ja', 'en', 'ko', 'zh', 'th'];
+    if (!body.lang || !validLangs.includes(body.lang)) {
+      return c.json({ success: false, error: `lang must be one of: ${validLangs.join(', ')}` }, 400);
+    }
+    await setFriendLanguage(c.env.DB, user.friendId, body.lang);
+    return c.json({ success: true, data: { lang: body.lang } });
+  } catch (err) {
+    console.error('PUT /api/liff/language error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/translate — AI翻訳 (on-demand)
+ */
+liffPortal.post('/api/liff/translate', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const body = await c.req.json<{ text: string; targetLang: string }>();
+    if (!body.text || body.text.length > 2000) {
+      return c.json({ success: false, error: 'text required (max 2000 chars)' }, 400);
+    }
+    const validLangs = ['ja', 'en', 'ko', 'zh', 'th'];
+    if (!body.targetLang || !validLangs.includes(body.targetLang)) {
+      return c.json({ success: false, error: 'Invalid targetLang' }, 400);
+    }
+
+    // Use AI translation service
+    const { translateText } = await import('../services/translate.js');
+    const translated = await translateText(
+      c.env.DB,
+      c.env.AI,
+      body.text,
+      'ja',
+      body.targetLang,
+      'LINE CRM health supplement context',
+    );
+
+    return c.json({ success: true, data: { text: translated } });
+  } catch (err) {
+    console.error('POST /api/liff/translate error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

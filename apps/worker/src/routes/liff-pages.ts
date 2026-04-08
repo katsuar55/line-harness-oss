@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { translations as i18nData } from '@line-crm/shared';
 import type { Env } from '../index.js';
 
 const liffPages = new Hono<Env>();
@@ -55,17 +56,29 @@ function portalPage(liffId: string, apiBase: string): string {
   <header class="bg-white sticky top-0 z-50 shadow-sm">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
       <h1 class="text-lg font-bold text-gray-800">naturism</h1>
-      <div id="user-avatar" class="w-8 h-8 rounded-full bg-gray-200"></div>
+      <div class="flex items-center gap-2">
+        <div class="relative">
+          <button id="lang-btn" onclick="toggleLangMenu()" class="text-lg" title="Language">&#x1F1EF;&#x1F1F5;</button>
+          <div id="lang-menu" style="display:none;" class="absolute right-0 top-8 bg-white border rounded-lg shadow-lg py-1 z-50 min-w-[120px]">
+            <button onclick="setLanguage('ja')" class="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50">&#x1F1EF;&#x1F1F5; 日本語</button>
+            <button onclick="setLanguage('en')" class="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50">&#x1F1FA;&#x1F1F8; English</button>
+            <button onclick="setLanguage('ko')" class="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50">&#x1F1F0;&#x1F1F7; 한국어</button>
+            <button onclick="setLanguage('zh')" class="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50">&#x1F1E8;&#x1F1F3; 中文</button>
+            <button onclick="setLanguage('th')" class="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50">&#x1F1F9;&#x1F1ED; ไทย</button>
+          </div>
+        </div>
+        <div id="user-avatar" class="w-8 h-8 rounded-full bg-gray-200"></div>
+      </div>
     </div>
   </header>
 
   <!-- Tab Navigation -->
   <nav class="bg-white border-b sticky top-[52px] z-40">
     <div class="max-w-lg mx-auto flex">
-      <button onclick="switchTab('home')" id="tab-home" class="flex-1 py-3 text-xs font-medium text-center tab-active">マイページ</button>
+      <button onclick="switchTab('home')" id="tab-home" class="flex-1 py-3 text-xs font-medium text-center tab-active" data-i18n="tab_mypage">マイページ</button>
       <button onclick="switchTab('quiz')" id="tab-quiz" class="flex-1 py-3 text-xs font-medium text-center tab-inactive">診断</button>
-      <button onclick="switchTab('intake')" id="tab-intake" class="flex-1 py-3 text-xs font-medium text-center tab-inactive">服用記録</button>
-      <button onclick="switchTab('health')" id="tab-health" class="flex-1 py-3 text-xs font-medium text-center tab-inactive">体調</button>
+      <button onclick="switchTab('intake')" id="tab-intake" class="flex-1 py-3 text-xs font-medium text-center tab-inactive" data-i18n="intake_log">服用記録</button>
+      <button onclick="switchTab('health')" id="tab-health" class="flex-1 py-3 text-xs font-medium text-center tab-inactive" data-i18n="tab_health">体調</button>
       <button onclick="switchTab('shop')" id="tab-shop" class="flex-1 py-3 text-xs font-medium text-center tab-inactive">ストア</button>
     </div>
   </nav>
@@ -450,6 +463,36 @@ let selectedCondition = null;
 
 function esc(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+// ─── i18n ───
+var I18N = ${JSON.stringify(i18nData)};
+var currentLang = 'ja';
+function i18n(key) { return (I18N[currentLang] && I18N[currentLang][key]) || (I18N.ja && I18N.ja[key]) || key; }
+async function loadLanguage() {
+  try {
+    const { data } = await api('/api/liff/language');
+    if (data && data.lang) { currentLang = data.lang; }
+  } catch { /* default ja */ }
+  updateI18nUI();
+}
+function setLanguage(lang) {
+  currentLang = lang;
+  api('/api/liff/language', {}).then(function(){}).catch(function(){});
+  fetch(API_BASE + '/api/liff/language', { method: 'PUT', headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) }, body: JSON.stringify({ lang: lang }) }).catch(function(){});
+  updateI18nUI();
+  document.getElementById('lang-menu').style.display = 'none';
+}
+function updateI18nUI() {
+  document.querySelectorAll('[data-i18n]').forEach(function(el) {
+    el.textContent = i18n(el.getAttribute('data-i18n'));
+  });
+  var langBtn = document.getElementById('lang-btn');
+  if (langBtn) { var flags = { ja: '&#x1F1EF;&#x1F1F5;', en: '&#x1F1FA;&#x1F1F8;', ko: '&#x1F1F0;&#x1F1F7;', zh: '&#x1F1E8;&#x1F1F3;', th: '&#x1F1F9;&#x1F1ED;' }; langBtn.innerHTML = flags[currentLang] || '&#x1F310;'; }
+}
+function toggleLangMenu() {
+  var menu = document.getElementById('lang-menu');
+  menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+}
+
 // ─── LIFF Init ───
 let isDemo = false;
 
@@ -467,7 +510,7 @@ async function initLiff() {
       document.getElementById('user-avatar').innerHTML =
         '<img src="' + profile.pictureUrl + '" class="w-8 h-8 rounded-full">';
     }
-    await Promise.all([loadRank(), loadTip(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadAmbassador()]);
+    await Promise.all([loadLanguage(), loadRank(), loadTip(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadAmbassador()]);
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
     document.getElementById('loading').style.display = 'none';
