@@ -33,53 +33,69 @@ function portalPage(liffId: string, apiBase: string): string {
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap');
-    body { font-family: 'Noto Sans JP', system-ui, sans-serif; background: #f8f9fa; }
-    .tab-active { color: #06C755; border-bottom: 2px solid #06C755; }
-    .tab-inactive { color: #999; }
-    .btn-primary { background: #06C755; color: #fff; }
-    .btn-primary:active { background: #05a847; }
-    .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
-    .skeleton { background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
-    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-    .progress-bar { transition: width 0.6s ease-out; }
-    .streak-fire { animation: pulse 1s ease-in-out infinite alternate; }
-    @keyframes pulse { 0% { transform: scale(1); } 100% { transform: scale(1.1); } }
-    .section { display: none; }
-    .section.active { display: block; }
+    *{-webkit-tap-highlight-color:transparent}
+    body{font-family:'Noto Sans JP',system-ui,sans-serif;background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%);min-height:100vh}
+    .tab-active{color:#059669;border-bottom:2.5px solid #059669;font-weight:600}
+    .tab-inactive{color:#94a3b8;border-bottom:2.5px solid transparent}
+    nav button{transition:color .2s,border-color .2s}
+    .btn-primary{background:linear-gradient(135deg,#059669 0%,#06C755 100%);color:#fff;border:none;transition:transform .15s,box-shadow .15s}
+    .btn-primary:active{transform:scale(0.97);box-shadow:0 2px 8px rgba(5,150,105,.3)}
+    .card{background:rgba(255,255,255,.85);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-radius:16px;border:1px solid rgba(0,0,0,.04);box-shadow:0 1px 4px rgba(0,0,0,.04),0 4px 16px rgba(0,0,0,.02)}
+    .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px}
+    @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+    .progress-bar{transition:width .6s cubic-bezier(.4,0,.2,1)}
+    .streak-fire{animation:pulse 1s ease-in-out infinite alternate}
+    @keyframes pulse{0%{transform:scale(1)}100%{transform:scale(1.12)}}
+    .section{display:none;animation:fadeUp .25s ease-out}
+    .section.active{display:block}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+    input[type="time"],input[type="date"],input[type="number"],input[type="text"],textarea,select{border-radius:12px;border:1.5px solid #e2e8f0;padding:10px 12px;font-size:14px;transition:border-color .2s,box-shadow .2s;background:#fff}
+    input:focus,textarea:focus,select:focus{outline:none;border-color:#06C755;box-shadow:0 0 0 3px rgba(6,199,85,.12)}
+    input[type="range"]{height:6px;border-radius:3px;accent-color:#059669}
+    .mood-btn,.skin-btn,.bowel-btn{transition:border-color .15s,background .15s,transform .1s}
+    .mood-btn:active,.skin-btn:active,.bowel-btn:active{transform:scale(0.95)}
+    .gender-btn{transition:all .15s;border-radius:12px !important}
+    #toast{backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);background:rgba(15,23,42,.85);font-weight:500;letter-spacing:.02em}
+    #loading{background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%)}
+    .graph-period-btn{transition:all .15s}
+    #survey-answer-modal>div{box-shadow:0 -4px 24px rgba(0,0,0,.08)}
+    @media(hover:hover){.btn-primary:hover{box-shadow:0 4px 16px rgba(5,150,105,.25)}}
   </style>
 </head>
 <body class="min-h-screen pb-20">
 
   <!-- Header -->
-  <header class="bg-white sticky top-0 z-50 shadow-sm">
+  <header class="sticky top-0 z-50" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(0,0,0,.06)">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
-      <h1 class="text-lg font-bold text-gray-800">naturism</h1>
-      <div class="flex items-center gap-2">
+      <h1 class="text-lg font-bold tracking-tight" style="background:linear-gradient(135deg,#059669,#06C755);-webkit-background-clip:text;-webkit-text-fill-color:transparent">naturism</h1>
+      <div class="flex items-center gap-3">
         <div class="relative">
-          <button id="lang-btn" onclick="toggleLangMenu()" class="text-lg" title="Language">&#x1F1EF;&#x1F1F5;</button>
-          <div id="lang-menu" style="display:none;" class="absolute right-0 top-8 bg-white border rounded-lg shadow-lg py-1 z-50 min-w-[120px]">
-            <button onclick="setLanguage('ja')" class="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50">&#x1F1EF;&#x1F1F5; 日本語</button>
-            <button onclick="setLanguage('en')" class="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50">&#x1F1FA;&#x1F1F8; English</button>
-            <button onclick="setLanguage('ko')" class="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50">&#x1F1F0;&#x1F1F7; 한국어</button>
-            <button onclick="setLanguage('zh')" class="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50">&#x1F1E8;&#x1F1F3; 中文</button>
-            <button onclick="setLanguage('th')" class="block w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50">&#x1F1F9;&#x1F1ED; ไทย</button>
+          <button id="lang-btn" onclick="toggleLangMenu()" class="text-base w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition-colors" title="Language">&#x1F1EF;&#x1F1F5;</button>
+          <div id="lang-menu" style="display:none;" class="absolute right-0 top-10 bg-white border border-gray-100 rounded-2xl shadow-xl py-1.5 z-50 min-w-[130px] overflow-hidden">
+            <button onclick="setLanguage('ja')" class="block w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors">&#x1F1EF;&#x1F1F5; 日本語</button>
+            <button onclick="setLanguage('en')" class="block w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors">&#x1F1FA;&#x1F1F8; English</button>
+            <button onclick="setLanguage('ko')" class="block w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors">&#x1F1F0;&#x1F1F7; 한국어</button>
+            <button onclick="setLanguage('zh')" class="block w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors">&#x1F1E8;&#x1F1F3; 中文</button>
+            <button onclick="setLanguage('th')" class="block w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors">&#x1F1F9;&#x1F1ED; ไทย</button>
           </div>
         </div>
-        <div id="user-avatar" class="w-8 h-8 rounded-full bg-gray-200"></div>
+        <div id="user-avatar" class="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-100 to-green-50 ring-2 ring-white shadow-sm"></div>
       </div>
     </div>
   </header>
 
   <!-- Tab Navigation -->
-  <nav class="bg-white border-b sticky top-[52px] z-40">
+  <nav class="sticky top-[53px] z-40" style="background:rgba(255,255,255,.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid rgba(0,0,0,.05)">
     <div class="max-w-lg mx-auto flex">
-      <button onclick="switchTab('home')" id="tab-home" class="flex-1 py-3 text-xs font-medium text-center tab-active" data-i18n="tab_mypage">マイページ</button>
-      <button onclick="switchTab('quiz')" id="tab-quiz" class="flex-1 py-3 text-xs font-medium text-center tab-inactive">診断</button>
-      <button onclick="switchTab('intake')" id="tab-intake" class="flex-1 py-3 text-xs font-medium text-center tab-inactive" data-i18n="intake_log">服用記録</button>
-      <button onclick="switchTab('health')" id="tab-health" class="flex-1 py-3 text-xs font-medium text-center tab-inactive" data-i18n="tab_health">体調</button>
-      <button onclick="switchTab('shop')" id="tab-shop" class="flex-1 py-3 text-xs font-medium text-center tab-inactive">ストア</button>
+      <button onclick="switchTab('home')" id="tab-home" class="flex-1 py-3 text-xs text-center tab-active" data-i18n="tab_mypage">マイページ</button>
+      <button onclick="switchTab('quiz')" id="tab-quiz" class="flex-1 py-3 text-xs text-center tab-inactive">診断</button>
+      <button onclick="switchTab('intake')" id="tab-intake" class="flex-1 py-3 text-xs text-center tab-inactive" data-i18n="intake_log">服用記録</button>
+      <button onclick="switchTab('health')" id="tab-health" class="flex-1 py-3 text-xs text-center tab-inactive" data-i18n="tab_health">体調</button>
+      <button onclick="switchTab('shop')" id="tab-shop" class="flex-1 py-3 text-xs text-center tab-inactive">ストア</button>
     </div>
   </nav>
 
@@ -140,7 +156,7 @@ function portalPage(liffId: string, apiBase: string): string {
               <label class="text-xs text-gray-500">内容</label>
               <textarea id="fb-content" rows="3" maxlength="2000" class="w-full mt-1 p-2.5 border rounded-xl text-sm" placeholder="商品の感想やご要望をお聞かせください..."></textarea>
             </div>
-            <button onclick="submitFeedback()" id="fb-submit-btn" class="btn-primary w-full py-2.5 rounded-lg text-xs font-bold">送信する</button>
+            <button onclick="submitFeedback()" id="fb-submit-btn" class="btn-primary w-full py-2.5 rounded-2xl text-xs font-bold shadow-md">送信する</button>
           </div>
         </div>
         <div id="ambassador-history-card" class="card p-4 mt-3">
@@ -152,13 +168,13 @@ function portalPage(liffId: string, apiBase: string): string {
           <div id="pending-surveys"></div>
         </div>
         <div id="survey-answer-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:50;background:rgba(0,0,0,0.5);">
-          <div style="position:absolute;bottom:0;left:0;right:0;max-height:85vh;overflow-y:auto;background:#fff;border-radius:20px 20px 0 0;padding:20px;">
+          <div style="position:absolute;bottom:0;left:0;right:0;max-height:85vh;overflow-y:auto;background:#fff;border-radius:24px 24px 0 0;padding:24px;">
             <div class="flex justify-between items-center mb-4">
               <p class="text-sm font-bold" id="survey-modal-title"></p>
               <button onclick="closeSurveyModal()" class="text-gray-400 text-xl">&times;</button>
             </div>
             <div id="survey-questions-container"></div>
-            <button onclick="submitSurveyAnswers()" id="survey-submit-btn" class="btn-primary w-full py-3 rounded-lg text-sm font-bold mt-4">回答を送信</button>
+            <button onclick="submitSurveyAnswers()" id="survey-submit-btn" class="btn-primary w-full py-3 rounded-2xl text-sm font-bold mt-4 shadow-lg">回答を送信</button>
           </div>
         </div>
       </div>
@@ -180,7 +196,7 @@ function portalPage(liffId: string, apiBase: string): string {
             <label class="text-xs text-gray-500">誕生日</label>
             <input type="date" id="birthday-input" class="w-full mt-1 p-2 border rounded-lg text-sm" min="1920-01-01" max="2020-12-31">
           </div>
-          <button onclick="saveProfile()" class="btn-primary w-full py-2.5 rounded-lg text-xs font-bold">保存</button>
+          <button onclick="saveProfile()" class="btn-primary w-full py-2.5 rounded-2xl text-xs font-bold shadow-md">保存</button>
         </div>
       </div>
     </div>
@@ -195,14 +211,14 @@ function portalPage(liffId: string, apiBase: string): string {
       <div class="card p-4">
         <p class="text-xs text-gray-500 font-bold mb-2">商品を選択</p>
         <div class="flex gap-2">
-          <button onclick="selectProduct('Blue')" data-product="Blue" class="product-btn flex-1 py-2 rounded-lg text-xs border bg-blue-50 text-blue-700 font-bold border-blue-300">Blue</button>
-          <button onclick="selectProduct('Pink')" data-product="Pink" class="product-btn flex-1 py-2 rounded-lg text-xs border">Pink</button>
-          <button onclick="selectProduct('Premium')" data-product="Premium" class="product-btn flex-1 py-2 rounded-lg text-xs border">Premium</button>
+          <button onclick="selectProduct('Blue')" data-product="Blue" class="product-btn flex-1 py-2.5 rounded-xl text-xs border bg-blue-50 text-blue-700 font-bold border-blue-300 transition-all">💧 Blue</button>
+          <button onclick="selectProduct('Pink')" data-product="Pink" class="product-btn flex-1 py-2.5 rounded-xl text-xs border transition-all">🌸 Pink</button>
+          <button onclick="selectProduct('Premium')" data-product="Premium" class="product-btn flex-1 py-2.5 rounded-xl text-xs border transition-all">👑 Premium</button>
         </div>
       </div>
       <!-- Log Button -->
-      <button onclick="logIntake()" id="intake-btn" class="btn-primary w-full py-4 rounded-xl text-lg font-bold shadow-md">
-        服用を記録する
+      <button onclick="logIntake()" id="intake-btn" class="btn-primary w-full py-4 rounded-2xl text-base font-bold shadow-lg" style="letter-spacing:.05em">
+        ✨ 服用を記録する
       </button>
       <!-- Calendar View -->
       <div class="card p-4">
@@ -224,7 +240,7 @@ function portalPage(liffId: string, apiBase: string): string {
             <p class="text-sm font-bold text-gray-700">リマインド通知</p>
             <p class="text-xs text-gray-400">毎日LINEにお知らせ（最大5件）</p>
           </div>
-          <button onclick="addReminderSlot()" class="text-xs font-bold text-green-600 border border-green-600 px-3 py-1.5 rounded-lg">＋ 追加</button>
+          <button onclick="addReminderSlot()" class="text-xs font-bold text-emerald-600 border border-emerald-300 bg-emerald-50 px-3 py-1.5 rounded-xl transition-colors active:bg-emerald-100">＋ 追加</button>
         </div>
         <div id="reminders-list" class="space-y-2"></div>
       </div>
@@ -235,9 +251,9 @@ function portalPage(liffId: string, apiBase: string): string {
     <!-- ===== HEALTH Section ===== -->
     <div id="section-health" class="section space-y-4">
       <!-- Sub-tabs: Record / Graph -->
-      <div class="flex bg-gray-100 rounded-xl p-1">
-        <button onclick="switchHealthView('record')" id="htab-record" class="flex-1 py-2 text-xs font-bold rounded-lg bg-white shadow text-green-600">記録する</button>
-        <button onclick="switchHealthView('graph')" id="htab-graph" class="flex-1 py-2 text-xs font-bold rounded-lg text-gray-400">グラフ</button>
+      <div class="flex bg-gray-100/80 rounded-2xl p-1">
+        <button onclick="switchHealthView('record')" id="htab-record" class="flex-1 py-2 text-xs font-bold rounded-xl bg-white shadow-sm text-emerald-600 transition-all">📝 記録する</button>
+        <button onclick="switchHealthView('graph')" id="htab-graph" class="flex-1 py-2 text-xs font-bold rounded-xl text-gray-400 transition-all">📊 グラフ</button>
       </div>
 
       <!-- ─── Record View ─── -->
@@ -334,8 +350,8 @@ function portalPage(liffId: string, apiBase: string): string {
           </div>
 
           <!-- Save Button -->
-          <button onclick="saveHealthLog()" class="btn-primary w-full py-3.5 rounded-xl text-sm font-bold shadow-md">
-            記録を保存 ✏️
+          <button onclick="saveHealthLog()" class="btn-primary w-full py-3.5 rounded-2xl text-sm font-bold shadow-lg">
+            ✏️ 記録を保存
           </button>
         </div>
       </div>
@@ -343,12 +359,12 @@ function portalPage(liffId: string, apiBase: string): string {
       <!-- ─── Graph View ─── -->
       <div id="health-graph-view" style="display:none;" class="space-y-4">
         <!-- Period Selector -->
-        <div class="flex gap-1 bg-gray-100 rounded-xl p-1">
-          <button onclick="loadGraph(7)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-lg" data-days="7">1W</button>
-          <button onclick="loadGraph(30)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-lg bg-white shadow font-bold text-green-600" data-days="30">1M</button>
-          <button onclick="loadGraph(90)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-lg" data-days="90">3M</button>
-          <button onclick="loadGraph(180)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-lg" data-days="180">6M</button>
-          <button onclick="loadGraph(365)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-lg" data-days="365">1Y</button>
+        <div class="flex gap-1 bg-gray-100/80 rounded-2xl p-1">
+          <button onclick="loadGraph(7)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-xl" data-days="7">1W</button>
+          <button onclick="loadGraph(30)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-xl bg-white shadow-sm font-bold text-emerald-600" data-days="30">1M</button>
+          <button onclick="loadGraph(90)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-xl" data-days="90">3M</button>
+          <button onclick="loadGraph(180)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-xl" data-days="180">6M</button>
+          <button onclick="loadGraph(365)" class="graph-period-btn flex-1 py-1.5 text-xs rounded-xl" data-days="365">1Y</button>
         </div>
 
         <!-- Weight Chart -->
@@ -387,10 +403,10 @@ function portalPage(liffId: string, apiBase: string): string {
     <div id="section-quiz" class="section space-y-4">
       <!-- Quiz Intro -->
       <div id="quiz-intro" class="card p-6 text-center">
-        <div class="text-4xl mb-3">💊</div>
+        <div class="text-5xl mb-3">💊</div>
         <h2 class="text-lg font-bold text-gray-800 mb-2">あなたにぴったりの naturism は？</h2>
-        <p class="text-sm text-gray-500 mb-4">8つの質問に答えるだけで、最適な商品をご提案します。</p>
-        <button onclick="startQuiz()" class="btn-primary px-8 py-3 rounded-xl text-sm font-bold shadow-md">診断スタート</button>
+        <p class="text-sm text-gray-500 mb-5 leading-relaxed">8つの質問に答えるだけで、<br>最適な商品をご提案します。</p>
+        <button onclick="startQuiz()" class="btn-primary px-10 py-3.5 rounded-2xl text-sm font-bold shadow-lg">診断スタート →</button>
       </div>
 
       <!-- Quiz Steps (hidden until started) -->
@@ -445,15 +461,15 @@ function portalPage(liffId: string, apiBase: string): string {
   </main>
 
   <!-- Loading overlay -->
-  <div id="loading" class="fixed inset-0 bg-white bg-opacity-90 flex items-center justify-center z-50">
+  <div id="loading" class="fixed inset-0 flex items-center justify-center z-50" style="background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%)">
     <div class="text-center">
-      <div class="w-10 h-10 border-4 border-green-500 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
-      <p class="text-sm text-gray-500">読み込み中...</p>
+      <div class="w-12 h-12 rounded-full animate-spin mx-auto mb-4" style="border:3px solid #e2e8f0;border-top-color:#059669"></div>
+      <p class="text-sm text-gray-400 font-medium tracking-wide">読み込み中...</p>
     </div>
   </div>
 
   <!-- Toast -->
-  <div id="toast" class="fixed bottom-24 left-1/2 -translate-x-1/2 bg-gray-800 text-white px-4 py-2 rounded-full text-sm shadow-lg opacity-0 transition-opacity pointer-events-none z-50"></div>
+  <div id="toast" class="fixed bottom-24 left-1/2 -translate-x-1/2 text-white px-5 py-2.5 rounded-2xl text-sm shadow-xl opacity-0 transition-opacity pointer-events-none z-50"></div>
 
 <script>
 const LIFF_ID = '${escapeHtml(liffId)}';
@@ -526,8 +542,8 @@ async function initLiff() {
 function loadDemoData() {
   // Demo banner
   var banner = document.createElement('div');
-  banner.className = 'bg-yellow-50 border border-yellow-200 rounded-lg p-2 text-center text-xs text-yellow-700 mx-4 mt-2';
-  banner.textContent = 'DEMO MODE - LINE\u30a2\u30d7\u30ea\u5185\u3067\u958b\u304f\u3068\u5b9f\u30c7\u30fc\u30bf\u304c\u8868\u793a\u3055\u308c\u307e\u3059';
+  banner.className = 'bg-amber-50 border border-amber-200 rounded-2xl p-2.5 text-center text-xs text-amber-700 mx-4 mt-2 font-medium';
+  banner.textContent = '\u{1F6A7} DEMO MODE \u2014 LINE\u30a2\u30d7\u30ea\u5185\u3067\u958b\u304f\u3068\u5b9f\u30c7\u30fc\u30bf\u304c\u8868\u793a\u3055\u308c\u307e\u3059';
   document.querySelector('nav').after(banner);
 
   // Avatar
@@ -667,10 +683,13 @@ async function apiGet(path) {
 
 // ─── Tab Switching ───
 function switchTab(name) {
-  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-  document.querySelectorAll('nav button').forEach(b => { b.className = b.className.replace('tab-active', 'tab-inactive'); });
-  document.getElementById('section-' + name).classList.add('active');
+  document.querySelectorAll('.section').forEach(function(s) { s.classList.remove('active'); });
+  document.querySelectorAll('nav button').forEach(function(b) { b.className = b.className.replace('tab-active', 'tab-inactive'); });
+  var section = document.getElementById('section-' + name);
+  section.classList.add('active');
   document.getElementById('tab-' + name).className = document.getElementById('tab-' + name).className.replace('tab-inactive', 'tab-active');
+  // Scroll to top smoothly
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 
   // Lazy load section data
   if (name === 'intake') { loadIntakeData(); initReminder(); }
@@ -749,7 +768,7 @@ function selectProduct(name) {
   selectedProduct = name;
   document.querySelectorAll('.product-btn').forEach(function(b) {
     var isSelected = b.getAttribute('data-product') === name;
-    b.className = 'product-btn flex-1 py-2 rounded-lg text-xs border ' +
+    b.className = 'product-btn flex-1 py-2.5 rounded-xl text-xs border transition-all ' +
       (isSelected ? (name === 'Blue' ? 'bg-blue-50 text-blue-700 font-bold border-blue-300' :
                      name === 'Pink' ? 'bg-pink-50 text-pink-700 font-bold border-pink-300' :
                      'bg-purple-50 text-purple-700 font-bold border-purple-300') : '');
@@ -957,8 +976,8 @@ var healthCharts = {};
 function switchHealthView(view) {
   document.getElementById('health-record-view').style.display = view === 'record' ? 'block' : 'none';
   document.getElementById('health-graph-view').style.display = view === 'graph' ? 'block' : 'none';
-  document.getElementById('htab-record').className = 'flex-1 py-2 text-xs font-bold rounded-lg ' + (view === 'record' ? 'bg-white shadow text-green-600' : 'text-gray-400');
-  document.getElementById('htab-graph').className = 'flex-1 py-2 text-xs font-bold rounded-lg ' + (view === 'graph' ? 'bg-white shadow text-green-600' : 'text-gray-400');
+  document.getElementById('htab-record').className = 'flex-1 py-2 text-xs font-bold rounded-xl transition-all ' + (view === 'record' ? 'bg-white shadow-sm text-emerald-600' : 'text-gray-400');
+  document.getElementById('htab-graph').className = 'flex-1 py-2 text-xs font-bold rounded-xl transition-all ' + (view === 'graph' ? 'bg-white shadow-sm text-emerald-600' : 'text-gray-400');
   if (view === 'graph') loadGraph(30);
 }
 
@@ -1053,7 +1072,7 @@ async function loadGraph(days) {
   // Update period button styles
   document.querySelectorAll('.graph-period-btn').forEach(function(b) {
     var d = parseInt(b.getAttribute('data-days'));
-    b.className = 'graph-period-btn flex-1 py-1.5 text-xs rounded-lg ' + (d === days ? 'bg-white shadow font-bold text-green-600' : 'text-gray-400');
+    b.className = 'graph-period-btn flex-1 py-1.5 text-xs rounded-xl ' + (d === days ? 'bg-white shadow-sm font-bold text-emerald-600' : 'text-gray-400');
   });
 
   try {
