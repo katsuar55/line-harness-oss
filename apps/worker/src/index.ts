@@ -50,6 +50,7 @@ import { ambassadors } from './routes/ambassadors.js';
 import { csvExport } from './routes/csv-export.js';
 import { dashboard } from './routes/dashboard.js';
 import { reminderMessages } from './routes/reminder-messages.js';
+import { surveys } from './routes/surveys.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 import { processIntakeReminders } from './services/intake-reminder.js';
 import { processWeeklyReports } from './services/weekly-report.js';
@@ -139,6 +140,7 @@ app.route('/', ambassadors);
 app.route('/', csvExport);
 app.route('/', dashboard);
 app.route('/', reminderMessages);
+app.route('/', surveys);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {

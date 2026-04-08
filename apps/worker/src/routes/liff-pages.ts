@@ -134,6 +134,20 @@ function portalPage(liffId: string, apiBase: string): string {
           <p class="text-xs text-gray-500 font-bold mb-2">送信履歴</p>
           <div id="fb-history"></div>
         </div>
+        <div id="ambassador-surveys-card" class="card p-4 mt-3" style="display:none;">
+          <p class="text-xs text-gray-500 font-bold mb-3">&#x1F4CB; 未回答アンケート</p>
+          <div id="pending-surveys"></div>
+        </div>
+        <div id="survey-answer-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:50;background:rgba(0,0,0,0.5);">
+          <div style="position:absolute;bottom:0;left:0;right:0;max-height:85vh;overflow-y:auto;background:#fff;border-radius:20px 20px 0 0;padding:20px;">
+            <div class="flex justify-between items-center mb-4">
+              <p class="text-sm font-bold" id="survey-modal-title"></p>
+              <button onclick="closeSurveyModal()" class="text-gray-400 text-xl">&times;</button>
+            </div>
+            <div id="survey-questions-container"></div>
+            <button onclick="submitSurveyAnswers()" id="survey-submit-btn" class="btn-primary w-full py-3 rounded-lg text-sm font-bold mt-4">回答を送信</button>
+          </div>
+        </div>
       </div>
 
       <!-- Profile (gender/birthday) -->
@@ -1182,6 +1196,7 @@ async function loadAmbassador() {
       '<div class="bg-gray-50 rounded-lg p-2"><p class="text-lg font-bold text-gray-800">' + (data.enrolledAt ? data.enrolledAt.slice(0, 10) : '-') + '</p><p class="text-xs text-gray-500">登録日</p></div></div>';
 
     loadFeedbackHistory();
+    loadPendingSurveys();
   } catch { /* ignore */ }
 }
 
@@ -1234,6 +1249,113 @@ async function loadFeedbackHistory() {
         '<p class="text-xs text-gray-700 mt-1">' + esc(fb.content.length > 100 ? fb.content.slice(0, 100) + '...' : fb.content) + '</p></div>';
     }).join('');
   } catch { /* ignore */ }
+}
+
+// ─── Ambassador Surveys ───
+var currentSurvey = null;
+var surveyAnswers = {};
+
+async function loadPendingSurveys() {
+  if (!ambassadorData) return;
+  try {
+    const { data } = await api('/api/liff/ambassador/surveys');
+    var card = document.getElementById('ambassador-surveys-card');
+    var el = document.getElementById('pending-surveys');
+    if (!data || data.length === 0) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = 'block';
+    el.innerHTML = data.map(function(s) {
+      var typeLabels = { survey: 'アンケート', product_test: '商品テスト', nps: '満足度調査' };
+      var typeColors = { survey: 'bg-indigo-100 text-indigo-700', product_test: 'bg-red-100 text-red-700', nps: 'bg-teal-100 text-teal-700' };
+      return '<div class="p-3 bg-gray-50 rounded-xl mb-2 cursor-pointer" onclick=\\'openSurvey(' + JSON.stringify(JSON.stringify(s)) + ')\\'>' +
+        '<div class="flex items-center gap-2 mb-1">' +
+        '<span class="text-xs px-2 py-0.5 rounded-full ' + esc(typeColors[s.survey_type] || '') + '">' + esc(typeLabels[s.survey_type] || s.survey_type) + '</span></div>' +
+        '<p class="text-sm font-bold text-gray-800">' + esc(s.title) + '</p>' +
+        (s.description ? '<p class="text-xs text-gray-500 mt-1">' + esc(s.description) + '</p>' : '') +
+        '<p class="text-xs text-green-600 mt-1 font-bold">' + s.questions.length + '問 &#x2192; 回答する</p></div>';
+    }).join('');
+  } catch { /* ignore */ }
+}
+
+function openSurvey(jsonStr) {
+  currentSurvey = JSON.parse(jsonStr);
+  surveyAnswers = {};
+  document.getElementById('survey-modal-title').textContent = currentSurvey.title;
+  var container = document.getElementById('survey-questions-container');
+  container.innerHTML = currentSurvey.questions.map(function(q, i) {
+    var html = '<div class="mb-4"><p class="text-sm font-bold text-gray-800 mb-2">' + (i + 1) + '. ' + esc(q.label) + (q.required ? ' <span class="text-red-500">*</span>' : '') + '</p>';
+    if (q.type === 'rating') {
+      html += '<div class="flex gap-1">';
+      for (var r = 1; r <= 5; r++) {
+        html += '<button onclick="setSurveyRating(\\'' + esc(q.id) + '\\',' + r + ')" data-qid="' + esc(q.id) + '" data-rating="' + r + '" class="survey-star text-2xl" style="opacity:0.3;">&#x2B50;</button>';
+      }
+      html += '</div>';
+    } else if (q.type === 'text') {
+      html += '<textarea onchange="surveyAnswers[\\'' + esc(q.id) + '\\']=this.value" rows="2" class="w-full p-2 border rounded-lg text-sm" placeholder="回答を入力..."></textarea>';
+    } else if (q.type === 'choice') {
+      html += '<div class="space-y-1">';
+      (q.options || []).forEach(function(opt) {
+        html += '<label class="flex items-center gap-2 p-2 bg-gray-50 rounded-lg cursor-pointer"><input type="radio" name="sq_' + esc(q.id) + '" value="' + esc(opt) + '" onchange="surveyAnswers[\\'' + esc(q.id) + '\\']=this.value" class="accent-green-500"><span class="text-sm">' + esc(opt) + '</span></label>';
+      });
+      html += '</div>';
+    } else if (q.type === 'multi_choice') {
+      html += '<div class="space-y-1">';
+      (q.options || []).forEach(function(opt) {
+        html += '<label class="flex items-center gap-2 p-2 bg-gray-50 rounded-lg cursor-pointer"><input type="checkbox" value="' + esc(opt) + '" onchange="updateMultiChoice(\\'' + esc(q.id) + '\\')" data-qid="' + esc(q.id) + '" class="accent-green-500"><span class="text-sm">' + esc(opt) + '</span></label>';
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+    return html;
+  }).join('');
+  document.getElementById('survey-answer-modal').style.display = 'block';
+}
+
+function closeSurveyModal() {
+  document.getElementById('survey-answer-modal').style.display = 'none';
+  currentSurvey = null;
+}
+
+function setSurveyRating(qid, rating) {
+  surveyAnswers[qid] = rating;
+  document.querySelectorAll('.survey-star[data-qid="' + qid + '"]').forEach(function(b) {
+    b.style.opacity = parseInt(b.getAttribute('data-rating')) <= rating ? '1' : '0.3';
+  });
+}
+
+function updateMultiChoice(qid) {
+  var checked = [];
+  document.querySelectorAll('input[data-qid="' + qid + '"]:checked').forEach(function(cb) {
+    checked.push(cb.value);
+  });
+  surveyAnswers[qid] = checked;
+}
+
+async function submitSurveyAnswers() {
+  if (!currentSurvey) return;
+  // Validate required
+  for (var q of currentSurvey.questions) {
+    if (q.required && (surveyAnswers[q.id] === undefined || surveyAnswers[q.id] === '' || (Array.isArray(surveyAnswers[q.id]) && surveyAnswers[q.id].length === 0))) {
+      showToast('必須項目に回答してください: ' + q.label);
+      return;
+    }
+  }
+  var btn = document.getElementById('survey-submit-btn');
+  btn.disabled = true;
+  btn.textContent = '送信中...';
+  try {
+    await api('/api/liff/ambassador/survey/respond', {
+      surveyId: currentSurvey.id,
+      answers: surveyAnswers,
+    });
+    showToast('回答を送信しました！ありがとうございます');
+    closeSurveyModal();
+    loadPendingSurveys();
+  } catch { showToast('送信に失敗しました'); }
+  btn.disabled = false;
+  btn.textContent = '回答を送信';
 }
 
 // ─── Profile (gender/birthday) ───

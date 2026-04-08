@@ -28,6 +28,9 @@ import {
   getAmbassador,
   submitAmbassadorFeedback,
   getAmbassadorFeedbacks,
+  getPendingSurveys,
+  getSurveyById,
+  submitSurveyResponse,
   getTodayTip,
   jstNow,
 } from '@line-crm/db';
@@ -998,6 +1001,84 @@ liffPortal.post('/api/liff/ambassador/feedbacks', async (c) => {
     return c.json({ success: true, data: feedbacks });
   } catch (err) {
     console.error('POST /api/liff/ambassador/feedbacks error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ═══════════════════════════════════════════════
+// アンバサダー: アンケート回答
+// ═══════════════════════════════════════════════
+
+/**
+ * POST /api/liff/ambassador/surveys — 未回答アンケート一覧取得
+ */
+liffPortal.post('/api/liff/ambassador/surveys', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const ambassador = await getAmbassador(c.env.DB, user.friendId);
+    if (!ambassador || ambassador.status !== 'active') {
+      return c.json({ success: true, data: [] });
+    }
+
+    const surveys = await getPendingSurveys(c.env.DB, ambassador.id);
+    return c.json({
+      success: true,
+      data: surveys.map((s) => ({
+        ...s,
+        questions: JSON.parse(s.questions),
+      })),
+    });
+  } catch (err) {
+    console.error('POST /api/liff/ambassador/surveys error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/ambassador/survey/respond — アンケート回答送信
+ */
+liffPortal.post('/api/liff/ambassador/survey/respond', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const ambassador = await getAmbassador(c.env.DB, user.friendId);
+    if (!ambassador || ambassador.status !== 'active') {
+      return c.json({ success: false, error: 'Not an active ambassador' }, 403);
+    }
+
+    const body = await c.req.json<{ surveyId: string; answers: Record<string, unknown> }>();
+
+    if (!body.surveyId || typeof body.surveyId !== 'string') {
+      return c.json({ success: false, error: 'surveyId is required' }, 400);
+    }
+    if (!body.answers || typeof body.answers !== 'object') {
+      return c.json({ success: false, error: 'answers is required as object' }, 400);
+    }
+
+    // Verify survey exists and is active
+    const survey = await getSurveyById(c.env.DB, body.surveyId);
+    if (!survey || survey.status !== 'active') {
+      return c.json({ success: false, error: 'Survey not found or closed' }, 404);
+    }
+
+    const result = await submitSurveyResponse(
+      c.env.DB,
+      body.surveyId,
+      ambassador.id,
+      user.friendId,
+      body.answers,
+    );
+
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : '';
+    if (errMsg.includes('UNIQUE constraint')) {
+      return c.json({ success: false, error: 'Already responded to this survey' }, 409);
+    }
+    console.error('POST /api/liff/ambassador/survey/respond error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

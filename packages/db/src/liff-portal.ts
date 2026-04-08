@@ -933,6 +933,314 @@ export async function getAmbassadorFeedbacks(
   return results as Array<{ id: string; type: string; category: string; content: string; rating: number | null; created_at: string }>;
 }
 
+// ===== Ambassador Surveys =====
+
+export interface SurveyQuestion {
+  id: string;
+  type: 'rating' | 'text' | 'choice' | 'multi_choice';
+  label: string;
+  options?: string[];
+  required?: boolean;
+}
+
+export interface AmbassadorSurvey {
+  id: string;
+  title: string;
+  description: string | null;
+  survey_type: string;
+  questions: string;
+  target_tier: string;
+  status: string;
+  sent_count: number;
+  response_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function createSurvey(
+  db: D1Database,
+  data: {
+    title: string;
+    description?: string;
+    survey_type?: string;
+    questions: SurveyQuestion[];
+    target_tier?: string;
+  },
+): Promise<{ id: string }> {
+  const id = `srv_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+  const now = jstNow();
+  const result = await db
+    .prepare(
+      `INSERT INTO ambassador_surveys (id, title, description, survey_type, questions, target_tier, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       RETURNING id`,
+    )
+    .bind(
+      id,
+      data.title,
+      data.description || null,
+      data.survey_type || 'survey',
+      JSON.stringify(data.questions),
+      data.target_tier || 'all',
+      now,
+      now,
+    )
+    .first<{ id: string }>();
+  if (!result) throw new Error('createSurvey: INSERT returned null');
+  return result;
+}
+
+export async function updateSurvey(
+  db: D1Database,
+  id: string,
+  data: {
+    title?: string;
+    description?: string;
+    questions?: SurveyQuestion[];
+    target_tier?: string;
+    status?: string;
+  },
+): Promise<void> {
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  if (data.title !== undefined) { sets.push('title = ?'); vals.push(data.title); }
+  if (data.description !== undefined) { sets.push('description = ?'); vals.push(data.description); }
+  if (data.questions !== undefined) { sets.push('questions = ?'); vals.push(JSON.stringify(data.questions)); }
+  if (data.target_tier !== undefined) { sets.push('target_tier = ?'); vals.push(data.target_tier); }
+  if (data.status !== undefined) { sets.push('status = ?'); vals.push(data.status); }
+  if (sets.length === 0) return;
+  sets.push('updated_at = ?');
+  vals.push(jstNow());
+  vals.push(id);
+  await db.prepare(`UPDATE ambassador_surveys SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
+}
+
+export async function getSurveys(
+  db: D1Database,
+  filters?: { status?: string; survey_type?: string; limit?: number; offset?: number },
+): Promise<{ surveys: AmbassadorSurvey[]; total: number }> {
+  const wheres: string[] = [];
+  const vals: unknown[] = [];
+  if (filters?.status) { wheres.push('status = ?'); vals.push(filters.status); }
+  if (filters?.survey_type) { wheres.push('survey_type = ?'); vals.push(filters.survey_type); }
+  const whereClause = wheres.length > 0 ? `WHERE ${wheres.join(' AND ')}` : '';
+  const limit = filters?.limit || 20;
+  const offset = filters?.offset || 0;
+
+  const countVals = [...vals];
+  const { total } = await db
+    .prepare(`SELECT COUNT(*) as total FROM ambassador_surveys ${whereClause}`)
+    .bind(...countVals)
+    .first<{ total: number }>() ?? { total: 0 };
+
+  vals.push(limit, offset);
+  const { results } = await db
+    .prepare(`SELECT * FROM ambassador_surveys ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .bind(...vals)
+    .all();
+
+  return { surveys: results as AmbassadorSurvey[], total };
+}
+
+export async function getSurveyById(
+  db: D1Database,
+  id: string,
+): Promise<AmbassadorSurvey | null> {
+  return db
+    .prepare('SELECT * FROM ambassador_surveys WHERE id = ?')
+    .bind(id)
+    .first<AmbassadorSurvey>();
+}
+
+export async function deleteSurvey(
+  db: D1Database,
+  id: string,
+): Promise<void> {
+  await db.prepare('DELETE FROM ambassador_surveys WHERE id = ?').bind(id).run();
+}
+
+// --- Survey Delivery ---
+
+export async function getDeliveryTargets(
+  db: D1Database,
+  surveyId: string,
+  targetTier: string,
+): Promise<Array<{ ambassador_id: string; friend_id: string; line_user_id: string }>> {
+  const tierClause = targetTier === 'all' ? '' : 'AND a.tier = ?';
+  const vals: unknown[] = [surveyId];
+  if (targetTier !== 'all') vals.push(targetTier);
+
+  const { results } = await db
+    .prepare(
+      `SELECT a.id as ambassador_id, a.friend_id, f.line_user_id
+       FROM ambassadors a
+       JOIN friends f ON f.id = a.friend_id
+       WHERE a.status = 'active'
+       AND f.is_following = 1
+       AND a.id NOT IN (SELECT ambassador_id FROM ambassador_survey_deliveries WHERE survey_id = ?)
+       ${tierClause}`,
+    )
+    .bind(...vals)
+    .all();
+
+  return results as Array<{ ambassador_id: string; friend_id: string; line_user_id: string }>;
+}
+
+export async function recordSurveyDelivery(
+  db: D1Database,
+  surveyId: string,
+  ambassadorId: string,
+  friendId: string,
+): Promise<void> {
+  const id = `sdl_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO ambassador_survey_deliveries (id, survey_id, ambassador_id, friend_id)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .bind(id, surveyId, ambassadorId, friendId)
+    .run();
+}
+
+export async function incrementSurveySentCount(
+  db: D1Database,
+  surveyId: string,
+  count: number,
+): Promise<void> {
+  await db
+    .prepare('UPDATE ambassador_surveys SET sent_count = sent_count + ?, updated_at = ? WHERE id = ?')
+    .bind(count, jstNow(), surveyId)
+    .run();
+}
+
+// --- Survey Responses ---
+
+export async function submitSurveyResponse(
+  db: D1Database,
+  surveyId: string,
+  ambassadorId: string,
+  friendId: string,
+  answers: Record<string, unknown>,
+): Promise<{ id: string }> {
+  const id = `srs_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+  const result = await db
+    .prepare(
+      `INSERT INTO ambassador_survey_responses (id, survey_id, ambassador_id, friend_id, answers)
+       VALUES (?, ?, ?, ?, ?)
+       RETURNING id`,
+    )
+    .bind(id, surveyId, ambassadorId, friendId, JSON.stringify(answers))
+    .first<{ id: string }>();
+  if (!result) throw new Error('submitSurveyResponse: INSERT returned null');
+
+  // Mark delivery as responded
+  await db
+    .prepare(
+      'UPDATE ambassador_survey_deliveries SET responded = 1 WHERE survey_id = ? AND ambassador_id = ?',
+    )
+    .bind(surveyId, ambassadorId)
+    .run();
+
+  // Increment response count
+  await db
+    .prepare('UPDATE ambassador_surveys SET response_count = response_count + 1, updated_at = ? WHERE id = ?')
+    .bind(jstNow(), surveyId)
+    .run();
+
+  // Increment ambassador survey count
+  await db
+    .prepare('UPDATE ambassadors SET total_surveys_completed = total_surveys_completed + 1, updated_at = ? WHERE id = ?')
+    .bind(jstNow(), ambassadorId)
+    .run();
+
+  return result;
+}
+
+export async function getSurveyResponses(
+  db: D1Database,
+  surveyId: string,
+  limit = 50,
+  offset = 0,
+): Promise<{ responses: Array<{ id: string; ambassador_id: string; friend_id: string; answers: string; submitted_at: string; display_name?: string }>; total: number }> {
+  const { total } = await db
+    .prepare('SELECT COUNT(*) as total FROM ambassador_survey_responses WHERE survey_id = ?')
+    .bind(surveyId)
+    .first<{ total: number }>() ?? { total: 0 };
+
+  const { results } = await db
+    .prepare(
+      `SELECT r.id, r.ambassador_id, r.friend_id, r.answers, r.submitted_at, f.display_name
+       FROM ambassador_survey_responses r
+       LEFT JOIN friends f ON f.id = r.friend_id
+       WHERE r.survey_id = ?
+       ORDER BY r.submitted_at DESC
+       LIMIT ? OFFSET ?`,
+    )
+    .bind(surveyId, limit, offset)
+    .all();
+
+  return { responses: results as Array<{ id: string; ambassador_id: string; friend_id: string; answers: string; submitted_at: string; display_name?: string }>, total };
+}
+
+export async function getSurveyStats(
+  db: D1Database,
+  surveyId: string,
+): Promise<{ sent: number; responded: number; responseRate: number; avgRating: number | null }> {
+  const survey = await db
+    .prepare('SELECT sent_count, response_count FROM ambassador_surveys WHERE id = ?')
+    .bind(surveyId)
+    .first<{ sent_count: number; response_count: number }>();
+  if (!survey) return { sent: 0, responded: 0, responseRate: 0, avgRating: null };
+
+  // Calculate average of rating-type answers
+  const { results } = await db
+    .prepare('SELECT answers FROM ambassador_survey_responses WHERE survey_id = ?')
+    .bind(surveyId)
+    .all();
+
+  let ratingSum = 0;
+  let ratingCount = 0;
+  for (const row of results) {
+    try {
+      const answers = JSON.parse(row.answers as string);
+      for (const val of Object.values(answers)) {
+        if (typeof val === 'number' && val >= 1 && val <= 5) {
+          ratingSum += val;
+          ratingCount++;
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  return {
+    sent: survey.sent_count,
+    responded: survey.response_count,
+    responseRate: survey.sent_count > 0 ? Math.round((survey.response_count / survey.sent_count) * 100) : 0,
+    avgRating: ratingCount > 0 ? Math.round((ratingSum / ratingCount) * 10) / 10 : null,
+  };
+}
+
+// --- Ambassador pending surveys (for LIFF) ---
+
+export async function getPendingSurveys(
+  db: D1Database,
+  ambassadorId: string,
+): Promise<Array<{ id: string; title: string; description: string | null; survey_type: string; questions: string }>> {
+  const { results } = await db
+    .prepare(
+      `SELECT s.id, s.title, s.description, s.survey_type, s.questions
+       FROM ambassador_surveys s
+       JOIN ambassador_survey_deliveries d ON d.survey_id = s.id
+       WHERE d.ambassador_id = ?
+       AND d.responded = 0
+       AND s.status = 'active'
+       ORDER BY d.delivered_at DESC`,
+    )
+    .bind(ambassadorId)
+    .all();
+  return results as Array<{ id: string; title: string; description: string | null; survey_type: string; questions: string }>;
+}
+
 // ===== Daily Tips =====
 
 export async function getTodayTip(

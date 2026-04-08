@@ -100,6 +100,19 @@ vi.mock('@line-crm/db', async (importOriginal) => {
       return null;
     }),
     getTodayTip: vi.fn(async () => ({ id: 'tip-1', tip_date: '2026-04-06', category: 'nutrition', title: '水分補給のコツ', content: 'こまめな水分補給が大切です', image_url: null })),
+    getPendingSurveys: vi.fn(async (_db: unknown, ambassadorId: string) => {
+      if (ambassadorId === 'amb-1') {
+        return [{ id: 'srv-1', title: '商品満足度調査', description: '使い心地について', survey_type: 'survey', questions: '[{"id":"q1","type":"rating","label":"総合満足度","required":true}]' }];
+      }
+      return [];
+    }),
+    getSurveyById: vi.fn(async (_db: unknown, id: string) => {
+      if (id === 'srv-1') {
+        return { id: 'srv-1', title: '商品満足度調査', status: 'active', questions: '[{"id":"q1","type":"rating","label":"総合満足度","required":true}]' };
+      }
+      return null;
+    }),
+    submitSurveyResponse: vi.fn(async () => ({ id: 'srs-1' })),
     jstNow: vi.fn(() => '2026-04-06T09:00:00+09:00'),
   };
 });
@@ -517,6 +530,56 @@ describe('LIFF Portal Routes', () => {
       const json = await res.json() as { data: Array<{ content: string }> };
       expect(json.data.length).toBe(1);
       expect(json.data[0].content).toBe('美味しいです');
+    });
+  });
+
+  // ─── Ambassador Surveys ───────────────────────
+  describe('POST /api/liff/ambassador/surveys', () => {
+    it('returns pending surveys for active ambassador', async () => {
+      const res = await post(app, '/api/liff/ambassador/surveys', { lineUserId: 'U_EXISTING' });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: Array<{ id: string; title: string; questions: unknown[] }> };
+      expect(json.data.length).toBe(1);
+      expect(json.data[0].title).toBe('商品満足度調査');
+      expect(Array.isArray(json.data[0].questions)).toBe(true);
+    });
+  });
+
+  describe('POST /api/liff/ambassador/survey/respond', () => {
+    it('submits survey response (200)', async () => {
+      const res = await post(app, '/api/liff/ambassador/survey/respond', {
+        lineUserId: 'U_EXISTING',
+        surveyId: 'srv-1',
+        answers: { q1: 5 },
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { id: string } };
+      expect(json.data.id).toBe('srs-1');
+    });
+
+    it('rejects without surveyId (400)', async () => {
+      const res = await post(app, '/api/liff/ambassador/survey/respond', {
+        lineUserId: 'U_EXISTING',
+        answers: { q1: 5 },
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects without answers (400)', async () => {
+      const res = await post(app, '/api/liff/ambassador/survey/respond', {
+        lineUserId: 'U_EXISTING',
+        surveyId: 'srv-1',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects non-existent survey (404)', async () => {
+      const res = await post(app, '/api/liff/ambassador/survey/respond', {
+        lineUserId: 'U_EXISTING',
+        surveyId: 'srv-nonexist',
+        answers: { q1: 3 },
+      });
+      expect(res.status).toBe(404);
     });
   });
 
