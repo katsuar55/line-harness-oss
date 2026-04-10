@@ -109,30 +109,57 @@ richMenus.delete('/api/friends/:friendId/rich-menu', async (c) => {
   }
 });
 
-// POST /api/rich-menus/setup-naturism — naturism用リッチメニュー一括セットアップ
-// フロー: 1. 構造作成 → 2. SVG画像生成・アップロード → 3. デフォルト設定
+// POST /api/rich-menus/setup-naturism — naturism用リッチメニュー一括セットアップ v2
+// 6ボタン（2×3）: ストア / マイページ / ランク / 友だち紹介 / 今日のヒント(postback) / お問い合わせ
+// フロー: 1. 既存デフォルト削除 → 2. 構造作成 → 3. 画像アップロード → 4. デフォルト設定
 richMenus.post('/api/rich-menus/setup-naturism', async (c) => {
   try {
     const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    const liffUrl = c.env.LIFF_URL || 'https://liff.line.me/2009713578-NbdHyFZf';
 
-    // naturism リッチメニュー定義（2500x843 ハーフサイズ、1行3列）
+    // Step 0: 既存デフォルトリッチメニューを解除（新規設定のため）
+    try {
+      await lineClient.deleteDefaultRichMenu();
+    } catch {
+      // デフォルトが無い場合は無視
+    }
+
+    // naturism リッチメニュー定義（2500×1686 フルサイズ、2行3列）
+    const cellW = 833;
+    const cellWMid = 834; // 中央列は834（2500 = 833 + 834 + 833）
+    const rowH = 843;
+
     const richMenuBody = {
-      size: { width: 2500, height: 843 },
+      size: { width: 2500, height: 1686 },
       selected: true,
-      name: 'naturism メインメニュー v1',
+      name: 'naturism メインメニュー v2',
       chatBarText: 'メニュー',
       areas: [
+        // 上段: ストア / マイページ / ランク
         {
-          bounds: { x: 0, y: 0, width: 833, height: 843 },
-          action: { type: 'message' as const, label: '商品を見る', text: '3種類の違いを教えて' },
+          bounds: { x: 0, y: 0, width: cellW, height: rowH },
+          action: { type: 'uri' as const, label: 'ストア', uri: `${liffUrl}#shop` },
         },
         {
-          bounds: { x: 833, y: 0, width: 834, height: 843 },
-          action: { type: 'message' as const, label: 'AI相談', text: '相談したいことがあります' },
+          bounds: { x: cellW, y: 0, width: cellWMid, height: rowH },
+          action: { type: 'uri' as const, label: 'マイページ', uri: `${liffUrl}#home` },
         },
         {
-          bounds: { x: 1667, y: 0, width: 833, height: 843 },
-          action: { type: 'uri' as const, label: '購入する', uri: 'https://naturism-diet.com' },
+          bounds: { x: cellW + cellWMid, y: 0, width: cellW, height: rowH },
+          action: { type: 'uri' as const, label: 'マイランク', uri: `${liffUrl}#rank` },
+        },
+        // 下段: 友だち紹介 / 今日のヒント(postback) / お問い合わせ
+        {
+          bounds: { x: 0, y: rowH, width: cellW, height: rowH },
+          action: { type: 'uri' as const, label: '友だち紹介', uri: `${liffUrl}#referral` },
+        },
+        {
+          bounds: { x: cellW, y: rowH, width: cellWMid, height: rowH },
+          action: { type: 'postback' as const, label: '今日のヒント', data: 'action=daily_tip', displayText: '💡 今日のヒント' },
+        },
+        {
+          bounds: { x: cellW + cellWMid, y: rowH, width: cellW, height: rowH },
+          action: { type: 'message' as const, label: 'お問い合わせ', text: 'お問い合わせ' },
         },
       ],
     };
@@ -140,22 +167,20 @@ richMenus.post('/api/rich-menus/setup-naturism', async (c) => {
     // Step 1: リッチメニュー作成
     const createResult = await lineClient.createRichMenu(richMenuBody);
     const richMenuId = createResult.richMenuId;
-    console.log('Rich menu created:', richMenuId);
 
-    // Step 2: 画像アップロード（事前生成済み 2500x843 緑PNG）
+    // Step 2: 画像アップロード（事前生成済み 2500×1686 緑PNG）
     const pngData = base64ToArrayBuffer(NATURISM_MENU_PNG_B64);
     await lineClient.uploadRichMenuImage(richMenuId, pngData, 'image/png');
-    console.log('Rich menu image uploaded');
 
     // Step 3: デフォルトに設定
     await lineClient.setDefaultRichMenu(richMenuId);
-    console.log('Rich menu set as default');
 
     return c.json({
       success: true,
       data: {
         richMenuId,
-        message: 'リッチメニューを作成・画像アップロード・デフォルト設定まで完了しました。LINEトーク画面にメニューが表示されます。',
+        areas: richMenuBody.areas.map((a) => ({ label: a.action.label, type: a.action.type })),
+        message: 'リッチメニュー v2（6ボタン）を作成・画像アップロード・デフォルト設定まで完了。LINEトーク画面にメニューが表示されます。',
       },
     }, 201);
   } catch (err) {
@@ -183,7 +208,7 @@ function base64ToArrayBuffer(b64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-// GET /api/rich-menus/image-guide — リッチメニュー画像テンプレートHTML
+// GET /api/rich-menus/image-guide — リッチメニュー画像テンプレートHTML v2
 // ブラウザで開いてスクリーンショット（2500x1686）を撮って画像として使用
 richMenus.get('/api/rich-menus/image-guide', async (c) => {
   return c.html(`<!DOCTYPE html>
@@ -194,26 +219,26 @@ body { width: 2500px; height: 1686px; font-family: 'Hiragino Sans', 'Noto Sans J
 .grid { display: grid; grid-template-columns: 833px 834px 833px; grid-template-rows: 843px 843px; width: 2500px; height: 1686px; }
 .cell {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  color: #fff; text-align: center; gap: 20px; border: 1px solid rgba(255,255,255,0.15);
+  color: #fff; text-align: center; gap: 20px; border: 1px solid rgba(255,255,255,0.12);
 }
-.cell .icon { font-size: 80px; }
-.cell .label { font-size: 48px; font-weight: 700; letter-spacing: 2px; }
-.cell .sub { font-size: 28px; opacity: 0.7; }
-.c1 { background: linear-gradient(135deg, #06C755, #05a847); }
-.c2 { background: linear-gradient(135deg, #05a847, #049a3f); }
-.c3 { background: linear-gradient(135deg, #049a3f, #038c37); }
-.c4 { background: linear-gradient(135deg, #15803d, #166534); }
-.c5 { background: linear-gradient(135deg, #166534, #14532d); }
-.c6 { background: linear-gradient(135deg, #14532d, #052e16); }
+.cell .icon { font-size: 96px; }
+.cell .label { font-size: 52px; font-weight: 700; letter-spacing: 2px; text-shadow: 0 2px 8px rgba(0,0,0,.15); }
+.cell .sub { font-size: 28px; opacity: 0.8; }
+.c1 { background: linear-gradient(135deg, #06C755, #059669); }
+.c2 { background: linear-gradient(135deg, #059669, #047857); }
+.c3 { background: linear-gradient(135deg, #f59e0b, #d97706); }
+.c4 { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+.c5 { background: linear-gradient(135deg, #8b5cf6, #7c3aed); }
+.c6 { background: linear-gradient(135deg, #64748b, #475569); }
 </style></head>
 <body>
 <div class="grid">
-  <div class="cell c1"><span class="icon">💊</span><span class="label">3種類の違い</span><span class="sub">Blue・Pink・Premium</span></div>
-  <div class="cell c2"><span class="icon">🔍</span><span class="label">おすすめ診断</span><span class="sub">あなたに合うのは？</span></div>
-  <div class="cell c3"><span class="icon">🛒</span><span class="label">購入する</span><span class="sub">公式ストアへ</span></div>
-  <div class="cell c4"><span class="icon">❓</span><span class="label">よくある質問</span><span class="sub">FAQ</span></div>
-  <div class="cell c5"><span class="icon">🤖</span><span class="label">AI相談</span><span class="sub">何でも聞いてね</span></div>
-  <div class="cell c6"><span class="icon">📧</span><span class="label">お問い合わせ</span><span class="sub">info@kenkoex.com</span></div>
+  <div class="cell c1"><span class="icon">🛍️</span><span class="label">ストア</span><span class="sub">商品を見る</span></div>
+  <div class="cell c2"><span class="icon">📋</span><span class="label">マイページ</span><span class="sub">記録・プロフィール</span></div>
+  <div class="cell c3"><span class="icon">🏆</span><span class="label">マイランク</span><span class="sub">ランク・特典</span></div>
+  <div class="cell c4"><span class="icon">👥</span><span class="label">友だち紹介</span><span class="sub">紹介してポイントGET</span></div>
+  <div class="cell c5"><span class="icon">💡</span><span class="label">今日のヒント</span><span class="sub">美容・健康情報</span></div>
+  <div class="cell c6"><span class="icon">💬</span><span class="label">お問い合わせ</span><span class="sub">ご質問はこちら</span></div>
 </div>
 </body></html>`);
 });

@@ -49,6 +49,7 @@ const mockSetDefaultRichMenu = vi.fn();
 const mockLinkRichMenuToUser = vi.fn();
 const mockUnlinkRichMenuFromUser = vi.fn();
 const mockUploadRichMenuImage = vi.fn();
+const mockDeleteDefaultRichMenu = vi.fn();
 
 vi.mock('@line-crm/line-sdk', () => ({
   verifySignature: vi.fn(async () => true),
@@ -58,6 +59,7 @@ vi.mock('@line-crm/line-sdk', () => ({
     createRichMenu = mockCreateRichMenu;
     deleteRichMenu = mockDeleteRichMenu;
     setDefaultRichMenu = mockSetDefaultRichMenu;
+    deleteDefaultRichMenu = mockDeleteDefaultRichMenu;
     linkRichMenuToUser = mockLinkRichMenuToUser;
     unlinkRichMenuFromUser = mockUnlinkRichMenuFromUser;
     uploadRichMenuImage = mockUploadRichMenuImage;
@@ -446,7 +448,8 @@ describe('Rich Menus Routes', () => {
   // =========================================================================
 
   describe('POST /api/rich-menus/setup-naturism', () => {
-    it('creates, uploads image, and sets default — returns 201', async () => {
+    it('creates 6-button menu with postback, uploads image, and sets default — returns 201', async () => {
+      mockDeleteDefaultRichMenu.mockResolvedValue(undefined);
       mockCreateRichMenu.mockResolvedValue({ richMenuId: 'rm-naturism' });
       mockUploadRichMenuImage.mockResolvedValue(undefined);
       mockSetDefaultRichMenu.mockResolvedValue(undefined);
@@ -456,15 +459,42 @@ describe('Rich Menus Routes', () => {
         { method: 'POST', headers: authHeaders() },
         env,
       );
-      const json = (await res.json()) as { success: boolean; data: { richMenuId: string; message: string } };
+      const json = (await res.json()) as { success: boolean; data: { richMenuId: string; areas: Array<{ label: string; type: string }>; message: string } };
 
       expect(res.status).toBe(201);
       expect(json.success).toBe(true);
       expect(json.data.richMenuId).toBe('rm-naturism');
       expect(json.data.message).toContain('リッチメニュー');
+      // v2: 6 areas with postback for daily_tip
+      expect(json.data.areas).toHaveLength(6);
+      expect(json.data.areas.find((a) => a.type === 'postback')).toBeDefined();
       expect(mockCreateRichMenu).toHaveBeenCalledTimes(1);
+      // Verify the rich menu body includes postback action
+      const menuBody = mockCreateRichMenu.mock.calls[0][0];
+      expect(menuBody.size).toEqual({ width: 2500, height: 1686 });
+      expect(menuBody.areas).toHaveLength(6);
+      const postbackArea = menuBody.areas.find((a: { action: { type: string } }) => a.action.type === 'postback');
+      expect(postbackArea.action.data).toBe('action=daily_tip');
       expect(mockUploadRichMenuImage).toHaveBeenCalledTimes(1);
       expect(mockSetDefaultRichMenu).toHaveBeenCalledWith('rm-naturism');
+    });
+
+    it('succeeds even if deleteDefaultRichMenu fails (no existing default)', async () => {
+      mockDeleteDefaultRichMenu.mockRejectedValue(new Error('no default'));
+      mockCreateRichMenu.mockResolvedValue({ richMenuId: 'rm-naturism-2' });
+      mockUploadRichMenuImage.mockResolvedValue(undefined);
+      mockSetDefaultRichMenu.mockResolvedValue(undefined);
+
+      const res = await app.request(
+        '/api/rich-menus/setup-naturism',
+        { method: 'POST', headers: authHeaders() },
+        env,
+      );
+      const json = (await res.json()) as { success: boolean; data: { richMenuId: string } };
+
+      expect(res.status).toBe(201);
+      expect(json.success).toBe(true);
+      expect(json.data.richMenuId).toBe('rm-naturism-2');
     });
 
     it('returns 500 if createRichMenu fails', async () => {
@@ -511,7 +541,7 @@ describe('Rich Menus Routes', () => {
       expect(ct).toContain('text/html');
       const html = await res.text();
       expect(html).toContain('<!DOCTYPE html>');
-      expect(html).toContain('kenkoex.com');
+      expect(html).toContain('ストア');
     });
   });
 

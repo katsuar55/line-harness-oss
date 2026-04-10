@@ -529,6 +529,8 @@ async function initLiff() {
     await Promise.all([loadLanguage(), loadRank(), loadTip(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadAmbassador()]);
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
+    // ハッシュベースのディープリンク（リッチメニューから特定タブへ遷移）
+    handleDeepLink();
     document.getElementById('loading').style.display = 'none';
   } catch (err) {
     console.error('LIFF init error:', err);
@@ -679,6 +681,19 @@ async function api(path, body = {}) {
 async function apiGet(path) {
   const res = await fetch(API_BASE + path);
   return res.json();
+}
+
+// ─── Deep Link (hash-based tab navigation from rich menu) ───
+function handleDeepLink() {
+  var hash = window.location.hash.replace('#', '');
+  var tabMap = { shop: 'shop', store: 'shop', home: 'home', mypage: 'home', rank: 'home', referral: 'home', quiz: 'quiz', intake: 'intake', health: 'health' };
+  var target = tabMap[hash];
+  if (target && target !== 'home') {
+    switchTab(target);
+  }
+  // rank/referral はホームタブ内のセクションへスクロール
+  if (hash === 'rank') { setTimeout(function() { var el = document.getElementById('rank-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
+  if (hash === 'referral') { setTimeout(function() { var el = document.getElementById('referral-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
 }
 
 // ─── Tab Switching ───
