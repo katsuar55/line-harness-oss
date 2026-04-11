@@ -820,19 +820,17 @@ describe('Shopify Routes', () => {
       expect(res.status).toBe(401);
     });
 
-    it('returns placeholder message', async () => {
+    it('returns 400 when SHOPIFY_STORE_DOMAIN is missing', async () => {
+      const envNoStore = { ...env, SHOPIFY_STORE_DOMAIN: undefined };
       const res = await app.request(
         '/api/integrations/shopify/sync',
         {
           method: 'POST',
           headers: { Authorization: `Bearer ${TEST_API_KEY}` },
         },
-        env,
+        envNoStore,
       );
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { success: boolean; data: { message: string } };
-      expect(body.success).toBe(true);
-      expect(body.data.message).toContain('not yet implemented');
+      expect(res.status).toBe(400);
     });
   });
 });

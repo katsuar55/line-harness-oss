@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import {
   upsertShopifyOrder,
   upsertShopifyCustomer,
+  upsertShopifyProduct,
   getShopifyOrders,
   getShopifyOrderById,
   getShopifyCustomers,
@@ -12,6 +13,7 @@ import {
 } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { verifyShopifySignature } from '../utils/shopify-hmac.js';
+import { getShopifyAccessToken } from '../services/shopify-token.js';
 
 const shopify = new Hono<Env>();
 
@@ -349,10 +351,234 @@ shopify.get('/api/integrations/shopify/customers', async (c) => {
   }
 });
 
-// ========== Shopify手動同期（プレースホルダー） ==========
+// ========== Shopify手動同期 ==========
 
 shopify.post('/api/integrations/shopify/sync', async (c) => {
-  return c.json({ success: true, data: { message: 'Manual sync is not yet implemented' } });
+  try {
+    const db = c.env.DB;
+    const storeDomain = (c.env as unknown as Record<string, string | undefined>).SHOPIFY_STORE_DOMAIN;
+
+    if (!storeDomain) {
+      return c.json({ success: false, error: 'SHOPIFY_STORE_DOMAIN is not configured' }, 400);
+    }
+
+    const accessToken = await getShopifyAccessToken(db, c.env as unknown as Record<string, string | undefined>);
+    const apiVersion = '2025-07';
+    const headers = {
+      'X-Shopify-Access-Token': accessToken,
+      'Content-Type': 'application/json',
+    };
+
+    // --- 商品同期 ---
+    const productsRes = await fetch(
+      `https://${storeDomain}/admin/api/${apiVersion}/products.json`,
+      { headers },
+    );
+    if (!productsRes.ok) {
+      const body = await productsRes.text();
+      return c.json(
+        { success: false, error: `Shopify Products API ${productsRes.status}: ${body}` },
+        502,
+      );
+    }
+
+    const productsData = (await productsRes.json()) as {
+      products: Array<Record<string, unknown>>;
+    };
+    const products = productsData.products ?? [];
+
+    let productsSynced = 0;
+    for (const p of products) {
+      const variants = p.variants as Array<Record<string, unknown>> | undefined;
+      const firstVariant = variants?.[0];
+      const images = p.images as Array<Record<string, unknown>> | undefined;
+      const firstImage = images?.[0];
+
+      await upsertShopifyProduct(db, {
+        shopifyProductId: String(p.id),
+        title: String(p.title ?? ''),
+        description: (p.body_html as string) ?? null,
+        vendor: (p.vendor as string) ?? null,
+        productType: (p.product_type as string) ?? null,
+        handle: (p.handle as string) ?? null,
+        status: ['active', 'draft', 'archived'].includes(p.status as string)
+          ? (p.status as 'active' | 'draft' | 'archived')
+          : 'active',
+        imageUrl: (firstImage?.src as string) ?? null,
+        price: firstVariant?.price != null ? String(firstVariant.price) : null,
+        compareAtPrice: firstVariant?.compare_at_price != null
+          ? String(firstVariant.compare_at_price)
+          : null,
+        tags: (p.tags as string) ?? null,
+        variantsJson: variants ? JSON.stringify(variants) : null,
+        storeUrl: `https://${storeDomain}/products/${p.handle ?? ''}`,
+      });
+      productsSynced++;
+    }
+
+    // --- 注文同期 ---
+    const ordersRes = await fetch(
+      `https://${storeDomain}/admin/api/${apiVersion}/orders.json?status=any&limit=50`,
+      { headers },
+    );
+    if (!ordersRes.ok) {
+      const body = await ordersRes.text();
+      return c.json(
+        { success: false, error: `Shopify Orders API ${ordersRes.status}: ${body}` },
+        502,
+      );
+    }
+
+    const ordersData = (await ordersRes.json()) as {
+      orders: Array<Record<string, unknown>>;
+    };
+    const orders = ordersData.orders ?? [];
+
+    let ordersSynced = 0;
+    for (const o of orders) {
+      const customer = o.customer as Record<string, unknown> | undefined;
+      const lineItemsRaw = o.line_items as Array<Record<string, unknown>> | undefined;
+
+      await upsertShopifyOrder(db, {
+        shopifyOrderId: String(o.id),
+        shopifyCustomerId: customer?.id ? String(customer.id) : undefined,
+        email: (o.email as string) ?? (customer?.email as string) ?? undefined,
+        phone: (o.phone as string) ?? (customer?.phone as string) ?? undefined,
+        totalPrice: o.total_price ? Number(o.total_price) : undefined,
+        currency: (o.currency as string) ?? 'JPY',
+        financialStatus: (o.financial_status as string) ?? undefined,
+        fulfillmentStatus: (o.fulfillment_status as string) ?? undefined,
+        orderNumber: o.order_number ? Number(o.order_number) : undefined,
+        lineItems: lineItemsRaw ? JSON.stringify(lineItemsRaw) : undefined,
+        tags: (o.tags as string) ?? undefined,
+        metadata: JSON.stringify({ source: 'manual_sync' }),
+      });
+      ordersSynced++;
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        message: 'Shopify sync completed',
+        productsSynced,
+        ordersSynced,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/integrations/shopify/sync error:', err);
+    const message = err instanceof Error ? err.message : 'Internal server error';
+    return c.json({ success: false, error: message }, 500);
+  }
+});
+
+// ========== Shopify Webhook登録 ==========
+
+shopify.post('/api/integrations/shopify/webhooks/register', async (c) => {
+  try {
+    const db = c.env.DB;
+    const storeDomain = (c.env as unknown as Record<string, string | undefined>).SHOPIFY_STORE_DOMAIN;
+    if (!storeDomain) {
+      return c.json({ success: false, error: 'SHOPIFY_STORE_DOMAIN not configured' }, 400);
+    }
+
+    const token = await getShopifyAccessToken(db, c.env as Record<string, string | undefined>);
+    const workerUrl = c.env.WORKER_URL || new URL(c.req.url).origin;
+    const apiVersion = '2025-07';
+
+    const webhookTopics = [
+      { topic: 'orders/create', address: `${workerUrl}/api/integrations/shopify/webhook` },
+      { topic: 'orders/updated', address: `${workerUrl}/api/integrations/shopify/webhook` },
+      { topic: 'customers/create', address: `${workerUrl}/api/integrations/shopify/webhook` },
+      { topic: 'customers/update', address: `${workerUrl}/api/integrations/shopify/webhook` },
+      { topic: 'products/create', address: `${workerUrl}/api/integrations/shopify/webhook/product` },
+      { topic: 'products/update', address: `${workerUrl}/api/integrations/shopify/webhook/product` },
+      { topic: 'products/delete', address: `${workerUrl}/api/integrations/shopify/webhook/product` },
+      { topic: 'fulfillments/create', address: `${workerUrl}/api/integrations/shopify/webhook/fulfillment` },
+      { topic: 'fulfillments/update', address: `${workerUrl}/api/integrations/shopify/webhook/fulfillment` },
+    ];
+
+    const results: Array<{ topic: string; status: string; id?: string }> = [];
+
+    for (const wh of webhookTopics) {
+      const res = await fetch(
+        `https://${storeDomain}/admin/api/${apiVersion}/webhooks.json`,
+        {
+          method: 'POST',
+          headers: {
+            'X-Shopify-Access-Token': token,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            webhook: {
+              topic: wh.topic,
+              address: wh.address,
+              format: 'json',
+            },
+          }),
+        },
+      );
+
+      if (res.ok) {
+        const data = (await res.json()) as { webhook: { id: number } };
+        results.push({ topic: wh.topic, status: 'created', id: String(data.webhook.id) });
+      } else {
+        const errBody = await res.text();
+        // 既に登録済みの場合は "already exists" が含まれる
+        if (errBody.includes('already') || errBody.includes('taken')) {
+          results.push({ topic: wh.topic, status: 'already_exists' });
+        } else {
+          results.push({ topic: wh.topic, status: `error: ${res.status}` });
+        }
+      }
+    }
+
+    return c.json({ success: true, data: { webhooks: results } });
+  } catch (err) {
+    console.error('POST /api/integrations/shopify/webhooks/register error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ========== Shopify Webhook一覧 ==========
+
+shopify.get('/api/integrations/shopify/webhooks', async (c) => {
+  try {
+    const db = c.env.DB;
+    const storeDomain = (c.env as unknown as Record<string, string | undefined>).SHOPIFY_STORE_DOMAIN;
+    if (!storeDomain) {
+      return c.json({ success: false, error: 'SHOPIFY_STORE_DOMAIN not configured' }, 400);
+    }
+
+    const token = await getShopifyAccessToken(db, c.env as Record<string, string | undefined>);
+    const apiVersion = '2025-07';
+
+    const res = await fetch(
+      `https://${storeDomain}/admin/api/${apiVersion}/webhooks.json`,
+      { headers: { 'X-Shopify-Access-Token': token } },
+    );
+
+    if (!res.ok) {
+      const body = await res.text();
+      return c.json({ success: false, error: `Shopify API ${res.status}: ${body}` }, 502);
+    }
+
+    const data = (await res.json()) as {
+      webhooks: Array<{ id: number; topic: string; address: string; created_at: string }>;
+    };
+
+    return c.json({
+      success: true,
+      data: data.webhooks.map((w) => ({
+        id: w.id,
+        topic: w.topic,
+        address: w.address,
+        createdAt: w.created_at,
+      })),
+    });
+  } catch (err) {
+    console.error('GET /api/integrations/shopify/webhooks error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
 });
 
 export { shopify };
