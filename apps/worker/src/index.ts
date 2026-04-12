@@ -55,6 +55,7 @@ import { shopifyAuth } from './routes/shopify-auth.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 import { processIntakeReminders } from './services/intake-reminder.js';
 import { processWeeklyReports } from './services/weekly-report.js';
+import { processSubscriptionReminders } from './services/subscription-reminder.js';
 
 export type Env = {
   Bindings: {
@@ -78,6 +79,7 @@ export type Env = {
     SHOPIFY_STORE_DOMAIN?: string;
     SHOPIFY_CLIENT_ID?: string;
     SHOPIFY_CLIENT_SECRET?: string;
+    SHOPIFY_LINE_NOTIFY_ENABLED?: string; // 'true' to enable LINE notifications from Shopify webhooks
     WEBHOOK_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
     API_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
   };
@@ -224,6 +226,7 @@ async function scheduled(
       processScheduledAbTests(env.DB, lineClient, env.WORKER_URL),
       processIntakeReminders(env.DB, lineClient, env.LIFF_URL),
       processWeeklyReports(env.DB, lineClient),
+      processSubscriptionReminders(env.DB, lineClient, env.LIFF_URL || ''),
     );
   }
   jobs.push(checkAccountHealth(env.DB));

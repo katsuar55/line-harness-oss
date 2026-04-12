@@ -106,6 +106,7 @@ function portalPage(liffId: string, apiBase: string): string {
       <button onclick="switchTab('intake')" id="tab-intake" class="flex-1 py-3 text-xs text-center tab-inactive" data-i18n="intake_log">服用記録</button>
       <button onclick="switchTab('health')" id="tab-health" class="flex-1 py-3 text-xs text-center tab-inactive" data-i18n="tab_health">体調</button>
       <button onclick="switchTab('shop')" id="tab-shop" class="flex-1 py-3 text-xs text-center tab-inactive">ストア</button>
+      <button onclick="switchTab('more')" id="tab-more" class="flex-1 py-3 text-xs text-center tab-inactive">その他</button>
     </div>
   </nav>
 
@@ -468,6 +469,115 @@ function portalPage(liffId: string, apiBase: string): string {
       </div>
     </div>
 
+    <!-- ===== MORE Section ===== -->
+    <div id="section-more" class="section space-y-4">
+      <!-- Quick Links -->
+      <div class="card p-4">
+        <p class="text-xs text-gray-500 font-bold mb-3">クイックリンク</p>
+        <div class="grid grid-cols-2 gap-2">
+          <a href="?page=reorder" class="flex items-center gap-2 p-3 rounded-xl bg-green-50 text-green-700 text-sm font-bold hover:bg-green-100 transition-colors">
+            <span class="text-lg">🔄</span> 再注文する
+          </a>
+          <a href="?page=delivery" class="flex items-center gap-2 p-3 rounded-xl bg-blue-50 text-blue-700 text-sm font-bold hover:bg-blue-100 transition-colors">
+            <span class="text-lg">📦</span> 配送状況
+          </a>
+        </div>
+      </div>
+
+      <!-- Subscription Reminders -->
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <p class="text-xs text-gray-500 font-bold">定期お届けリマインダー</p>
+            <p class="text-xs text-gray-400">再購入のタイミングをLINEでお知らせ</p>
+          </div>
+          <button onclick="showAddSubscription()" class="text-xs font-bold text-emerald-600 border border-emerald-300 bg-emerald-50 px-3 py-1.5 rounded-xl transition-colors active:bg-emerald-100">＋ 追加</button>
+        </div>
+        <div id="subscriptions-list">
+          <div class="skeleton h-16 rounded-lg"></div>
+        </div>
+        <!-- Add subscription modal -->
+        <div id="sub-add-form" style="display:none" class="mt-3 p-3 bg-gray-50 rounded-xl space-y-3">
+          <div>
+            <label class="text-xs text-gray-500">商品名</label>
+            <select id="sub-product" class="w-full mt-1 p-2 border rounded-lg text-sm bg-white">
+              <option value="">選択してください</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">お届けサイクル</label>
+            <select id="sub-interval" class="w-full mt-1 p-2 border rounded-lg text-sm bg-white">
+              <option value="15">15日ごと</option>
+              <option value="30" selected>30日ごと</option>
+              <option value="45">45日ごと</option>
+              <option value="60">60日ごと</option>
+              <option value="90">90日ごと</option>
+            </select>
+          </div>
+          <button onclick="createSubscription()" class="btn-primary w-full py-2.5 rounded-2xl text-xs font-bold shadow-md">リマインダーを設定</button>
+        </div>
+      </div>
+
+      <!-- Notification Settings -->
+      <div class="card p-4">
+        <p class="text-xs text-gray-500 font-bold mb-3">通知設定</p>
+        <div class="space-y-3" id="notif-prefs-list">
+          <div class="skeleton h-32 rounded-lg"></div>
+        </div>
+      </div>
+
+      <!-- FAQ -->
+      <div class="card p-4">
+        <p class="text-xs text-gray-500 font-bold mb-3">よくあるご質問</p>
+        <div id="faq-list">
+          <div class="skeleton h-24 rounded-lg"></div>
+        </div>
+      </div>
+
+      <!-- Official Links -->
+      <div class="card p-4">
+        <p class="text-xs text-gray-500 font-bold mb-3">オフィシャルリンク</p>
+        <div class="space-y-2">
+          <a href="https://naturism.jp" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+            <span class="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center text-sm">🌿</span>
+            <div class="flex-1"><p class="text-sm font-bold text-gray-800">公式サイト</p><p class="text-xs text-gray-400">naturism.jp</p></div>
+            <span class="text-gray-300 text-sm">→</span>
+          </a>
+          <a href="https://xn-0ckn0a9fxa4a.myshopify.com" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+            <span class="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-sm">🛒</span>
+            <div class="flex-1"><p class="text-sm font-bold text-gray-800">オンラインストア</p><p class="text-xs text-gray-400">Shopify公式ストア</p></div>
+            <span class="text-gray-300 text-sm">→</span>
+          </a>
+          <a href="https://www.instagram.com/naturism_afterdiet/" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+            <span class="w-8 h-8 rounded-full bg-pink-100 flex items-center justify-center text-sm">📸</span>
+            <div class="flex-1"><p class="text-sm font-bold text-gray-800">Instagram</p><p class="text-xs text-gray-400">@naturism_afterdiet</p></div>
+            <span class="text-gray-300 text-sm">→</span>
+          </a>
+          <a href="https://x.com/naturism_diet" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+            <span class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-sm">𝕏</span>
+            <div class="flex-1"><p class="text-sm font-bold text-gray-800">X (Twitter)</p><p class="text-xs text-gray-400">@naturism_diet</p></div>
+            <span class="text-gray-300 text-sm">→</span>
+          </a>
+          <a href="https://www.tiktok.com/@naturism_official" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+            <span class="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-sm text-white">♪</span>
+            <div class="flex-1"><p class="text-sm font-bold text-gray-800">TikTok</p><p class="text-xs text-gray-400">@naturism_official</p></div>
+            <span class="text-gray-300 text-sm">→</span>
+          </a>
+          <a href="https://www.youtube.com/@naturism-diet" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+            <span class="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center text-sm">▶</span>
+            <div class="flex-1"><p class="text-sm font-bold text-gray-800">YouTube</p><p class="text-xs text-gray-400">@naturism-diet</p></div>
+            <span class="text-gray-300 text-sm">→</span>
+          </a>
+        </div>
+      </div>
+
+      <!-- App Info -->
+      <div class="text-center py-4">
+        <p class="text-xs text-gray-400">naturism LINE CRM</p>
+        <p class="text-xs text-gray-300">Powered by LINE Harness OSS</p>
+      </div>
+    </div>
+
   </main>
 
   <!-- Loading overlay -->
@@ -721,6 +831,7 @@ function switchTab(name) {
   if (name === 'intake') { loadIntakeData(); initReminder(); }
   if (name === 'health') loadHealthData();
   if (name === 'shop') loadShopData();
+  if (name === 'more') loadMoreData();
 }
 
 // ─── Toast ───
@@ -1560,6 +1671,212 @@ async function loadShopData() {
       fel.innerHTML = '<p class="text-xs text-gray-400">配送情報はありません</p>';
     }
   } catch { /* ignore */ }
+}
+
+// ─── MORE Tab: Notifications, Subscriptions, FAQ ───
+
+var notifPrefs = {};
+var subscriptionsList = [];
+var moreLoaded = false;
+
+async function loadMoreData() {
+  if (moreLoaded) return;
+  moreLoaded = true;
+  await Promise.all([loadNotifPrefs(), loadSubscriptions(), loadFAQ()]);
+}
+
+async function loadNotifPrefs() {
+  try {
+    var res = await api('/api/liff/notification-prefs');
+    if (res.data) {
+      notifPrefs = res.data;
+      renderNotifPrefs();
+    }
+  } catch { renderNotifPrefs(); }
+}
+
+function renderNotifPrefs() {
+  var el = document.getElementById('notif-prefs-list');
+  var items = [
+    { key: 'restock_alert', label: '在庫復活通知', desc: '売り切れ商品が再入荷した時' },
+    { key: 'delivery_complete', label: '配送完了通知', desc: '注文商品がお届け完了した時' },
+    { key: 'order_confirm', label: '注文確認通知', desc: '注文が確定した時' },
+    { key: 'campaign_message', label: 'キャンペーン通知', desc: 'お得なキャンペーン情報' },
+    { key: 'reorder_reminder', label: '再購入リマインダー', desc: '定期お届けのタイミング通知' },
+  ];
+  el.innerHTML = items.map(function(item) {
+    var isOn = notifPrefs[item.key] !== undefined ? !!notifPrefs[item.key] : true;
+    return '<div class="flex items-center justify-between py-2 border-b last:border-0">' +
+      '<div><p class="text-sm text-gray-800">' + item.label + '</p>' +
+      '<p class="text-xs text-gray-400">' + item.desc + '</p></div>' +
+      '<label class="relative inline-block w-11 h-6 cursor-pointer">' +
+      '<input type="checkbox" class="sr-only" ' + (isOn ? 'checked' : '') + ' onchange="toggleNotifPref(\\'' + item.key + '\\', this.checked)">' +
+      '<span class="block w-11 h-6 rounded-full transition-colors ' + (isOn ? 'bg-green-500' : 'bg-gray-300') + '"></span>' +
+      '<span class="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ' + (isOn ? 'translate-x-5' : '') + '"></span>' +
+      '</label></div>';
+  }).join('');
+}
+
+async function toggleNotifPref(key, val) {
+  notifPrefs[key] = val ? 1 : 0;
+  renderNotifPrefs();
+  var body = {};
+  body[key] = val;
+  try {
+    await fetch(API_BASE + '/api/liff/notification-prefs', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) },
+      body: JSON.stringify(body),
+    });
+    showToast(val ? '通知をONにしました' : '通知をOFFにしました');
+  } catch { showToast('設定の保存に失敗しました'); }
+}
+
+async function loadSubscriptions() {
+  try {
+    var res = await api('/api/liff/subscriptions');
+    if (res.data) {
+      subscriptionsList = res.data.subscriptions || [];
+      renderSubscriptions();
+    }
+  } catch { renderSubscriptions(); }
+}
+
+function renderSubscriptions() {
+  var el = document.getElementById('subscriptions-list');
+  if (subscriptionsList.length === 0) {
+    el.innerHTML = '<p class="text-xs text-gray-400 text-center py-4">まだリマインダーが設定されていません</p>';
+    return;
+  }
+  el.innerHTML = subscriptionsList.map(function(s) {
+    var nextDate = s.next_reminder_at ? s.next_reminder_at.slice(0, 10) : '';
+    return '<div class="flex items-center justify-between py-3 border-b last:border-0">' +
+      '<div class="flex-1 min-w-0">' +
+      '<p class="text-sm font-bold text-gray-800 truncate">' + esc(s.product_title) + '</p>' +
+      '<p class="text-xs text-gray-400">' + s.interval_days + '日サイクル' + (nextDate ? ' ・ 次回: ' + nextDate : '') + '</p></div>' +
+      '<div class="flex items-center gap-2 ml-2">' +
+      '<label class="relative inline-block w-10 h-5 cursor-pointer">' +
+      '<input type="checkbox" class="sr-only" ' + (s.is_active ? 'checked' : '') + ' onchange="toggleSubscription(\\'' + esc(s.id) + '\\', this.checked)">' +
+      '<span class="block w-10 h-5 rounded-full transition-colors ' + (s.is_active ? 'bg-green-500' : 'bg-gray-300') + '"></span>' +
+      '<span class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ' + (s.is_active ? 'translate-x-5' : '') + '"></span>' +
+      '</label>' +
+      '<button onclick="deleteSubscription(\\'' + esc(s.id) + '\\')" class="text-gray-300 hover:text-red-400 text-sm">✕</button>' +
+      '</div></div>';
+  }).join('');
+}
+
+async function toggleSubscription(id, isActive) {
+  try {
+    await fetch(API_BASE + '/api/liff/subscriptions/' + id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) },
+      body: JSON.stringify({ isActive: isActive }),
+    });
+    for (var i = 0; i < subscriptionsList.length; i++) {
+      if (subscriptionsList[i].id === id) subscriptionsList[i].is_active = isActive ? 1 : 0;
+    }
+    renderSubscriptions();
+    showToast(isActive ? 'リマインダーをONにしました' : 'リマインダーを停止しました');
+  } catch { showToast('エラーが発生しました'); }
+}
+
+async function deleteSubscription(id) {
+  if (!confirm('このリマインダーを削除しますか？')) return;
+  try {
+    await fetch(API_BASE + '/api/liff/subscriptions/' + id, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) },
+    });
+    subscriptionsList = subscriptionsList.filter(function(s) { return s.id !== id; });
+    renderSubscriptions();
+    showToast('リマインダーを削除しました');
+  } catch { showToast('エラーが発生しました'); }
+}
+
+function showAddSubscription() {
+  var form = document.getElementById('sub-add-form');
+  form.style.display = form.style.display === 'none' ? 'block' : 'none';
+  // Populate product list from shop data if available
+  var sel = document.getElementById('sub-product');
+  if (sel.options.length <= 1) {
+    var defaults = [
+      { title: 'naturism Blue', value: 'naturism Blue' },
+      { title: 'naturism Pink', value: 'naturism Pink' },
+      { title: 'naturism Premium', value: 'naturism Premium' },
+    ];
+    defaults.forEach(function(p) {
+      var opt = document.createElement('option');
+      opt.value = p.value;
+      opt.textContent = p.title;
+      sel.appendChild(opt);
+    });
+  }
+}
+
+async function createSubscription() {
+  var product = document.getElementById('sub-product').value;
+  var interval = parseInt(document.getElementById('sub-interval').value);
+  if (!product) { showToast('商品を選択してください'); return; }
+  try {
+    var res = await fetch(API_BASE + '/api/liff/subscriptions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) },
+      body: JSON.stringify({ productTitle: product, intervalDays: interval }),
+    });
+    var json = await res.json();
+    if (json.success) {
+      showToast('リマインダーを設定しました');
+      document.getElementById('sub-add-form').style.display = 'none';
+      moreLoaded = false;
+      loadSubscriptions();
+    }
+  } catch { showToast('エラーが発生しました'); }
+}
+
+async function loadFAQ() {
+  try {
+    var res = await api('/api/liff/faq');
+    var el = document.getElementById('faq-list');
+    if (res.data && res.data.faqs && res.data.faqs.length > 0) {
+      el.innerHTML = res.data.faqs.map(function(f, i) {
+        return '<div class="border-b last:border-0">' +
+          '<button onclick="toggleFaq(' + i + ')" class="w-full text-left py-3 flex items-center justify-between">' +
+          '<span class="text-sm text-gray-800 font-medium">' + esc(f.question) + '</span>' +
+          '<span class="text-gray-400 text-xs faq-arrow" id="faq-arrow-' + i + '">▼</span></button>' +
+          '<div id="faq-answer-' + i + '" style="display:none" class="pb-3 text-xs text-gray-600 leading-relaxed">' + esc(f.answer) + '</div></div>';
+      }).join('');
+    } else {
+      // Default FAQ if no DB entries
+      var defaultFaq = [
+        { q: 'naturismはいつ飲むのが効果的ですか？', a: '毎日同じ時間に飲むのがおすすめです。食事と一緒に、または寝る前に飲んでいただくと続けやすくなります。' },
+        { q: '定期購入はできますか？', a: 'この画面の「定期お届けリマインダー」で、お好みのサイクルでリマインドを設定できます。タイミングが来たらLINEでお知らせし、ワンタッチで再注文いただけます。' },
+        { q: '配送にどのくらいかかりますか？', a: '通常2〜5営業日でお届けいたします。配送状況は「ストア」タブまたは「配送状況」ページでご確認いただけます。' },
+        { q: '返品・交換はできますか？', a: '未開封品に限り、到着後7日以内にご連絡いただければ対応いたします。公式サイトの返品ポリシーをご確認ください。' },
+        { q: '問い合わせはどこからできますか？', a: 'このLINEアカウントにメッセージを送っていただくか、公式サイトのお問い合わせフォームからご連絡ください。' },
+      ];
+      el.innerHTML = defaultFaq.map(function(f, i) {
+        return '<div class="border-b last:border-0">' +
+          '<button onclick="toggleFaq(' + i + ')" class="w-full text-left py-3 flex items-center justify-between">' +
+          '<span class="text-sm text-gray-800 font-medium">' + esc(f.q) + '</span>' +
+          '<span class="text-gray-400 text-xs faq-arrow" id="faq-arrow-' + i + '">▼</span></button>' +
+          '<div id="faq-answer-' + i + '" style="display:none" class="pb-3 text-xs text-gray-600 leading-relaxed">' + esc(f.a) + '</div></div>';
+      }).join('');
+    }
+  } catch {
+    document.getElementById('faq-list').innerHTML = '<p class="text-xs text-gray-400">FAQの読み込みに失敗しました</p>';
+  }
+}
+
+function toggleFaq(idx) {
+  var ans = document.getElementById('faq-answer-' + idx);
+  var arrow = document.getElementById('faq-arrow-' + idx);
+  if (ans.style.display === 'none') {
+    ans.style.display = 'block';
+    arrow.textContent = '▲';
+  } else {
+    ans.style.display = 'none';
+    arrow.textContent = '▼';
+  }
 }
 
 // ─── Referral Claim (auto-detect ?ref= param) ───

@@ -241,6 +241,20 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
+    // Rate limit: 同一ユーザー5分以内の連続作成を防止
+    const recentDraft = await c.env.DB
+      .prepare(
+        `SELECT created_at FROM shopify_draft_orders
+         WHERE friend_id = ? AND created_at > datetime('now', '-5 minutes')
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .bind(user.friendId)
+      .first<{ created_at: string }>();
+
+    if (recentDraft) {
+      return c.json({ success: false, error: '再注文は5分に1回までです。しばらくお待ちください。' }, 429);
+    }
+
     const { orderId, items } = await c.req.json<{
       orderId?: string;
       items?: Array<{ variantId: string; quantity: number }>;
@@ -299,6 +313,9 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
       },
     };
 
+    // Idempotency key: ユーザーID + タイムスタンプ(分単位) で重複防止
+    const idempotencyKey = `liff-reorder-${user.friendId}-${Math.floor(Date.now() / 60000)}`;
+
     const draftRes = await fetch(
       `https://${storeDomain}/admin/api/2026-04/draft_orders.json`,
       {
@@ -306,6 +323,7 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
         headers: {
           'Content-Type': 'application/json',
           'X-Shopify-Access-Token': accessToken,
+          'Idempotency-Key': idempotencyKey,
         },
         body: JSON.stringify(draftOrderPayload),
       },
@@ -1437,6 +1455,208 @@ liffPortal.get('/api/liff/profile', async (c) => {
     return c.json({ success: true, data: friend || {} });
   } catch (err) {
     console.error('GET /api/liff/profile error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ─── Notification Preferences ───
+
+/**
+ * GET /api/liff/notification-prefs — 通知設定取得
+ */
+liffPortal.get('/api/liff/notification-prefs', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const prefs = await c.env.DB
+      .prepare('SELECT restock_alert, delivery_complete, order_confirm, campaign_message, reorder_reminder FROM friend_notification_preferences WHERE friend_id = ?')
+      .bind(user.friendId)
+      .first<{ restock_alert: number; delivery_complete: number; order_confirm: number; campaign_message: number; reorder_reminder: number }>();
+
+    // Default all on if no record
+    return c.json({
+      success: true,
+      data: prefs || { restock_alert: 1, delivery_complete: 1, order_confirm: 1, campaign_message: 1, reorder_reminder: 1 },
+    });
+  } catch (err) {
+    console.error('GET /api/liff/notification-prefs error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * PUT /api/liff/notification-prefs — 通知設定変更
+ */
+liffPortal.put('/api/liff/notification-prefs', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const body = await c.req.json<Record<string, unknown>>();
+    const allowed = ['restock_alert', 'delivery_complete', 'order_confirm', 'campaign_message', 'reorder_reminder'];
+    const now = new Date().toISOString();
+
+    // Check existing
+    const existing = await c.env.DB
+      .prepare('SELECT id FROM friend_notification_preferences WHERE friend_id = ?')
+      .bind(user.friendId)
+      .first<{ id: string }>();
+
+    if (existing) {
+      const updates: string[] = [];
+      const values: (string | number)[] = [];
+      for (const key of allowed) {
+        if (key in body) {
+          updates.push(`${key} = ?`);
+          values.push(body[key] ? 1 : 0);
+        }
+      }
+      if (updates.length > 0) {
+        updates.push('updated_at = ?');
+        values.push(now, existing.id);
+        await c.env.DB.prepare(`UPDATE friend_notification_preferences SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
+      }
+    } else {
+      const id = crypto.randomUUID();
+      await c.env.DB.prepare(
+        `INSERT INTO friend_notification_preferences (id, friend_id, restock_alert, delivery_complete, order_confirm, campaign_message, reorder_reminder, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        id, user.friendId,
+        body.restock_alert !== undefined ? (body.restock_alert ? 1 : 0) : 1,
+        body.delivery_complete !== undefined ? (body.delivery_complete ? 1 : 0) : 1,
+        body.order_confirm !== undefined ? (body.order_confirm ? 1 : 0) : 1,
+        body.campaign_message !== undefined ? (body.campaign_message ? 1 : 0) : 1,
+        body.reorder_reminder !== undefined ? (body.reorder_reminder ? 1 : 0) : 1,
+        now, now,
+      ).run();
+    }
+
+    return c.json({ success: true, message: 'Preferences updated' });
+  } catch (err) {
+    console.error('PUT /api/liff/notification-prefs error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ─── Subscription Reminders ───
+
+/**
+ * GET /api/liff/subscriptions — 定期購買リマインダー一覧
+ */
+liffPortal.get('/api/liff/subscriptions', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const subs = await c.env.DB
+      .prepare('SELECT id, product_title, interval_days, next_reminder_at, is_active, created_at FROM subscription_reminders WHERE friend_id = ? ORDER BY created_at DESC')
+      .bind(user.friendId)
+      .all<{ id: string; product_title: string; interval_days: number; next_reminder_at: string; is_active: number; created_at: string }>();
+
+    return c.json({ success: true, data: { subscriptions: subs.results || [] } });
+  } catch (err) {
+    console.error('GET /api/liff/subscriptions error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/subscriptions — 定期購買リマインダー作成
+ */
+liffPortal.post('/api/liff/subscriptions', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const body = await c.req.json<{ productTitle: string; intervalDays?: number; variantId?: string; sourceOrderId?: string }>();
+    if (!body.productTitle) return c.json({ success: false, error: 'productTitle required' }, 400);
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const intervalDays = body.intervalDays || 30;
+    const nextAt = new Date(Date.now() + intervalDays * 86400000).toISOString();
+
+    await c.env.DB.prepare(
+      `INSERT INTO subscription_reminders (id, friend_id, product_title, variant_id, interval_days, next_reminder_at, source_order_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, user.friendId, body.productTitle, body.variantId || null, intervalDays, nextAt, body.sourceOrderId || null, now, now).run();
+
+    return c.json({ success: true, data: { id, nextReminderAt: nextAt } });
+  } catch (err) {
+    console.error('POST /api/liff/subscriptions error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * PUT /api/liff/subscriptions/:id — 定期購買リマインダー更新（間隔変更/停止）
+ */
+liffPortal.put('/api/liff/subscriptions/:id', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const subId = c.req.param('id');
+    const body = await c.req.json<{ intervalDays?: number; isActive?: boolean }>();
+    const now = new Date().toISOString();
+
+    const updates: string[] = ['updated_at = ?'];
+    const values: (string | number)[] = [now];
+
+    if (body.intervalDays !== undefined) {
+      updates.push('interval_days = ?');
+      values.push(body.intervalDays);
+      const nextAt = new Date(Date.now() + body.intervalDays * 86400000).toISOString();
+      updates.push('next_reminder_at = ?');
+      values.push(nextAt);
+    }
+    if (body.isActive !== undefined) {
+      updates.push('is_active = ?');
+      values.push(body.isActive ? 1 : 0);
+    }
+
+    values.push(subId, user.friendId);
+    await c.env.DB.prepare(`UPDATE subscription_reminders SET ${updates.join(', ')} WHERE id = ? AND friend_id = ?`).bind(...values).run();
+
+    return c.json({ success: true, message: 'Subscription updated' });
+  } catch (err) {
+    console.error('PUT /api/liff/subscriptions/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * DELETE /api/liff/subscriptions/:id — 定期購買リマインダー削除
+ */
+liffPortal.delete('/api/liff/subscriptions/:id', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const subId = c.req.param('id');
+    await c.env.DB.prepare('DELETE FROM subscription_reminders WHERE id = ? AND friend_id = ?').bind(subId, user.friendId).run();
+
+    return c.json({ success: true, message: 'Subscription deleted' });
+  } catch (err) {
+    console.error('DELETE /api/liff/subscriptions/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ─── FAQ ───
+
+/**
+ * GET /api/liff/faq — FAQ一覧
+ */
+liffPortal.get('/api/liff/faq', async (c) => {
+  try {
+    const faqs = await c.env.DB
+      .prepare('SELECT id, question, answer, category FROM faq_items WHERE is_active = 1 ORDER BY sort_order ASC, created_at ASC')
+      .all<{ id: string; question: string; answer: string; category: string }>();
+
+    return c.json({ success: true, data: { faqs: faqs.results || [] } });
+  } catch (err) {
+    console.error('GET /api/liff/faq error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

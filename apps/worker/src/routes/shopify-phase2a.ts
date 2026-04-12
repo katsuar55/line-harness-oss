@@ -274,8 +274,9 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/fulfillment', async (c) =
           }
         }
 
-        // LINE通知送信
-        if (lineUserId && trackingNumber) {
+        // LINE通知送信（SHOPIFY_LINE_NOTIFY_ENABLED が 'true' の場合のみ）
+        const notifyEnabled = (c.env as unknown as Record<string, string | undefined>).SHOPIFY_LINE_NOTIFY_ENABLED === 'true';
+        if (notifyEnabled && lineUserId && trackingNumber) {
           const message = `ご注文の商品が発送されました！追跡番号: ${trackingNumber}`;
           await sendLineMessage(c.env.LINE_CHANNEL_ACCESS_TOKEN, lineUserId, message);
 
@@ -341,9 +342,12 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/inventory', async (c) => 
             .first<{ line_user_id: string | null }>();
 
           if (friend?.line_user_id) {
-            const productTitle = (request.product_title as string) ?? '商品';
-            const message = `お待たせしました！「${productTitle}」が再入荷しました。お早めにお求めください。`;
-            await sendLineMessage(c.env.LINE_CHANNEL_ACCESS_TOKEN, friend.line_user_id, message);
+            const restockNotifyEnabled = (c.env as unknown as Record<string, string | undefined>).SHOPIFY_LINE_NOTIFY_ENABLED === 'true';
+            if (restockNotifyEnabled) {
+              const productTitle = (request.product_title as string) ?? '商品';
+              const message = `お待たせしました！「${productTitle}」が再入荷しました。お早めにお求めください。`;
+              await sendLineMessage(c.env.LINE_CHANNEL_ACCESS_TOKEN, friend.line_user_id, message);
+            }
           }
 
           // status を notified に更新
@@ -432,8 +436,9 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/payment', async (c) => {
       currency,
     });
 
-    // 非同期: LINE通知送信
-    if (lineUserId && orderNumber) {
+    // 非同期: LINE通知送信（SHOPIFY_LINE_NOTIFY_ENABLED が 'true' の場合のみ）
+    const paymentNotifyEnabled = (c.env as unknown as Record<string, string | undefined>).SHOPIFY_LINE_NOTIFY_ENABLED === 'true';
+    if (paymentNotifyEnabled && lineUserId && orderNumber) {
       const asyncWork = (async () => {
         try {
           const message = `ご注文ありがとうございます！注文番号: ${orderNumber}`;

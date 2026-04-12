@@ -708,3 +708,233 @@ describe('LIFF Portal Routes', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// LIFF More Tab APIs (GET / PUT / DELETE endpoints)
+// ---------------------------------------------------------------------------
+// These endpoints use getLiffUser(c) which reads c.get('liffUser').
+// We need a middleware that sets liffUser for all HTTP methods.
+
+function createMoreTabApp() {
+  const moreApp = new Hono();
+
+  // Middleware: set liffUser via X-Friend-Id / X-Line-User-Id headers
+  moreApp.use('/api/liff/*', async (c, next) => {
+    const friendId = c.req.header('X-Friend-Id');
+    const lineUserId = c.req.header('X-Line-User-Id');
+    if (friendId && lineUserId) {
+      (c as unknown as { set: (key: string, value: unknown) => void }).set('liffUser', { lineUserId, friendId });
+    }
+    // Also support JSON body for POST/PUT
+    if (!friendId && (c.req.method === 'POST' || c.req.method === 'PUT')) {
+      try {
+        const body = await c.req.json<{ lineUserId?: string }>();
+        if (body.lineUserId === 'U_EXISTING') {
+          (c as unknown as { set: (key: string, value: unknown) => void }).set('liffUser', { lineUserId: 'U_EXISTING', friendId: 'friend-1' });
+        }
+      } catch { /* no body */ }
+    }
+    return next();
+  });
+
+  moreApp.route('/', liffPortal);
+  return moreApp;
+}
+
+function moreReq(
+  moreApp: ReturnType<typeof createMoreTabApp>,
+  method: string,
+  path: string,
+  body?: Record<string, unknown>,
+  authenticated = true,
+) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (authenticated) {
+    headers['X-Friend-Id'] = 'friend-1';
+    headers['X-Line-User-Id'] = 'U_EXISTING';
+  }
+  const init: RequestInit = { method, headers };
+  if (body) init.body = JSON.stringify(body);
+  return moreApp.request(path, init, mockEnv());
+}
+
+describe('LIFF More Tab APIs', () => {
+  let moreApp: ReturnType<typeof createMoreTabApp>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    moreApp = createMoreTabApp();
+  });
+
+  // ─── Notification Prefs ─────────────────────────
+  describe('GET /api/liff/notification-prefs', () => {
+    it('returns default prefs when no record exists', async () => {
+      const res = await moreReq(moreApp, 'GET', '/api/liff/notification-prefs');
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean; data: Record<string, number> };
+      expect(json.success).toBe(true);
+      // Default all on
+      expect(json.data.restock_alert).toBe(1);
+      expect(json.data.campaign_message).toBe(1);
+    });
+
+    it('returns saved prefs when record exists', async () => {
+      const env = mockEnv();
+      const stmt = env.DB.prepare('');
+      (stmt.bind('').first as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        restock_alert: 0, delivery_complete: 1, order_confirm: 1, campaign_message: 0, reorder_reminder: 1,
+      });
+      const res = await moreApp.request('/api/liff/notification-prefs', {
+        method: 'GET',
+        headers: { 'X-Friend-Id': 'friend-1', 'X-Line-User-Id': 'U_EXISTING' },
+      }, env);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: Record<string, number> };
+      expect(json.data.restock_alert).toBe(0);
+      expect(json.data.campaign_message).toBe(0);
+    });
+
+    it('returns 401 when not authenticated', async () => {
+      const res = await moreReq(moreApp, 'GET', '/api/liff/notification-prefs', undefined, false);
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('PUT /api/liff/notification-prefs', () => {
+    it('updates preferences (existing record)', async () => {
+      const env = mockEnv();
+      const stmt = env.DB.prepare('');
+      // First call: check existing -> found
+      (stmt.bind('').first as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ id: 'np-1' });
+      const res = await moreApp.request('/api/liff/notification-prefs', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-Friend-Id': 'friend-1', 'X-Line-User-Id': 'U_EXISTING' },
+        body: JSON.stringify({ restock_alert: false, campaign_message: false }),
+      }, env);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean; message: string };
+      expect(json.success).toBe(true);
+    });
+
+    it('inserts preferences (new record)', async () => {
+      const res = await moreReq(moreApp, 'PUT', '/api/liff/notification-prefs', { restock_alert: true });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean };
+      expect(json.success).toBe(true);
+    });
+
+    it('returns 401 when not authenticated', async () => {
+      const res = await moreReq(moreApp, 'PUT', '/api/liff/notification-prefs', { restock_alert: false }, false);
+      expect(res.status).toBe(401);
+    });
+  });
+
+  // ─── Subscriptions ──────────────────────────────
+  describe('GET /api/liff/subscriptions', () => {
+    it('returns empty subscriptions list', async () => {
+      const res = await moreReq(moreApp, 'GET', '/api/liff/subscriptions');
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { subscriptions: unknown[] } };
+      expect(json.data.subscriptions).toEqual([]);
+    });
+
+    it('returns 401 when not authenticated', async () => {
+      const res = await moreReq(moreApp, 'GET', '/api/liff/subscriptions', undefined, false);
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('POST /api/liff/subscriptions', () => {
+    it('creates subscription reminder', async () => {
+      const res = await moreReq(moreApp, 'POST', '/api/liff/subscriptions', { productTitle: 'naturism Blue', intervalDays: 30 });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean; data: { id: string; nextReminderAt: string } };
+      expect(json.success).toBe(true);
+      expect(json.data.id).toBeTruthy();
+      expect(json.data.nextReminderAt).toBeTruthy();
+    });
+
+    it('returns 400 when productTitle missing', async () => {
+      const res = await moreReq(moreApp, 'POST', '/api/liff/subscriptions', {});
+      expect(res.status).toBe(400);
+    });
+
+    it('defaults intervalDays to 30', async () => {
+      const res = await moreReq(moreApp, 'POST', '/api/liff/subscriptions', { productTitle: 'naturism Pink' });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { nextReminderAt: string } };
+      // nextReminderAt should be ~30 days from now
+      const nextDate = new Date(json.data.nextReminderAt);
+      const now = new Date();
+      const diffDays = (nextDate.getTime() - now.getTime()) / 86400000;
+      expect(diffDays).toBeGreaterThan(29);
+      expect(diffDays).toBeLessThan(31);
+    });
+
+    it('returns 401 when not authenticated', async () => {
+      const res = await moreReq(moreApp, 'POST', '/api/liff/subscriptions', { productTitle: 'test' }, false);
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('PUT /api/liff/subscriptions/:id', () => {
+    it('updates subscription interval', async () => {
+      const res = await moreReq(moreApp, 'PUT', '/api/liff/subscriptions/sub-1', { intervalDays: 60 });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean; message: string };
+      expect(json.success).toBe(true);
+    });
+
+    it('updates subscription active status', async () => {
+      const res = await moreReq(moreApp, 'PUT', '/api/liff/subscriptions/sub-1', { isActive: false });
+      expect(res.status).toBe(200);
+    });
+
+    it('returns 401 when not authenticated', async () => {
+      const res = await moreReq(moreApp, 'PUT', '/api/liff/subscriptions/sub-1', { isActive: false }, false);
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('DELETE /api/liff/subscriptions/:id', () => {
+    it('deletes subscription', async () => {
+      const res = await moreReq(moreApp, 'DELETE', '/api/liff/subscriptions/sub-1');
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean; message: string };
+      expect(json.success).toBe(true);
+      expect(json.message).toBe('Subscription deleted');
+    });
+
+    it('returns 401 when not authenticated', async () => {
+      const res = await moreReq(moreApp, 'DELETE', '/api/liff/subscriptions/sub-1', undefined, false);
+      expect(res.status).toBe(401);
+    });
+  });
+
+  // ─── FAQ ────────────────────────────────────────
+  describe('GET /api/liff/faq', () => {
+    it('returns FAQ list (empty by default)', async () => {
+      const res = await moreReq(moreApp, 'GET', '/api/liff/faq', undefined, false);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean; data: { faqs: unknown[] } };
+      expect(json.success).toBe(true);
+      expect(json.data.faqs).toEqual([]);
+    });
+
+    it('returns FAQ items when they exist', async () => {
+      const env = mockEnv();
+      const stmt = env.DB.prepare('');
+      (stmt.bind('').all as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        results: [
+          { id: 'faq-1', question: '返品はできますか？', answer: '未開封なら7日以内に返品可能です。', category: 'shipping' },
+          { id: 'faq-2', question: '定期購買の解約方法は？', answer: 'マイページから解約できます。', category: 'subscription' },
+        ],
+      });
+      const res = await moreApp.request('/api/liff/faq', { method: 'GET' }, env);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { faqs: Array<{ id: string; question: string }> } };
+      expect(json.data.faqs).toHaveLength(2);
+      expect(json.data.faqs[0].question).toContain('返品');
+    });
+  });
+});
