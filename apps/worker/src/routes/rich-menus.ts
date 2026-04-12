@@ -109,8 +109,8 @@ richMenus.delete('/api/friends/:friendId/rich-menu', async (c) => {
   }
 });
 
-// POST /api/rich-menus/setup-naturism — naturism用リッチメニュー一括セットアップ v2
-// 6ボタン（2×3）: ストア / マイページ / ランク / 友だち紹介 / 今日のヒント(postback) / お問い合わせ
+// POST /api/rich-menus/setup-naturism — naturism用リッチメニュー一括セットアップ v3
+// 8ボタン（本番同等レイアウト）: 左2列大 + 右1列上下分割×4
 // フロー: 1. 既存デフォルト削除 → 2. 構造作成 → 3. 画像アップロード → 4. デフォルト設定
 richMenus.post('/api/rich-menus/setup-naturism', async (c) => {
   try {
@@ -124,42 +124,59 @@ richMenus.post('/api/rich-menus/setup-naturism', async (c) => {
       // デフォルトが無い場合は無視
     }
 
-    // naturism リッチメニュー定義（2500×1686 フルサイズ、2行3列）
-    const cellW = 833;
-    const cellWMid = 834; // 中央列は834（2500 = 833 + 834 + 833）
-    const rowH = 843;
+    // naturism リッチメニュー定義（2500×1686 フルサイズ）
+    // レイアウト: 左2列(各833px) + 右1列(834px, 上下分割)
+    const colW = 833;       // 左2列の幅
+    const colWR = 834;      // 右列の幅 (2500 - 833*2 = 834)
+    const rowH = 843;       // 行の高さ (1686/2)
+    const halfH = 421;      // 右列セル高さ (上)
+    const halfH2 = 422;     // 右列セル高さ (下, 843-421=422)
 
     const richMenuBody = {
       size: { width: 2500, height: 1686 },
       selected: true,
-      name: 'naturism メインメニュー v2',
+      name: 'naturism メインメニュー v3',
       chatBarText: 'メニュー',
       areas: [
-        // 上段: ストア / マイページ / ランク
+        // 上段左: ホームページ
         {
-          bounds: { x: 0, y: 0, width: cellW, height: rowH },
-          action: { type: 'uri' as const, label: 'ストア', uri: `${liffUrl}#shop` },
+          bounds: { x: 0, y: 0, width: colW, height: rowH },
+          action: { type: 'uri' as const, label: 'ホームページ', uri: 'https://naturism-diet.com' },
         },
+        // 上段中: カテゴリー
         {
-          bounds: { x: cellW, y: 0, width: cellWMid, height: rowH },
-          action: { type: 'uri' as const, label: 'マイページ', uri: `${liffUrl}#home` },
+          bounds: { x: colW, y: 0, width: colW, height: rowH },
+          action: { type: 'uri' as const, label: 'カテゴリー', uri: 'https://naturism-diet.com/collections' },
         },
+        // 上段右上: 友達紹介
         {
-          bounds: { x: cellW + cellWMid, y: 0, width: cellW, height: rowH },
+          bounds: { x: colW * 2, y: 0, width: colWR, height: halfH },
+          action: { type: 'uri' as const, label: '友達紹介', uri: `${liffUrl}#referral` },
+        },
+        // 上段右下: マイランク
+        {
+          bounds: { x: colW * 2, y: halfH, width: colWR, height: halfH2 },
           action: { type: 'uri' as const, label: 'マイランク', uri: `${liffUrl}#rank` },
         },
-        // 下段: 友だち紹介 / 今日のヒント(postback) / お問い合わせ
+        // 下段左: 配送状況をみる
         {
-          bounds: { x: 0, y: rowH, width: cellW, height: rowH },
-          action: { type: 'uri' as const, label: '友だち紹介', uri: `${liffUrl}#referral` },
+          bounds: { x: 0, y: rowH, width: colW, height: rowH },
+          action: { type: 'uri' as const, label: '配送状況をみる', uri: `${liffUrl}#delivery` },
         },
+        // 下段中: 購入履歴・再購入
         {
-          bounds: { x: cellW, y: rowH, width: cellWMid, height: rowH },
-          action: { type: 'postback' as const, label: '今日のヒント', data: 'action=daily_tip', displayText: '💡 今日のヒント' },
+          bounds: { x: colW, y: rowH, width: colW, height: rowH },
+          action: { type: 'uri' as const, label: '購入履歴・再購入', uri: `${liffUrl}#reorder` },
         },
+        // 下段右上: SNS
         {
-          bounds: { x: cellW + cellWMid, y: rowH, width: cellW, height: rowH },
-          action: { type: 'message' as const, label: 'お問い合わせ', text: 'お問い合わせ' },
+          bounds: { x: colW * 2, y: rowH, width: colWR, height: halfH },
+          action: { type: 'uri' as const, label: 'SNS', uri: 'https://www.instagram.com/naturism_supplement/' },
+        },
+        // 下段右下: Q&A お問い合わせ
+        {
+          bounds: { x: colW * 2, y: rowH + halfH, width: colWR, height: halfH2 },
+          action: { type: 'message' as const, label: 'Q&A お問い合わせ', text: 'お問い合わせ' },
         },
       ],
     };
@@ -168,7 +185,7 @@ richMenus.post('/api/rich-menus/setup-naturism', async (c) => {
     const createResult = await lineClient.createRichMenu(richMenuBody);
     const richMenuId = createResult.richMenuId;
 
-    // Step 2: 画像アップロード（事前生成済み 2500×1686 緑PNG）
+    // Step 2: 画像アップロード（事前生成済み 2500×1686 PNG）
     const pngData = base64ToArrayBuffer(NATURISM_MENU_PNG_B64);
     await lineClient.uploadRichMenuImage(richMenuId, pngData, 'image/png');
 
@@ -180,7 +197,7 @@ richMenus.post('/api/rich-menus/setup-naturism', async (c) => {
       data: {
         richMenuId,
         areas: richMenuBody.areas.map((a) => ({ label: a.action.label, type: a.action.type })),
-        message: 'リッチメニュー v2（6ボタン）を作成・画像アップロード・デフォルト設定まで完了。LINEトーク画面にメニューが表示されます。',
+        message: 'リッチメニュー v3（8ボタン）を作成・画像アップロード・デフォルト設定まで完了。',
       },
     }, 201);
   } catch (err) {
@@ -208,37 +225,149 @@ function base64ToArrayBuffer(b64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-// GET /api/rich-menus/image-guide — リッチメニュー画像テンプレートHTML v2
+// GET /api/rich-menus/image-guide — リッチメニュー画像テンプレートHTML v3
+// 8ボタン・シルバーアクセント付き豪華デザイン
 // ブラウザで開いてスクリーンショット（2500x1686）を撮って画像として使用
 richMenus.get('/api/rich-menus/image-guide', async (c) => {
   return c.html(`<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap');
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { width: 2500px; height: 1686px; font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; }
-.grid { display: grid; grid-template-columns: 833px 834px 833px; grid-template-rows: 843px 843px; width: 2500px; height: 1686px; }
-.cell {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  color: #fff; text-align: center; gap: 20px; border: 1px solid rgba(255,255,255,0.12);
+body { width: 2500px; height: 1686px; font-family: 'Noto Sans JP', 'Hiragino Sans', sans-serif; overflow: hidden; }
+
+.container {
+  width: 2500px; height: 1686px;
+  display: grid;
+  grid-template-columns: 833px 833px 834px;
+  grid-template-rows: 843px 843px;
+  background: linear-gradient(160deg, #f8f9fa 0%, #e8eaed 50%, #d4d7dc 100%);
 }
-.cell .icon { font-size: 96px; }
-.cell .label { font-size: 52px; font-weight: 700; letter-spacing: 2px; text-shadow: 0 2px 8px rgba(0,0,0,.15); }
-.cell .sub { font-size: 28px; opacity: 0.8; }
-.c1 { background: linear-gradient(135deg, #06C755, #059669); }
-.c2 { background: linear-gradient(135deg, #059669, #047857); }
-.c3 { background: linear-gradient(135deg, #f59e0b, #d97706); }
-.c4 { background: linear-gradient(135deg, #3b82f6, #2563eb); }
-.c5 { background: linear-gradient(135deg, #8b5cf6, #7c3aed); }
-.c6 { background: linear-gradient(135deg, #64748b, #475569); }
+
+/* 大セル（左2列） */
+.cell-large {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 24px; position: relative; overflow: hidden;
+  border: 1px solid rgba(192,192,192,0.3);
+}
+.cell-large .icon { font-size: 120px; filter: drop-shadow(0 4px 12px rgba(0,0,0,0.15)); }
+.cell-large .label {
+  font-size: 48px; font-weight: 900; letter-spacing: 3px;
+  background: linear-gradient(135deg, #3a3a3a 0%, #666 50%, #3a3a3a 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  text-shadow: none;
+}
+.cell-large .sub {
+  font-size: 24px; color: #888; font-weight: 400; letter-spacing: 1px;
+}
+/* シルバーシャイン効果 */
+.cell-large::after {
+  content: ''; position: absolute; top: -50%; left: -50%;
+  width: 200%; height: 200%;
+  background: linear-gradient(45deg, transparent 40%, rgba(255,255,255,0.08) 50%, transparent 60%);
+  pointer-events: none;
+}
+
+/* 右列の小セル（上下分割） */
+.right-col {
+  display: grid; grid-template-rows: 421px 422px;
+  border: 1px solid rgba(192,192,192,0.3);
+}
+.cell-small {
+  display: flex; flex-direction: row; align-items: center; justify-content: center;
+  gap: 16px; position: relative; overflow: hidden;
+  border-bottom: 1px solid rgba(192,192,192,0.2);
+}
+.cell-small .icon { font-size: 72px; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.12)); }
+.cell-small .label {
+  font-size: 36px; font-weight: 700;
+  background: linear-gradient(135deg, #3a3a3a 0%, #555 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+
+/* 各セルの背景 — 淡いグラデーション + シルバーボーダー */
+.bg-home {
+  background: linear-gradient(135deg, #f0f4f8 0%, #e2e8f0 100%);
+  border-left: 4px solid rgba(180,180,200,0.4);
+}
+.bg-category {
+  background: linear-gradient(135deg, #f0f4f8 0%, #e2e8f0 100%);
+}
+.bg-referral {
+  background: linear-gradient(135deg, #eef6f0 0%, #d4edda 100%);
+}
+.bg-rank {
+  background: linear-gradient(135deg, #fff9e6 0%, #ffeeba 100%);
+}
+.bg-delivery {
+  background: linear-gradient(135deg, #e8f4fd 0%, #cce5ff 100%);
+  border-left: 4px solid rgba(180,180,200,0.4);
+}
+.bg-reorder {
+  background: linear-gradient(135deg, #e8f4fd 0%, #cce5ff 100%);
+}
+.bg-sns {
+  background: linear-gradient(135deg, #f3eefb 0%, #e2d5f1 100%);
+}
+.bg-qa {
+  background: linear-gradient(135deg, #f0f0f0 0%, #ddd 100%);
+}
+
+/* シルバーのコーナー装飾 */
+.cell-large::before, .cell-small::before {
+  content: ''; position: absolute; top: 8px; left: 8px; right: 8px; bottom: 8px;
+  border: 1px solid rgba(192,192,192,0.15); border-radius: 16px;
+  pointer-events: none;
+}
 </style></head>
 <body>
-<div class="grid">
-  <div class="cell c1"><span class="icon">🛍️</span><span class="label">ストア</span><span class="sub">商品を見る</span></div>
-  <div class="cell c2"><span class="icon">📋</span><span class="label">マイページ</span><span class="sub">記録・プロフィール</span></div>
-  <div class="cell c3"><span class="icon">🏆</span><span class="label">マイランク</span><span class="sub">ランク・特典</span></div>
-  <div class="cell c4"><span class="icon">👥</span><span class="label">友だち紹介</span><span class="sub">紹介してポイントGET</span></div>
-  <div class="cell c5"><span class="icon">💡</span><span class="label">今日のヒント</span><span class="sub">美容・健康情報</span></div>
-  <div class="cell c6"><span class="icon">💬</span><span class="label">お問い合わせ</span><span class="sub">ご質問はこちら</span></div>
+<div class="container">
+  <!-- 上段左: ホームページ -->
+  <div class="cell-large bg-home">
+    <span class="icon">🖥️</span>
+    <span class="label">ホームページ</span>
+    <span class="sub">naturism公式サイト</span>
+  </div>
+  <!-- 上段中: カテゴリー -->
+  <div class="cell-large bg-category">
+    <span class="icon">🔍</span>
+    <span class="label">カテゴリー</span>
+    <span class="sub">商品を探す</span>
+  </div>
+  <!-- 上段右（分割） -->
+  <div class="right-col">
+    <div class="cell-small bg-referral">
+      <span class="icon">👥</span>
+      <span class="label">友達紹介</span>
+    </div>
+    <div class="cell-small bg-rank">
+      <span class="icon">🏅</span>
+      <span class="label">マイランク</span>
+    </div>
+  </div>
+  <!-- 下段左: 配送状況 -->
+  <div class="cell-large bg-delivery">
+    <span class="icon">🚚</span>
+    <span class="label">配送状況をみる</span>
+    <span class="sub">お届け状況を確認</span>
+  </div>
+  <!-- 下段中: 購入履歴・再購入 -->
+  <div class="cell-large bg-reorder">
+    <span class="icon">🛒</span>
+    <span class="label">購入履歴・再購入</span>
+    <span class="sub">ワンタップで再注文</span>
+  </div>
+  <!-- 下段右（分割） -->
+  <div class="right-col">
+    <div class="cell-small bg-sns">
+      <span class="icon">💬</span>
+      <span class="label">SNS</span>
+    </div>
+    <div class="cell-small bg-qa">
+      <span class="icon">✉️</span>
+      <span class="label">Q&A</span>
+    </div>
+  </div>
 </div>
 </body></html>`);
 });
