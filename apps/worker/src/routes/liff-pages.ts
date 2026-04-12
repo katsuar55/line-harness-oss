@@ -64,6 +64,16 @@ function portalPage(liffId: string, apiBase: string): string {
     .graph-period-btn{transition:all .15s}
     #survey-answer-modal>div{box-shadow:0 -4px 24px rgba(0,0,0,.08)}
     @media(hover:hover){.btn-primary:hover{box-shadow:0 4px 16px rgba(5,150,105,.25)}}
+    /* Ambassador badge */
+    .ambassador-badge{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:linear-gradient(135deg,#fbbf24,#f59e0b);color:#fff;box-shadow:0 1px 4px rgba(245,158,11,.3);animation:badgePop .4s cubic-bezier(.34,1.56,.64,1)}
+    @keyframes badgePop{from{transform:scale(0);opacity:0}to{transform:scale(1);opacity:1}}
+    /* Ambassador sparkle rank card */
+    .rank-ambassador{position:relative;background:linear-gradient(135deg,rgba(251,191,36,.08) 0%,rgba(245,158,11,.04) 50%,rgba(255,255,255,.9) 100%) !important;border:1.5px solid rgba(251,191,36,.25) !important;overflow:hidden}
+    .rank-ambassador::before{content:'';position:absolute;top:-50%;left:-50%;width:200%;height:200%;background:conic-gradient(from 0deg,transparent 0%,rgba(251,191,36,.06) 10%,transparent 20%,rgba(245,158,11,.04) 30%,transparent 40%);animation:sparkleRotate 8s linear infinite}
+    @keyframes sparkleRotate{to{transform:rotate(360deg)}}
+    .sparkle-dots{position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;overflow:hidden}
+    .sparkle-dot{position:absolute;width:4px;height:4px;border-radius:50%;background:radial-gradient(circle,#fbbf24,transparent);animation:sparkle 2s ease-in-out infinite}
+    @keyframes sparkle{0%,100%{opacity:0;transform:scale(0)}50%{opacity:.7;transform:scale(1)}}
   </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -526,7 +536,8 @@ async function initLiff() {
       document.getElementById('user-avatar').innerHTML =
         '<img src="' + profile.pictureUrl + '" class="w-8 h-8 rounded-full">';
     }
-    await Promise.all([loadLanguage(), loadRank(), loadTip(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadAmbassador()]);
+    await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile()]);
+    await loadRank();
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
     // ハッシュベースのディープリンク（リッチメニューから特定タブへ遷移）
@@ -728,12 +739,25 @@ async function loadRank() {
     const el = document.getElementById('rank-card');
     if (data.currentRank) {
       const pct = data.progressPercent || 0;
-      el.innerHTML = '<div class="flex items-center gap-3 mb-3">' +
+      // Check if user is ambassador (will be set after loadAmbassador runs)
+      const isAmb = !!ambassadorData;
+      if (isAmb) {
+        el.classList.add('rank-ambassador');
+      }
+      const badgeHtml = isAmb ? ' <span class="ambassador-badge">&#x2728; Ambassador</span>' : '';
+      const sparkleHtml = isAmb ? '<div class="sparkle-dots">' +
+        '<div class="sparkle-dot" style="top:12%;left:85%;animation-delay:0s"></div>' +
+        '<div class="sparkle-dot" style="top:35%;left:10%;animation-delay:0.6s"></div>' +
+        '<div class="sparkle-dot" style="top:70%;left:78%;animation-delay:1.2s"></div>' +
+        '<div class="sparkle-dot" style="top:55%;left:25%;animation-delay:0.3s"></div>' +
+        '<div class="sparkle-dot" style="top:20%;left:55%;animation-delay:0.9s"></div></div>' : '';
+      el.innerHTML = sparkleHtml +
+        '<div class="flex items-center gap-3 mb-3" style="position:relative;z-index:1">' +
         '<div class="w-12 h-12 rounded-full flex items-center justify-center text-2xl" style="background:' + esc(data.currentRank.color || '#ccc') + '20">' + esc(data.currentRank.icon || '') + '</div>' +
-        '<div><p class="text-sm font-bold text-gray-800">' + esc(data.currentRank.name) + '</p>' +
+        '<div><p class="text-sm font-bold text-gray-800">' + esc(data.currentRank.name) + badgeHtml + '</p>' +
         '<p class="text-xs text-gray-500">累計 ¥' + Number(data.totalSpent).toLocaleString() + '</p></div></div>' +
-        '<div class="bg-gray-100 rounded-full h-2 overflow-hidden"><div class="bg-green-500 h-2 progress-bar" style="width:' + pct + '%"></div></div>' +
-        (data.nextRank ? '<p class="text-xs text-gray-400 mt-1">次のランク ' + esc(data.nextRank.name) + ' まであと ¥' + Number(data.nextRank.remaining).toLocaleString() + '</p>' : '<p class="text-xs text-green-600 mt-1">最高ランク達成!</p>');
+        '<div class="bg-gray-100 rounded-full h-2 overflow-hidden" style="position:relative;z-index:1"><div class="' + (isAmb ? 'h-2 progress-bar' : 'bg-green-500 h-2 progress-bar') + '" style="width:' + pct + '%;' + (isAmb ? 'background:linear-gradient(90deg,#fbbf24,#f59e0b)' : '') + '"></div></div>' +
+        (data.nextRank ? '<p class="text-xs text-gray-400 mt-1" style="position:relative;z-index:1">次のランク ' + esc(data.nextRank.name) + ' まであと ¥' + Number(data.nextRank.remaining).toLocaleString() + '</p>' : '<p class="text-xs text-green-600 mt-1" style="position:relative;z-index:1">最高ランク達成!</p>');
     } else {
       el.innerHTML = '<p class="text-sm text-gray-500">まだ購入履歴がありません</p>';
     }
@@ -1263,14 +1287,19 @@ async function loadAmbassador() {
     var tierIcons = { standard: '&#x1F331;', bronze: '&#x1F949;', silver: '&#x1F948;', gold: '&#x1F947;', platinum: '&#x1F451;', premium: '&#x2B50;' };
     var tierNames = { standard: 'スタンダード', bronze: 'ブロンズ', silver: 'シルバー', gold: 'ゴールド', platinum: 'プラチナ', premium: 'プレミアム' };
     var el = document.getElementById('ambassador-status-card');
-    el.innerHTML = '<div class="flex items-center gap-3 mb-3">' +
-      '<div class="w-12 h-12 rounded-full bg-yellow-50 flex items-center justify-center text-2xl">' + (tierIcons[data.tier] || '&#x1F331;') + '</div>' +
-      '<div><p class="text-sm font-bold text-gray-800">アンバサダー</p>' +
+    el.classList.add('rank-ambassador');
+    el.innerHTML = '<div class="sparkle-dots">' +
+      '<div class="sparkle-dot" style="top:10%;left:90%;animation-delay:0s"></div>' +
+      '<div class="sparkle-dot" style="top:40%;left:5%;animation-delay:0.5s"></div>' +
+      '<div class="sparkle-dot" style="top:75%;left:80%;animation-delay:1s"></div></div>' +
+      '<div class="flex items-center gap-3 mb-3" style="position:relative;z-index:1">' +
+      '<div class="w-12 h-12 rounded-full flex items-center justify-center text-2xl" style="background:linear-gradient(135deg,#fef3c7,#fde68a);box-shadow:0 2px 8px rgba(251,191,36,.25)">' + (tierIcons[data.tier] || '&#x1F331;') + '</div>' +
+      '<div><p class="text-sm font-bold text-gray-800">アンバサダー <span class="ambassador-badge">&#x2728; Ambassador</span></p>' +
       '<p class="text-xs text-yellow-600 font-bold">' + esc(tierNames[data.tier] || data.tier) + '</p></div></div>' +
-      '<div class="grid grid-cols-3 gap-2 text-center">' +
-      '<div class="bg-gray-50 rounded-lg p-2"><p class="text-lg font-bold text-gray-800">' + (data.surveysCompleted || 0) + '</p><p class="text-xs text-gray-500">回答数</p></div>' +
-      '<div class="bg-gray-50 rounded-lg p-2"><p class="text-lg font-bold text-gray-800">' + (data.productTests || 0) + '</p><p class="text-xs text-gray-500">商品テスト</p></div>' +
-      '<div class="bg-gray-50 rounded-lg p-2"><p class="text-lg font-bold text-gray-800">' + (data.enrolledAt ? data.enrolledAt.slice(0, 10) : '-') + '</p><p class="text-xs text-gray-500">登録日</p></div></div>';
+      '<div class="grid grid-cols-3 gap-2 text-center" style="position:relative;z-index:1">' +
+      '<div class="bg-yellow-50 rounded-lg p-2"><p class="text-lg font-bold text-gray-800">' + (data.surveysCompleted || 0) + '</p><p class="text-xs text-gray-500">回答数</p></div>' +
+      '<div class="bg-yellow-50 rounded-lg p-2"><p class="text-lg font-bold text-gray-800">' + (data.productTests || 0) + '</p><p class="text-xs text-gray-500">商品テスト</p></div>' +
+      '<div class="bg-yellow-50 rounded-lg p-2"><p class="text-lg font-bold text-gray-800">' + (data.enrolledAt ? data.enrolledAt.slice(0, 10) : '-') + '</p><p class="text-xs text-gray-500">登録日</p></div></div>';
 
     loadFeedbackHistory();
     loadPendingSurveys();
