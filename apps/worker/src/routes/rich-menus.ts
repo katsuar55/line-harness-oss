@@ -109,6 +109,45 @@ richMenus.delete('/api/friends/:friendId/rich-menu', async (c) => {
   }
 });
 
+// GET /api/rich-menus/status — リッチメニュー診断（デフォルト設定・全メニュー一覧）
+richMenus.get('/api/rich-menus/status', async (c) => {
+  try {
+    const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+
+    // デフォルトリッチメニューのIDを取得
+    let defaultMenuId: string | null = null;
+    try {
+      const resp = await fetch('https://api.line.me/v2/bot/user/all/richmenu', {
+        headers: { Authorization: `Bearer ${c.env.LINE_CHANNEL_ACCESS_TOKEN}` },
+      });
+      if (resp.ok) {
+        const data = await resp.json<{ richMenuId: string }>();
+        defaultMenuId = data.richMenuId;
+      }
+    } catch { /* no default */ }
+
+    // 全リッチメニュー一覧
+    const list = await lineClient.getRichMenuList();
+    const menus = (list.richmenus ?? []).map((m: Record<string, unknown>) => ({
+      richMenuId: m.richMenuId,
+      name: m.name,
+      size: m.size,
+      chatBarText: m.chatBarText,
+      selected: m.selected,
+      areaCount: Array.isArray(m.areas) ? m.areas.length : 0,
+      isDefault: m.richMenuId === defaultMenuId,
+    }));
+
+    return c.json({
+      success: true,
+      data: { defaultRichMenuId: defaultMenuId, totalMenus: menus.length, menus },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return c.json({ success: false, error: message }, 500);
+  }
+});
+
 // POST /api/rich-menus/setup-naturism — naturism用リッチメニュー一括セットアップ v3
 // 8ボタン（本番同等レイアウト）: 左2列大 + 右1列上下分割×4
 // フロー: 1. 既存デフォルト削除 → 2. 構造作成 → 3. 画像アップロード → 4. デフォルト設定
@@ -230,144 +269,94 @@ function base64ToArrayBuffer(b64: string): ArrayBuffer {
 // ブラウザで開いてスクリーンショット（2500x1686）を撮って画像として使用
 richMenus.get('/api/rich-menus/image-guide', async (c) => {
   return c.html(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8">
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap');
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { width: 2500px; height: 1686px; font-family: 'Noto Sans JP', 'Hiragino Sans', sans-serif; overflow: hidden; }
-
-.container {
-  width: 2500px; height: 1686px;
-  display: grid;
-  grid-template-columns: 833px 833px 834px;
-  grid-template-rows: 843px 843px;
-  background: linear-gradient(160deg, #f8f9fa 0%, #e8eaed 50%, #d4d7dc 100%);
+html { background: #222; }
+body {
+  font-family: 'Noto Sans JP', 'Hiragino Sans', sans-serif;
+  display: flex; justify-content: center; align-items: center;
+  min-height: 100vh; padding: 20px;
 }
-
-/* 大セル（左2列） */
+.wrapper {
+  width: 100%; max-width: 1000px;
+  aspect-ratio: 2500 / 1686;
+}
+.container {
+  width: 100%; height: 100%;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  background: linear-gradient(160deg, #f8f9fa 0%, #e8eaed 50%, #d4d7dc 100%);
+  border-radius: 12px; overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
 .cell-large {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 24px; position: relative; overflow: hidden;
+  gap: 12px; position: relative; overflow: hidden;
   border: 1px solid rgba(192,192,192,0.3);
 }
-.cell-large .icon { font-size: 120px; filter: drop-shadow(0 4px 12px rgba(0,0,0,0.15)); }
+.cell-large .icon { font-size: 4vw; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.15)); }
 .cell-large .label {
-  font-size: 48px; font-weight: 900; letter-spacing: 3px;
-  background: linear-gradient(135deg, #3a3a3a 0%, #666 50%, #3a3a3a 100%);
+  font-size: 1.6vw; font-weight: 900; letter-spacing: 2px;
+  background: linear-gradient(135deg, #2a2a2a, #666, #2a2a2a);
   -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-  text-shadow: none;
 }
-.cell-large .sub {
-  font-size: 24px; color: #888; font-weight: 400; letter-spacing: 1px;
-}
-/* シルバーシャイン効果 */
+.cell-large .sub { font-size: 0.9vw; color: #888; font-weight: 400; }
 .cell-large::after {
-  content: ''; position: absolute; top: -50%; left: -50%;
-  width: 200%; height: 200%;
-  background: linear-gradient(45deg, transparent 40%, rgba(255,255,255,0.08) 50%, transparent 60%);
+  content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
+  background: linear-gradient(45deg, transparent 40%, rgba(255,255,255,0.06) 50%, transparent 60%);
   pointer-events: none;
 }
-
-/* 右列の小セル（上下分割） */
 .right-col {
-  display: grid; grid-template-rows: 421px 422px;
+  display: grid; grid-template-rows: 1fr 1fr;
   border: 1px solid rgba(192,192,192,0.3);
 }
 .cell-small {
   display: flex; flex-direction: row; align-items: center; justify-content: center;
-  gap: 16px; position: relative; overflow: hidden;
+  gap: 10px; position: relative; overflow: hidden;
   border-bottom: 1px solid rgba(192,192,192,0.2);
 }
-.cell-small .icon { font-size: 72px; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.12)); }
+.cell-small .icon { font-size: 2.8vw; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1)); }
 .cell-small .label {
-  font-size: 36px; font-weight: 700;
-  background: linear-gradient(135deg, #3a3a3a 0%, #555 100%);
+  font-size: 1.3vw; font-weight: 700;
+  background: linear-gradient(135deg, #2a2a2a, #555);
   -webkit-background-clip: text; -webkit-text-fill-color: transparent;
 }
-
-/* 各セルの背景 — 淡いグラデーション + シルバーボーダー */
-.bg-home {
-  background: linear-gradient(135deg, #f0f4f8 0%, #e2e8f0 100%);
-  border-left: 4px solid rgba(180,180,200,0.4);
-}
-.bg-category {
-  background: linear-gradient(135deg, #f0f4f8 0%, #e2e8f0 100%);
-}
-.bg-referral {
-  background: linear-gradient(135deg, #eef6f0 0%, #d4edda 100%);
-}
-.bg-rank {
-  background: linear-gradient(135deg, #fff9e6 0%, #ffeeba 100%);
-}
-.bg-delivery {
-  background: linear-gradient(135deg, #e8f4fd 0%, #cce5ff 100%);
-  border-left: 4px solid rgba(180,180,200,0.4);
-}
-.bg-reorder {
-  background: linear-gradient(135deg, #e8f4fd 0%, #cce5ff 100%);
-}
-.bg-sns {
-  background: linear-gradient(135deg, #f3eefb 0%, #e2d5f1 100%);
-}
-.bg-qa {
-  background: linear-gradient(135deg, #f0f0f0 0%, #ddd 100%);
-}
-
-/* シルバーのコーナー装飾 */
+.bg-home     { background: linear-gradient(135deg, #f0f4f8, #e2e8f0); border-left: 3px solid rgba(180,180,200,0.4); }
+.bg-category { background: linear-gradient(135deg, #f0f4f8, #e2e8f0); }
+.bg-referral { background: linear-gradient(135deg, #eef6f0, #d4edda); }
+.bg-rank     { background: linear-gradient(135deg, #fff9e6, #ffeeba); }
+.bg-delivery { background: linear-gradient(135deg, #e8f4fd, #cce5ff); border-left: 3px solid rgba(180,180,200,0.4); }
+.bg-reorder  { background: linear-gradient(135deg, #e8f4fd, #cce5ff); }
+.bg-sns      { background: linear-gradient(135deg, #f3eefb, #e2d5f1); }
+.bg-qa       { background: linear-gradient(135deg, #f0f0f0, #ddd); }
 .cell-large::before, .cell-small::before {
-  content: ''; position: absolute; top: 8px; left: 8px; right: 8px; bottom: 8px;
-  border: 1px solid rgba(192,192,192,0.15); border-radius: 16px;
-  pointer-events: none;
+  content: ''; position: absolute; top: 4px; left: 4px; right: 4px; bottom: 4px;
+  border: 1px solid rgba(200,200,210,0.2); border-radius: 8px; pointer-events: none;
 }
+.note { color: #aaa; font-size: 14px; text-align: center; margin-top: 16px; }
 </style></head>
 <body>
+<div>
+<div class="wrapper">
 <div class="container">
-  <!-- 上段左: ホームページ -->
-  <div class="cell-large bg-home">
-    <span class="icon">🖥️</span>
-    <span class="label">ホームページ</span>
-    <span class="sub">naturism公式サイト</span>
-  </div>
-  <!-- 上段中: カテゴリー -->
-  <div class="cell-large bg-category">
-    <span class="icon">🔍</span>
-    <span class="label">カテゴリー</span>
-    <span class="sub">商品を探す</span>
-  </div>
-  <!-- 上段右（分割） -->
+  <div class="cell-large bg-home"><span class="icon">🖥️</span><span class="label">ホームページ</span><span class="sub">naturism公式サイト</span></div>
+  <div class="cell-large bg-category"><span class="icon">🔍</span><span class="label">カテゴリー</span><span class="sub">商品を探す</span></div>
   <div class="right-col">
-    <div class="cell-small bg-referral">
-      <span class="icon">👥</span>
-      <span class="label">友達紹介</span>
-    </div>
-    <div class="cell-small bg-rank">
-      <span class="icon">🏅</span>
-      <span class="label">マイランク</span>
-    </div>
+    <div class="cell-small bg-referral"><span class="icon">👥</span><span class="label">友達紹介</span></div>
+    <div class="cell-small bg-rank"><span class="icon">🏅</span><span class="label">マイランク</span></div>
   </div>
-  <!-- 下段左: 配送状況 -->
-  <div class="cell-large bg-delivery">
-    <span class="icon">🚚</span>
-    <span class="label">配送状況をみる</span>
-    <span class="sub">お届け状況を確認</span>
-  </div>
-  <!-- 下段中: 購入履歴・再購入 -->
-  <div class="cell-large bg-reorder">
-    <span class="icon">🛒</span>
-    <span class="label">購入履歴・再購入</span>
-    <span class="sub">ワンタップで再注文</span>
-  </div>
-  <!-- 下段右（分割） -->
+  <div class="cell-large bg-delivery"><span class="icon">🚚</span><span class="label">配送状況をみる</span><span class="sub">お届け状況を確認</span></div>
+  <div class="cell-large bg-reorder"><span class="icon">🛒</span><span class="label">購入履歴・再購入</span><span class="sub">ワンタップで再注文</span></div>
   <div class="right-col">
-    <div class="cell-small bg-sns">
-      <span class="icon">💬</span>
-      <span class="label">SNS</span>
-    </div>
-    <div class="cell-small bg-qa">
-      <span class="icon">✉️</span>
-      <span class="label">Q&A</span>
-    </div>
+    <div class="cell-small bg-sns"><span class="icon">💬</span><span class="label">SNS</span></div>
+    <div class="cell-small bg-qa"><span class="icon">✉️</span><span class="label">Q&A お問い合わせ</span></div>
   </div>
+</div>
+</div>
+<p class="note">📐 リッチメニュー画像テンプレート (2500×1686) — このプレビューはブラウザに合わせて縮小表示されています</p>
 </div>
 </body></html>`);
 });
