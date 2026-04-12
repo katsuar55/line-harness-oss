@@ -16,6 +16,7 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path.startsWith('/images/') ||
     path.startsWith('/api/liff/') ||
     path === '/liff/portal' ||
+    path === '/liff/portal/' ||
     path.startsWith('/auth/') ||
     path === '/api/integrations/stripe/webhook' ||
     path === '/api/integrations/shopify/webhook' ||
@@ -23,6 +24,7 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/api/integrations/shopify/webhook/fulfillment' ||
     path === '/api/integrations/shopify/webhook/inventory' ||
     path === '/api/integrations/shopify/webhook/payment' ||
+    path === '/api/integrations/shopify/webhook/product' ||
     path.match(/^\/api\/webhooks\/incoming\/[^/]+\/receive$/) ||
     path.match(/^\/api\/forms\/[^/]+\/submit$/) ||
     path.match(/^\/api\/forms\/[^/]+$/) || // GET form definition (public for LIFF)

@@ -30,6 +30,28 @@ import { verifyShopifySignature } from '../utils/shopify-hmac.js';
 
 const shopifyPhase2a = new Hono<Env>();
 
+// ========== ヘルパー: Webhookログ ==========
+
+async function logWebhook(
+  db: D1Database,
+  topic: string,
+  shopifyId: string | undefined,
+  status: string,
+  summary?: string,
+): Promise<void> {
+  try {
+    const now = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().replace('Z', '');
+    await db
+      .prepare(
+        `INSERT INTO shopify_webhook_log (topic, shopify_id, status, summary, error, received_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(topic, shopifyId ?? null, status, summary ?? null, null, now)
+      .run();
+  } catch {
+    // ログ書き込み失敗はサイレントに無視
+  }
+}
+
 // ========== ヘルパー: フレンドマッチング ==========
 
 async function findFriendByEmailOrPhone(
@@ -79,7 +101,6 @@ async function findFriendByEmailOrPhone(
 
 /**
  * LINE Messaging API でテキストメッセージを送信
- * TODO: LINE Messaging API の実際の呼び出しに置き換え
  */
 async function sendLineMessage(
   lineChannelAccessToken: string,
@@ -231,6 +252,8 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/fulfillment', async (c) =
       }
     }
 
+    await logWebhook(db, c.req.header('X-Shopify-Topic') ?? 'fulfillments/?', shopifyFulfillmentId, 'received', `order:${shopifyOrderId} ${status ?? ''}`);
+
     const fulfillment = await upsertShopifyFulfillment(db, {
       shopifyOrderId,
       shopifyFulfillmentId,
@@ -241,6 +264,8 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/fulfillment', async (c) =
       status,
       lineItems: lineItemsRaw ? JSON.stringify(lineItemsRaw) : undefined,
     });
+
+    await logWebhook(db, c.req.header('X-Shopify-Topic') ?? 'fulfillments/?', shopifyFulfillmentId, 'processed', `saved as ${fulfillment.id}`);
 
     // 非同期: フレンドマッチング → LINE通知送信
     const asyncWork = (async () => {

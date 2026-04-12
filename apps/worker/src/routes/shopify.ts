@@ -17,6 +17,29 @@ import { getShopifyAccessToken } from '../services/shopify-token.js';
 
 const shopify = new Hono<Env>();
 
+// ========== ヘルパー: Webhookログ ==========
+
+async function logWebhook(
+  db: D1Database,
+  topic: string,
+  shopifyId: string | undefined,
+  status: string,
+  summary?: string,
+  error?: string,
+): Promise<void> {
+  try {
+    const now = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().replace('Z', '');
+    await db
+      .prepare(
+        `INSERT INTO shopify_webhook_log (topic, shopify_id, status, summary, error, received_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(topic, shopifyId ?? null, status, summary ?? null, error ?? null, now)
+      .run();
+  } catch {
+    // ログ書き込み失敗はサイレントに無視（テーブル未作成時など）
+  }
+}
+
 // ========== Shopify Webhookレシーバー ==========
 
 shopify.post('/api/integrations/shopify/webhook', async (c) => {
@@ -31,6 +54,8 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
 
       const valid = await verifyShopifySignature(shopifySecret, rawBody, hmacHeader);
       if (!valid) {
+        const topic = c.req.header('X-Shopify-Topic') ?? '';
+        await logWebhook(c.env.DB, topic, undefined, 'auth_failed', 'HMAC verification failed');
         return c.json({ success: false, error: 'Shopify signature verification failed' }, 401);
       }
       body = JSON.parse(rawBody) as Record<string, unknown>;
@@ -61,6 +86,8 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
       const totalPrice = body.total_price ? Number(body.total_price) : undefined;
       const lineItemsRaw = body.line_items as Array<Record<string, unknown>> | undefined;
 
+      await logWebhook(db, topic, shopifyOrderId, 'received', `order #${body.order_number ?? '?'} ¥${body.total_price ?? '?'}`);
+
       const order = await upsertShopifyOrder(db, {
         shopifyOrderId,
         shopifyCustomerId,
@@ -75,6 +102,8 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
         tags: (body.tags as string) ?? undefined,
         metadata: JSON.stringify({ source: 'webhook', topic }),
       });
+
+      await logWebhook(db, topic, shopifyOrderId, 'processed', `saved as ${order.id}`);
 
       // 非同期処理: フレンドマッチング・タグ付け・イベント発火
       const orderAsyncWork = (async () => {
@@ -174,6 +203,8 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
       const email = (body.email as string) ?? undefined;
       const phone = (body.phone as string) ?? undefined;
 
+      await logWebhook(db, topic, shopifyCustomerId, 'received', `${body.first_name ?? ''} ${body.last_name ?? ''}`);
+
       const customer = await upsertShopifyCustomer(db, {
         shopifyCustomerId,
         email,
@@ -185,6 +216,8 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
         tags: (body.tags as string) ?? undefined,
         metadata: JSON.stringify({ source: 'webhook', topic }),
       });
+
+      await logWebhook(db, topic, shopifyCustomerId, 'processed', `saved as ${customer.id}`);
 
       // 非同期処理: フレンドマッチング
       const customerAsyncWork = (async () => {
@@ -237,9 +270,81 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
     }
 
     // 未対応のトピック
+    await logWebhook(db, topic, String(body.id ?? ''), 'skipped', 'Unhandled topic');
     return c.json({ success: true, data: { message: `Topic '${topic}' received but not processed` } });
   } catch (err) {
     console.error('POST /api/integrations/shopify/webhook error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ========== Shopify Product Webhookレシーバー ==========
+
+shopify.post('/api/integrations/shopify/webhook/product', async (c) => {
+  try {
+    const shopifySecret = (c.env as unknown as Record<string, string | undefined>).SHOPIFY_WEBHOOK_SECRET;
+    let body: Record<string, unknown>;
+
+    if (shopifySecret) {
+      const hmacHeader = c.req.header('X-Shopify-Hmac-Sha256') ?? '';
+      const rawBody = await c.req.text();
+      const valid = await verifyShopifySignature(shopifySecret, rawBody, hmacHeader);
+      if (!valid) {
+        return c.json({ success: false, error: 'Shopify signature verification failed' }, 401);
+      }
+      body = JSON.parse(rawBody) as Record<string, unknown>;
+    } else {
+      body = await c.req.json<Record<string, unknown>>();
+    }
+
+    const topic = c.req.header('X-Shopify-Topic') ?? '';
+    const db = c.env.DB;
+    const shopifyProductId = String(body.id ?? '');
+
+    await logWebhook(db, topic, shopifyProductId, 'received', String(body.title ?? ''));
+
+    if (topic === 'products/delete') {
+      // 論理削除: ステータスを archived に変更
+      await db
+        .prepare(`UPDATE shopify_products SET status = 'archived', updated_at = ? WHERE shopify_product_id = ?`)
+        .bind(jstNow(), shopifyProductId)
+        .run();
+      await logWebhook(db, topic, shopifyProductId, 'processed', 'archived');
+      return c.json({ success: true, data: { message: 'Product archived', shopifyProductId } });
+    }
+
+    // products/create, products/update
+    const variants = body.variants as Array<Record<string, unknown>> | undefined;
+    const firstVariant = variants?.[0];
+    const images = body.images as Array<Record<string, unknown>> | undefined;
+    const firstImage = images?.[0];
+    const storeDomain = (c.env as unknown as Record<string, string | undefined>).SHOPIFY_STORE_DOMAIN ?? '';
+
+    const statusRaw = (body.status as string) ?? 'active';
+    const status = ['active', 'draft', 'archived'].includes(statusRaw)
+      ? (statusRaw as 'active' | 'draft' | 'archived')
+      : 'draft';
+
+    await upsertShopifyProduct(db, {
+      shopifyProductId,
+      title: String(body.title ?? ''),
+      description: (body.body_html as string) ?? null,
+      vendor: (body.vendor as string) ?? null,
+      productType: (body.product_type as string) ?? null,
+      handle: (body.handle as string) ?? null,
+      status,
+      imageUrl: (firstImage?.src as string) ?? null,
+      price: firstVariant?.price != null ? String(firstVariant.price) : null,
+      compareAtPrice: firstVariant?.compare_at_price != null ? String(firstVariant.compare_at_price) : null,
+      tags: (body.tags as string) ?? null,
+      variantsJson: variants ? JSON.stringify(variants) : null,
+      storeUrl: storeDomain ? `https://${storeDomain}/products/${body.handle ?? ''}` : null,
+    });
+
+    await logWebhook(db, topic, shopifyProductId, 'processed', `"${body.title}" ${status}`);
+    return c.json({ success: true, data: { shopifyProductId, title: body.title } });
+  } catch (err) {
+    console.error('POST /api/integrations/shopify/webhook/product error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

@@ -14,14 +14,15 @@ function escapeHtml(str: string): string {
  * LIFF SDK で初期化 → IDトークン取得 → API呼び出し → セクション表示
  * Tailwind CSS CDN + LIFF SDK CDN を使用
  */
-liffPages.get('/liff/portal', (c) => {
+// 末尾スラッシュ付きリクエスト対応（LINE LIFF ブラウザ互換性）
+const portalHandler = (c: { env: Env['Bindings']; html: (html: string) => Response }) => {
   const liffUrl = c.env.LIFF_URL || '';
   const workerUrl = c.env.WORKER_URL || '';
-  // LIFF ID を LIFF_URL から抽出 (例: https://liff.line.me/1234567890-abcdefgh → 1234567890-abcdefgh)
   const liffId = liffUrl.replace('https://liff.line.me/', '');
-
   return c.html(portalPage(liffId, workerUrl));
-});
+};
+liffPages.get('/liff/portal', portalHandler as never);
+liffPages.get('/liff/portal/', portalHandler as never);
 
 function portalPage(liffId: string, apiBase: string): string {
   return `<!DOCTYPE html>
@@ -475,10 +476,10 @@ function portalPage(liffId: string, apiBase: string): string {
       <div class="card p-4">
         <p class="text-xs text-gray-500 font-bold mb-3">クイックリンク</p>
         <div class="grid grid-cols-2 gap-2">
-          <a href="?page=reorder" class="flex items-center gap-2 p-3 rounded-xl bg-green-50 text-green-700 text-sm font-bold hover:bg-green-100 transition-colors">
+          <a href="javascript:void(0)" onclick="openLiffPage('reorder')" class="flex items-center gap-2 p-3 rounded-xl bg-green-50 text-green-700 text-sm font-bold hover:bg-green-100 transition-colors">
             <span class="text-lg">🔄</span> 再注文する
           </a>
-          <a href="?page=delivery" class="flex items-center gap-2 p-3 rounded-xl bg-blue-50 text-blue-700 text-sm font-bold hover:bg-blue-100 transition-colors">
+          <a href="javascript:void(0)" onclick="openLiffPage('delivery')" class="flex items-center gap-2 p-3 rounded-xl bg-blue-50 text-blue-700 text-sm font-bold hover:bg-blue-100 transition-colors">
             <span class="text-lg">📦</span> 配送状況
           </a>
         </div>
@@ -598,6 +599,12 @@ let idToken = null;
 let selectedCondition = null;
 
 function esc(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// ─── LIFF ページ遷移 (reorder / delivery) ───
+function openLiffPage(page) {
+  var liffUrl = 'https://liff.line.me/' + LIFF_ID;
+  window.location.href = liffUrl + '?page=' + encodeURIComponent(page);
+}
 
 // ─── i18n ───
 var I18N = ${JSON.stringify(i18nData)};
@@ -800,7 +807,9 @@ async function api(path, body = {}) {
 }
 
 async function apiGet(path) {
-  const res = await fetch(API_BASE + path);
+  var headers = {};
+  if (idToken) { headers['Authorization'] = 'Bearer ' + idToken; }
+  const res = await fetch(API_BASE + path, { headers: headers });
   return res.json();
 }
 

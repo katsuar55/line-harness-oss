@@ -808,8 +808,7 @@ function attachOrderDetailEvents(): void {
   const storeBtn = document.getElementById('storeBtn');
   if (storeBtn) {
     storeBtn.addEventListener('click', () => {
-      const domain = 'naturism-diet.com';
-      window.open(`https://${domain}`, '_blank');
+      window.open('https://naturism-diet.com', '_blank');
     });
   }
 }

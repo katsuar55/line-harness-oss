@@ -57,16 +57,33 @@ export async function liffAuthMiddleware(c: Context<Env>, next: Next): Promise<R
   }
 
   try {
-    const body = await c.req.json<{ idToken?: string; lineUserId?: string }>();
+    // Authorization ヘッダーからIDトークンを取得（GET リクエスト対応）
+    const authHeader = c.req.header('Authorization');
+    const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+    // POST はボディから、GET は Authorization ヘッダーから取得
+    let bodyToken: string | undefined;
+    let bodyLineUserId: string | undefined;
+    if (c.req.method !== 'GET') {
+      try {
+        const body = await c.req.json<{ idToken?: string; lineUserId?: string }>();
+        bodyToken = body.idToken;
+        bodyLineUserId = body.lineUserId;
+      } catch {
+        // JSON パース失敗 — ヘッダートークンにフォールバック
+      }
+    }
+
+    const idToken = headerToken || bodyToken;
 
     // Try idToken first (secure path)
-    if (body.idToken) {
+    if (idToken) {
       const channelId = c.env.LINE_LOGIN_CHANNEL_ID;
       if (!channelId) {
         return c.json({ success: false, error: 'LIFF auth not configured' }, 500);
       }
 
-      const verifiedUserId = await verifyLineIdToken(body.idToken, channelId);
+      const verifiedUserId = await verifyLineIdToken(idToken, channelId);
       if (!verifiedUserId) {
         return c.json({ success: false, error: 'Invalid or expired ID token' }, 401);
       }
@@ -82,17 +99,17 @@ export async function liffAuthMiddleware(c: Context<Env>, next: Next): Promise<R
 
     // Fallback: lineUserId directly (for development/testing only)
     // In production, LINE_LOGIN_CHANNEL_ID should always be set
-    if (body.lineUserId) {
-      const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
+    if (bodyLineUserId) {
+      const friend = await getFriendByLineUserId(c.env.DB, bodyLineUserId);
       if (!friend) {
         return c.json({ success: false, error: 'Friend not found' }, 404);
       }
 
-      (c as { set: (key: string, value: unknown) => void }).set('liffUser', { lineUserId: body.lineUserId, friendId: friend.id });
+      (c as { set: (key: string, value: unknown) => void }).set('liffUser', { lineUserId: bodyLineUserId, friendId: friend.id });
       return next();
     }
 
-    return c.json({ success: false, error: 'idToken or lineUserId required' }, 401);
+    return c.json({ success: false, error: 'idToken or lineUserId required. Send idToken in Authorization Bearer header or request body.' }, 401);
   } catch {
     return c.json({ success: false, error: 'Invalid request body' }, 400);
   }
