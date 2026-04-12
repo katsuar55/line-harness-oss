@@ -56,7 +56,20 @@ vi.mock('@line-crm/db', async (importOriginal) => {
     getShopifyOrders: vi.fn(async () => [
       { id: 'o1', order_number: 1001, total_price: 6415, line_items: '[{"name":"naturism Blue VP","quantity":1}]', created_at: '2026-03-01', fulfillment_status: 'fulfilled' },
     ]),
-    getShopifyOrderById: vi.fn(async () => null),
+    getShopifyOrderById: vi.fn(async (_db: unknown, id: string) => {
+      if (id === 'o1') {
+        return {
+          id: 'o1',
+          order_number: 1001,
+          total_price: 6415,
+          email: 'test@example.com',
+          line_items: '[{"name":"naturism Blue VP","variant_id":"44000001","quantity":1,"price":"6415"}]',
+          created_at: '2026-03-01',
+          fulfillment_status: 'fulfilled',
+        };
+      }
+      return null;
+    }),
     getShopifyProducts: vi.fn(async () => ({
       products: [
         { id: 'p1', shopify_product_id: 'sp1', title: 'naturism Blue', price: 2376, compare_at_price: null, image_url: 'https://img.example.com/blue.jpg', handle: 'naturism-blue', status: 'active' },
@@ -120,6 +133,30 @@ vi.mock('@line-crm/db', async (importOriginal) => {
   };
 });
 
+// Mock shopify-token (getShopifyAccessToken)
+vi.mock('../services/shopify-token.js', () => ({
+  getShopifyAccessToken: vi.fn(async () => 'test-shopify-token'),
+}));
+
+// Mock global fetch for Shopify API calls (Draft Orders)
+const originalFetch = globalThis.fetch;
+vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  if (typeof url === 'string' && url.includes('/admin/api/') && url.includes('draft_orders')) {
+    return new Response(JSON.stringify({
+      draft_order: {
+        id: 12345,
+        invoice_url: 'https://naturism-diet.com/checkout/draft/12345',
+        status: 'open',
+        total_price: '6415.00',
+        currency: 'JPY',
+        line_items: [{ title: 'naturism Blue VP', quantity: 1, price: '6415.00' }],
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+  // Fallback for other URLs (shouldn't hit in tests)
+  return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+}));
+
 // Mock quiz engine
 vi.mock('../services/quiz-engine.js', () => ({
   scoreQuiz: vi.fn(() => ({
@@ -166,11 +203,19 @@ function createApp() {
 }
 
 function mockEnv() {
+  const mockStmt = {
+    bind: vi.fn().mockReturnThis(),
+    run: vi.fn(async () => ({ success: true })),
+    all: vi.fn(async () => ({ results: [] })),
+    first: vi.fn(async () => null),
+  };
   return {
-    DB: {} as D1Database,
+    DB: { prepare: vi.fn(() => mockStmt) } as unknown as D1Database,
     AI: {} as Ai,
     WORKER_URL: 'https://test.workers.dev',
     SHOPIFY_STORE_DOMAIN: 'naturism-diet.com',
+    SHOPIFY_CLIENT_ID: 'test-client-id',
+    SHOPIFY_CLIENT_SECRET: 'test-client-secret',
   };
 }
 
@@ -251,6 +296,44 @@ describe('LIFF Portal Routes', () => {
       const json = await res.json() as { data: { recentOrders: unknown[]; products: unknown[] } };
       expect(json.data.recentOrders).toHaveLength(1);
       expect(json.data.products).toHaveLength(2);
+    });
+  });
+
+  // ─── Reorder Create ──────────────────────────
+  describe('POST /api/liff/reorder/create', () => {
+    it('creates draft order from past order', async () => {
+      const res = await post(app, '/api/liff/reorder/create', { lineUserId: 'U_EXISTING', orderId: 'o1' });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean; data: { invoiceUrl: string; totalPrice: number } };
+      expect(json.success).toBe(true);
+      expect(json.data.invoiceUrl).toContain('checkout');
+      expect(json.data.totalPrice).toBe(6415);
+    });
+
+    it('returns 404 for nonexistent order', async () => {
+      const res = await post(app, '/api/liff/reorder/create', { lineUserId: 'U_EXISTING', orderId: 'nonexistent' });
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 400 when no items provided', async () => {
+      const res = await post(app, '/api/liff/reorder/create', { lineUserId: 'U_EXISTING' });
+      expect(res.status).toBe(400);
+    });
+
+    it('creates draft order from item list', async () => {
+      const res = await post(app, '/api/liff/reorder/create', {
+        lineUserId: 'U_EXISTING',
+        items: [{ variantId: '44000001', quantity: 2 }],
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean; data: { shopifyDraftOrderId: string } };
+      expect(json.success).toBe(true);
+      expect(json.data.shopifyDraftOrderId).toBe('12345');
+    });
+
+    it('returns 401 for unauthorized user', async () => {
+      const res = await post(app, '/api/liff/reorder/create', { lineUserId: 'U_UNKNOWN' });
+      expect(res.status).toBe(404);
     });
   });
 

@@ -16,6 +16,7 @@
 
 import { initBooking } from './booking.js';
 import { initForm } from './form.js';
+import { initReorder } from './reorder.js';
 
 declare const liff: {
   init(config: { liffId: string }): Promise<void>;
@@ -273,6 +274,8 @@ async function main() {
       const params = new URLSearchParams(window.location.search);
       const formId = params.get('id');
       await initForm(formId);
+    } else if (page === 'reorder') {
+      await initReorder();
     } else {
       await linkAndAddFlow();
     }

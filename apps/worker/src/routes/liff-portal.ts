@@ -1,10 +1,12 @@
 import { Hono } from 'hono';
+import { getShopifyAccessToken } from '../services/shopify-token.js';
 import {
   getFriendRank,
   getMemberRanks,
   getCouponAssignmentsByFriend,
   getShopifyOrders,
   getShopifyProducts,
+  getShopifyOrderById,
   createIntakeLog,
   getIntakeLogs,
   getIntakeStreak,
@@ -221,6 +223,148 @@ liffPortal.post('/api/liff/reorder', async (c) => {
     });
   } catch (err) {
     console.error('POST /api/liff/reorder error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/reorder/create — Draft Order作成（ワンクリック再購入）
+ *
+ * body: { orderId?: string, items?: Array<{ variantId: string, quantity: number }> }
+ *   - orderId: 過去の注文IDから全品目を再注文
+ *   - items: 個別商品を指定して再注文
+ *
+ * Shopify Draft Orders API でチェックアウトURLを生成し返却
+ */
+liffPortal.post('/api/liff/reorder/create', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const { orderId, items } = await c.req.json<{
+      orderId?: string;
+      items?: Array<{ variantId: string; quantity: number }>;
+    }>();
+
+    // Build line items for draft order
+    let lineItems: Array<{ variantId: string; quantity: number }> = [];
+
+    if (orderId) {
+      // Reorder from past order
+      const order = await getShopifyOrderById(c.env.DB, orderId);
+      if (!order) return c.json({ success: false, error: 'Order not found' }, 404);
+
+      const parsed = order.line_items ? JSON.parse(order.line_items as string) : [];
+      lineItems = parsed
+        .filter((li: Record<string, unknown>) => li.variant_id)
+        .map((li: Record<string, unknown>) => ({
+          variantId: `gid://shopify/ProductVariant/${li.variant_id}`,
+          quantity: Number(li.quantity) || 1,
+        }));
+    } else if (items && items.length > 0) {
+      lineItems = items.map((item) => ({
+        variantId: item.variantId.startsWith('gid://')
+          ? item.variantId
+          : `gid://shopify/ProductVariant/${item.variantId}`,
+        quantity: Math.max(1, Math.min(99, item.quantity)),
+      }));
+    }
+
+    if (lineItems.length === 0) {
+      return c.json({ success: false, error: 'No items to reorder' }, 400);
+    }
+
+    // Get Shopify access token
+    const accessToken = await getShopifyAccessToken(c.env.DB, c.env);
+    const storeDomain = c.env.SHOPIFY_STORE_DOMAIN;
+    if (!storeDomain) {
+      return c.json({ success: false, error: 'Shopify not configured' }, 500);
+    }
+
+    // Look up customer email from friend's orders
+    const recentOrders = await getShopifyOrders(c.env.DB, { friendId: user.friendId, limit: 1 });
+    const customerEmail = recentOrders[0]?.email as string | undefined;
+
+    // Create Draft Order via Shopify Admin REST API
+    const draftOrderPayload: Record<string, unknown> = {
+      draft_order: {
+        line_items: lineItems.map((li) => ({
+          variant_id: li.variantId.replace('gid://shopify/ProductVariant/', ''),
+          quantity: li.quantity,
+        })),
+        use_customer_default_address: true,
+        ...(customerEmail ? { email: customerEmail } : {}),
+        tags: 'liff-reorder',
+        note: 'LIFF再購入',
+      },
+    };
+
+    const draftRes = await fetch(
+      `https://${storeDomain}/admin/api/2026-04/draft_orders.json`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Shopify-Access-Token': accessToken,
+        },
+        body: JSON.stringify(draftOrderPayload),
+      },
+    );
+
+    if (!draftRes.ok) {
+      const errBody = await draftRes.text();
+      console.error('Shopify Draft Order API error:', draftRes.status, errBody);
+      return c.json({ success: false, error: 'Failed to create draft order' }, 502);
+    }
+
+    const draftData = await draftRes.json() as {
+      draft_order: {
+        id: number;
+        invoice_url: string;
+        status: string;
+        total_price: string;
+        currency: string;
+        line_items: Array<Record<string, unknown>>;
+      };
+    };
+
+    const draft = draftData.draft_order;
+
+    // Save to D1
+    const draftId = crypto.randomUUID();
+    await c.env.DB
+      .prepare(
+        `INSERT INTO shopify_draft_orders
+         (id, friend_id, shopify_draft_order_id, invoice_url, status, total_price, currency, line_items, source_order_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        draftId,
+        user.friendId,
+        String(draft.id),
+        draft.invoice_url,
+        draft.status,
+        Number(draft.total_price) || 0,
+        draft.currency || 'JPY',
+        JSON.stringify(draft.line_items),
+        orderId ?? null,
+        jstNow(),
+        jstNow(),
+      )
+      .run();
+
+    return c.json({
+      success: true,
+      data: {
+        draftOrderId: draftId,
+        shopifyDraftOrderId: String(draft.id),
+        invoiceUrl: draft.invoice_url,
+        totalPrice: Number(draft.total_price),
+        currency: draft.currency || 'JPY',
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/liff/reorder/create error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
