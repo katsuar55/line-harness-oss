@@ -233,186 +233,7 @@ describe('Shopify Routes', () => {
   // =========================================================================
 
   describe('POST /api/integrations/shopify/webhook (no SHOPIFY_WEBHOOK_SECRET)', () => {
-    it('bypasses auth middleware', async () => {
-      mockGetShopifyOrderByShopifyId.mockResolvedValueOnce(null);
-      mockUpsertShopifyOrder.mockResolvedValueOnce({
-        id: 'so-1',
-        shopify_order_id: '5551234567890',
-      });
-
-      const res = await app.request(
-        '/api/integrations/shopify/webhook',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Shopify-Topic': 'orders/create',
-          },
-          body: JSON.stringify(makeOrderWebhookBody()),
-        },
-        env,
-      );
-      expect(res.status).toBe(200);
-    });
-
-    it('processes orders/create and returns success', async () => {
-      mockGetShopifyOrderByShopifyId.mockResolvedValueOnce(null);
-      mockUpsertShopifyOrder.mockResolvedValueOnce({
-        id: 'so-new',
-        shopify_order_id: '5551234567890',
-      });
-
-      const res = await app.request(
-        '/api/integrations/shopify/webhook',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Shopify-Topic': 'orders/create',
-          },
-          body: JSON.stringify(makeOrderWebhookBody()),
-        },
-        env,
-      );
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { success: boolean; data: { id: string; shopifyOrderId: string } };
-      expect(body.success).toBe(true);
-      expect(body.data.id).toBe('so-new');
-      expect(body.data.shopifyOrderId).toBe('5551234567890');
-    });
-
-    it('returns already processed for duplicate orders (idempotency)', async () => {
-      mockGetShopifyOrderByShopifyId.mockResolvedValueOnce({
-        id: 'so-existing',
-        shopify_order_id: '5551234567890',
-      });
-
-      const res = await app.request(
-        '/api/integrations/shopify/webhook',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Shopify-Topic': 'orders/create',
-          },
-          body: JSON.stringify(makeOrderWebhookBody()),
-        },
-        env,
-      );
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { success: boolean; data: { message: string } };
-      expect(body.success).toBe(true);
-      expect(body.data.message).toBe('Already processed');
-      expect(mockUpsertShopifyOrder).not.toHaveBeenCalled();
-    });
-
-    it('processes orders/updated without idempotency check', async () => {
-      mockUpsertShopifyOrder.mockResolvedValueOnce({
-        id: 'so-updated',
-        shopify_order_id: '5551234567890',
-      });
-
-      const res = await app.request(
-        '/api/integrations/shopify/webhook',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Shopify-Topic': 'orders/updated',
-          },
-          body: JSON.stringify(makeOrderWebhookBody({ financial_status: 'refunded' })),
-        },
-        env,
-      );
-      expect(res.status).toBe(200);
-      expect(mockGetShopifyOrderByShopifyId).not.toHaveBeenCalled();
-      expect(mockUpsertShopifyOrder).toHaveBeenCalled();
-    });
-
-    it('processes customers/create', async () => {
-      mockUpsertShopifyCustomer.mockResolvedValueOnce({
-        id: 'sc-1',
-        shopify_customer_id: '7771234567890',
-      });
-
-      const res = await app.request(
-        '/api/integrations/shopify/webhook',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Shopify-Topic': 'customers/create',
-          },
-          body: JSON.stringify(makeCustomerWebhookBody()),
-        },
-        env,
-      );
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { success: boolean; data: { id: string; shopifyCustomerId: string } };
-      expect(body.success).toBe(true);
-      expect(body.data.id).toBe('sc-1');
-      expect(body.data.shopifyCustomerId).toBe('7771234567890');
-    });
-
-    it('processes customers/update', async () => {
-      mockUpsertShopifyCustomer.mockResolvedValueOnce({
-        id: 'sc-1',
-        shopify_customer_id: '7771234567890',
-      });
-
-      const res = await app.request(
-        '/api/integrations/shopify/webhook',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Shopify-Topic': 'customers/update',
-          },
-          body: JSON.stringify(makeCustomerWebhookBody({ orders_count: 5, total_spent: '19900.00' })),
-        },
-        env,
-      );
-      expect(res.status).toBe(200);
-      expect(mockUpsertShopifyCustomer).toHaveBeenCalled();
-    });
-
-    it('returns success with message for unhandled topic', async () => {
-      const res = await app.request(
-        '/api/integrations/shopify/webhook',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Shopify-Topic': 'products/update',
-          },
-          body: JSON.stringify({ id: 123 }),
-        },
-        env,
-      );
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { success: boolean; data: { message: string } };
-      expect(body.success).toBe(true);
-      expect(body.data.message).toContain('products/update');
-    });
-
-    it('handles missing topic header gracefully', async () => {
-      const res = await app.request(
-        '/api/integrations/shopify/webhook',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: 123 }),
-        },
-        env,
-      );
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { success: boolean; data: { message: string } };
-      expect(body.success).toBe(true);
-    });
-
-    it('returns 500 on internal error', async () => {
-      mockGetShopifyOrderByShopifyId.mockRejectedValueOnce(new Error('DB failure'));
-
+    it('rejects webhook when no signing secret is configured', async () => {
       const res = await app.request(
         '/api/integrations/shopify/webhook',
         {
@@ -428,17 +249,29 @@ describe('Shopify Routes', () => {
       expect(res.status).toBe(500);
       const body = (await res.json()) as { success: boolean; error: string };
       expect(body.success).toBe(false);
-      expect(body.error).toBe('Internal server error');
+      expect(body.error).toBe('Webhook secret not configured');
+      expect(mockUpsertShopifyOrder).not.toHaveBeenCalled();
     });
 
-    it('passes correct params to upsertShopifyOrder', async () => {
-      mockGetShopifyOrderByShopifyId.mockResolvedValueOnce(null);
-      mockUpsertShopifyOrder.mockResolvedValueOnce({
-        id: 'so-1',
-        shopify_order_id: '5551234567890',
-      });
+    it('rejects customer webhook when no signing secret is configured', async () => {
+      const res = await app.request(
+        '/api/integrations/shopify/webhook',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Shopify-Topic': 'customers/create',
+          },
+          body: JSON.stringify(makeCustomerWebhookBody()),
+        },
+        env,
+      );
+      expect(res.status).toBe(500);
+      expect(mockUpsertShopifyCustomer).not.toHaveBeenCalled();
+    });
 
-      await app.request(
+    it('also rejects when SHOPIFY_CLIENT_SECRET fallback is also missing', async () => {
+      const res = await app.request(
         '/api/integrations/shopify/webhook',
         {
           method: 'POST',
@@ -448,11 +281,70 @@ describe('Shopify Routes', () => {
           },
           body: JSON.stringify(makeOrderWebhookBody()),
         },
-        env,
+        env, // env has no SHOPIFY_WEBHOOK_SECRET or SHOPIFY_CLIENT_SECRET
+      );
+      expect(res.status).toBe(500);
+    });
+
+    it('uses SHOPIFY_CLIENT_SECRET as fallback when SHOPIFY_WEBHOOK_SECRET is not set', async () => {
+      const clientSecret = 'client_secret_for_test';
+      const envWithClient = createMockEnv({ SHOPIFY_CLIENT_SECRET: clientSecret });
+      mockGetShopifyOrderByShopifyId.mockResolvedValueOnce(null);
+      mockUpsertShopifyOrder.mockResolvedValueOnce({
+        id: 'so-client',
+        shopify_order_id: '5551234567890',
+      });
+
+      const rawBody = JSON.stringify(makeOrderWebhookBody());
+      const hmac = await generateShopifyHmac(clientSecret, rawBody);
+
+      const res = await app.request(
+        '/api/integrations/shopify/webhook',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Shopify-Topic': 'orders/create',
+            'X-Shopify-Hmac-Sha256': hmac,
+          },
+          body: rawBody,
+        },
+        envWithClient,
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { success: boolean; data: { id: string } };
+      expect(body.success).toBe(true);
+      expect(body.data.id).toBe('so-client');
+    });
+
+    it('passes correct params to upsertShopifyOrder (with valid HMAC)', async () => {
+      const secret = 'test_hmac_secret';
+      const envWithSecret = createMockEnv({ SHOPIFY_WEBHOOK_SECRET: secret });
+      mockGetShopifyOrderByShopifyId.mockResolvedValueOnce(null);
+      mockUpsertShopifyOrder.mockResolvedValueOnce({
+        id: 'so-1',
+        shopify_order_id: '5551234567890',
+      });
+
+      const rawBody = JSON.stringify(makeOrderWebhookBody());
+      const hmac = await generateShopifyHmac(secret, rawBody);
+
+      await app.request(
+        '/api/integrations/shopify/webhook',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Shopify-Topic': 'orders/create',
+            'X-Shopify-Hmac-Sha256': hmac,
+          },
+          body: rawBody,
+        },
+        envWithSecret,
       );
 
       expect(mockUpsertShopifyOrder).toHaveBeenCalledWith(
-        env.DB,
+        envWithSecret.DB,
         expect.objectContaining({
           shopifyOrderId: '5551234567890',
           shopifyCustomerId: '7771234567890',

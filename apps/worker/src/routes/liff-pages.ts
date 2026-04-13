@@ -549,9 +549,9 @@ function portalPage(liffId: string, apiBase: string): string {
             <div class="flex-1"><p class="text-sm font-bold text-gray-800">オンラインストア</p><p class="text-xs text-gray-400">Shopify公式ストア</p></div>
             <span class="text-gray-300 text-sm">→</span>
           </a>
-          <a href="https://www.instagram.com/naturism_afterdiet/" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+          <a href="https://www.instagram.com/naturism_supplement/" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
             <span class="w-8 h-8 rounded-full bg-pink-100 flex items-center justify-center text-sm">📸</span>
-            <div class="flex-1"><p class="text-sm font-bold text-gray-800">Instagram</p><p class="text-xs text-gray-400">@naturism_afterdiet</p></div>
+            <div class="flex-1"><p class="text-sm font-bold text-gray-800">Instagram</p><p class="text-xs text-gray-400">@naturism_supplement</p></div>
             <span class="text-gray-300 text-sm">→</span>
           </a>
           <a href="https://x.com/naturism_diet" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
@@ -816,14 +816,22 @@ async function apiGet(path) {
 // ─── Deep Link (hash-based tab navigation from rich menu) ───
 function handleDeepLink() {
   var hash = window.location.hash.replace('#', '');
-  var tabMap = { shop: 'shop', store: 'shop', home: 'home', mypage: 'home', rank: 'home', referral: 'home', quiz: 'quiz', intake: 'intake', health: 'health' };
+  var tabMap = { shop: 'shop', store: 'shop', home: 'home', mypage: 'home', rank: 'home', referral: 'home', quiz: 'quiz', intake: 'intake', health: 'health', delivery: 'shop', reorder: 'shop' };
+  // URLSearchParams もチェック（openLiffPage 互換）
+  if (!hash) {
+    var params = new URLSearchParams(window.location.search);
+    hash = params.get('page') || '';
+  }
   var target = tabMap[hash];
   if (target && target !== 'home') {
     switchTab(target);
   }
-  // rank/referral はホームタブ内のセクションへスクロール
+  // ホームタブ内のセクションへスクロール
   if (hash === 'rank') { setTimeout(function() { var el = document.getElementById('rank-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
   if (hash === 'referral') { setTimeout(function() { var el = document.getElementById('referral-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
+  // ショップタブ内のカードへスクロール
+  if (hash === 'delivery') { setTimeout(function() { var el = document.getElementById('fulfillments-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
+  if (hash === 'reorder') { setTimeout(function() { var el = document.getElementById('orders-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
 }
 
 // ─── Tab Switching ───

@@ -47,8 +47,8 @@ async function logWebhook(
       )
       .bind(topic, shopifyId ?? null, status, summary ?? null, null, now)
       .run();
-  } catch {
-    // ログ書き込み失敗はサイレントに無視
+  } catch (err) {
+    console.error('Webhook log write failed:', err);
   }
 }
 
@@ -131,21 +131,29 @@ async function sendLineMessage(
 async function parseWebhookBody(
   c: { env: Env['Bindings']; req: { header: (name: string) => string | undefined; text: () => Promise<string>; json: <T>() => Promise<T> } },
 ): Promise<{ body: Record<string, unknown>; valid: boolean; errorResponse?: Response }> {
-  const shopifySecret = (c.env as unknown as Record<string, string | undefined>).SHOPIFY_WEBHOOK_SECRET;
+  const envRecord = c.env as unknown as Record<string, string | undefined>;
+  const signingSecret = envRecord.SHOPIFY_WEBHOOK_SECRET || envRecord.SHOPIFY_CLIENT_SECRET;
 
-  if (shopifySecret) {
+  if (signingSecret) {
     const hmacHeader = c.req.header('X-Shopify-Hmac-Sha256') ?? '';
     const rawBody = await c.req.text();
-    const valid = await verifyShopifySignature(shopifySecret, rawBody, hmacHeader);
+    let valid = await verifyShopifySignature(signingSecret, rawBody, hmacHeader);
+
+    // フォールバック: CLIENT_SECRET で再試行
+    if (!valid && envRecord.SHOPIFY_WEBHOOK_SECRET && envRecord.SHOPIFY_CLIENT_SECRET
+        && envRecord.SHOPIFY_WEBHOOK_SECRET !== envRecord.SHOPIFY_CLIENT_SECRET) {
+      valid = await verifyShopifySignature(envRecord.SHOPIFY_CLIENT_SECRET, rawBody, hmacHeader);
+    }
+
     if (!valid) {
       return { body: {}, valid: false };
     }
     return { body: JSON.parse(rawBody) as Record<string, unknown>, valid: true };
   }
 
-  // シークレット未設定（開発環境向け）
-  const body = await c.req.json<Record<string, unknown>>();
-  return { body, valid: true };
+  // シークレット未設定 — セキュリティのため拒否
+  console.error('Shopify webhook rejected: no signing secret configured');
+  return { body: {}, valid: false };
 }
 
 // =============================================

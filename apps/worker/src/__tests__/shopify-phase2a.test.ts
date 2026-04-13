@@ -1149,14 +1149,8 @@ describe('Shopify Phase 2A Routes', () => {
   // =========================================================================
 
   describe('Auth requirements', () => {
-    it('webhook/checkout bypasses auth', async () => {
-      mockGetAbandonedCartByCheckoutId.mockResolvedValueOnce(null);
-      mockUpsertAbandonedCart.mockResolvedValueOnce({
-        id: 'ac-1',
-        shopify_checkout_id: 'checkout_001',
-      });
-
-      // No SHOPIFY_WEBHOOK_SECRET -> no signature check either
+    it('webhook/checkout rejects when no signing secret is configured', async () => {
+      // No SHOPIFY_WEBHOOK_SECRET or SHOPIFY_CLIENT_SECRET -> rejected for security
       const envNoSecret = createMockEnv();
       const res = await app.request(
         '/api/integrations/shopify/webhook/checkout',
@@ -1168,8 +1162,9 @@ describe('Shopify Phase 2A Routes', () => {
         envNoSecret,
       );
 
-      // Should succeed without Bearer token
-      expect(res.status).toBe(200);
+      // Should be rejected — no signing secret means no verification possible
+      expect(res.status).toBe(401);
+      expect(mockUpsertAbandonedCart).not.toHaveBeenCalled();
     });
 
     it('CRUD endpoints require auth', async () => {

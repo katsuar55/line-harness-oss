@@ -35,8 +35,8 @@ async function logWebhook(
       )
       .bind(topic, shopifyId ?? null, status, summary ?? null, error ?? null, now)
       .run();
-  } catch {
-    // ログ書き込み失敗はサイレントに無視（テーブル未作成時など）
+  } catch (err) {
+    console.error('Webhook log write failed:', err);
   }
 }
 
@@ -47,21 +47,40 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
     const shopifySecret = (c.env as unknown as Record<string, string | undefined>).SHOPIFY_WEBHOOK_SECRET;
     let body: Record<string, unknown>;
 
-    if (shopifySecret) {
+    // 署名検証に使うシークレット（SHOPIFY_WEBHOOK_SECRET → SHOPIFY_CLIENT_SECRET の優先順）
+    const envRecord = c.env as unknown as Record<string, string | undefined>;
+    const webhookSecret = envRecord.SHOPIFY_WEBHOOK_SECRET;
+    const clientSecret = envRecord.SHOPIFY_CLIENT_SECRET;
+    const signingSecret = webhookSecret || clientSecret;
+
+    if (signingSecret) {
       // 署名検証モード（本番環境）
       const hmacHeader = c.req.header('X-Shopify-Hmac-Sha256') ?? '';
       const rawBody = await c.req.text();
 
-      const valid = await verifyShopifySignature(shopifySecret, rawBody, hmacHeader);
+      // まず主シークレットで検証
+      let valid = await verifyShopifySignature(signingSecret, rawBody, hmacHeader);
+
+      // 主シークレットで失敗した場合、もう一方で再試行
+      if (!valid && webhookSecret && clientSecret && webhookSecret !== clientSecret) {
+        valid = await verifyShopifySignature(clientSecret, rawBody, hmacHeader);
+        if (valid) {
+          console.warn('Shopify HMAC: succeeded with CLIENT_SECRET, not WEBHOOK_SECRET — consider updating SHOPIFY_WEBHOOK_SECRET');
+        }
+      }
+
       if (!valid) {
         const topic = c.req.header('X-Shopify-Topic') ?? '';
-        await logWebhook(c.env.DB, topic, undefined, 'auth_failed', 'HMAC verification failed');
+        const debugInfo = `hmac_len=${hmacHeader.length} body_len=${rawBody.length} tried=${webhookSecret ? 'webhook+client' : 'client_only'}`;
+        console.error(`Shopify HMAC failed: ${debugInfo}`);
+        await logWebhook(c.env.DB, topic, undefined, 'auth_failed', `HMAC verification failed: ${debugInfo}`);
         return c.json({ success: false, error: 'Shopify signature verification failed' }, 401);
       }
       body = JSON.parse(rawBody) as Record<string, unknown>;
     } else {
-      // シークレット未設定（開発環境向け）
-      body = await c.req.json<Record<string, unknown>>();
+      // シークレット未設定 — セキュリティのため本番では拒否
+      console.error('Shopify webhook rejected: no signing secret configured');
+      return c.json({ success: false, error: 'Webhook secret not configured' }, 500);
     }
 
     const topic = c.req.header('X-Shopify-Topic') ?? '';
@@ -282,19 +301,28 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
 
 shopify.post('/api/integrations/shopify/webhook/product', async (c) => {
   try {
-    const shopifySecret = (c.env as unknown as Record<string, string | undefined>).SHOPIFY_WEBHOOK_SECRET;
+    const envRecord = c.env as unknown as Record<string, string | undefined>;
+    const signingSecret = envRecord.SHOPIFY_WEBHOOK_SECRET || envRecord.SHOPIFY_CLIENT_SECRET;
     let body: Record<string, unknown>;
 
-    if (shopifySecret) {
+    if (signingSecret) {
       const hmacHeader = c.req.header('X-Shopify-Hmac-Sha256') ?? '';
       const rawBody = await c.req.text();
-      const valid = await verifyShopifySignature(shopifySecret, rawBody, hmacHeader);
+      let valid = await verifyShopifySignature(signingSecret, rawBody, hmacHeader);
+
+      // フォールバック: CLIENT_SECRET で再試行
+      if (!valid && envRecord.SHOPIFY_WEBHOOK_SECRET && envRecord.SHOPIFY_CLIENT_SECRET
+          && envRecord.SHOPIFY_WEBHOOK_SECRET !== envRecord.SHOPIFY_CLIENT_SECRET) {
+        valid = await verifyShopifySignature(envRecord.SHOPIFY_CLIENT_SECRET, rawBody, hmacHeader);
+      }
+
       if (!valid) {
         return c.json({ success: false, error: 'Shopify signature verification failed' }, 401);
       }
       body = JSON.parse(rawBody) as Record<string, unknown>;
     } else {
-      body = await c.req.json<Record<string, unknown>>();
+      console.error('Shopify product webhook rejected: no signing secret configured');
+      return c.json({ success: false, error: 'Webhook secret not configured' }, 500);
     }
 
     const topic = c.req.header('X-Shopify-Topic') ?? '';
@@ -467,6 +495,11 @@ shopify.post('/api/integrations/shopify/sync', async (c) => {
       return c.json({ success: false, error: 'SHOPIFY_STORE_DOMAIN is not configured' }, 400);
     }
 
+    // SSRF防止: storeDomain がShopifyドメインであることを検証
+    if (!/^[a-z0-9-]+\.myshopify\.com$/.test(storeDomain)) {
+      return c.json({ success: false, error: 'Invalid SHOPIFY_STORE_DOMAIN format' }, 400);
+    }
+
     const accessToken = await getShopifyAccessToken(db, c.env as unknown as Record<string, string | undefined>);
     const apiVersion = '2025-07';
     const headers = {
@@ -480,9 +513,9 @@ shopify.post('/api/integrations/shopify/sync', async (c) => {
       { headers },
     );
     if (!productsRes.ok) {
-      const body = await productsRes.text();
+      console.error(`Shopify Products API error: ${productsRes.status}`);
       return c.json(
-        { success: false, error: `Shopify Products API ${productsRes.status}: ${body}` },
+        { success: false, error: `Shopify Products API returned ${productsRes.status}` },
         502,
       );
     }
@@ -527,9 +560,9 @@ shopify.post('/api/integrations/shopify/sync', async (c) => {
       { headers },
     );
     if (!ordersRes.ok) {
-      const body = await ordersRes.text();
+      console.error(`Shopify Orders API error: ${ordersRes.status}`);
       return c.json(
-        { success: false, error: `Shopify Orders API ${ordersRes.status}: ${body}` },
+        { success: false, error: `Shopify Orders API returned ${ordersRes.status}` },
         502,
       );
     }
@@ -561,18 +594,47 @@ shopify.post('/api/integrations/shopify/sync', async (c) => {
       ordersSynced++;
     }
 
+    // --- 顧客同期 ---
+    const customersRes = await fetch(
+      `https://${storeDomain}/admin/api/${apiVersion}/customers.json?limit=250`,
+      { headers },
+    );
+    let customersSynced = 0;
+    if (customersRes.ok) {
+      const customersData = (await customersRes.json()) as {
+        customers: Array<Record<string, unknown>>;
+      };
+      const customers = customersData.customers ?? [];
+
+      for (const cust of customers) {
+        await upsertShopifyCustomer(db, {
+          shopifyCustomerId: String(cust.id),
+          email: (cust.email as string) ?? undefined,
+          phone: (cust.phone as string) ?? undefined,
+          firstName: (cust.first_name as string) ?? undefined,
+          lastName: (cust.last_name as string) ?? undefined,
+          ordersCount: cust.orders_count ? Number(cust.orders_count) : undefined,
+          totalSpent: cust.total_spent ? Number(cust.total_spent) : undefined,
+          tags: (cust.tags as string) ?? undefined,
+          metadata: JSON.stringify({ source: 'manual_sync' }),
+        });
+        customersSynced++;
+      }
+    }
+
     return c.json({
       success: true,
       data: {
         message: 'Shopify sync completed',
         productsSynced,
         ordersSynced,
+        customersSynced,
       },
     });
   } catch (err) {
     console.error('POST /api/integrations/shopify/sync error:', err);
-    const message = err instanceof Error ? err.message : 'Internal server error';
-    return c.json({ success: false, error: message }, 500);
+    console.error('POST /api/integrations/shopify/sync error:', err);
+    return c.json({ success: false, error: 'Shopify sync failed' }, 500);
   }
 });
 
@@ -586,7 +648,7 @@ shopify.post('/api/integrations/shopify/webhooks/register', async (c) => {
       return c.json({ success: false, error: 'SHOPIFY_STORE_DOMAIN not configured' }, 400);
     }
 
-    const token = await getShopifyAccessToken(db, c.env as Record<string, string | undefined>);
+    const token = await getShopifyAccessToken(db, c.env as unknown as Record<string, string | undefined>);
     const workerUrl = c.env.WORKER_URL || new URL(c.req.url).origin;
     const apiVersion = '2025-07';
 
@@ -654,7 +716,7 @@ shopify.get('/api/integrations/shopify/webhooks', async (c) => {
       return c.json({ success: false, error: 'SHOPIFY_STORE_DOMAIN not configured' }, 400);
     }
 
-    const token = await getShopifyAccessToken(db, c.env as Record<string, string | undefined>);
+    const token = await getShopifyAccessToken(db, c.env as unknown as Record<string, string | undefined>);
     const apiVersion = '2025-07';
 
     const res = await fetch(
