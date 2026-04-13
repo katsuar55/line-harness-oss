@@ -633,7 +633,6 @@ shopify.post('/api/integrations/shopify/sync', async (c) => {
     });
   } catch (err) {
     console.error('POST /api/integrations/shopify/sync error:', err);
-    console.error('POST /api/integrations/shopify/sync error:', err);
     return c.json({ success: false, error: 'Shopify sync failed' }, 500);
   }
 });

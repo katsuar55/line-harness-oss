@@ -7,6 +7,7 @@ import { processScheduledBroadcasts } from './services/broadcast.js';
 import { processReminderDeliveries } from './services/reminder-delivery.js';
 import { checkAccountHealth } from './services/ban-monitor.js';
 import { refreshLineAccessTokens } from './services/token-refresh.js';
+import { syncShopifyCustomers } from './services/shopify-customer-sync.js';
 import { authMiddleware } from './middleware/auth.js';
 import { liffAuthMiddleware } from './middleware/liff-auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
@@ -231,6 +232,15 @@ async function scheduled(
   }
   jobs.push(checkAccountHealth(env.DB));
   jobs.push(refreshLineAccessTokens(env.DB));
+
+  // Shopify顧客同期（5分ごと実行、冪等なので安全）
+  jobs.push(
+    syncShopifyCustomers(env.DB, env as unknown as Record<string, string | undefined>)
+      .then((r) => {
+        if (r.synced > 0) console.info(`Shopify customer sync: ${r.synced} customers`);
+        if (r.error) console.warn(`Shopify customer sync warning: ${r.error}`);
+      }),
+  );
 
   await Promise.allSettled(jobs);
 }
