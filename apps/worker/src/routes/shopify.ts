@@ -66,6 +66,9 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
         valid = await verifyShopifySignature(clientSecret, rawBody, hmacHeader);
         if (valid) {
           console.warn('Shopify HMAC: succeeded with CLIENT_SECRET, not WEBHOOK_SECRET — consider updating SHOPIFY_WEBHOOK_SECRET');
+          // セキュリティイベントとしてD1に記録（WEBHOOK_SECRETの不一致を追跡）
+          const secTopic = c.req.header('X-Shopify-Topic') ?? 'unknown';
+          await logWebhook(c.env.DB, secTopic, undefined, 'security_warning', 'HMAC verified via CLIENT_SECRET fallback — SHOPIFY_WEBHOOK_SECRET may be misconfigured');
         }
       }
 

@@ -448,7 +448,7 @@ describe('Rich Menus Routes', () => {
   // =========================================================================
 
   describe('POST /api/rich-menus/setup-naturism', () => {
-    it('creates 6-button menu with postback, uploads image, and sets default — returns 201', async () => {
+    it('creates 8-button menu v3, uploads image, and sets default — returns 201', async () => {
       mockDeleteDefaultRichMenu.mockResolvedValue(undefined);
       mockCreateRichMenu.mockResolvedValue({ richMenuId: 'rm-naturism' });
       mockUploadRichMenuImage.mockResolvedValue(undefined);
@@ -465,16 +465,16 @@ describe('Rich Menus Routes', () => {
       expect(json.success).toBe(true);
       expect(json.data.richMenuId).toBe('rm-naturism');
       expect(json.data.message).toContain('リッチメニュー');
-      // v2: 6 areas with postback for daily_tip
-      expect(json.data.areas).toHaveLength(6);
-      expect(json.data.areas.find((a) => a.type === 'postback')).toBeDefined();
+      // v3: 8 areas (uri + message types, no postback)
+      expect(json.data.areas).toHaveLength(8);
       expect(mockCreateRichMenu).toHaveBeenCalledTimes(1);
-      // Verify the rich menu body includes postback action
       const menuBody = mockCreateRichMenu.mock.calls[0][0];
       expect(menuBody.size).toEqual({ width: 2500, height: 1686 });
-      expect(menuBody.areas).toHaveLength(6);
-      const postbackArea = menuBody.areas.find((a: { action: { type: string } }) => a.action.type === 'postback');
-      expect(postbackArea.action.data).toBe('action=daily_tip');
+      expect(menuBody.areas).toHaveLength(8);
+      // Verify area labels include key buttons
+      const labels = menuBody.areas.map((a: { action: { label: string } }) => a.action.label);
+      expect(labels).toContain('ホームページ');
+      expect(labels).toContain('Q&A お問い合わせ');
       expect(mockUploadRichMenuImage).toHaveBeenCalledTimes(1);
       expect(mockSetDefaultRichMenu).toHaveBeenCalledWith('rm-naturism');
     });
@@ -541,7 +541,7 @@ describe('Rich Menus Routes', () => {
       expect(ct).toContain('text/html');
       const html = await res.text();
       expect(html).toContain('<!DOCTYPE html>');
-      expect(html).toContain('ストア');
+      expect(html).toContain('ホームページ');
     });
   });
 

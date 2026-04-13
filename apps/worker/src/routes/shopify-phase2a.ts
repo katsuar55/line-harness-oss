@@ -143,6 +143,15 @@ async function parseWebhookBody(
     if (!valid && envRecord.SHOPIFY_WEBHOOK_SECRET && envRecord.SHOPIFY_CLIENT_SECRET
         && envRecord.SHOPIFY_WEBHOOK_SECRET !== envRecord.SHOPIFY_CLIENT_SECRET) {
       valid = await verifyShopifySignature(envRecord.SHOPIFY_CLIENT_SECRET, rawBody, hmacHeader);
+      if (valid) {
+        console.warn('Shopify HMAC (phase2a): succeeded with CLIENT_SECRET fallback');
+        // セキュリティイベントとしてD1に記録
+        try {
+          const db = (c.env as unknown as { DB: D1Database }).DB;
+          const topic = c.req.header('X-Shopify-Topic') ?? 'unknown';
+          await logWebhook(db, topic, undefined, 'security_warning', 'HMAC verified via CLIENT_SECRET fallback — SHOPIFY_WEBHOOK_SECRET may be misconfigured');
+        } catch { /* ログ失敗は無視 */ }
+      }
     }
 
     if (!valid) {
