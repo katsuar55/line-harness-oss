@@ -42,6 +42,7 @@ const menuSections = [
   {
     label: '自動化',
     items: [
+      { href: '/rich-menus', label: 'リッチメニュー', icon: 'M4 6a2 2 0 012-2h12a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm0 8a2 2 0 012-2h12a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2z' },
       { href: '/automations', label: 'オートメーション', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
       { href: '/webhooks', label: 'Webhook', icon: 'M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' },
       { href: '/notifications', label: '通知', icon: 'M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9' },
@@ -170,10 +171,33 @@ export default function Sidebar() {
   const [isOpen, setIsOpen] = useState(false)
   const [staffName, setStaffName] = useState<string | null>(null)
   const [staffRole, setStaffRole] = useState<string | null>(null)
+  const [unreadCount, setUnreadCount] = useState(0)
 
   useEffect(() => {
     setStaffName(localStorage.getItem('lh_staff_name'))
     setStaffRole(localStorage.getItem('lh_staff_role'))
+  }, [])
+
+  // Poll unread chat count every 30s
+  useEffect(() => {
+    const apiKey = typeof window !== 'undefined' ? localStorage.getItem('lh_api_key') : null
+    if (!apiKey) return
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL
+    if (!apiUrl) return
+
+    const fetchUnread = () => {
+      fetch(`${apiUrl}/api/chats?status=unread&limit=1`, {
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      })
+        .then(r => r.json())
+        .then((d: { success?: boolean; data?: { total?: number } }) => {
+          if (d.success && d.data?.total !== undefined) setUnreadCount(d.data.total)
+        })
+        .catch(() => {})
+    }
+    fetchUnread()
+    const interval = setInterval(fetchUnread, 30000)
+    return () => clearInterval(interval)
   }, [])
 
   useEffect(() => { setIsOpen(false) }, [pathname])
@@ -232,7 +256,12 @@ export default function Sidebar() {
                   style={active ? { backgroundColor: isDanger ? '#EF4444' : '#06C755' } : {}}
                 >
                   <NavIcon d={item.icon} />
-                  {item.label}
+                  <span className="flex-1">{item.label}</span>
+                  {item.href === '/chats' && unreadCount > 0 && (
+                    <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-red-500 text-white min-w-[18px] text-center">
+                      {unreadCount > 99 ? '99+' : unreadCount}
+                    </span>
+                  )}
                 </Link>
               )
             })}

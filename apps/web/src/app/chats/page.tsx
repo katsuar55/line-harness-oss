@@ -98,6 +98,8 @@ interface MessageLog {
   createdAt: string
 }
 
+interface TemplateItem { id: string; name: string; messageContent: string; messageType: string }
+
 function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
   friendId: string
   friend: FriendItem | null
@@ -108,6 +110,9 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
   const [sending, setSending] = useState(false)
   const [messages, setMessages] = useState<MessageLog[]>([])
   const [loadingMessages, setLoadingMessages] = useState(true)
+  const [showTemplates, setShowTemplates] = useState(false)
+  const [templates, setTemplates] = useState<TemplateItem[]>([])
+  const [templatesLoaded, setTemplatesLoaded] = useState(false)
 
   useEffect(() => {
     const loadMessages = async () => {
@@ -212,8 +217,50 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
           ))
         )}
       </div>
+      {/* Template picker */}
+      {showTemplates && (
+        <div className="px-4 py-2 border-t border-gray-100 bg-gray-50 max-h-[200px] overflow-y-auto">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-semibold text-gray-500">定型文を挿入</p>
+            <button onClick={() => setShowTemplates(false)} className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+          </div>
+          {templates.length === 0 ? (
+            <p className="text-xs text-gray-400 py-2">テンプレートがありません</p>
+          ) : (
+            <div className="space-y-1">
+              {templates.filter(t => t.messageType === 'text').map(t => (
+                <button
+                  key={t.id}
+                  onClick={() => { setMessage(t.messageContent); setShowTemplates(false) }}
+                  className="w-full text-left px-3 py-2 text-sm rounded-md hover:bg-white transition-colors border border-transparent hover:border-gray-200"
+                >
+                  <span className="font-medium text-gray-700">{t.name}</span>
+                  <p className="text-xs text-gray-400 truncate mt-0.5">{t.messageContent}</p>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div className="px-4 py-3 border-t border-gray-200">
         <div className="flex gap-2">
+          <button
+            onClick={() => {
+              if (!templatesLoaded) {
+                fetchApi<{ success: boolean; data: TemplateItem[] }>('/api/templates')
+                  .then(r => { if (r.success && r.data) setTemplates(r.data) })
+                  .catch(() => {})
+                  .finally(() => setTemplatesLoaded(true))
+              }
+              setShowTemplates(!showTemplates)
+            }}
+            className="px-2 py-2 rounded-lg border border-gray-300 text-gray-500 hover:bg-gray-50 transition-colors"
+            title="定型文"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6z" />
+            </svg>
+          </button>
           <input
             type="text"
             value={message}

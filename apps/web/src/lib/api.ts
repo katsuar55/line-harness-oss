@@ -69,7 +69,17 @@ export type FriendListParams = {
   accountId?: string
 }
 
-export type FriendWithTags = Friend & { tags: Tag[] }
+export type FriendStatus = 'none' | 'prospect' | 'active' | 'vip' | 'dormant' | 'churned'
+
+export type FriendWithTags = Friend & {
+  tags: Tag[]
+  status?: FriendStatus
+  phone?: string | null
+  email?: string | null
+  address?: string | null
+  memo?: string | null
+  assignedStaffId?: string | null
+}
 
 export const api = {
   friends: {
@@ -97,6 +107,21 @@ export const api = {
     removeTag: (friendId: string, tagId: string) =>
       fetchApi<ApiResponse<null>>(`/api/friends/${friendId}/tags/${tagId}`, {
         method: 'DELETE',
+      }),
+    updateStatus: (friendId: string, status: FriendStatus) =>
+      fetchApi<ApiResponse<null>>(`/api/friends/${friendId}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status }),
+      }),
+    updateProfile: (friendId: string, data: { phone?: string; email?: string; address?: string; memo?: string }) =>
+      fetchApi<ApiResponse<null>>(`/api/friends/${friendId}/profile`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    assignStaff: (friendId: string, staffId: string | null) =>
+      fetchApi<ApiResponse<null>>(`/api/friends/${friendId}/assign-staff`, {
+        method: 'PUT',
+        body: JSON.stringify({ staffId }),
       }),
   },
   tags: {
@@ -534,4 +559,59 @@ export const api = {
     delete: (id: string) =>
       fetchApi<ApiResponse<{ deleted: string }>>(`/api/tips/${id}`, { method: 'DELETE' }),
   },
+  richMenus: {
+    list: () =>
+      fetchApi<ApiResponse<RichMenu[]>>('/api/rich-menus'),
+    create: (data: RichMenuCreatePayload) =>
+      fetchApi<ApiResponse<{ richMenuId: string }>>('/api/rich-menus', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/rich-menus/${id}`, { method: 'DELETE' }),
+    setDefault: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/rich-menus/${id}/default`, { method: 'POST' }),
+    uploadImage: (id: string, file: File) => {
+      const formData = new FormData()
+      formData.append('image', file)
+      return fetch(`${API_URL}/api/rich-menus/${id}/image`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${getApiKey()}` },
+        body: formData,
+      }).then(r => r.json()) as Promise<ApiResponse<null>>
+    },
+    status: () =>
+      fetchApi<ApiResponse<{ defaultRichMenuId: string | null; menus: RichMenu[] }>>('/api/rich-menus/status'),
+    linkToFriend: (friendId: string, richMenuId: string) =>
+      fetchApi<ApiResponse<null>>(`/api/friends/${friendId}/rich-menu`, {
+        method: 'POST',
+        body: JSON.stringify({ richMenuId }),
+      }),
+    unlinkFromFriend: (friendId: string) =>
+      fetchApi<ApiResponse<null>>(`/api/friends/${friendId}/rich-menu`, { method: 'DELETE' }),
+  },
+}
+
+// ─── Rich Menu Types ───
+
+export interface RichMenuArea {
+  bounds: { x: number; y: number; width: number; height: number }
+  action: { type: string; uri?: string; text?: string; data?: string; label?: string }
+}
+
+export interface RichMenu {
+  richMenuId: string
+  name: string
+  size: { width: number; height: number }
+  chatBarText: string
+  selected: boolean
+  areas: RichMenuArea[]
+}
+
+export interface RichMenuCreatePayload {
+  size: { width: number; height: number }
+  selected: boolean
+  name: string
+  chatBarText: string
+  areas: RichMenuArea[]
 }
