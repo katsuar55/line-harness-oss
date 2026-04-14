@@ -15,6 +15,9 @@ export interface Broadcast {
   sent_at: string | null;
   total_count: number;
   success_count: number;
+  line_request_id?: string | null;
+  insights_json?: string | null;
+  insights_fetched_at?: string | null;
   created_at: string;
 }
 

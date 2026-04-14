@@ -28,6 +28,8 @@ function serializeBroadcast(row: DbBroadcast) {
     sentAt: row.sent_at,
     totalCount: row.total_count,
     successCount: row.success_count,
+    lineRequestId: row.line_request_id ?? null,
+    insightsFetchedAt: row.insights_fetched_at ?? null,
     createdAt: row.created_at,
   };
 }
@@ -180,6 +182,79 @@ broadcasts.delete('/api/broadcasts/:id', async (c) => {
   } catch (err) {
     console.error('DELETE /api/broadcasts/:id error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// GET /api/broadcasts/:id/insights - fetch open/click stats via LINE Insight API
+// Stats become available ~14 days after send, and only when 20+ users have viewed.
+broadcasts.get('/api/broadcasts/:id/insights', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const refresh = c.req.query('refresh') === '1';
+
+    const row = await c.env.DB
+      .prepare('SELECT id, line_request_id, insights_json, insights_fetched_at, status, sent_at FROM broadcasts WHERE id = ?')
+      .bind(id)
+      .first<{
+        id: string;
+        line_request_id: string | null;
+        insights_json: string | null;
+        insights_fetched_at: string | null;
+        status: string;
+        sent_at: string | null;
+      }>();
+
+    if (!row) {
+      return c.json({ success: false, error: 'Broadcast not found' }, 404);
+    }
+
+    if (!row.line_request_id) {
+      return c.json(
+        {
+          success: false,
+          error: 'No LINE request id — insights only available for "all" target broadcasts sent via LINE Broadcast API',
+        },
+        400,
+      );
+    }
+
+    // Cache: return stored insights unless refresh requested or cache older than 1 hour
+    const CACHE_TTL_MS = 60 * 60 * 1000;
+    if (!refresh && row.insights_json && row.insights_fetched_at) {
+      const age = Date.now() - new Date(row.insights_fetched_at).getTime();
+      if (age < CACHE_TTL_MS) {
+        return c.json({
+          success: true,
+          data: {
+            cached: true,
+            fetchedAt: row.insights_fetched_at,
+            insights: JSON.parse(row.insights_json),
+          },
+        });
+      }
+    }
+
+    const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    const insights = await lineClient.getInsightMessageEvent(row.line_request_id);
+    const fetchedAt = new Date().toISOString();
+
+    await c.env.DB
+      .prepare('UPDATE broadcasts SET insights_json = ?, insights_fetched_at = ? WHERE id = ?')
+      .bind(JSON.stringify(insights), fetchedAt, id)
+      .run();
+
+    return c.json({
+      success: true,
+      data: {
+        cached: false,
+        fetchedAt,
+        insights,
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/broadcasts/:id/insights error:', err);
+    const message = err instanceof Error ? err.message : 'Internal server error';
+    return c.json({ success: false, error: message }, 500);
   }
 });
 

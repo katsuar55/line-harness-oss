@@ -286,3 +286,44 @@ export interface ReplyMessageRequest {
   replyToken: string;
   messages: Message[];
 }
+
+// ─── Insight types ────────────────────────────────────────────────────────────
+
+export interface InsightMessageEventOverview {
+  requestId: string;
+  timestamp: number;
+  delivered: number;
+  uniqueImpression: number | null;
+  uniqueClick: number | null;
+  uniqueMediaPlayed: number | null;
+  uniqueMediaPlayed100Percent: number | null;
+}
+
+export interface InsightMessageEventMessage {
+  seq: number;
+  impression: number | null;
+  mediaPlayed: number | null;
+  mediaPlayed25Percent: number | null;
+  mediaPlayed50Percent: number | null;
+  mediaPlayed75Percent: number | null;
+  mediaPlayed100Percent: number | null;
+  uniqueMediaPlayed: number | null;
+  uniqueMediaPlayed25Percent: number | null;
+  uniqueMediaPlayed50Percent: number | null;
+  uniqueMediaPlayed75Percent: number | null;
+  uniqueMediaPlayed100Percent: number | null;
+}
+
+export interface InsightMessageEventClick {
+  seq: number;
+  url: string;
+  click: number | null;
+  uniqueClick: number | null;
+  uniqueClickOfRequest: number | null;
+}
+
+export interface InsightMessageEventResponse {
+  overview: InsightMessageEventOverview | null;
+  messages: InsightMessageEventMessage[];
+  clicks: InsightMessageEventClick[];
+}

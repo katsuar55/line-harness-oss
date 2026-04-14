@@ -28,7 +28,37 @@ import type {
 import type { Broadcast } from '@line-crm/shared'
 
 /** Broadcast type from API (now camelCase after worker serialization) */
-export type ApiBroadcast = Broadcast
+export type ApiBroadcast = Broadcast & {
+  lineRequestId?: string | null
+  insightsFetchedAt?: string | null
+}
+
+export interface BroadcastInsightsPayload {
+  cached: boolean
+  fetchedAt: string
+  insights: {
+    overview: {
+      requestId: string
+      timestamp: number
+      delivered: number
+      uniqueImpression: number | null
+      uniqueClick: number | null
+      uniqueMediaPlayed: number | null
+      uniqueMediaPlayed100Percent: number | null
+    } | null
+    messages: Array<{
+      seq: number
+      impression: number | null
+    }>
+    clicks: Array<{
+      seq: number
+      url: string
+      click: number | null
+      uniqueClick: number | null
+      uniqueClickOfRequest: number | null
+    }>
+  }
+}
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL
 if (!API_URL) {
@@ -212,6 +242,10 @@ export const api = {
       fetchApi<ApiResponse<null>>(`/api/broadcasts/${id}`, { method: 'DELETE' }),
     send: (id: string) =>
       fetchApi<ApiResponse<ApiBroadcast>>(`/api/broadcasts/${id}/send`, { method: 'POST' }),
+    insights: (id: string, refresh = false) =>
+      fetchApi<ApiResponse<BroadcastInsightsPayload>>(
+        `/api/broadcasts/${id}/insights${refresh ? '?refresh=1' : ''}`,
+      ),
   },
 
   // ── Round 2 APIs ─────────────────────────────────────────────────────────

@@ -105,10 +105,14 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   sent_at         TEXT,
   total_count     INTEGER NOT NULL DEFAULT 0,
   success_count   INTEGER NOT NULL DEFAULT 0,
+  line_request_id TEXT,
+  insights_json   TEXT,
+  insights_fetched_at TEXT,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts (status);
+CREATE INDEX IF NOT EXISTS idx_broadcasts_line_request_id ON broadcasts (line_request_id);
 
 -- ============================================================
 -- Messages Log

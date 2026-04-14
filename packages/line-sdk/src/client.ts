@@ -1,6 +1,7 @@
 import type {
   BroadcastRequest,
   FlexContainer,
+  InsightMessageEventResponse,
   Message,
   MulticastRequest,
   PushMessageRequest,
@@ -21,6 +22,18 @@ export class LineClient {
     body: object,
     method: 'GET' | 'POST' | 'DELETE' = 'POST',
   ): Promise<T> {
+    const result = await this.requestWithHeaders<T>(path, body, method);
+    return result.data;
+  }
+
+  /**
+   * Same as request() but also returns response headers (for X-Line-Request-Id etc).
+   */
+  private async requestWithHeaders<T = unknown>(
+    path: string,
+    body: object,
+    method: 'GET' | 'POST' | 'DELETE' = 'POST',
+  ): Promise<{ data: T; headers: Headers }> {
     const url = `${LINE_API_BASE}${path}`;
 
     const options: RequestInit = {
@@ -44,13 +57,12 @@ export class LineClient {
       );
     }
 
-    // Some endpoints (e.g. push, reply) return an empty body with 200.
     const contentType = res.headers.get('content-type') ?? '';
-    if (contentType.includes('application/json')) {
-      return res.json() as Promise<T>;
-    }
+    const data = contentType.includes('application/json')
+      ? ((await res.json()) as T)
+      : (undefined as unknown as T);
 
-    return undefined as unknown as T;
+    return { data, headers: res.headers };
   }
 
   // ─── Profile ──────────────────────────────────────────────────────────────
@@ -78,6 +90,45 @@ export class LineClient {
   async broadcast(messages: Message[]): Promise<void> {
     const body: BroadcastRequest = { messages };
     await this.request('/message/broadcast', body);
+  }
+
+  /**
+   * Broadcast a message and return the X-Line-Request-Id header.
+   * Used for tracking message insights (impression/click) via LINE Insight API.
+   */
+  async broadcastWithRequestId(messages: Message[]): Promise<{ requestId: string | null }> {
+    const body: BroadcastRequest = { messages };
+    const result = await this.requestWithHeaders('/message/broadcast', body);
+    return { requestId: result.headers.get('x-line-request-id') };
+  }
+
+  /**
+   * Get message event statistics (impressions, unique clicks) for a broadcast.
+   * Requires the X-Line-Request-Id returned by broadcastWithRequestId().
+   * Stats are available for 14 days and only when 20+ users have seen the message.
+   * See: https://developers.line.biz/en/reference/messaging-api/#get-message-event
+   */
+  async getInsightMessageEvent(requestId: string): Promise<InsightMessageEventResponse> {
+    return this.request<InsightMessageEventResponse>(
+      `/insight/message/event?requestId=${encodeURIComponent(requestId)}`,
+      {},
+      'GET',
+    );
+  }
+
+  /**
+   * Get the aggregated number of sent messages (delivered counts).
+   * date must be in YYYYMMDD format (JST).
+   */
+  async getNumberOfSentMessages(
+    type: 'reply' | 'push' | 'multicast' | 'broadcast',
+    date: string,
+  ): Promise<{ status: string; success?: number }> {
+    return this.request<{ status: string; success?: number }>(
+      `/message/delivery/${type}?date=${date}`,
+      {},
+      'GET',
+    );
   }
 
   async replyMessage(

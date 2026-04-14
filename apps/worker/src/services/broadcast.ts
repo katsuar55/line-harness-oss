@@ -43,8 +43,16 @@ export async function processBroadcastSend(
 
   try {
     if (broadcast.target_type === 'all') {
-      // Use LINE broadcast API (sends to all followers)
-      await lineClient.broadcast([message]);
+      // Use LINE broadcast API (sends to all followers).
+      // Capture X-Line-Request-Id so we can later query open/click stats
+      // from LINE Insight API (/v2/bot/insight/message/event).
+      const { requestId } = await lineClient.broadcastWithRequestId([message]);
+      if (requestId) {
+        await db
+          .prepare('UPDATE broadcasts SET line_request_id = ? WHERE id = ?')
+          .bind(requestId, broadcastId)
+          .run();
+      }
       // We don't have exact count for broadcast API, set as 0 (unknown)
       totalCount = 0;
       successCount = 0;
