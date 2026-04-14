@@ -19,6 +19,7 @@ const friends = new Hono<Env>();
 
 /** Convert a D1 snake_case Friend row to the shared camelCase shape */
 function serializeFriend(row: DbFriend) {
+  const r = row as unknown as Record<string, unknown>;
   return {
     id: row.id,
     lineUserId: row.line_user_id,
@@ -27,8 +28,19 @@ function serializeFriend(row: DbFriend) {
     statusMessage: row.status_message,
     isFollowing: Boolean(row.is_following),
     metadata: JSON.parse(row.metadata || '{}'),
-    refCode: (row as unknown as Record<string, unknown>).ref_code as string | null,
+    refCode: r.ref_code as string | null,
     userId: row.user_id,
+    // ⑮ ステータス管理
+    status: (r.status as string) || 'none',
+    // ⑲ ユーザー情報拡充
+    phone: r.phone as string | null,
+    email: r.email as string | null,
+    birthday: r.birthday as string | null,
+    gender: r.gender as string | null,
+    address: r.address as string | null,
+    memo: r.memo as string | null,
+    // ⑳ 担当者
+    assignedStaffId: r.assigned_staff_id as string | null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -277,6 +289,117 @@ friends.put('/api/friends/:id/metadata', async (c) => {
     });
   } catch (err) {
     console.error('PUT /api/friends/:id/metadata error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ⑮ PUT /api/friends/:id/status - ステータス更新（per-friend）
+friends.put('/api/friends/:id/status', async (c) => {
+  try {
+    const friendId = c.req.param('id');
+    const body = await c.req.json<{ status: string }>();
+    const allowed = ['none', 'prospect', 'active', 'vip', 'dormant', 'churned'];
+    if (!body.status || !allowed.includes(body.status)) {
+      return c.json({ success: false, error: `status must be one of: ${allowed.join(', ')}` }, 400);
+    }
+    const db = c.env.DB;
+    const friend = await getFriendById(db, friendId);
+    if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+
+    await db
+      .prepare('UPDATE friends SET status = ?, updated_at = ? WHERE id = ?')
+      .bind(body.status, jstNow(), friendId)
+      .run();
+    return c.json({ success: true, data: { friendId, status: body.status } });
+  } catch (err) {
+    console.error('PUT /api/friends/:id/status error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ⑲ PUT /api/friends/:id/profile - ユーザー情報編集（住所・電話・メール・誕生日・性別・メモ）
+friends.put('/api/friends/:id/profile', async (c) => {
+  try {
+    const friendId = c.req.param('id');
+    const body = await c.req.json<{
+      phone?: string | null;
+      email?: string | null;
+      birthday?: string | null;
+      gender?: string | null;
+      address?: string | null;
+      memo?: string | null;
+      displayName?: string | null;
+    }>();
+
+    const db = c.env.DB;
+    const friend = await getFriendById(db, friendId);
+    if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+
+    await db
+      .prepare(
+        `UPDATE friends SET
+           phone = COALESCE(?, phone),
+           email = COALESCE(?, email),
+           birthday = COALESCE(?, birthday),
+           gender = COALESCE(?, gender),
+           address = COALESCE(?, address),
+           memo = COALESCE(?, memo),
+           display_name = COALESCE(?, display_name),
+           updated_at = ?
+         WHERE id = ?`,
+      )
+      .bind(
+        body.phone ?? null,
+        body.email ?? null,
+        body.birthday ?? null,
+        body.gender ?? null,
+        body.address ?? null,
+        body.memo ?? null,
+        body.displayName ?? null,
+        jstNow(),
+        friendId,
+      )
+      .run();
+
+    const updated = await getFriendById(db, friendId);
+    const tags = await getFriendTags(db, friendId);
+    return c.json({
+      success: true,
+      data: { ...serializeFriend(updated!), tags: tags.map(serializeTag) },
+    });
+  } catch (err) {
+    console.error('PUT /api/friends/:id/profile error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ⑳ PUT /api/friends/:id/assign-staff - 担当者割り当て
+friends.put('/api/friends/:id/assign-staff', async (c) => {
+  try {
+    const friendId = c.req.param('id');
+    const body = await c.req.json<{ staffId: string | null }>();
+
+    const db = c.env.DB;
+    const friend = await getFriendById(db, friendId);
+    if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+
+    // staffId が指定された場合は存在確認
+    if (body.staffId) {
+      const staffExists = await db
+        .prepare('SELECT id FROM staff_members WHERE id = ? AND is_active = 1')
+        .bind(body.staffId)
+        .first();
+      if (!staffExists) return c.json({ success: false, error: 'Staff not found or inactive' }, 404);
+    }
+
+    await db
+      .prepare('UPDATE friends SET assigned_staff_id = ?, updated_at = ? WHERE id = ?')
+      .bind(body.staffId ?? null, jstNow(), friendId)
+      .run();
+
+    return c.json({ success: true, data: { friendId, assignedStaffId: body.staffId } });
+  } catch (err) {
+    console.error('PUT /api/friends/:id/assign-staff error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

@@ -57,6 +57,7 @@ import { surveys } from './routes/surveys.js';
 import { shopifyAuth } from './routes/shopify-auth.js';
 import { groups } from './routes/groups.js';
 import { tagElapsedDeliveries } from './routes/tag-elapsed-deliveries.js';
+import { liffCart } from './routes/liff-cart.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 import { processIntakeReminders } from './services/intake-reminder.js';
 import { processWeeklyReports } from './services/weekly-report.js';
@@ -101,6 +102,9 @@ app.use('*', cors({ origin: '*' }));
 
 // Rate limiting — runs before auth to block abuse early
 app.use('*', rateLimitMiddleware);
+
+// Health check — before auth (認証不要)
+app.get('/api/health', (c) => c.json({ success: true, status: 'ok', timestamp: new Date().toISOString() }));
 
 // Auth middleware — skips /webhook and /docs automatically
 app.use('*', authMiddleware);
@@ -152,6 +156,7 @@ app.route('/', surveys);
 app.route('/', shopifyAuth);
 app.route('/', groups);
 app.route('/', tagElapsedDeliveries);
+app.route('/', liffCart);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {

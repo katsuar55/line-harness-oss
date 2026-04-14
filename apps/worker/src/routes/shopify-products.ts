@@ -55,6 +55,34 @@ shopifyProducts.get('/api/shopify/products', async (c) => {
   }
 });
 
+// ㉗ GET /api/shopify/products/new-arrivals — 新着商品（※ :id より前に定義）
+shopifyProducts.get('/api/shopify/products/new-arrivals', async (c) => {
+  try {
+    const limit = Number(c.req.query('limit') || '10');
+    const productType = c.req.query('productType');
+    const db = c.env.DB;
+
+    let sql = `SELECT * FROM shopify_products WHERE status = 'active'`;
+    const binds: unknown[] = [];
+    if (productType) {
+      sql += ` AND product_type = ?`;
+      binds.push(productType);
+    }
+    sql += ` ORDER BY created_at DESC LIMIT ?`;
+    binds.push(limit);
+
+    const result = await (binds.length > 0
+      ? db.prepare(sql).bind(...binds)
+      : db.prepare(sql)
+    ).all<DbProduct>();
+
+    return c.json({ success: true, data: result.results.map(serializeProduct) });
+  } catch (err) {
+    console.error('GET /api/shopify/products/new-arrivals error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 // GET /api/shopify/products/:id — get single product
 shopifyProducts.get('/api/shopify/products/:id', async (c) => {
   try {
@@ -226,6 +254,47 @@ shopifyProducts.post('/api/integrations/shopify/webhook/product', async (c) => {
       body,
       c.env.SHOPIFY_STORE_DOMAIN,
     );
+
+    // ㉗ Auto-notify: 新商品登録時、関連カテゴリに興味あるユーザーに自動通知
+    if (topic === 'products/create' && product.status === 'active') {
+      try {
+        const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+        // Find friends who have purchased this product_type before (via shopify_orders)
+        const recipients = await c.env.DB
+          .prepare(
+            `SELECT DISTINCT f.id, f.line_user_id FROM friends f
+             JOIN shopify_orders so ON so.friend_id = f.id
+             JOIN shopify_products sp ON sp.shopify_product_id = so.shopify_customer_id
+             WHERE f.is_following = 1 AND COALESCE(f.is_blacklisted, 0) = 0
+             LIMIT 50`,
+          )
+          .all<{ id: string; line_user_id: string }>();
+
+        // If no order-based recipients, fall back to recently active followers
+        const targets = recipients.results.length > 0
+          ? recipients.results
+          : (await c.env.DB
+              .prepare(
+                `SELECT f.id, f.line_user_id FROM friends f
+                 WHERE f.is_following = 1 AND COALESCE(f.is_blacklisted, 0) = 0
+                 ORDER BY f.updated_at DESC LIMIT 0`,
+              )
+              .all<{ id: string; line_user_id: string }>()).results;
+
+        if (targets.length > 0) {
+          const carousel = buildProductCarousel([product]);
+          if (carousel) {
+            for (const t of targets) {
+              try {
+                await lineClient.pushMessage(t.line_user_id, [carousel]);
+              } catch { /* skip individual send errors */ }
+            }
+          }
+        }
+      } catch (notifyErr) {
+        console.error('Product auto-notify error:', notifyErr);
+      }
+    }
 
     return c.json({ success: true, data: { action: 'synced', id: product.id } });
   } catch (err) {
