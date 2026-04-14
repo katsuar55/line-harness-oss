@@ -303,6 +303,38 @@ export function buildMessage(messageType: string, messageContent: string, altTex
     }
   }
 
+  // Quick Reply — テキスト + 選択肢ボタン
+  // messageContent format: JSON { text: string, items: [{ label: string, text?: string, data?: string }] }
+  if (messageType === 'quick_reply') {
+    try {
+      const parsed = JSON.parse(messageContent) as {
+        text: string;
+        items: Array<{ label: string; text?: string; data?: string }>;
+      };
+      const quickReplyItems = parsed.items.map((item) => {
+        if (item.data) {
+          // Postback action
+          return {
+            type: 'action' as const,
+            action: { type: 'postback' as const, label: item.label, data: item.data, displayText: item.label },
+          };
+        }
+        // Message action
+        return {
+          type: 'action' as const,
+          action: { type: 'message' as const, label: item.label, text: item.text || item.label },
+        };
+      });
+      return {
+        type: 'text',
+        text: parsed.text,
+        quickReply: { items: quickReplyItems },
+      } as Message;
+    } catch {
+      return { type: 'text', text: messageContent };
+    }
+  }
+
   // Fallback
   return { type: 'text', text: messageContent };
 }

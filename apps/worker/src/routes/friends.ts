@@ -281,6 +281,23 @@ friends.put('/api/friends/:id/metadata', async (c) => {
   }
 });
 
+// PUT /api/friends/:id/blacklist - ブラックリスト設定/解除
+friends.put('/api/friends/:id/blacklist', async (c) => {
+  try {
+    const friendId = c.req.param('id');
+    const body = await c.req.json<{ blacklisted: boolean }>();
+    const value = body.blacklisted ? 1 : 0;
+    await c.env.DB
+      .prepare('UPDATE friends SET is_blacklisted = ?, updated_at = ? WHERE id = ?')
+      .bind(value, new Date(Date.now() + 9 * 3600_000).toISOString().replace('Z', ''), friendId)
+      .run();
+    return c.json({ success: true, data: { friendId, is_blacklisted: value } });
+  } catch (err) {
+    console.error('PUT /api/friends/:id/blacklist error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 // GET /api/friends/:id/messages - get message history
 friends.get('/api/friends/:id/messages', async (c) => {
   try {

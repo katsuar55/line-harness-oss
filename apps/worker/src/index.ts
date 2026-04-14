@@ -8,6 +8,8 @@ import { processReminderDeliveries } from './services/reminder-delivery.js';
 import { checkAccountHealth } from './services/ban-monitor.js';
 import { refreshLineAccessTokens } from './services/token-refresh.js';
 import { syncShopifyCustomers } from './services/shopify-customer-sync.js';
+import { processAbandonedCartNotifications } from './services/abandoned-cart-notify.js';
+import { processTagElapsedDeliveries } from './services/tag-elapsed-delivery.js';
 import { authMiddleware } from './middleware/auth.js';
 import { liffAuthMiddleware } from './middleware/liff-auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
@@ -53,6 +55,8 @@ import { dashboard } from './routes/dashboard.js';
 import { reminderMessages } from './routes/reminder-messages.js';
 import { surveys } from './routes/surveys.js';
 import { shopifyAuth } from './routes/shopify-auth.js';
+import { groups } from './routes/groups.js';
+import { tagElapsedDeliveries } from './routes/tag-elapsed-deliveries.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 import { processIntakeReminders } from './services/intake-reminder.js';
 import { processWeeklyReports } from './services/weekly-report.js';
@@ -146,6 +150,8 @@ app.route('/', dashboard);
 app.route('/', reminderMessages);
 app.route('/', surveys);
 app.route('/', shopifyAuth);
+app.route('/', groups);
+app.route('/', tagElapsedDeliveries);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
@@ -228,6 +234,8 @@ async function scheduled(
       processIntakeReminders(env.DB, lineClient, env.LIFF_URL),
       processWeeklyReports(env.DB, lineClient),
       processSubscriptionReminders(env.DB, lineClient, env.LIFF_URL || ''),
+      processAbandonedCartNotifications(env.DB, lineClient, env.LIFF_URL || ''),
+      processTagElapsedDeliveries(env.DB, lineClient, env.WORKER_URL),
     );
   }
   jobs.push(checkAccountHealth(env.DB));
