@@ -6,6 +6,7 @@ import { api, type ApiBroadcast, type BroadcastInsightsPayload } from '@/lib/api
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import BroadcastForm from '@/components/broadcasts/broadcast-form'
+import BroadcastCalendar from '@/components/broadcasts/broadcast-calendar'
 import CcPromptButton from '@/components/cc-prompt-button'
 
 const ccPrompts = [
@@ -60,6 +61,7 @@ export default function BroadcastsPage() {
   const [insightsData, setInsightsData] = useState<BroadcastInsightsPayload | null>(null)
   const [insightsLoading, setInsightsLoading] = useState(false)
   const [insightsError, setInsightsError] = useState('')
+  const [viewMode, setViewMode] = useState<'list' | 'calendar'>('list')
 
   const loadInsights = useCallback(async (broadcast: ApiBroadcast, refresh = false) => {
     setInsightsFor(broadcast)
@@ -160,6 +162,28 @@ export default function BroadcastsPage() {
         />
       )}
 
+      {/* View toggle */}
+      {!loading && broadcasts.length > 0 && (
+        <div className="mb-3 inline-flex rounded-md border border-gray-200 bg-white overflow-hidden">
+          <button
+            onClick={() => setViewMode('list')}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+              viewMode === 'list' ? 'bg-green-50 text-green-700' : 'text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            リスト
+          </button>
+          <button
+            onClick={() => setViewMode('calendar')}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors border-l border-gray-200 ${
+              viewMode === 'calendar' ? 'bg-green-50 text-green-700' : 'text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            📅 カレンダー
+          </button>
+        </div>
+      )}
+
       {/* Loading */}
       {loading ? (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
@@ -178,6 +202,14 @@ export default function BroadcastsPage() {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
           <p className="text-gray-500">配信がありません。「新規配信」から作成してください。</p>
         </div>
+      ) : viewMode === 'calendar' ? (
+        <BroadcastCalendar
+          broadcasts={broadcasts}
+          getTagName={getTagName}
+          onSelectBroadcast={(b) => {
+            if (b.status === 'sent' && b.lineRequestId) loadInsights(b)
+          }}
+        />
       ) : (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
           <div className="overflow-x-auto">
