@@ -6,6 +6,7 @@ import {
   deleteTrackedLink,
   recordLinkClick,
   getLinkClicks,
+  getTrafficSourceStats,
   getFriendByLineUserId,
 } from '@line-crm/db';
 import { addTagToFriend, enrollFriendInScenario } from '@line-crm/db';
@@ -34,6 +35,47 @@ function getBaseUrl(c: { req: { url: string } }): string {
   const url = new URL(c.req.url);
   return `${url.protocol}//${url.host}`;
 }
+
+// GET /api/tracked-links/stats/traffic-sources — aggregated flow analytics
+trackedLinks.get('/api/tracked-links/stats/traffic-sources', async (c) => {
+  try {
+    const rows = await getTrafficSourceStats(c.env.DB);
+    const base = getBaseUrl(c);
+    const data = rows.map((r) => ({
+      linkId: r.link_id,
+      linkName: r.link_name,
+      originalUrl: r.original_url,
+      trackingUrl: `${base}/t/${r.link_id}`,
+      tagId: r.tag_id,
+      scenarioId: r.scenario_id,
+      totalClicks: Number(r.total_clicks ?? 0),
+      identifiedClicks: Number(r.identified_clicks ?? 0),
+      uniqueFriends: Number(r.unique_friends ?? 0),
+      clicks30d: Number(r.clicks_30d ?? 0),
+      clicks7d: Number(r.clicks_7d ?? 0),
+      lastClickAt: r.last_click_at,
+      identificationRate:
+        Number(r.total_clicks ?? 0) > 0
+          ? Number(r.identified_clicks ?? 0) / Number(r.total_clicks ?? 0)
+          : 0,
+    }));
+    const totals = data.reduce(
+      (acc, r) => {
+        acc.totalClicks += r.totalClicks;
+        acc.identifiedClicks += r.identifiedClicks;
+        acc.uniqueFriends += r.uniqueFriends;
+        acc.clicks30d += r.clicks30d;
+        acc.clicks7d += r.clicks7d;
+        return acc;
+      },
+      { totalClicks: 0, identifiedClicks: 0, uniqueFriends: 0, clicks30d: 0, clicks7d: 0 },
+    );
+    return c.json({ success: true, data: { sources: data, totals } });
+  } catch (err) {
+    console.error('GET /api/tracked-links/stats/traffic-sources error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
 
 // GET /api/tracked-links — list all
 trackedLinks.get('/api/tracked-links', async (c) => {

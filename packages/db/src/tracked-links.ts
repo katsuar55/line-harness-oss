@@ -105,6 +105,53 @@ export interface LinkClickWithFriend extends LinkClick {
   friend_display_name: string | null;
 }
 
+export interface TrafficSourceStat {
+  link_id: string;
+  link_name: string;
+  original_url: string;
+  tag_id: string | null;
+  scenario_id: string | null;
+  total_clicks: number;
+  identified_clicks: number;
+  unique_friends: number;
+  clicks_30d: number;
+  clicks_7d: number;
+  last_click_at: string | null;
+}
+
+/**
+ * Aggregate click stats across all tracked links for the traffic-sources dashboard.
+ * Uses JST boundaries already encoded on clicked_at via jstNow().
+ */
+export async function getTrafficSourceStats(db: D1Database): Promise<TrafficSourceStat[]> {
+  const now = new Date();
+  const d30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const d7 = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const result = await db
+    .prepare(
+      `SELECT
+        tl.id as link_id,
+        tl.name as link_name,
+        tl.original_url,
+        tl.tag_id,
+        tl.scenario_id,
+        COUNT(lc.id) as total_clicks,
+        SUM(CASE WHEN lc.friend_id IS NOT NULL THEN 1 ELSE 0 END) as identified_clicks,
+        COUNT(DISTINCT lc.friend_id) as unique_friends,
+        SUM(CASE WHEN lc.clicked_at >= ? THEN 1 ELSE 0 END) as clicks_30d,
+        SUM(CASE WHEN lc.clicked_at >= ? THEN 1 ELSE 0 END) as clicks_7d,
+        MAX(lc.clicked_at) as last_click_at
+       FROM tracked_links tl
+       LEFT JOIN link_clicks lc ON lc.tracked_link_id = tl.id
+       GROUP BY tl.id
+       ORDER BY total_clicks DESC, tl.created_at DESC`,
+    )
+    .bind(d30, d7)
+    .all<TrafficSourceStat>();
+  return result.results;
+}
+
 export async function getLinkClicks(
   db: D1Database,
   trackedLinkId: string,

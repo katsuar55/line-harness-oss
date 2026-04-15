@@ -92,6 +92,22 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
   return res.json() as Promise<T>
 }
 
+export interface TrafficSourceStat {
+  linkId: string
+  linkName: string
+  originalUrl: string
+  trackingUrl: string
+  tagId: string | null
+  scenarioId: string | null
+  totalClicks: number
+  identifiedClicks: number
+  uniqueFriends: number
+  clicks30d: number
+  clicks7d: number
+  lastClickAt: string | null
+  identificationRate: number
+}
+
 export interface Operator {
   id: string
   name: string
@@ -428,6 +444,13 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
       }),
+  },
+  trackedLinks: {
+    trafficSources: () =>
+      fetchApi<ApiResponse<{
+        sources: TrafficSourceStat[]
+        totals: { totalClicks: number; identifiedClicks: number; uniqueFriends: number; clicks30d: number; clicks7d: number }
+      }>>('/api/tracked-links/stats/traffic-sources'),
   },
   operators: {
     list: () => fetchApi<ApiResponse<Operator[]>>('/api/operators'),
