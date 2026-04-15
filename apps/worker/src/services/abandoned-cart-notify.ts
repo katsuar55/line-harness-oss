@@ -26,6 +26,56 @@ interface CartRow {
   checkout_url: string | null;
 }
 
+/**
+ * 単一かご落ちレコードへ通知を送信する（Cron と手動再送で共用）。
+ *
+ * 戻り値: 'sent' = 送信成功 / 'skipped:<reason>' = スキップ
+ * throws: LINE API 失敗、DB 失敗など
+ */
+export async function notifyAbandonedCart(
+  db: D1Database,
+  lineClient: LineClient,
+  liffUrl: string,
+  cart: CartRow,
+): Promise<'sent' | `skipped:${string}`> {
+  if (!cart.friend_id) return 'skipped:no_friend';
+
+  const friend = await db
+    .prepare('SELECT line_user_id, is_following, is_blacklisted FROM friends WHERE id = ?')
+    .bind(cart.friend_id)
+    .first<{ line_user_id: string; is_following: number; is_blacklisted: number | null }>();
+
+  if (!friend) return 'skipped:friend_missing';
+  if (!friend.is_following) return 'skipped:not_following';
+  if (friend.is_blacklisted) return 'skipped:blacklisted';
+
+  // 商品名を抽出
+  let itemSummary = 'カートの商品';
+  try {
+    const items = JSON.parse(cart.line_items || '[]') as Array<{ title?: string }>;
+    if (items.length > 0 && items[0].title) {
+      itemSummary = items.length === 1
+        ? items[0].title
+        : `${items[0].title} 他${items.length - 1}点`;
+    }
+  } catch { /* parse error — use default */ }
+
+  const price = cart.total_price ? `¥${Math.round(cart.total_price).toLocaleString()}` : '';
+  const checkoutLink = cart.checkout_url || `${liffUrl}#reorder`;
+  const message = [
+    `お買い忘れはありませんか？`,
+    ``,
+    `「${itemSummary}」${price ? `（${price}）` : ''}がカートに残っています。`,
+    ``,
+    `▼ お買い物を続ける`,
+    checkoutLink,
+  ].join('\n');
+
+  await lineClient.pushMessage(friend.line_user_id, [{ type: 'text', text: message }]);
+  await updateAbandonedCartStatus(db, cart.id, 'notified', { notifiedAt: jstNow() });
+  return 'sent';
+}
+
 export async function processAbandonedCartNotifications(
   db: D1Database,
   lineClient: LineClient,
@@ -39,61 +89,10 @@ export async function processAbandonedCartNotifications(
   let errors = 0;
 
   for (const cart of pendingCarts) {
-    // friend_id が無い場合はスキップ（LINE友だちとマッチしていない）
-    if (!cart.friend_id) {
-      skipped++;
-      continue;
-    }
-
     try {
-      // LINE user ID を取得
-      const friend = await db
-        .prepare('SELECT line_user_id, is_following FROM friends WHERE id = ? AND is_following = 1')
-        .bind(cart.friend_id)
-        .first<{ line_user_id: string; is_following: number }>();
-
-      if (!friend) {
-        skipped++;
-        continue;
-      }
-
-      // ブラックリストチェック
-      const bl = await db
-        .prepare('SELECT is_blacklisted FROM friends WHERE id = ?')
-        .bind(cart.friend_id)
-        .first<{ is_blacklisted: number }>();
-      if (bl?.is_blacklisted) {
-        skipped++;
-        continue;
-      }
-
-      // 商品名を抽出
-      let itemSummary = 'カートの商品';
-      try {
-        const items = JSON.parse(cart.line_items || '[]') as Array<{ title?: string }>;
-        if (items.length > 0 && items[0].title) {
-          itemSummary = items.length === 1
-            ? items[0].title
-            : `${items[0].title} 他${items.length - 1}点`;
-        }
-      } catch { /* parse error — use default */ }
-
-      // メッセージ送信
-      const price = cart.total_price ? `¥${Math.round(cart.total_price).toLocaleString()}` : '';
-      const checkoutLink = cart.checkout_url || `${liffUrl}#reorder`;
-      const message = [
-        `お買い忘れはありませんか？`,
-        ``,
-        `「${itemSummary}」${price ? `（${price}）` : ''}がカートに残っています。`,
-        ``,
-        `▼ お買い物を続ける`,
-        checkoutLink,
-      ].join('\n');
-
-      await lineClient.pushMessage(friend.line_user_id, [{ type: 'text', text: message }]);
-
-      await updateAbandonedCartStatus(db, cart.id, 'notified', { notifiedAt: now });
-      sent++;
+      const result = await notifyAbandonedCart(db, lineClient, liffUrl, cart);
+      if (result === 'sent') sent++;
+      else skipped++;
     } catch (err) {
       console.error(`Abandoned cart notification failed (id=${cart.id}):`, err);
       errors++;

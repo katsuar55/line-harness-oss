@@ -593,6 +593,27 @@ export const api = {
     delete: (id: string) =>
       fetchApi<ApiResponse<{ deleted: string }>>(`/api/tips/${id}`, { method: 'DELETE' }),
   },
+  abandonedCarts: {
+    list: (params?: { status?: string; friendId?: string; limit?: number; offset?: number }) => {
+      const query: Record<string, string> = {}
+      if (params?.status) query.status = params.status
+      if (params?.friendId) query.friendId = params.friendId
+      if (params?.limit !== undefined) query.limit = String(params.limit)
+      if (params?.offset !== undefined) query.offset = String(params.offset)
+      return fetchApi<ApiResponse<AbandonedCart[]>>(
+        '/api/integrations/shopify/abandoned-carts?' + new URLSearchParams(query),
+      )
+    },
+    stats: () =>
+      fetchApi<ApiResponse<{ pending: number; notified: number; recovered: number }>>(
+        '/api/integrations/shopify/abandoned-carts/stats',
+      ),
+    resend: (id: string) =>
+      fetchApi<ApiResponse<{ id: string; status: string }>>(
+        `/api/integrations/shopify/abandoned-carts/${id}/resend`,
+        { method: 'POST' },
+      ),
+  },
   richMenus: {
     list: () =>
       fetchApi<ApiResponse<RichMenu[]>>('/api/rich-menus'),
@@ -648,4 +669,37 @@ export interface RichMenuCreatePayload {
   name: string
   chatBarText: string
   areas: RichMenuArea[]
+}
+
+// ─── Abandoned Cart Types ───
+
+export type AbandonedCartStatus = 'pending' | 'notified' | 'recovered' | 'cancelled'
+
+export interface AbandonedCartLineItem {
+  title?: string
+  quantity?: number
+  price?: number | string
+  variant_title?: string
+  image?: string
+}
+
+export interface AbandonedCart {
+  id: string
+  shopify_checkout_id: string
+  friend_id: string | null
+  shopify_customer_id: string | null
+  cart_token: string | null
+  email: string | null
+  line_items: string // JSON string
+  total_price: number
+  currency: string
+  checkout_url: string | null
+  status: AbandonedCartStatus
+  notification_scheduled_at: string | null
+  notified_at: string | null
+  recovered_at: string | null
+  recovered_order_id: string | null
+  metadata: string
+  created_at: string
+  updated_at: string
 }

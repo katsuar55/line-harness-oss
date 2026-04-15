@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { LineClient } from '@line-crm/line-sdk';
+import { notifyAbandonedCart } from '../services/abandoned-cart-notify.js';
 import {
   upsertAbandonedCart,
   getAbandonedCartByCheckoutId,
@@ -945,6 +947,56 @@ shopifyPhase2a.get('/api/integrations/shopify/abandoned-carts/stats', async (c) 
   } catch (err) {
     console.error('GET /api/integrations/shopify/abandoned-carts/stats error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// 手動再送: 管理画面から個別のかご落ちに対して通知を送る
+shopifyPhase2a.post('/api/integrations/shopify/abandoned-carts/:id/resend', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const cart = await c.env.DB
+      .prepare(
+        `SELECT id, friend_id, email, line_items, total_price, currency, checkout_url, status
+         FROM abandoned_carts WHERE id = ?`,
+      )
+      .bind(id)
+      .first<{
+        id: string;
+        friend_id: string | null;
+        email: string | null;
+        line_items: string;
+        total_price: number;
+        currency: string;
+        checkout_url: string | null;
+        status: string;
+      }>();
+
+    if (!cart) {
+      return c.json({ success: false, error: 'Abandoned cart not found' }, 404);
+    }
+    if (cart.status === 'recovered') {
+      return c.json({ success: false, error: 'Cart already recovered' }, 400);
+    }
+    if (cart.status === 'cancelled') {
+      return c.json({ success: false, error: 'Cart is cancelled' }, 400);
+    }
+
+    const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    const result = await notifyAbandonedCart(c.env.DB, lineClient, c.env.LIFF_URL, {
+      id: cart.id,
+      friend_id: cart.friend_id,
+      email: cart.email,
+      line_items: cart.line_items,
+      total_price: cart.total_price,
+      currency: cart.currency,
+      checkout_url: cart.checkout_url,
+    });
+
+    return c.json({ success: true, data: { id: cart.id, status: result } });
+  } catch (err) {
+    console.error('POST /api/integrations/shopify/abandoned-carts/:id/resend error:', err);
+    const message = err instanceof Error ? err.message : 'Internal server error';
+    return c.json({ success: false, error: message }, 500);
   }
 });
 
