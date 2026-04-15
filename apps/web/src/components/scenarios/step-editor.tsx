@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import type { ScenarioStep, MessageType } from '@line-crm/shared'
+import QuickReplyEditor from '@/components/quick-reply-editor'
 
 interface StepEditorProps {
   step?: ScenarioStep
@@ -14,6 +15,7 @@ const messageTypeLabels: Record<MessageType, string> = {
   text: 'テキスト',
   image: '画像',
   flex: 'Flexメッセージ',
+  quick_reply: 'クイックリプライ',
 }
 
 function minutesToDisplay(minutes: number): { days: number; hours: number; mins: number } {
@@ -48,6 +50,22 @@ export default function StepEditor({ step, stepOrder, onSave, onCancel }: StepEd
         JSON.parse(messageContent)
       } catch {
         setError('FlexメッセージのJSONが無効です')
+        return
+      }
+    }
+    if (messageType === 'quick_reply') {
+      try {
+        const parsed = JSON.parse(messageContent)
+        if (!Array.isArray(parsed?.items) || parsed.items.length === 0) {
+          setError('クイックリプライには1件以上のボタンが必要です')
+          return
+        }
+        if (parsed.items.length > 13) {
+          setError('クイックリプライのボタンは最大13件です')
+          return
+        }
+      } catch {
+        setError('クイックリプライのJSONが無効です')
         return
       }
     }
@@ -147,6 +165,10 @@ export default function StepEditor({ step, stepOrder, onSave, onCancel }: StepEd
           )}
         </label>
 
+        {messageType === 'quick_reply' && (
+          <QuickReplyEditor value={messageContent} onChange={setMessageContent} />
+        )}
+
         {/* Image helper: URL inputs that auto-generate the required LINE image JSON */}
         {messageType === 'image' && (() => {
           let parsed: { originalContentUrl?: string; previewImageUrl?: string } = {}
@@ -184,6 +206,7 @@ export default function StepEditor({ step, stepOrder, onSave, onCancel }: StepEd
           )
         })()}
 
+        {messageType !== 'quick_reply' && (
         <textarea
           className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
           rows={messageType === 'flex' ? 8 : messageType === 'image' ? 3 : 4}
@@ -198,6 +221,7 @@ export default function StepEditor({ step, stepOrder, onSave, onCancel }: StepEd
           onChange={(e) => setMessageContent(e.target.value)}
           style={{ fontFamily: messageType !== 'text' ? 'monospace' : 'inherit' }}
         />
+        )}
         {messageType === 'image' && (
           <p className="text-xs text-gray-400 mt-1">上のURLフォームか、直接JSONを編集できます</p>
         )}
