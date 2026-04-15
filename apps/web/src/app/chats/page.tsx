@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { api, fetchApi } from '@/lib/api'
+import { api, fetchApi, type Operator } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
@@ -291,6 +291,8 @@ export default function ChatsPage() {
   const [selectedFriendId, setSelectedFriendId] = useState<string | null>(null)
   const [chatDetail, setChatDetail] = useState<ChatDetail | null>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [operators, setOperators] = useState<Operator[]>([])
+  const [operatorFilter, setOperatorFilter] = useState<string>('all') // 'all' | 'unassigned' | operator.id
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
@@ -330,25 +332,36 @@ export default function ChatsPage() {
     setLoading(true)
     setError('')
     try {
-      const params: { status?: string; accountId?: string } = {}
+      const params: { status?: string; operatorId?: string; accountId?: string } = {}
       if (statusFilter !== 'all') params.status = statusFilter
       if (selectedAccountId) params.accountId = selectedAccountId
-      const [chatRes, friendRes] = await Promise.allSettled([
+      if (operatorFilter !== 'all' && operatorFilter !== 'unassigned') {
+        params.operatorId = operatorFilter
+      }
+      const [chatRes, friendRes, opRes] = await Promise.allSettled([
         api.chats.list(params),
         api.friends.list({ accountId: selectedAccountId || undefined, limit: '800' }),
+        api.operators.list(),
       ])
       if (chatRes.status === 'fulfilled' && chatRes.value.success) {
-        setChats(chatRes.value.data as unknown as Chat[])
+        let rows = chatRes.value.data as unknown as Chat[]
+        if (operatorFilter === 'unassigned') {
+          rows = rows.filter((c) => !c.operatorId)
+        }
+        setChats(rows)
       }
       if (friendRes.status === 'fulfilled' && friendRes.value.success) {
         setAllFriends((friendRes.value.data as unknown as { items: FriendItem[] }).items)
+      }
+      if (opRes.status === 'fulfilled' && opRes.value.success) {
+        setOperators((opRes.value.data as Operator[]).filter((o) => o.isActive !== false))
       }
     } catch {
       setError('チャットの読み込みに失敗しました。もう一度お試しください。')
     } finally {
       setLoading(false)
     }
-  }, [statusFilter, selectedAccountId])
+  }, [statusFilter, operatorFilter, selectedAccountId])
 
   const loadChatDetail = useCallback(async (chatId: string) => {
     setDetailLoading(true)
@@ -429,6 +442,17 @@ export default function ChatsPage() {
     }
   }
 
+  const handleOperatorAssign = async (operatorId: string) => {
+    if (!selectedChatId) return
+    try {
+      await api.chats.update(selectedChatId, { operatorId: operatorId || null })
+      loadChatDetail(selectedChatId)
+      loadChats()
+    } catch {
+      setError('担当者の更新に失敗しました。')
+    }
+  }
+
   const handleSaveNotes = async () => {
     if (!selectedChatId) return
     setSavingNotes(true)
@@ -479,6 +503,22 @@ export default function ChatsPage() {
                 {filter.label}
               </button>
             ))}
+          </div>
+
+          {/* Operator Filter */}
+          <div className="px-3 py-2 border-b border-gray-200 bg-gray-50">
+            <label className="block text-[10px] text-gray-500 mb-1">担当者フィルター</label>
+            <select
+              value={operatorFilter}
+              onChange={(e) => { setOperatorFilter(e.target.value); setSelectedChatId(null) }}
+              className="w-full text-xs border border-gray-300 rounded-md px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-green-500"
+            >
+              <option value="all">すべて</option>
+              <option value="unassigned">未対応キュー（未アサイン）</option>
+              {operators.map((op) => (
+                <option key={op.id} value={op.id}>{op.name}</option>
+              ))}
+            </select>
           </div>
 
           {/* Chat List */}
@@ -581,6 +621,17 @@ export default function ChatsPage() {
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={chatDetail.operatorId ?? ''}
+                    onChange={(e) => handleOperatorAssign(e.target.value)}
+                    className="text-xs border border-gray-300 rounded-md px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-green-500"
+                    title="担当者"
+                  >
+                    <option value="">担当者未割当</option>
+                    {operators.map((op) => (
+                      <option key={op.id} value={op.id}>{op.name}</option>
+                    ))}
+                  </select>
                   {chatDetail.status !== 'unread' && (
                     <button
                       onClick={() => handleStatusUpdate('unread')}

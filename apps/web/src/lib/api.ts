@@ -92,6 +92,16 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
   return res.json() as Promise<T>
 }
 
+export interface Operator {
+  id: string
+  name: string
+  email: string
+  role: string | null
+  isActive: boolean
+  createdAt?: string
+  updatedAt?: string
+}
+
 export type FriendListParams = {
   offset?: string
   limit?: string
@@ -418,6 +428,21 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
       }),
+  },
+  operators: {
+    list: () => fetchApi<ApiResponse<Operator[]>>('/api/operators'),
+    create: (data: { name: string; email: string; role?: string }) =>
+      fetchApi<ApiResponse<Operator>>('/api/operators', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: Partial<Pick<Operator, 'name' | 'email' | 'role' | 'isActive'>>) =>
+      fetchApi<ApiResponse<Operator>>(`/api/operators/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/operators/${id}`, { method: 'DELETE' }),
   },
   reminders: {
     list: (params?: { accountId?: string }) => {
