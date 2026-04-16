@@ -58,7 +58,9 @@ export async function notifyAbandonedCart(
         ? items[0].title
         : `${items[0].title} 他${items.length - 1}点`;
     }
-  } catch { /* parse error — use default */ }
+  } catch (err) {
+    console.warn(`abandoned-cart-notify: line_items JSON parse failed for cart ${cart.id}:`, err);
+  }
 
   const price = cart.total_price ? `¥${Math.round(cart.total_price).toLocaleString()}` : '';
   const checkoutLink = cart.checkout_url || `${liffUrl}#reorder`;

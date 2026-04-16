@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { api } from '@/lib/api';
+import { fetchApi } from '@/lib/api';
+import type { ApiResponse } from '@line-crm/shared';
 
 interface ReminderMessage {
   id: string;
@@ -17,6 +18,11 @@ interface Stats {
   total: number;
   active: number;
   byTimeSlot: Array<{ time_slot: string; count: number; active_count: number }>;
+}
+
+interface ListResponse {
+  messages: ReminderMessage[];
+  total: number;
 }
 
 const TIME_SLOT_LABELS: Record<string, string> = {
@@ -46,25 +52,23 @@ export default function ReminderMessagesPage() {
     try {
       const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
       if (filterSlot) params.set('time_slot', filterSlot);
-      const res = await fetch(`/api/reminder-messages?${params}`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('apiKey') || ''}` },
-      });
-      const json = await res.json();
-      if (json.success) {
+      const json = await fetchApi<ApiResponse<ListResponse>>(`/api/reminder-messages?${params}`);
+      if (json.success && json.data) {
         setMessages(json.data.messages);
         setTotal(json.data.total);
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.error('reminder-messages load failed:', err);
+    }
   }, [offset, filterSlot]);
 
   const loadStats = useCallback(async () => {
     try {
-      const res = await fetch('/api/reminder-messages/stats', {
-        headers: { Authorization: `Bearer ${localStorage.getItem('apiKey') || ''}` },
-      });
-      const json = await res.json();
-      if (json.success) setStats(json.data);
-    } catch { /* ignore */ }
+      const json = await fetchApi<ApiResponse<Stats>>('/api/reminder-messages/stats');
+      if (json.success && json.data) setStats(json.data);
+    } catch (err) {
+      console.error('reminder-messages stats failed:', err);
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -73,15 +77,13 @@ export default function ReminderMessagesPage() {
   async function handleSave() {
     try {
       if (editMsg) {
-        await fetch(`/api/reminder-messages/${editMsg.id}`, {
+        await fetchApi(`/api/reminder-messages/${editMsg.id}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('apiKey') || ''}` },
           body: JSON.stringify(form),
         });
       } else {
-        await fetch('/api/reminder-messages', {
+        await fetchApi('/api/reminder-messages', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('apiKey') || ''}` },
           body: JSON.stringify(form),
         });
       }
@@ -90,16 +92,17 @@ export default function ReminderMessagesPage() {
       setForm({ timeSlot: 'any', message: '', category: 'general' });
       load();
       loadStats();
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.error('reminder-messages save failed:', err);
+    }
   }
 
   async function handleBulkImport() {
     const lines = bulkText.split('\n').filter((l) => l.trim());
     if (lines.length === 0) return;
     try {
-      await fetch('/api/reminder-messages/bulk', {
+      await fetchApi('/api/reminder-messages/bulk', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('apiKey') || ''}` },
         body: JSON.stringify({
           messages: lines.map((line) => ({ timeSlot: bulkSlot, message: line.trim(), category: 'general' })),
         }),
@@ -108,27 +111,33 @@ export default function ReminderMessagesPage() {
       setBulkText('');
       load();
       loadStats();
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.error('reminder-messages bulk import failed:', err);
+    }
   }
 
   async function handleDelete(id: string) {
     if (!confirm('削除しますか？')) return;
-    await fetch(`/api/reminder-messages/${id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${localStorage.getItem('apiKey') || ''}` },
-    });
-    load();
-    loadStats();
+    try {
+      await fetchApi(`/api/reminder-messages/${id}`, { method: 'DELETE' });
+      load();
+      loadStats();
+    } catch (err) {
+      console.error('reminder-messages delete failed:', err);
+    }
   }
 
   async function toggleActive(msg: ReminderMessage) {
-    await fetch(`/api/reminder-messages/${msg.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('apiKey') || ''}` },
-      body: JSON.stringify({ isActive: !msg.is_active }),
-    });
-    load();
-    loadStats();
+    try {
+      await fetchApi(`/api/reminder-messages/${msg.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ isActive: !msg.is_active }),
+      });
+      load();
+      loadStats();
+    } catch (err) {
+      console.error('reminder-messages toggle failed:', err);
+    }
   }
 
   return (
