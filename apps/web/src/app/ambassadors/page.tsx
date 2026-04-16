@@ -104,9 +104,8 @@ export default function AmbassadorsPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <Header />
+      <Header title="アンバサダー管理" />
       <main className="max-w-6xl mx-auto px-4 py-6">
-        <h1 className="text-2xl font-bold text-gray-900 mb-6">アンバサダー管理</h1>
 
         {/* Stats Cards */}
         {stats && (

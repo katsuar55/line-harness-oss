@@ -22,7 +22,7 @@ function createApp(role: string = 'owner') {
   app.use('/api/*', async (c, next) => {
     const auth = c.req.header('Authorization');
     if (!auth || auth !== `Bearer ${API_KEY}`) return c.json({ error: 'Unauthorized' }, 401);
-    c.set('staff', { id: 'test-staff', name: 'Test', role });
+    (c as any).set('staff', { id: 'test-staff', name: 'Test', role });
     return next();
   });
   app.route('/', csvExport);

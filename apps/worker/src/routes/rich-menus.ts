@@ -128,7 +128,7 @@ richMenus.get('/api/rich-menus/status', async (c) => {
 
     // 全リッチメニュー一覧
     const list = await lineClient.getRichMenuList();
-    const menus = (list.richmenus ?? []).map((m: Record<string, unknown>) => ({
+    const menus = (list.richmenus ?? []).map((m: any) => ({
       richMenuId: m.richMenuId,
       name: m.name,
       size: m.size,

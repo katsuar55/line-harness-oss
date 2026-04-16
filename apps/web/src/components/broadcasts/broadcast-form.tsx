@@ -15,6 +15,7 @@ const messageTypeLabels: Record<ApiBroadcast['messageType'], string> = {
   text: 'テキスト',
   image: '画像',
   flex: 'Flexメッセージ',
+  quick_reply: 'クイックリプライ',
 }
 
 interface FormState {

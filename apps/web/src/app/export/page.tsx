@@ -62,9 +62,8 @@ export default function ExportPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <Header />
+      <Header title="CSV エクスポート" />
       <main className="max-w-4xl mx-auto px-4 py-6">
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">CSV エクスポート</h1>
         <p className="text-sm text-gray-500 mb-6">各データをCSVファイルとしてダウンロードできます（最大10,000件）</p>
 
         {error && (

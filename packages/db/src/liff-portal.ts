@@ -1039,7 +1039,7 @@ export async function getSurveys(
     .bind(...vals)
     .all();
 
-  return { surveys: results as AmbassadorSurvey[], total };
+  return { surveys: results as unknown as AmbassadorSurvey[], total };
 }
 
 export async function getSurveyById(

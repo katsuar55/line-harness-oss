@@ -145,11 +145,10 @@ export default function TipsPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <Header />
+      <Header title="日替わり Tips 管理" />
       <main className="max-w-5xl mx-auto px-4 py-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">日替わり Tips 管理</h1>
             <p className="text-sm text-gray-500 mt-1">
               合計 {total} 件のTip
             </p>

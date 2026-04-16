@@ -43,12 +43,12 @@ function formatYen(n: number): string {
 
 function MiniBarChart({ data, valueKey, color = '#06C755', height = 120 }: {
   data: TrendPoint[]
-  valueKey: string
+  valueKey: keyof TrendPoint
   color?: string
   height?: number
 }) {
   if (data.length === 0) return <div className="text-xs text-gray-400 text-center py-8">データなし</div>
-  const values = data.map((d) => (d as Record<string, unknown>)[valueKey] as number || 0)
+  const values = data.map((d) => { const v = d[valueKey]; return typeof v === 'number' ? v : 0 })
   const max = Math.max(...values, 1)
 
   return (
@@ -109,10 +109,9 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <Header />
+      <Header title="ダッシュボード" />
       <main className="max-w-6xl mx-auto px-4 py-6">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold text-gray-900">ダッシュボード</h1>
           <div className="flex gap-1 bg-white rounded-lg border p-0.5">
             {[7, 30, 90].map((d) => (
               <button

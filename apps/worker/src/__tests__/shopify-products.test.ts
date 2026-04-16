@@ -38,7 +38,7 @@ vi.mock('@line-crm/line-sdk', () => ({
   productCard: vi.fn((opts: unknown) => ({
     type: 'bubble',
     body: { type: 'box', layout: 'vertical', contents: [] },
-    ...opts,
+    ...(opts as Record<string, unknown>),
   })),
 }));
 

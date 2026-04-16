@@ -107,11 +107,11 @@ liffPortal.post('/api/liff/rank', async (c) => {
     );
     const nextRank = currentIdx < allRanks.length - 1 ? allRanks[currentIdx + 1] : null;
 
-    const totalSpent = (friendRank as Record<string, unknown>).total_spent as number ?? 0;
+    const totalSpent = Number((friendRank as Record<string, unknown>).total_spent) || 0;
     let progressPercent = 100;
     if (nextRank) {
-      const currentMin = currentRankDetail?.min_total_spent ?? 0;
-      const nextMin = nextRank.min_total_spent ?? 0;
+      const currentMin = Number(currentRankDetail?.min_total_spent) || 0;
+      const nextMin = Number(nextRank.min_total_spent) || 0;
       const range = nextMin - currentMin;
       progressPercent = range > 0 ? Math.min(100, Math.round(((totalSpent - currentMin) / range) * 100)) : 100;
     }
@@ -136,7 +136,7 @@ liffPortal.post('/api/liff/rank', async (c) => {
               name: nextRank.name,
               color: nextRank.color,
               minTotalSpent: nextRank.min_total_spent,
-              remaining: Math.max(0, (nextRank.min_total_spent ?? 0) - totalSpent),
+              remaining: Math.max(0, Number(nextRank.min_total_spent ?? 0) - totalSpent),
             }
           : null,
         progressPercent,
@@ -195,7 +195,7 @@ liffPortal.post('/api/liff/reorder', async (c) => {
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
     const recentOrders = await getShopifyOrders(c.env.DB, { friendId: user.friendId, limit: 3 });
-    const { products } = await getShopifyProducts(c.env.DB, { status: 'active', limit: 10 });
+    const products = await getShopifyProducts(c.env.DB, { status: 'active', limit: 10 });
     const storeDomain = c.env.SHOPIFY_STORE_DOMAIN || 'naturism-diet.com';
 
     return c.json({
@@ -209,7 +209,7 @@ liffPortal.post('/api/liff/reorder', async (c) => {
           createdAt: o.created_at,
           fulfillmentStatus: o.fulfillment_status,
         })),
-        products: products.map((p: Record<string, unknown>) => ({
+        products: products.map((p: any) => ({
           id: p.id,
           shopifyProductId: p.shopify_product_id,
           title: p.title,

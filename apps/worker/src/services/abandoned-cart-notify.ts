@@ -82,7 +82,7 @@ export async function processAbandonedCartNotifications(
   liffUrl: string,
 ): Promise<{ sent: number; skipped: number; errors: number }> {
   const now = jstNow();
-  const pendingCarts = (await getPendingAbandonedCarts(db, now)) as CartRow[];
+  const pendingCarts = (await getPendingAbandonedCarts(db, now)) as unknown as CartRow[];
 
   let sent = 0;
   let skipped = 0;
