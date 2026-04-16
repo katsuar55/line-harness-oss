@@ -98,8 +98,8 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
       }
       body = JSON.parse(rawBody) as StripeWebhookBody;
     } else {
-      // シークレット未設定（開発環境向け）
-      body = await c.req.json<StripeWebhookBody>();
+      // シークレット未設定 → 本番ではリジェクト
+      return c.json({ success: false, error: 'STRIPE_WEBHOOK_SECRET is not configured. Webhook rejected.' }, 500);
     }
 
     // 冪等性チェック

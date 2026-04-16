@@ -97,19 +97,9 @@ export async function liffAuthMiddleware(c: Context<Env>, next: Next): Promise<R
       return next();
     }
 
-    // Fallback: lineUserId directly (for development/testing only)
-    // In production, LINE_LOGIN_CHANNEL_ID should always be set
-    if (bodyLineUserId) {
-      const friend = await getFriendByLineUserId(c.env.DB, bodyLineUserId);
-      if (!friend) {
-        return c.json({ success: false, error: 'Friend not found' }, 404);
-      }
-
-      (c as { set: (key: string, value: unknown) => void }).set('liffUser', { lineUserId: bodyLineUserId, friendId: friend.id });
-      return next();
-    }
-
-    return c.json({ success: false, error: 'idToken or lineUserId required. Send idToken in Authorization Bearer header or request body.' }, 401);
+    // lineUserId フォールバック削除（セキュリティリスク: IDを知っているだけで他人になりすまし可能）
+    // 本番では必ず LINE_LOGIN_CHANNEL_ID を設定し、idToken 検証を使うこと
+    return c.json({ success: false, error: 'Authentication required. Send idToken in Authorization Bearer header.' }, 401);
   } catch {
     return c.json({ success: false, error: 'Invalid request body' }, 400);
   }

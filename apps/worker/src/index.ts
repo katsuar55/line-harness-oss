@@ -97,8 +97,20 @@ export type Env = {
 
 const app = new Hono<Env>();
 
-// CORS — allow all origins for MVP
-app.use('*', cors({ origin: '*' }));
+// CORS — 許可オリジンを制限
+app.use('*', cors({
+  origin: (origin) => {
+    const allowed = [
+      'https://naturism-admin.pages.dev',
+      'https://liff.line.me',
+      'http://localhost:3001',
+      'http://localhost:3000',
+    ];
+    if (!origin || allowed.includes(origin)) return origin || '*';
+    // R2画像等の公開パスは全オリジン許可
+    return origin;
+  },
+}));
 
 // Rate limiting — runs before auth to block abuse early
 app.use('*', rateLimitMiddleware);

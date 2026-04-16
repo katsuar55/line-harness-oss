@@ -450,7 +450,13 @@ liffRoutes.get('/auth/callback', async (c) => {
 
     // Redirect or show completion
     if (redirect) {
-      return c.redirect(redirect);
+      // セキュリティ: 許可ドメインのみリダイレクト（オープンリダイレクト防止）
+      const allowedOrigins = [c.env.LIFF_URL, c.env.WORKER_URL, 'https://naturism-diet.com'].filter(Boolean);
+      const isAllowed = allowedOrigins.some((o) => o && redirect.startsWith(o));
+      if (isAllowed) {
+        return c.redirect(redirect);
+      }
+      // 不正なリダイレクト先は無視してデフォルト動作
     }
 
     // Redirect to the correct bot's chat after auth
@@ -1067,18 +1073,18 @@ async function resolveXHarnessToken(
  */
 liffRoutes.post('/api/liff/orders', async (c) => {
   try {
-    const body = await c.req.json<{ lineUserId: string; limit?: number; offset?: number }>();
-    if (!body.lineUserId) {
-      return c.json({ success: false, error: 'lineUserId is required' }, 400);
+    const liffUser = c.get('liffUser') as { lineUserId: string; friendId: string } | undefined;
+    if (!liffUser) {
+      return c.json({ success: false, error: 'Authentication required' }, 401);
     }
 
-    const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
+    const body = await c.req.json<{ limit?: number; offset?: number }>().catch(() => ({}));
+    const limit = Math.min((body as any).limit ?? 20, 100);
+    const offset = (body as any).offset ?? 0;
+    const friend = await getFriendByLineUserId(c.env.DB, liffUser.lineUserId);
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
-
-    const limit = Math.min(body.limit ?? 20, 100);
-    const offset = body.offset ?? 0;
 
     const orders = await getShopifyOrders(c.env.DB, {
       friendId: friend.id,
@@ -1124,12 +1130,12 @@ liffRoutes.post('/api/liff/orders', async (c) => {
 liffRoutes.post('/api/liff/orders/:id', async (c) => {
   try {
     const orderId = c.req.param('id');
-    const body = await c.req.json<{ lineUserId: string }>();
-    if (!body.lineUserId) {
-      return c.json({ success: false, error: 'lineUserId is required' }, 400);
+    const liffUser = c.get('liffUser') as { lineUserId: string; friendId: string } | undefined;
+    if (!liffUser) {
+      return c.json({ success: false, error: 'Authentication required' }, 401);
     }
 
-    const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
+    const friend = await getFriendByLineUserId(c.env.DB, liffUser.lineUserId);
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
@@ -1168,12 +1174,12 @@ liffRoutes.post('/api/liff/orders/:id', async (c) => {
  */
 liffRoutes.post('/api/liff/orders-summary', async (c) => {
   try {
-    const body = await c.req.json<{ lineUserId: string }>();
-    if (!body.lineUserId) {
-      return c.json({ success: false, error: 'lineUserId is required' }, 400);
+    const liffUser = c.get('liffUser') as { lineUserId: string; friendId: string } | undefined;
+    if (!liffUser) {
+      return c.json({ success: false, error: 'Authentication required' }, 401);
     }
 
-    const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
+    const friend = await getFriendByLineUserId(c.env.DB, liffUser.lineUserId);
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
