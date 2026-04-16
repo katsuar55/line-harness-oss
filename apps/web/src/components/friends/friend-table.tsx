@@ -283,7 +283,7 @@ export default function FriendTable({ friends, allTags, onRefresh }: FriendTable
                             <p className="text-xs text-gray-600 font-mono">{friend.lineUserId}</p>
                           </div>
                           <Link
-                            href={`/friends/${friend.id}`}
+                            href={`/friend-detail?id=${friend.id}`}
                             onClick={(e) => e.stopPropagation()}
                             className="px-3 py-1.5 text-xs font-medium rounded-md text-white transition-opacity hover:opacity-90"
                             style={{ backgroundColor: '#06C755' }}

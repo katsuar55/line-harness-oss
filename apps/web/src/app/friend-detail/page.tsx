@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect, use } from 'react'
+import { useState, useEffect } from 'react'
+import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { api, fetchApi } from '@/lib/api'
 import type { FriendWithTags, FriendStatus } from '@/lib/api'
@@ -68,8 +69,9 @@ function formatCurrency(amount: number, currency: string): string {
 
 type ActiveTab = 'overview' | 'orders' | 'messages'
 
-export default function FriendDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = use(params)
+export default function FriendDetailPage() {
+  const searchParams = useSearchParams()
+  const id = searchParams.get('id') ?? ''
 
   const [friend, setFriend] = useState<FriendWithTags | null>(null)
   const [orders, setOrders] = useState<ShopifyOrder[]>([])
