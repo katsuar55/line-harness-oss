@@ -193,11 +193,11 @@ dashboard.get('/api/dashboard/intake-rate', async (c) => {
 
     const { results } = await c.env.DB.prepare(
       `SELECT
-         date(logged_at) as date,
+         date(log_date) as date,
          COUNT(DISTINCT friend_id) as users_logged
        FROM intake_logs
-       WHERE logged_at >= date('now', '-' || ? || ' days')
-       GROUP BY date(logged_at)
+       WHERE log_date >= date('now', '-' || ? || ' days')
+       GROUP BY date(log_date)
        ORDER BY date ASC`,
     ).bind(days).all();
 
@@ -224,7 +224,7 @@ dashboard.get('/api/dashboard/health-score', async (c) => {
 
     const { results } = await c.env.DB.prepare(
       `SELECT
-         date(logged_at) as date,
+         date(log_date) as date,
          COUNT(*) as entries,
          AVG(CASE condition
            WHEN 'good' THEN 3
@@ -236,8 +236,8 @@ dashboard.get('/api/dashboard/health-score', async (c) => {
          SUM(CASE WHEN condition = 'normal' THEN 1 ELSE 0 END) as normal_count,
          SUM(CASE WHEN condition = 'bad' THEN 1 ELSE 0 END) as bad_count
        FROM health_logs
-       WHERE logged_at >= date('now', '-' || ? || ' days')
-       GROUP BY date(logged_at)
+       WHERE log_date >= date('now', '-' || ? || ' days')
+       GROUP BY date(log_date)
        ORDER BY date ASC`,
     ).bind(days).all();
 
@@ -268,7 +268,7 @@ dashboard.get('/api/dashboard/referral-funnel', async (c) => {
   try {
     const [linksRow, addedRow, purchasedRow] = await Promise.all([
       c.env.DB.prepare(
-        `SELECT COUNT(DISTINCT friend_id) as cnt FROM friends WHERE referral_code IS NOT NULL`,
+        `SELECT COUNT(DISTINCT friend_id) as cnt FROM referral_links WHERE ref_code IS NOT NULL`,
       ).first<{ cnt: number }>(),
 
       c.env.DB.prepare(
