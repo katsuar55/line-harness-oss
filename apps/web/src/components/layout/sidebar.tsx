@@ -180,7 +180,7 @@ export default function Sidebar() {
     setStaffRole(localStorage.getItem('lh_staff_role'))
   }, [])
 
-  // Poll unread chat count every 30s
+  // Poll unread chat count — 10s interval, plus on-focus/visibility re-fetch for instant updates
   useEffect(() => {
     const apiKey = typeof window !== 'undefined' ? localStorage.getItem('lh_api_key') : null
     if (!apiKey) return
@@ -197,9 +197,22 @@ export default function Sidebar() {
         })
         .catch(() => {})
     }
+
+    // Initial + periodic
     fetchUnread()
-    const interval = setInterval(fetchUnread, 30000)
-    return () => clearInterval(interval)
+    const interval = setInterval(fetchUnread, 10000)
+
+    // Instant refresh when tab becomes visible / window focused
+    const onVisibility = () => { if (document.visibilityState === 'visible') fetchUnread() }
+    const onFocus = () => fetchUnread()
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', onFocus)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', onFocus)
+    }
   }, [])
 
   useEffect(() => { setIsOpen(false) }, [pathname])

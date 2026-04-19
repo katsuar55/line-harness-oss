@@ -304,6 +304,7 @@ export default function ChatsPage() {
   const [loadingSeconds, setLoadingSeconds] = useState(5)
   const lastLoadingTriggerAtRef = useRef<Record<string, number>>({})
   const [isMessageInputFocused, setIsMessageInputFocused] = useState(false)
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     try {
@@ -389,6 +390,18 @@ export default function ChatsPage() {
       setChatDetail(null)
     }
   }, [selectedChatId, loadChatDetail])
+
+  // Auto-scroll to bottom (latest messages) when chat opens or new messages arrive.
+  // Matches PC LINE UX: show the most recent conversation, not the oldest history.
+  useEffect(() => {
+    const el = messagesContainerRef.current
+    if (!el || !chatDetail?.messages) return
+    // Use a microtask + rAF so the scroll runs after paint of the new messages
+    const id = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+    return () => cancelAnimationFrame(id)
+  }, [chatDetail?.id, chatDetail?.messages?.length])
 
   const handleSelectChat = (chatId: string) => {
     setSelectedChatId(chatId)
@@ -660,7 +673,7 @@ export default function ChatsPage() {
               </div>
 
               {/* Messages — LINE-style chat bubbles */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
+              <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
                 {(!chatDetail.messages || chatDetail.messages.length === 0) ? (
                   <div className="text-center py-8">
                     <p className="text-white/60 text-sm">メッセージはまだありません。</p>
