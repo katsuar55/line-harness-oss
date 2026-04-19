@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { api, fetchApi, type Operator } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
-import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
 import FlexPreviewComponent from '@/components/flex-preview'
 
@@ -306,6 +305,58 @@ export default function ChatsPage() {
   const [isMessageInputFocused, setIsMessageInputFocused] = useState(false)
   const messagesContainerRef = useRef<HTMLDivElement | null>(null)
 
+  // Resizable split: user can drag divider between left (list) and right (detail).
+  // Persisted in localStorage. Only applies on lg+ (desktop); mobile remains stacked.
+  const LEFT_WIDTH_KEY = 'lh_chat_left_width'
+  const MIN_LEFT = 260
+  const MAX_LEFT = 720
+  const DEFAULT_LEFT = 384
+  const [leftWidth, setLeftWidth] = useState<number>(DEFAULT_LEFT)
+  const splitContainerRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LEFT_WIDTH_KEY)
+      if (raw) {
+        const n = Number.parseInt(raw, 10)
+        if (Number.isFinite(n)) setLeftWidth(Math.max(MIN_LEFT, Math.min(MAX_LEFT, n)))
+      }
+    } catch { /* ignore */ }
+  }, [])
+  useEffect(() => {
+    try { localStorage.setItem(LEFT_WIDTH_KEY, String(leftWidth)) } catch { /* ignore */ }
+  }, [leftWidth])
+
+  const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const container = splitContainerRef.current
+    if (!container) return
+    const containerRect = container.getBoundingClientRect()
+    const startX = e.clientX
+    const startWidth = leftWidth
+    // Cap max width to half of container so right panel always has breathing room.
+    const containerMax = Math.min(MAX_LEFT, Math.floor(containerRect.width * 0.7))
+    const onMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX
+      const next = Math.max(MIN_LEFT, Math.min(containerMax, startWidth + delta))
+      setLeftWidth(next)
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }, [leftWidth])
+
+  // Auto-mark chat as "in_progress" the first time an operator opens it.
+  // Matches PC LINE UX: viewing clears the unread badge. Only triggers once per
+  // chatId per session (tracked in a ref) so manually marking "未読に戻す" works.
+  const autoMarkedRef = useRef<Set<string>>(new Set())
+
   useEffect(() => {
     try {
       const rawEnabled = localStorage.getItem(SHOW_LOADING_PREF_KEY)
@@ -415,6 +466,26 @@ export default function ChatsPage() {
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [selectedChatId, loadChatDetail])
+
+  // Auto-clear unread badge when operator opens a chat: transition unread -> in_progress.
+  // Fires only once per chatId per session, so operator can manually set "未読に戻す" afterwards.
+  useEffect(() => {
+    if (!selectedChatId || !chatDetail) return
+    if (chatDetail.status !== 'unread') return
+    if (autoMarkedRef.current.has(selectedChatId)) return
+    autoMarkedRef.current.add(selectedChatId)
+    api.chats.update(selectedChatId, { status: 'in_progress' })
+      .then(() => {
+        // Refresh list so status badge updates, and detail so local state matches.
+        loadChats()
+        loadChatDetail(selectedChatId, true)
+      })
+      .catch((err) => {
+        console.error('auto-mark-as-in-progress failed', err)
+        // Allow a later retry if it failed
+        autoMarkedRef.current.delete(selectedChatId)
+      })
+  }, [selectedChatId, chatDetail, loadChats, loadChatDetail])
 
   useEffect(() => {
     if (selectedChatId) {
@@ -537,19 +608,28 @@ export default function ChatsPage() {
   }
 
   return (
-    <div>
-      <Header title="オペレーターチャット" />
+    <div className="-mt-4 lg:-mt-6">
+      {/* Compact title: smaller than shared Header, pinned to top for max vertical space */}
+      <div className="flex items-center justify-between mb-1.5">
+        <h1 className="text-base lg:text-lg font-bold text-gray-900">オペレーターチャット</h1>
+      </div>
 
       {/* Error */}
       {error && (
-        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+        <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded-md text-red-700 text-xs">
           {error}
         </div>
       )}
 
-      <div className="flex gap-4 h-[calc(100vh-100px)] lg:h-[calc(100vh-140px)]">
-        {/* Left Panel: Chat List */}
-        <div className={`w-full lg:w-96 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
+      <div
+        ref={splitContainerRef}
+        className="flex h-[calc(100vh-88px)] lg:h-[calc(100vh-88px)]"
+      >
+        {/* Left Panel: Chat List — width is user-resizable on lg+ via divider */}
+        <div
+          className={`w-full lg:w-[var(--lh-left-w)] lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}
+          style={{ ['--lh-left-w' as string]: `${leftWidth}px` } as React.CSSProperties}
+        >
           {/* Status Filter Tabs */}
           <div className="flex border-b border-gray-200">
             {statusFilters.map((filter) => (
@@ -637,8 +717,21 @@ export default function ChatsPage() {
           </div>
         </div>
 
+        {/* Resizable divider — desktop only. Drag to resize left/right panels. */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="幅を調整（ドラッグ）"
+          onMouseDown={handleDividerMouseDown}
+          onDoubleClick={() => setLeftWidth(DEFAULT_LEFT)}
+          title="ドラッグで幅調整 / ダブルクリックでリセット"
+          className="hidden lg:flex items-center justify-center mx-1 w-2 cursor-col-resize group select-none"
+        >
+          <div className="w-0.5 h-16 rounded bg-gray-300 group-hover:bg-green-500 transition-colors" />
+        </div>
+
         {/* Right Panel: Chat Detail */}
-        <div className={`flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
+        <div className={`flex-1 min-w-0 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
           {selectedFriendId && !selectedChatId ? (
             /* Direct message to friend without existing chat */
             <DirectMessagePanel

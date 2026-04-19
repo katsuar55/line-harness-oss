@@ -200,11 +200,13 @@ chats.get('/api/chats/:id', async (c) => {
       .bind(item.friend_id)
       .first<{ display_name: string | null; picture_url: string | null; line_user_id: string }>();
 
-    // チャットに関連するメッセージログも取得
+    // チャットに関連するメッセージログ: 最新200件を取得（古い順 LIMIT 200 だと
+    // 会話が長いと新着が切れるバグを防ぐため、DESC で最新を取ってから JS で反転）。
     const messages = await c.env.DB
-      .prepare(`SELECT id, friend_id, direction, message_type, content, created_at FROM messages_log WHERE friend_id = ? ORDER BY created_at ASC LIMIT 200`)
+      .prepare(`SELECT id, friend_id, direction, message_type, content, created_at FROM messages_log WHERE friend_id = ? ORDER BY created_at DESC LIMIT 200`)
       .bind(item.friend_id)
       .all();
+    const messagesAsc = (messages.results as Record<string, unknown>[]).slice().reverse();
 
     return c.json({
       success: true,
@@ -218,7 +220,7 @@ chats.get('/api/chats/:id', async (c) => {
         notes: item.notes,
         lastMessageAt: item.last_message_at,
         createdAt: item.created_at,
-        messages: (messages.results as Record<string, unknown>[]).map((m) => ({
+        messages: messagesAsc.map((m) => ({
           id: m.id,
           direction: m.direction,
           messageType: m.message_type,
