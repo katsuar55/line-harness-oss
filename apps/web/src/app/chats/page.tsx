@@ -364,18 +364,22 @@ export default function ChatsPage() {
     }
   }, [statusFilter, operatorFilter, selectedAccountId])
 
-  const loadChatDetail = useCallback(async (chatId: string) => {
-    setDetailLoading(true)
+  // silent=true -> don't toggle detailLoading (keeps the DOM mounted so scroll
+  // position and notes field aren't disrupted during background polling).
+  const loadChatDetail = useCallback(async (chatId: string, silent = false) => {
+    if (!silent) setDetailLoading(true)
     try {
       const res = await api.chats.get(chatId)
       if (res.success) {
-        setChatDetail(res.data as unknown as ChatDetail)
-        setNotes((res.data as unknown as ChatDetail).notes || '')
+        const detail = res.data as unknown as ChatDetail
+        setChatDetail(detail)
+        // Only overwrite notes on initial load; silent refresh keeps user's in-progress typing.
+        if (!silent) setNotes(detail.notes || '')
       }
     } catch {
-      setError('チャット詳細の読み込みに失敗しました。')
+      if (!silent) setError('チャット詳細の読み込みに失敗しました。')
     } finally {
-      setDetailLoading(false)
+      if (!silent) setDetailLoading(false)
     }
   }, [])
 
@@ -398,12 +402,18 @@ export default function ChatsPage() {
     }
   }, [loadChats])
 
-  // Auto-refresh detail of currently-selected chat every 10s so
-  // operator can see new incoming messages while viewing a thread.
+  // Auto-refresh detail of currently-selected chat every 10s (silent — no loading
+  // state flicker, preserves scroll + notes input). Also silent-refresh on tab focus.
   useEffect(() => {
     if (!selectedChatId) return
-    const interval = setInterval(() => { loadChatDetail(selectedChatId) }, 10000)
-    return () => clearInterval(interval)
+    const refresh = () => loadChatDetail(selectedChatId, true)
+    const interval = setInterval(refresh, 10000)
+    const onVisibility = () => { if (document.visibilityState === 'visible') refresh() }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [selectedChatId, loadChatDetail])
 
   useEffect(() => {
@@ -414,16 +424,33 @@ export default function ChatsPage() {
     }
   }, [selectedChatId, loadChatDetail])
 
-  // Auto-scroll to bottom (latest messages) when chat opens or new messages arrive.
-  // Matches PC LINE UX: show the most recent conversation, not the oldest history.
+  // Scroll-to-bottom strategy:
+  //   - When chat id changes (new chat opened): force scroll to bottom.
+  //   - When new messages arrive: only scroll if user was already near the bottom
+  //     (so we don't yank them away from old messages they were reading).
+  const prevChatIdRef = useRef<string | null>(null)
+  const prevMessageCountRef = useRef(0)
   useEffect(() => {
     const el = messagesContainerRef.current
     if (!el || !chatDetail?.messages) return
-    // Use a microtask + rAF so the scroll runs after paint of the new messages
-    const id = requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight
-    })
-    return () => cancelAnimationFrame(id)
+    const currentId = chatDetail.id
+    const currentCount = chatDetail.messages.length
+    const isNewChat = prevChatIdRef.current !== currentId
+    const hasNewMessages = !isNewChat && currentCount > prevMessageCountRef.current
+    // Consider "near bottom" as within 120px — user scroll is preserved otherwise.
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    const wasNearBottom = distanceFromBottom < 120
+
+    if (isNewChat || (hasNewMessages && wasNearBottom)) {
+      const id = requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight
+      })
+      prevChatIdRef.current = currentId
+      prevMessageCountRef.current = currentCount
+      return () => cancelAnimationFrame(id)
+    }
+    prevChatIdRef.current = currentId
+    prevMessageCountRef.current = currentCount
   }, [chatDetail?.id, chatDetail?.messages?.length])
 
   const handleSelectChat = (chatId: string) => {
