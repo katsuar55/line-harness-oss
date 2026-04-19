@@ -697,9 +697,19 @@ export const api = {
 
 // ─── Rich Menu Types ───
 
+export interface RichMenuAction {
+  type: 'uri' | 'message' | 'postback' | 'richmenuswitch'
+  uri?: string
+  text?: string
+  data?: string
+  label?: string
+  displayText?: string
+  richMenuAliasId?: string
+}
+
 export interface RichMenuArea {
   bounds: { x: number; y: number; width: number; height: number }
-  action: { type: string; uri?: string; text?: string; data?: string; label?: string }
+  action: RichMenuAction
 }
 
 export interface RichMenu {

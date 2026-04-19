@@ -188,12 +188,12 @@ export default function Sidebar() {
     if (!apiUrl) return
 
     const fetchUnread = () => {
-      fetch(`${apiUrl}/api/chats?status=unread&limit=1`, {
+      fetch(`${apiUrl}/api/chats/unread-count`, {
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       })
         .then(r => r.json())
-        .then((d: { success?: boolean; data?: { total?: number } }) => {
-          if (d.success && d.data?.total !== undefined) setUnreadCount(d.data.total)
+        .then((d: { success?: boolean; data?: { count?: number } }) => {
+          if (d.success && typeof d.data?.count === 'number') setUnreadCount(d.data.count)
         })
         .catch(() => {})
     }

@@ -106,6 +106,32 @@ chats.delete('/api/operators/:id', async (c) => {
 
 // ========== チャットCRUD ==========
 
+/**
+ * GET /api/chats/unread-count
+ * サイドバーの未読バッジ向け: status='unread' の件数のみを返す軽量エンドポイント。
+ * 30秒毎のポーリング前提なので、WHERE status='unread' のみの単純集計に留める。
+ */
+chats.get('/api/chats/unread-count', async (c) => {
+  try {
+    const lineAccountId = c.req.query('lineAccountId');
+    let sql = `SELECT COUNT(*) as cnt FROM chats c`;
+    const bindings: unknown[] = [];
+    if (lineAccountId) {
+      sql += ` LEFT JOIN friends f ON c.friend_id = f.id WHERE c.status = 'unread' AND f.line_account_id = ?`;
+      bindings.push(lineAccountId);
+    } else {
+      sql += ` WHERE c.status = 'unread'`;
+    }
+    const row = bindings.length
+      ? await c.env.DB.prepare(sql).bind(...bindings).first<{ cnt: number }>()
+      : await c.env.DB.prepare(sql).first<{ cnt: number }>();
+    return c.json({ success: true, data: { count: row?.cnt ?? 0 } });
+  } catch (err) {
+    console.error('GET /api/chats/unread-count error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 chats.get('/api/chats', async (c) => {
   try {
     const status = c.req.query('status') ?? undefined;
