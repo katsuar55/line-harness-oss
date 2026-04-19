@@ -383,6 +383,29 @@ export default function ChatsPage() {
     loadChats()
   }, [loadChats])
 
+  // Auto-refresh chat list every 15s + on tab visibility/focus,
+  // so new LINE messages appear without a manual reload.
+  useEffect(() => {
+    const interval = setInterval(() => { loadChats() }, 15000)
+    const onVisibility = () => { if (document.visibilityState === 'visible') loadChats() }
+    const onFocus = () => loadChats()
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [loadChats])
+
+  // Auto-refresh detail of currently-selected chat every 10s so
+  // operator can see new incoming messages while viewing a thread.
+  useEffect(() => {
+    if (!selectedChatId) return
+    const interval = setInterval(() => { loadChatDetail(selectedChatId) }, 10000)
+    return () => clearInterval(interval)
+  }, [selectedChatId, loadChatDetail])
+
   useEffect(() => {
     if (selectedChatId) {
       loadChatDetail(selectedChatId)
@@ -497,7 +520,7 @@ export default function ChatsPage() {
         </div>
       )}
 
-      <div className="flex gap-4 h-[calc(100vh-120px)] lg:h-[calc(100vh-180px)]">
+      <div className="flex gap-4 h-[calc(100vh-100px)] lg:h-[calc(100vh-140px)]">
         {/* Left Panel: Chat List */}
         <div className={`w-full lg:w-96 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
           {/* Status Filter Tabs */}
@@ -720,7 +743,7 @@ export default function ChatsPage() {
                         <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
                           {/* メッセージバブル */}
                           <div
-                            className={`max-w-[320px] px-3 py-2 text-sm break-words whitespace-pre-wrap ${
+                            className={`max-w-[min(85%,640px)] px-3 py-2 text-sm break-words whitespace-pre-wrap ${
                               isOutgoing
                                 ? 'rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
                                 : 'rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
@@ -740,43 +763,51 @@ export default function ChatsPage() {
                 )}
               </div>
 
-              {/* Notes */}
-              <div className="px-4 py-2 border-t border-gray-200 bg-gray-50">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    placeholder="メモを入力..."
-                    className="flex-1 text-xs border border-gray-300 rounded-md px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-green-500"
-                  />
-                  <button
-                    onClick={handleSaveNotes}
-                    disabled={savingNotes}
-                    className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors disabled:opacity-50"
-                  >
-                    {savingNotes ? '保存中...' : 'メモ保存'}
-                  </button>
-                </div>
-              </div>
+              {/* Compact bottom: notes (collapsible) + send form */}
+              <div className="border-t border-gray-200 bg-white">
+                {/* Notes — compact, click to edit */}
+                <details className="border-b border-gray-100 px-4">
+                  <summary className="py-1.5 text-xs text-gray-500 cursor-pointer hover:text-gray-700 select-none list-none flex items-center gap-1">
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    メモ{notes ? `: ${notes.slice(0, 40)}${notes.length > 40 ? '...' : ''}` : ''}
+                  </summary>
+                  <div className="py-2 flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      placeholder="この友だちに関するメモ..."
+                      className="flex-1 text-xs border border-gray-300 rounded-md px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-green-500"
+                    />
+                    <button
+                      onClick={handleSaveNotes}
+                      disabled={savingNotes}
+                      className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors disabled:opacity-50"
+                    >
+                      {savingNotes ? '...' : '保存'}
+                    </button>
+                  </div>
+                </details>
 
-              {/* Send Message Form */}
-              <div className="px-4 py-3 border-t border-gray-200">
-                <div className="mb-2 flex items-center gap-3 text-xs text-gray-600">
-                  <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+              {/* Send Message Form — single compact row */}
+              <div className="px-4 py-2">
+                <div className="flex items-center gap-2 mb-1.5 text-[11px] text-gray-500">
+                  <label className="inline-flex items-center gap-1 cursor-pointer select-none">
                     <input
                       type="checkbox"
                       checked={showLoadingIndicator}
                       onChange={(e) => setShowLoadingIndicator(e.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+                      className="h-3 w-3 rounded border-gray-300 text-green-600 focus:ring-green-500"
                     />
-                    入力中ローディングを表示
+                    入力中ローディング
                   </label>
                   <select
                     value={loadingSeconds}
                     onChange={(e) => setLoadingSeconds(Number.parseInt(e.target.value, 10))}
                     disabled={!showLoadingIndicator}
-                    className="border border-gray-300 rounded-md px-2 py-1 bg-white disabled:bg-gray-100 disabled:text-gray-400"
+                    className="text-[11px] border border-gray-300 rounded-md px-1 py-0.5 bg-white disabled:bg-gray-100 disabled:text-gray-400"
                   >
                     {[5, 10, 15, 20, 30, 45, 60].map((sec) => (
                       <option key={sec} value={sec}>{sec}秒</option>
@@ -814,6 +845,7 @@ export default function ChatsPage() {
                     {sending ? '送信中...' : '送信'}
                   </button>
                 </div>
+              </div>
               </div>
             </>
           ) : null}

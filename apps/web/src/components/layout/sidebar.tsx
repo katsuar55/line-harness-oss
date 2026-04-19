@@ -187,15 +187,35 @@ export default function Sidebar() {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL
     if (!apiUrl) return
 
-    const fetchUnread = () => {
-      fetch(`${apiUrl}/api/chats/unread-count`, {
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      })
-        .then(r => r.json())
-        .then((d: { success?: boolean; data?: { count?: number } }) => {
-          if (d.success && typeof d.data?.count === 'number') setUnreadCount(d.data.count)
+    // Prefer dedicated /unread-count endpoint, fall back to counting /api/chats?status=unread.
+    // The fallback is guaranteed to work because the chats list page relies on the same endpoint.
+    const fetchUnread = async () => {
+      try {
+        const r = await fetch(`${apiUrl}/api/chats/unread-count`, {
+          headers: { 'Authorization': `Bearer ${apiKey}` },
         })
-        .catch(() => {})
+        if (r.ok) {
+          const d = await r.json() as { success?: boolean; data?: { count?: number } }
+          if (d.success && typeof d.data?.count === 'number') {
+            setUnreadCount(d.data.count)
+            return
+          }
+        }
+      } catch {
+        // fall through to fallback
+      }
+      try {
+        const r = await fetch(`${apiUrl}/api/chats?status=unread`, {
+          headers: { 'Authorization': `Bearer ${apiKey}` },
+        })
+        if (!r.ok) return
+        const d = await r.json() as { success?: boolean; data?: unknown }
+        if (d.success && Array.isArray(d.data)) {
+          setUnreadCount(d.data.length)
+        }
+      } catch {
+        // network or parse failure — keep previous count
+      }
     }
 
     // Initial + periodic
