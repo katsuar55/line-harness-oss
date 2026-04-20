@@ -498,9 +498,12 @@ export default function ChatsPage() {
   // Scroll-to-bottom strategy:
   //   - When chat id changes (new chat opened): force scroll to bottom.
   //   - When new messages arrive: only scroll if user was already near the bottom
-  //     (so we don't yank them away from old messages they were reading).
+  //     (don't yank them away from old messages they're reading).
+  //   - Flex/image messages render asynchronously, so scrollHeight grows AFTER the
+  //     initial paint. We schedule multiple scroll attempts to catch late layout.
   const prevChatIdRef = useRef<string | null>(null)
   const prevMessageCountRef = useRef(0)
+  const stickyBottomRef = useRef(true)
   useEffect(() => {
     const el = messagesContainerRef.current
     if (!el || !chatDetail?.messages) return
@@ -508,21 +511,48 @@ export default function ChatsPage() {
     const currentCount = chatDetail.messages.length
     const isNewChat = prevChatIdRef.current !== currentId
     const hasNewMessages = !isNewChat && currentCount > prevMessageCountRef.current
-    // Consider "near bottom" as within 120px — user scroll is preserved otherwise.
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    const wasNearBottom = distanceFromBottom < 120
+    const wasNearBottom = distanceFromBottom < 200
 
-    if (isNewChat || (hasNewMessages && wasNearBottom)) {
-      const id = requestAnimationFrame(() => {
-        el.scrollTop = el.scrollHeight
-      })
-      prevChatIdRef.current = currentId
-      prevMessageCountRef.current = currentCount
-      return () => cancelAnimationFrame(id)
-    }
+    const shouldScroll = isNewChat || (hasNewMessages && wasNearBottom)
     prevChatIdRef.current = currentId
     prevMessageCountRef.current = currentCount
+
+    if (!shouldScroll) return
+
+    // Stage scrolls over time — flex / image rendering can extend scrollHeight
+    // tens or hundreds of ms after initial paint.
+    stickyBottomRef.current = true
+    const run = () => {
+      const node = messagesContainerRef.current
+      if (node && stickyBottomRef.current) node.scrollTop = node.scrollHeight
+    }
+    run()
+    const handles = [0, 60, 200, 500, 1000, 1800].map((ms) => window.setTimeout(run, ms))
+    return () => { handles.forEach((h) => window.clearTimeout(h)) }
   }, [chatDetail?.id, chatDetail?.messages?.length])
+
+  // ResizeObserver: while "sticky bottom" is active, keep the view pinned to the
+  // bottom as flex/image content grows. User scrolling up cancels sticky mode.
+  useEffect(() => {
+    const el = messagesContainerRef.current
+    if (!el) return
+    const onUserScroll = () => {
+      const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+      stickyBottomRef.current = dist < 120
+    }
+    el.addEventListener('scroll', onUserScroll, { passive: true })
+    const ro = new ResizeObserver(() => {
+      if (stickyBottomRef.current) el.scrollTop = el.scrollHeight
+    })
+    ro.observe(el)
+    // Also observe direct children — height changes on flex render trigger this.
+    if (el.firstElementChild) ro.observe(el.firstElementChild)
+    return () => {
+      el.removeEventListener('scroll', onUserScroll)
+      ro.disconnect()
+    }
+  }, [chatDetail?.id])
 
   const handleSelectChat = (chatId: string) => {
     setSelectedChatId(chatId)
@@ -816,7 +846,11 @@ export default function ChatsPage() {
               </div>
 
               {/* Messages — LINE-style chat bubbles */}
-              <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
+              <div
+                ref={messagesContainerRef}
+                className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-2"
+                style={{ backgroundColor: '#7494C0', overflowAnchor: 'none' }}
+              >
                 {(!chatDetail.messages || chatDetail.messages.length === 0) ? (
                   <div className="text-center py-8">
                     <p className="text-white/60 text-sm">メッセージはまだありません。</p>
