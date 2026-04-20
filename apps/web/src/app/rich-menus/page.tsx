@@ -208,6 +208,31 @@ function RichMenuCard({
 }) {
   const fileRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
+  // Cache-bust key — bumping this after upload forces re-fetch of the image.
+  const [imageVersion, setImageVersion] = useState<number>(() => Date.now())
+
+  // Fetch the LINE-hosted rich menu image as a blob URL for preview.
+  useEffect(() => {
+    let cancelled = false
+    let createdUrl: string | null = null
+    api.richMenus.fetchImageBlobUrl(menu.richMenuId, imageVersion).then((url) => {
+      if (cancelled) {
+        if (url) URL.revokeObjectURL(url)
+        return
+      }
+      if (url) {
+        createdUrl = url
+        setImageUrl(url)
+      } else {
+        setImageUrl(null)
+      }
+    })
+    return () => {
+      cancelled = true
+      if (createdUrl) URL.revokeObjectURL(createdUrl)
+    }
+  }, [menu.richMenuId, imageVersion])
 
   async function handleUploadImage(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -215,6 +240,8 @@ function RichMenuCard({
     setUploading(true)
     try {
       await api.richMenus.uploadImage(menu.richMenuId, file)
+      // Bump version → triggers re-fetch of the freshly uploaded image.
+      setImageVersion(Date.now())
       onImageUploaded()
     } catch (err) {
       console.error('richMenus.uploadImage', err)
@@ -251,17 +278,41 @@ function RichMenuCard({
 
       <div className="px-5 py-4">
         <p className="text-xs font-semibold text-gray-500 mb-2">メニューバー: 「{menu.chatBarText}」</p>
-        <AreaPreview width={menu.size.width} height={menu.size.height} areas={menu.areas} maxW={500} />
+        <AreaPreview
+          width={menu.size.width}
+          height={menu.size.height}
+          areas={menu.areas}
+          maxW={500}
+          imageUrl={imageUrl}
+        />
+        {!imageUrl && (
+          <p className="text-[11px] text-gray-400 mt-2">
+            ※ 画像が未設定、または LINE から取得できません。「画像変更」からアップロードしてください。
+          </p>
+        )}
       </div>
     </div>
   )
 }
 
-function AreaPreview({ width, height, areas, maxW }: { width: number; height: number; areas: RichMenuArea[]; maxW: number }) {
+function AreaPreview({ width, height, areas, maxW, imageUrl }: {
+  width: number
+  height: number
+  areas: RichMenuArea[]
+  maxW: number
+  imageUrl?: string | null
+}) {
   return (
     <div
       className="relative border border-gray-200 rounded-lg overflow-hidden bg-gray-50"
-      style={{ width: '100%', maxWidth: `${maxW}px`, aspectRatio: `${width} / ${height}` }}
+      style={{
+        width: '100%',
+        maxWidth: `${maxW}px`,
+        aspectRatio: `${width} / ${height}`,
+        backgroundImage: imageUrl ? `url("${imageUrl}")` : undefined,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+      }}
     >
       {areas.map((area, idx) => {
         const left = (area.bounds.x / width) * 100

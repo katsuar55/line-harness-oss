@@ -405,3 +405,37 @@ richMenus.post('/api/rich-menus/:id/image', async (c) => {
     return c.json({ success: false, error: `Failed to upload rich menu image: ${message}` }, 500);
   }
 });
+
+// GET /api/rich-menus/:id/image — fetch rich menu image binary (proxy from api-data.line.me)
+// Admin UI の一覧プレビューで背景画像として表示するために使用。
+// LINE の image content は api-data.line.me からのみ取得可能で、要 Channel Access Token。
+richMenus.get('/api/rich-menus/:id/image', async (c) => {
+  try {
+    const richMenuId = c.req.param('id');
+    const resp = await fetch(
+      `https://api-data.line.me/v2/bot/richmenu/${encodeURIComponent(richMenuId)}/content`,
+      { headers: { Authorization: `Bearer ${c.env.LINE_CHANNEL_ACCESS_TOKEN}` } },
+    );
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      return c.json(
+        { success: false, error: `LINE content API ${resp.status}: ${detail}` },
+        resp.status === 404 ? 404 : 502,
+      );
+    }
+    const contentType = resp.headers.get('Content-Type') ?? 'image/png';
+    const buf = await resp.arrayBuffer();
+    return new Response(buf, {
+      status: 200,
+      headers: {
+        'Content-Type': contentType,
+        // 30秒キャッシュ: 画像変更後もすぐ反映させたい、かつ連続表示で過度なLINE API呼び出しを抑える
+        'Cache-Control': 'private, max-age=30',
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('GET /api/rich-menus/:id/image error:', message);
+    return c.json({ success: false, error: `Failed to fetch rich menu image: ${message}` }, 500);
+  }
+});

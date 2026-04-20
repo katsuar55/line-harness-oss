@@ -683,6 +683,26 @@ export const api = {
         body: formData,
       }).then(r => r.json()) as Promise<ApiResponse<null>>
     },
+    /**
+     * リッチメニュー画像をblobとして取得し、object URL (blob:...) を返す。
+     * LINE の画像コンテンツは Channel Access Token 必須なため、Worker経由プロキシ。
+     * 呼び出し側は不要になったら URL.revokeObjectURL() すること。
+     * 画像変更直後のキャッシュバスト用に任意の version (時刻等) を付与できる。
+     */
+    fetchImageBlobUrl: async (id: string, version?: number): Promise<string | null> => {
+      try {
+        const suffix = version !== undefined ? `?v=${version}` : ''
+        const r = await fetch(`${API_URL}/api/rich-menus/${id}/image${suffix}`, {
+          headers: { 'Authorization': `Bearer ${getApiKey()}` },
+        })
+        if (!r.ok) return null
+        const blob = await r.blob()
+        if (blob.size === 0) return null
+        return URL.createObjectURL(blob)
+      } catch {
+        return null
+      }
+    },
     status: () =>
       fetchApi<ApiResponse<{ defaultRichMenuId: string | null; menus: RichMenu[] }>>('/api/rich-menus/status'),
     linkToFriend: (friendId: string, richMenuId: string) =>
