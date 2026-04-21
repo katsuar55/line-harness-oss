@@ -387,12 +387,36 @@ richMenus.post('/api/rich-menus/:id/image', async (c) => {
       }
       imageData = bytes.buffer;
       if (body.contentType === 'image/jpeg') imageContentType = 'image/jpeg';
+    } else if (contentType.includes('multipart/form-data')) {
+      // Defensive: legacy clients (or older cached UI) may send multipart with field name "image"
+      const form = await c.req.formData();
+      const file = form.get('image') as unknown as { arrayBuffer?: () => Promise<ArrayBuffer>; type?: string } | null;
+      if (!file || typeof file.arrayBuffer !== 'function') {
+        return c.json({ success: false, error: 'multipart field "image" must be a file' }, 400);
+      }
+      imageData = await file.arrayBuffer();
+      const blobType = file.type ?? '';
+      imageContentType = blobType.includes('jpeg') || blobType.includes('jpg') ? 'image/jpeg' : 'image/png';
     } else if (contentType.includes('image/')) {
-      // Accept raw binary upload
+      // Accept raw binary upload (preferred path)
       imageData = await c.req.arrayBuffer();
       imageContentType = contentType.includes('jpeg') || contentType.includes('jpg') ? 'image/jpeg' : 'image/png';
     } else {
-      return c.json({ success: false, error: 'Content-Type must be application/json (with base64) or image/png or image/jpeg' }, 400);
+      return c.json({
+        success: false,
+        error: `Unsupported Content-Type "${contentType}". Send raw binary with image/png or image/jpeg, JSON with {image: base64}, or multipart/form-data with field "image".`,
+      }, 400);
+    }
+
+    // Pre-flight size check (LINE limit: 1MB)
+    if (imageData.byteLength > 1024 * 1024) {
+      return c.json({
+        success: false,
+        error: `Image too large: ${(imageData.byteLength / 1024 / 1024).toFixed(2)}MB exceeds LINE's 1MB limit.`,
+      }, 413);
+    }
+    if (imageData.byteLength === 0) {
+      return c.json({ success: false, error: 'Empty image body' }, 400);
     }
 
     const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);

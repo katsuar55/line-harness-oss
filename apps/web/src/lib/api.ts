@@ -674,14 +674,47 @@ export const api = {
       fetchApi<ApiResponse<null>>(`/api/rich-menus/${id}`, { method: 'DELETE' }),
     setDefault: (id: string) =>
       fetchApi<ApiResponse<null>>(`/api/rich-menus/${id}/default`, { method: 'POST' }),
-    uploadImage: (id: string, file: File) => {
-      const formData = new FormData()
-      formData.append('image', file)
-      return fetch(`${API_URL}/api/rich-menus/${id}/image`, {
+    /**
+     * リッチメニュー画像をアップロード。生バイナリで POST する（multipart は使わない）。
+     * Worker 側は Content-Type を `image/png` か `image/jpeg` で判定するため、
+     * file.type をそのまま使い、空ならファイル名から推定する。
+     * 失敗時 (HTTP !ok or success:false) は明示的に throw して呼び出し側に伝播させる。
+     */
+    uploadImage: async (id: string, file: File): Promise<ApiResponse<null>> => {
+      let mime: 'image/png' | 'image/jpeg' = 'image/png'
+      const t = (file.type || '').toLowerCase()
+      if (t.includes('jpeg') || t.includes('jpg')) mime = 'image/jpeg'
+      else if (t.includes('png')) mime = 'image/png'
+      else {
+        const name = file.name.toLowerCase()
+        if (name.endsWith('.jpg') || name.endsWith('.jpeg')) mime = 'image/jpeg'
+        else if (name.endsWith('.png')) mime = 'image/png'
+        else {
+          throw new Error('PNG または JPEG 画像のみ対応しています')
+        }
+      }
+      // Read whole file into ArrayBuffer to send as raw binary body. This avoids
+      // multipart parsing on the worker (which it does not support).
+      const buf = await file.arrayBuffer()
+      const r = await fetch(`${API_URL}/api/rich-menus/${id}/image`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${getApiKey()}` },
-        body: formData,
-      }).then(r => r.json()) as Promise<ApiResponse<null>>
+        headers: {
+          'Authorization': `Bearer ${getApiKey()}`,
+          'Content-Type': mime,
+        },
+        body: buf,
+      })
+      let data: ApiResponse<null>
+      try {
+        data = await r.json() as ApiResponse<null>
+      } catch {
+        throw new Error(`HTTP ${r.status} ${r.statusText}`)
+      }
+      if (!r.ok || !data.success) {
+        const errMsg = ('error' in data && data.error) ? data.error : `HTTP ${r.status}`
+        throw new Error(errMsg)
+      }
+      return data
     },
     /**
      * リッチメニュー画像をblobとして取得し、object URL (blob:...) を返す。

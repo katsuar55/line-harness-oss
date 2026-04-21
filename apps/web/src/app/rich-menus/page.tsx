@@ -237,15 +237,57 @@ function RichMenuCard({
   async function handleUploadImage(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
+
+    // ── Pre-flight validation against LINE's rich menu image requirements ──
+    // (LINE: PNG/JPEG, ≤1MB, 800-2500px wide, 250-1686px tall, width/height ≥ 1.45)
+    const MAX_BYTES = 1024 * 1024
+    if (file.size > MAX_BYTES) {
+      onError(`画像サイズが大きすぎます (${(file.size / 1024 / 1024).toFixed(2)}MB)。LINE の制限は 1MB までです。`)
+      if (fileRef.current) fileRef.current.value = ''
+      return
+    }
+    const fileType = (file.type || '').toLowerCase()
+    if (!fileType.includes('png') && !fileType.includes('jpeg') && !fileType.includes('jpg')) {
+      onError('PNG または JPEG 画像のみ対応しています')
+      if (fileRef.current) fileRef.current.value = ''
+      return
+    }
+
+    // Verify dimensions match the rich menu size (otherwise LINE returns 400)
+    const dimsOk = await new Promise<boolean>((resolve) => {
+      const img = new Image()
+      img.onload = () => {
+        const ok = img.width === menu.size.width && img.height === menu.size.height
+        if (!ok) {
+          onError(
+            `画像サイズが ${img.width}×${img.height} です。このリッチメニューは ${menu.size.width}×${menu.size.height} の画像が必要です。`
+          )
+        }
+        URL.revokeObjectURL(img.src)
+        resolve(ok)
+      }
+      img.onerror = () => {
+        onError('画像を読み込めませんでした。ファイルが破損していないか確認してください。')
+        URL.revokeObjectURL(img.src)
+        resolve(false)
+      }
+      img.src = URL.createObjectURL(file)
+    })
+    if (!dimsOk) {
+      if (fileRef.current) fileRef.current.value = ''
+      return
+    }
+
     setUploading(true)
     try {
       await api.richMenus.uploadImage(menu.richMenuId, file)
-      // Bump version → triggers re-fetch of the freshly uploaded image.
+      // Bump version → triggers re-fetch of the freshly uploaded image from LINE.
       setImageVersion(Date.now())
       onImageUploaded()
     } catch (err) {
       console.error('richMenus.uploadImage', err)
-      onError('画像のアップロードに失敗しました')
+      const msg = err instanceof Error ? err.message : String(err)
+      onError(`画像のアップロードに失敗しました: ${msg}`)
     } finally {
       setUploading(false)
       if (fileRef.current) fileRef.current.value = ''
@@ -268,7 +310,12 @@ function RichMenuCard({
               デフォルトに設定
             </button>
           )}
-          <button onClick={() => fileRef.current?.click()} disabled={uploading} className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-50">
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+            className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-50"
+            title={`要件: ${menu.size.width}×${menu.size.height}px / PNG または JPEG / 1MB以下`}
+          >
             {uploading ? 'アップロード中...' : '画像変更'}
           </button>
           <input ref={fileRef} type="file" accept="image/png,image/jpeg" className="hidden" onChange={handleUploadImage} />
