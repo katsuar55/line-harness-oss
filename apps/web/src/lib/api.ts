@@ -679,8 +679,12 @@ export const api = {
      * Worker 側は Content-Type を `image/png` か `image/jpeg` で判定するため、
      * file.type をそのまま使い、空ならファイル名から推定する。
      * 失敗時 (HTTP !ok or success:false) は明示的に throw して呼び出し側に伝播させる。
+     *
+     * LINE API は同一メニューへの再アップロードを禁止しているため、Worker 側で
+     * 自動的にメニューを再作成し、新しい richMenuId を返すことがある（replaced=true）。
+     * 呼び出し側は data.richMenuId が変わっている可能性を考慮すること。
      */
-    uploadImage: async (id: string, file: File): Promise<ApiResponse<null>> => {
+    uploadImage: async (id: string, file: File): Promise<ApiResponse<{ richMenuId: string; replaced: boolean; oldRichMenuId?: string; wasDefault?: boolean }>> => {
       let mime: 'image/png' | 'image/jpeg' = 'image/png'
       const t = (file.type || '').toLowerCase()
       if (t.includes('jpeg') || t.includes('jpg')) mime = 'image/jpeg'
@@ -704,9 +708,9 @@ export const api = {
         },
         body: buf,
       })
-      let data: ApiResponse<null>
+      let data: ApiResponse<{ richMenuId: string; replaced: boolean; oldRichMenuId?: string; wasDefault?: boolean }>
       try {
-        data = await r.json() as ApiResponse<null>
+        data = await r.json() as ApiResponse<{ richMenuId: string; replaced: boolean; oldRichMenuId?: string; wasDefault?: boolean }>
       } catch {
         throw new Error(`HTTP ${r.status} ${r.statusText}`)
       }

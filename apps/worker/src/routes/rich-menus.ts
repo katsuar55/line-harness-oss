@@ -420,9 +420,91 @@ richMenus.post('/api/rich-menus/:id/image', async (c) => {
     }
 
     const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
-    await lineClient.uploadRichMenuImage(richMenuId, imageData, imageContentType);
 
-    return c.json({ success: true, data: null });
+    // ── Try direct upload first ──
+    // LINE allows uploading to a richmenu only ONCE. If the menu already has an
+    // image, a subsequent POST returns 400 "An image has already been uploaded".
+    // To support "画像変更" UX, we transparently clone the menu, upload to the
+    // clone, swap default if applicable, and delete the original.
+    try {
+      await lineClient.uploadRichMenuImage(richMenuId, imageData, imageContentType);
+      return c.json({ success: true, data: { richMenuId, replaced: false } });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const alreadyUploaded = msg.includes('already been uploaded') || msg.includes('already uploaded');
+      if (!alreadyUploaded) {
+        console.error('POST /api/rich-menus/:id/image direct upload error:', msg);
+        return c.json({ success: false, error: `Failed to upload rich menu image: ${msg}` }, 500);
+      }
+      // Fall through to recreate flow
+    }
+
+    // ── Recreate flow ──
+    // 1. Fetch original menu structure
+    const list = await lineClient.getRichMenuList();
+    const original = (list.richmenus ?? []).find((m) => m.richMenuId === richMenuId);
+    if (!original) {
+      return c.json({ success: false, error: 'Original rich menu not found for image replacement' }, 404);
+    }
+
+    // 2. Detect if original is the default — we'll need to swap
+    let wasDefault = false;
+    try {
+      const r = await fetch('https://api.line.me/v2/bot/user/all/richmenu', {
+        headers: { Authorization: `Bearer ${c.env.LINE_CHANNEL_ACCESS_TOKEN}` },
+      });
+      if (r.ok) {
+        const d = await r.json<{ richMenuId?: string }>();
+        wasDefault = d.richMenuId === richMenuId;
+      }
+    } catch (e) {
+      console.warn('Could not determine default rich menu:', e);
+    }
+
+    // 3. Create new menu with same structure (strip richMenuId)
+    const newMenu = await lineClient.createRichMenu({
+      size: original.size,
+      selected: original.selected,
+      name: original.name,
+      chatBarText: original.chatBarText,
+      areas: original.areas,
+    });
+
+    // 4. Upload image to new menu — on failure, clean up the orphan
+    try {
+      await lineClient.uploadRichMenuImage(newMenu.richMenuId, imageData, imageContentType);
+    } catch (uploadErr) {
+      try { await lineClient.deleteRichMenu(newMenu.richMenuId); } catch { /* best-effort */ }
+      const m = uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
+      console.error('POST /api/rich-menus/:id/image clone-upload error:', m);
+      return c.json({ success: false, error: `Failed to upload image to recreated menu: ${m}` }, 500);
+    }
+
+    // 5. Set default if needed (best-effort)
+    if (wasDefault) {
+      try {
+        await lineClient.setDefaultRichMenu(newMenu.richMenuId);
+      } catch (e) {
+        console.warn('setDefaultRichMenu failed during replace:', e);
+      }
+    }
+
+    // 6. Delete the old menu (best-effort — new one is already up)
+    try {
+      await lineClient.deleteRichMenu(richMenuId);
+    } catch (e) {
+      console.warn(`Failed to delete old rich menu ${richMenuId}:`, e);
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        richMenuId: newMenu.richMenuId,
+        replaced: true,
+        oldRichMenuId: richMenuId,
+        wasDefault,
+      },
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('POST /api/rich-menus/:id/image error:', message);

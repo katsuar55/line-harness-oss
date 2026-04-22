@@ -183,7 +183,12 @@ export default function RichMenusPage() {
                 isDefault={menu.richMenuId === defaultMenuId}
                 onSetDefault={() => handleSetDefault(menu.richMenuId)}
                 onDelete={() => handleDelete(menu.richMenuId, menu.name)}
-                onImageUploaded={() => { loadMenus(); showFlash('ok', '画像をアップロードしました') }}
+                onImageUploaded={(info) => {
+                  loadMenus()
+                  showFlash('ok', info?.replaced
+                    ? '画像を更新しました（LINE仕様により内部的にメニューを再作成しました）'
+                    : '画像をアップロードしました')
+                }}
                 onError={(msg) => showFlash('err', msg)}
               />
             ))}
@@ -203,7 +208,8 @@ function RichMenuCard({
   isDefault: boolean
   onSetDefault: () => void
   onDelete: () => void
-  onImageUploaded: () => void
+  // info.replaced=true means LINE forced a menu recreate (id changed)
+  onImageUploaded: (info?: { replaced?: boolean }) => void
   onError: (msg: string) => void
 }) {
   const fileRef = useRef<HTMLInputElement>(null)
@@ -280,10 +286,13 @@ function RichMenuCard({
 
     setUploading(true)
     try {
-      await api.richMenus.uploadImage(menu.richMenuId, file)
-      // Bump version → triggers re-fetch of the freshly uploaded image from LINE.
+      const res = await api.richMenus.uploadImage(menu.richMenuId, file)
+      // If the worker had to recreate the menu (LINE doesn't allow re-uploading
+      // images), the rich menu ID changes. The list refresh in onImageUploaded()
+      // picks up the new menu and remounts the card.
+      const replaced = res.success && res.data?.replaced === true
       setImageVersion(Date.now())
-      onImageUploaded()
+      onImageUploaded({ replaced })
     } catch (err) {
       console.error('richMenus.uploadImage', err)
       const msg = err instanceof Error ? err.message : String(err)
