@@ -708,17 +708,21 @@ export const api = {
         },
         body: buf,
       })
-      let data: ApiResponse<{ richMenuId: string; replaced: boolean; oldRichMenuId?: string; wasDefault?: boolean }>
+      type UploadResponse = { success: boolean; data?: { richMenuId: string; replaced: boolean; oldRichMenuId?: string; wasDefault?: boolean; steps?: string[] }; error?: string; steps?: string[] }
+      let data: UploadResponse
       try {
-        data = await r.json() as ApiResponse<{ richMenuId: string; replaced: boolean; oldRichMenuId?: string; wasDefault?: boolean }>
+        data = await r.json() as UploadResponse
       } catch {
         throw new Error(`HTTP ${r.status} ${r.statusText}`)
       }
       if (!r.ok || !data.success) {
-        const errMsg = ('error' in data && data.error) ? data.error : `HTTP ${r.status}`
-        throw new Error(errMsg)
+        const errMsg = data.error || `HTTP ${r.status}`
+        const steps = data.steps?.join(' → ') || ''
+        // Surface detailed diagnostics so we can see exactly which LINE API step failed
+        const detailed = steps ? `${errMsg}\n[診断: ${steps}]` : errMsg
+        throw new Error(detailed)
       }
-      return data
+      return data as ApiResponse<{ richMenuId: string; replaced: boolean; oldRichMenuId?: string; wasDefault?: boolean }>
     },
     /**
      * リッチメニュー画像をblobとして取得し、object URL (blob:...) を返す。
