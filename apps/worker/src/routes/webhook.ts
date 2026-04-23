@@ -630,6 +630,98 @@ async function handleEvent(
       }
     }
 
+    // ─── AI コスト・DoS 防御ガード（Layer 1.5） ──────────────────────────
+    // 1) ノイズフィルタ: 「？」「a」等の短文は AI に渡さず定型で処理
+    // 2) バーストクールダウン: 同じ friend_id が 30秒以内に 5件超 → AI 呼ばない
+    // 3) 日次上限: 1 friend_id あたり AI 応答 100件/日 超 → 上限通知
+    // 悪意あるユーザーの連投で AI コストが爆発しないように保険。
+    const BURST_THRESHOLD = 5;      // 30秒あたりの閾値
+    const BURST_WINDOW_SEC = 30;
+    const DAILY_AI_CAP = 100;       // 1 friend / 1 JST日 あたりの AI 応答上限
+
+    // Capture narrowed values into stable locals so the helper closure has concrete types
+    const guardReplyToken: string = event.replyToken;
+    const guardFriendId: string = friend.id;
+
+    async function trySendGuard(text: string, reason: string): Promise<void> {
+      try {
+        await lineClient.replyMessage(guardReplyToken, [buildMessage('text', text)]);
+        replyTokenConsumed = true;
+      } catch (err) {
+        console.error(`guard-reply failed (${reason}):`, err);
+      }
+      matched = true;
+      // ログに残す（管理画面で [guard:*] プレフィックスで見える）
+      try {
+        await db
+          .prepare(
+            `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, created_at)
+             VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, 'reply', ?)`,
+          )
+          .bind(crypto.randomUUID(), guardFriendId, `[guard:${reason}] ${text}`, jstNow())
+          .run();
+      } catch { /* best-effort log */ }
+    }
+
+    if (!matched && !replyTokenConsumed && env?.AI) {
+      // Guard 1: ノイズフィルタ — 短すぎ/記号のみ/同一文字の連打 など
+      const trimmed = incomingText.trim();
+      const isOnlySymbols = /^[\s\?？!！。、.,…・ー~〜"'`]+$/.test(trimmed);
+      const isSingleCharRepeat = /^(.)\1{0,3}$/s.test(trimmed);
+      const isNoise = trimmed.length === 0 || trimmed.length <= 1 || isOnlySymbols || isSingleCharRepeat;
+      if (isNoise) {
+        await trySendGuard(
+          '何かお手伝いできることはありますか？😊 naturism の商品や使い方などお気軽にご質問ください。「Q&A お問い合わせ」メニューもご利用いただけます。',
+          'noise',
+        );
+      }
+    }
+
+    if (!matched && !replyTokenConsumed && env?.AI) {
+      // Guard 2: バーストクールダウン — 直近 30 秒の incoming 件数をカウント
+      try {
+        const burst = await db
+          .prepare(
+            `SELECT COUNT(*) as cnt FROM messages_log
+             WHERE friend_id = ? AND direction = 'incoming'
+             AND datetime(created_at) > datetime('now', '-${BURST_WINDOW_SEC} seconds')`,
+          )
+          .bind(guardFriendId)
+          .first<{ cnt: number }>();
+        if ((burst?.cnt ?? 0) >= BURST_THRESHOLD) {
+          await trySendGuard(
+            '少しお時間をいただいております。数秒後にもう一度お試しください🙏',
+            'burst',
+          );
+        }
+      } catch (err) {
+        console.error('burst guard query failed:', err);
+      }
+    }
+
+    if (!matched && !replyTokenConsumed && env?.AI) {
+      // Guard 3: 日次 AI 応答上限 — [ai:...] プレフィックス付きの outgoing を当日分カウント
+      try {
+        const jstTodayPrefix = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+        const daily = await db
+          .prepare(
+            `SELECT COUNT(*) as cnt FROM messages_log
+             WHERE friend_id = ? AND direction = 'outgoing'
+             AND content LIKE '[ai:%' AND created_at LIKE ?`,
+          )
+          .bind(friend.id, `${jstTodayPrefix}%`)
+          .first<{ cnt: number }>();
+        if ((daily?.cnt ?? 0) >= DAILY_AI_CAP) {
+          await trySendGuard(
+            '本日の AI 応答の上限に達しました。詳しいご質問はカスタマーサポート (info@kenkoex.com / 03-6411-5513) までご連絡ください。明日また自動応答をご利用いただけます。',
+            'daily-cap',
+          );
+        }
+      } catch (err) {
+        console.error('daily-cap guard query failed:', err);
+      }
+    }
+
     // Layer 2/3: キーワードマッチしなかった場合、AI応答を試行
     if (!matched && !replyTokenConsumed && env?.AI) {
       try {
