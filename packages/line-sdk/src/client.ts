@@ -202,6 +202,50 @@ export class LineClient {
     );
   }
 
+  // ─── Rich Menu Alias ──────────────────────────────────────────────────────
+  // https://developers.line.biz/en/reference/messaging-api/#rich-menu-alias
+  //
+  // Alias は「richmenuswitch action / 管理画面上の固定ID」として使う。
+  // 画像を差し替える際に新 richMenuId を alias に向け直すことで、
+  // UI 上は常に同じ alias を参照し、切り替えも即時反映される。
+
+  async createRichMenuAlias(richMenuAliasId: string, richMenuId: string): Promise<void> {
+    await this.request('/richmenu/alias', { richMenuAliasId, richMenuId });
+  }
+
+  async updateRichMenuAlias(richMenuAliasId: string, richMenuId: string): Promise<void> {
+    await this.request(
+      `/richmenu/alias/${encodeURIComponent(richMenuAliasId)}`,
+      { richMenuId },
+    );
+  }
+
+  async deleteRichMenuAlias(richMenuAliasId: string): Promise<void> {
+    await this.request(
+      `/richmenu/alias/${encodeURIComponent(richMenuAliasId)}`,
+      {},
+      'DELETE',
+    );
+  }
+
+  async getRichMenuAlias(
+    richMenuAliasId: string,
+  ): Promise<{ richMenuAliasId: string; richMenuId: string }> {
+    return this.request<{ richMenuAliasId: string; richMenuId: string }>(
+      `/richmenu/alias/${encodeURIComponent(richMenuAliasId)}`,
+      {},
+      'GET',
+    );
+  }
+
+  async getRichMenuAliasList(): Promise<{
+    aliases: Array<{ richMenuAliasId: string; richMenuId: string }>;
+  }> {
+    return this.request<{
+      aliases: Array<{ richMenuAliasId: string; richMenuId: string }>;
+    }>('/richmenu/alias/list', {}, 'GET');
+  }
+
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
   async pushTextMessage(to: string, text: string): Promise<void> {

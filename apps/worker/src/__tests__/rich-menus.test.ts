@@ -50,6 +50,10 @@ const mockLinkRichMenuToUser = vi.fn();
 const mockUnlinkRichMenuFromUser = vi.fn();
 const mockUploadRichMenuImage = vi.fn();
 const mockDeleteDefaultRichMenu = vi.fn();
+const mockGetRichMenuAliasList = vi.fn();
+const mockCreateRichMenuAlias = vi.fn();
+const mockUpdateRichMenuAlias = vi.fn();
+const mockDeleteRichMenuAlias = vi.fn();
 
 vi.mock('@line-crm/line-sdk', () => ({
   verifySignature: vi.fn(async () => true),
@@ -63,6 +67,10 @@ vi.mock('@line-crm/line-sdk', () => ({
     linkRichMenuToUser = mockLinkRichMenuToUser;
     unlinkRichMenuFromUser = mockUnlinkRichMenuFromUser;
     uploadRichMenuImage = mockUploadRichMenuImage;
+    getRichMenuAliasList = mockGetRichMenuAliasList;
+    createRichMenuAlias = mockCreateRichMenuAlias;
+    updateRichMenuAlias = mockUpdateRichMenuAlias;
+    deleteRichMenuAlias = mockDeleteRichMenuAlias;
     async replyMessage() {}
     async pushMessage() {}
     async getProfile(userId: string) {
@@ -702,6 +710,113 @@ describe('Rich Menus Routes', () => {
       expect(res.status).toBe(500);
       expect(json.success).toBe(false);
       expect(json.error).toContain('Failed to upload rich menu image');
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Rich menu alias endpoints
+  // ------------------------------------------------------------------
+
+  describe('GET /api/rich-menus/aliases', () => {
+    it('returns list of aliases', async () => {
+      mockGetRichMenuAliasList.mockResolvedValueOnce({
+        aliases: [
+          { richMenuAliasId: 'alias-a', richMenuId: 'rm-1' },
+          { richMenuAliasId: 'alias-b', richMenuId: 'rm-2' },
+        ],
+      });
+      const res = await app.request(
+        '/api/rich-menus/aliases',
+        { method: 'GET', headers: authHeaders() },
+        env,
+      );
+      const json = (await res.json()) as { success: boolean; data: unknown[] };
+      expect(res.status).toBe(200);
+      expect(json.success).toBe(true);
+      expect(json.data).toHaveLength(2);
+    });
+
+    it('returns 500 on LINE API error', async () => {
+      mockGetRichMenuAliasList.mockRejectedValueOnce(new Error('alias list failed'));
+      const res = await app.request(
+        '/api/rich-menus/aliases',
+        { method: 'GET', headers: authHeaders() },
+        env,
+      );
+      expect(res.status).toBe(500);
+    });
+  });
+
+  describe('POST /api/rich-menus/aliases', () => {
+    it('creates alias successfully', async () => {
+      mockCreateRichMenuAlias.mockResolvedValueOnce(undefined);
+      const res = await app.request(
+        '/api/rich-menus/aliases',
+        {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ aliasId: 'alias-1', richMenuId: 'rm-1' }),
+        },
+        env,
+      );
+      expect(res.status).toBe(201);
+      expect(mockCreateRichMenuAlias).toHaveBeenCalledWith('alias-1', 'rm-1');
+    });
+
+    it('returns 400 when aliasId missing', async () => {
+      const res = await app.request(
+        '/api/rich-menus/aliases',
+        {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ richMenuId: 'rm-1' }),
+        },
+        env,
+      );
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('PUT /api/rich-menus/aliases/:aliasId', () => {
+    it('updates alias to point at new richMenuId', async () => {
+      mockUpdateRichMenuAlias.mockResolvedValueOnce(undefined);
+      const res = await app.request(
+        '/api/rich-menus/aliases/alias-1',
+        {
+          method: 'PUT',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ richMenuId: 'rm-2' }),
+        },
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(mockUpdateRichMenuAlias).toHaveBeenCalledWith('alias-1', 'rm-2');
+    });
+
+    it('returns 400 when richMenuId missing', async () => {
+      const res = await app.request(
+        '/api/rich-menus/aliases/alias-1',
+        {
+          method: 'PUT',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        },
+        env,
+      );
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('DELETE /api/rich-menus/aliases/:aliasId', () => {
+    it('deletes alias successfully', async () => {
+      mockDeleteRichMenuAlias.mockResolvedValueOnce(undefined);
+      const res = await app.request(
+        '/api/rich-menus/aliases/alias-1',
+        { method: 'DELETE', headers: authHeaders() },
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(mockDeleteRichMenuAlias).toHaveBeenCalledWith('alias-1');
     });
   });
 });

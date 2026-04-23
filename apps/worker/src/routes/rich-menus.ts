@@ -60,6 +60,72 @@ richMenus.post('/api/rich-menus/:id/default', async (c) => {
   }
 });
 
+// ─── Rich Menu Alias endpoints ─────────────────────────────────────────────
+// alias は LINE プラットフォーム上の「固定ID」。richMenuId は画像変更のたびに
+// 新規発行されるが、alias は付替え可能で UI から見ると一貫したID で扱える。
+
+// GET /api/rich-menus/aliases — list all aliases
+richMenus.get('/api/rich-menus/aliases', async (c) => {
+  try {
+    const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    const result = await lineClient.getRichMenuAliasList();
+    return c.json({ success: true, data: result.aliases ?? [] });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('GET /api/rich-menus/aliases error:', message);
+    return c.json({ success: false, error: `Failed to list aliases: ${message}` }, 500);
+  }
+});
+
+// POST /api/rich-menus/aliases — create alias { aliasId, richMenuId }
+richMenus.post('/api/rich-menus/aliases', async (c) => {
+  try {
+    const body = await c.req.json<{ aliasId: string; richMenuId: string }>();
+    if (!body.aliasId || !body.richMenuId) {
+      return c.json({ success: false, error: 'aliasId and richMenuId are required' }, 400);
+    }
+    const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    await lineClient.createRichMenuAlias(body.aliasId, body.richMenuId);
+    return c.json({ success: true, data: { aliasId: body.aliasId, richMenuId: body.richMenuId } }, 201);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('POST /api/rich-menus/aliases error:', message);
+    return c.json({ success: false, error: `Failed to create alias: ${message}` }, 500);
+  }
+});
+
+// PUT /api/rich-menus/aliases/:aliasId — point alias at a different richMenuId
+richMenus.put('/api/rich-menus/aliases/:aliasId', async (c) => {
+  try {
+    const aliasId = c.req.param('aliasId');
+    const body = await c.req.json<{ richMenuId: string }>();
+    if (!body.richMenuId) {
+      return c.json({ success: false, error: 'richMenuId is required' }, 400);
+    }
+    const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    await lineClient.updateRichMenuAlias(aliasId, body.richMenuId);
+    return c.json({ success: true, data: { aliasId, richMenuId: body.richMenuId } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('PUT /api/rich-menus/aliases/:aliasId error:', message);
+    return c.json({ success: false, error: `Failed to update alias: ${message}` }, 500);
+  }
+});
+
+// DELETE /api/rich-menus/aliases/:aliasId
+richMenus.delete('/api/rich-menus/aliases/:aliasId', async (c) => {
+  try {
+    const aliasId = c.req.param('aliasId');
+    const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    await lineClient.deleteRichMenuAlias(aliasId);
+    return c.json({ success: true, data: null });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('DELETE /api/rich-menus/aliases/:aliasId error:', message);
+    return c.json({ success: false, error: `Failed to delete alias: ${message}` }, 500);
+  }
+});
+
 // POST /api/friends/:friendId/rich-menu — link rich menu to a specific friend
 richMenus.post('/api/friends/:friendId/rich-menu', async (c) => {
   try {
@@ -532,6 +598,29 @@ richMenus.post('/api/rich-menus/:id/image', async (c) => {
       }
     }
 
+    // 5.5 Re-point any alias that targeted the old richMenuId → new richMenuId.
+    //     LINE アプリ側は alias 経由で参照している場合、ここで updateAlias することで
+    //     richmenuswitch action の参照先が即反映される。
+    //     UI 上は alias が「固定ID」として振る舞うので、Katsu の運用感として
+    //     「同じメニューの画像だけ差し替わった」ように見える。
+    const rebindAliases: string[] = [];
+    try {
+      const aliasRes = await lineClient.getRichMenuAliasList();
+      for (const alias of aliasRes.aliases ?? []) {
+        if (alias.richMenuId === richMenuId) {
+          try {
+            await lineClient.updateRichMenuAlias(alias.richMenuAliasId, newRichMenuId);
+            rebindAliases.push(alias.richMenuAliasId);
+            steps.push(`alias_rebind_ok id=${alias.richMenuAliasId}`);
+          } catch (e) {
+            steps.push(`alias_rebind_failed id=${alias.richMenuAliasId}: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+      }
+    } catch (e) {
+      steps.push(`alias_list_failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
     // 6. Delete the old menu (best-effort — new one is already up)
     try {
       await lineClient.deleteRichMenu(richMenuId);
@@ -547,6 +636,7 @@ richMenus.post('/api/rich-menus/:id/image', async (c) => {
         replaced: true,
         oldRichMenuId: richMenuId,
         wasDefault,
+        rebindAliases,
         steps,
         directUploadError,
       },
