@@ -310,19 +310,13 @@ describe('Stripe Routes', () => {
   });
 
   // =========================================================================
-  // POST /api/integrations/stripe/webhook (no signature verification)
+  // POST /api/integrations/stripe/webhook — unsecured webhook is rejected
   // =========================================================================
-
-  describe('POST /api/integrations/stripe/webhook (no STRIPE_WEBHOOK_SECRET)', () => {
-    it('bypasses auth middleware', async () => {
-      // Webhook should work without Authorization header
-      mockGetStripeEventByStripeId.mockResolvedValueOnce(null);
-      mockCreateStripeEvent.mockResolvedValueOnce({
-        id: 'se-1',
-        stripe_event_id: 'evt_test_001',
-        event_type: 'payment_intent.succeeded',
-        processed_at: '2026-01-01T00:00:00+09:00',
-      });
+  // セキュリティ強化により STRIPE_WEBHOOK_SECRET 未設定時は 500 で拒否する。
+  // 以前 "no STRIPE_WEBHOOK_SECRET" で検証していた機能テストは
+  // 下記の "signed webhook" describe に集約（secret+HMAC 署名を付けて検証）。
+  describe('POST /api/integrations/stripe/webhook — without secret', () => {
+    it('rejects with 500 when STRIPE_WEBHOOK_SECRET is not configured', async () => {
       const webhookBody = makeWebhookBody();
       const res = await app.request(
         '/api/integrations/stripe/webhook',
@@ -333,29 +327,67 @@ describe('Stripe Routes', () => {
         },
         env,
       );
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body.success).toBe(false);
+      expect(body.error).toContain('STRIPE_WEBHOOK_SECRET');
     });
 
+    it('bypasses auth middleware (no Authorization header needed even for rejection)', async () => {
+      // 認証 middleware をスキップできているか: 401 にならず 500 になる
+      const webhookBody = makeWebhookBody();
+      const res = await app.request(
+        '/api/integrations/stripe/webhook',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(webhookBody),
+        },
+        env,
+      );
+      expect(res.status).not.toBe(401);
+    });
+  });
+
+  // =========================================================================
+  // POST /api/integrations/stripe/webhook — signed webhook
+  // =========================================================================
+  // 以前 "no secret" で検証していたビジネスロジック（冪等性/scoring/tag 等）は
+  // 全て signed webhook 経由のテストに移行（secret + 有効な HMAC 署名を注入）。
+  describe('POST /api/integrations/stripe/webhook — signed webhook', () => {
+    const STRIPE_SECRET = 'whsec_test_secret_key';
+
+    async function signedPost(
+      body: Record<string, unknown>,
+      customEnv: Env['Bindings'],
+    ): Promise<Response> {
+      const rawBody = JSON.stringify(body);
+      const sigHeader = await generateStripeSignature(STRIPE_SECRET, rawBody, '1700000000');
+      return app.request(
+        '/api/integrations/stripe/webhook',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Stripe-Signature': sigHeader,
+          },
+          body: rawBody,
+        },
+        customEnv,
+      );
+    }
+
     it('creates event and returns success', async () => {
+      const envWithSecret = createMockEnv({ STRIPE_WEBHOOK_SECRET: STRIPE_SECRET });
       mockGetStripeEventByStripeId.mockResolvedValueOnce(null);
-      const createdEvent = {
+      mockCreateStripeEvent.mockResolvedValueOnce({
         id: 'se-new',
         stripe_event_id: 'evt_test_001',
         event_type: 'payment_intent.succeeded',
         processed_at: '2026-01-01T00:00:00+09:00',
-      };
-      mockCreateStripeEvent.mockResolvedValueOnce(createdEvent);
+      });
 
-      const webhookBody = makeWebhookBody();
-      const res = await app.request(
-        '/api/integrations/stripe/webhook',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(webhookBody),
-        },
-        env,
-      );
+      const res = await signedPost(makeWebhookBody(), envWithSecret);
       expect(res.status).toBe(200);
       const body = (await res.json()) as { success: boolean; data: { id: string; stripeEventId: string; eventType: string } };
       expect(body.success).toBe(true);
@@ -365,29 +397,22 @@ describe('Stripe Routes', () => {
     });
 
     it('returns already processed for duplicate events (idempotency)', async () => {
+      const envWithSecret = createMockEnv({ STRIPE_WEBHOOK_SECRET: STRIPE_SECRET });
       mockGetStripeEventByStripeId.mockResolvedValueOnce({
         id: 'se-existing',
         stripe_event_id: 'evt_test_001',
       });
-      const webhookBody = makeWebhookBody();
-      const res = await app.request(
-        '/api/integrations/stripe/webhook',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(webhookBody),
-        },
-        env,
-      );
+
+      const res = await signedPost(makeWebhookBody(), envWithSecret);
       expect(res.status).toBe(200);
       const body = (await res.json()) as { success: boolean; data: { message: string } };
       expect(body.success).toBe(true);
       expect(body.data.message).toBe('Already processed');
-      // createStripeEvent should NOT have been called
       expect(mockCreateStripeEvent).not.toHaveBeenCalled();
     });
 
     it('calls applyScoring and fireEvent on payment_intent.succeeded with friendId', async () => {
+      const envWithSecret = createMockEnv({ STRIPE_WEBHOOK_SECRET: STRIPE_SECRET });
       mockGetStripeEventByStripeId.mockResolvedValueOnce(null);
       mockCreateStripeEvent.mockResolvedValueOnce({
         id: 'se-1',
@@ -398,19 +423,10 @@ describe('Stripe Routes', () => {
       mockApplyScoring.mockResolvedValueOnce(100);
       mockFireEvent.mockResolvedValueOnce(undefined);
 
-      const webhookBody = makeWebhookBody();
-      const res = await app.request(
-        '/api/integrations/stripe/webhook',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(webhookBody),
-        },
-        env,
-      );
+      const res = await signedPost(makeWebhookBody(), envWithSecret);
       expect(res.status).toBe(200);
-      expect(mockApplyScoring).toHaveBeenCalledWith(env.DB, 'friend-abc', 'purchase');
-      expect(mockFireEvent).toHaveBeenCalledWith(env.DB, 'cv_fire', {
+      expect(mockApplyScoring).toHaveBeenCalledWith(envWithSecret.DB, 'friend-abc', 'purchase');
+      expect(mockFireEvent).toHaveBeenCalledWith(envWithSecret.DB, 'cv_fire', {
         friendId: 'friend-abc',
         eventData: {
           type: 'purchase',
@@ -427,7 +443,7 @@ describe('Stripe Routes', () => {
       const mockPrepare = vi.fn(() => ({ bind: mockBind, first: vi.fn(), all: vi.fn(), run: vi.fn() }));
       (mockDb as unknown as { prepare: typeof mockPrepare }).prepare = mockPrepare;
 
-      const envWithDb = createMockEnv({ DB: mockDb });
+      const envWithDb = createMockEnv({ DB: mockDb, STRIPE_WEBHOOK_SECRET: STRIPE_SECRET });
 
       mockGetStripeEventByStripeId.mockResolvedValueOnce(null);
       mockCreateStripeEvent.mockResolvedValueOnce({
@@ -439,24 +455,15 @@ describe('Stripe Routes', () => {
       mockApplyScoring.mockResolvedValueOnce(100);
       mockFireEvent.mockResolvedValueOnce(undefined);
 
-      const webhookBody = makeWebhookBody();
-      const res = await app.request(
-        '/api/integrations/stripe/webhook',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(webhookBody),
-        },
-        envWithDb,
-      );
+      const res = await signedPost(makeWebhookBody(), envWithDb);
       expect(res.status).toBe(200);
-      // Verify tag lookup query was prepared
       expect(mockPrepare).toHaveBeenCalledWith(
         expect.stringContaining('SELECT id FROM tags WHERE name = ?'),
       );
     });
 
     it('does NOT call applyScoring when friendId is absent', async () => {
+      const envWithSecret = createMockEnv({ STRIPE_WEBHOOK_SECRET: STRIPE_SECRET });
       mockGetStripeEventByStripeId.mockResolvedValueOnce(null);
       mockCreateStripeEvent.mockResolvedValueOnce({
         id: 'se-1',
@@ -465,7 +472,7 @@ describe('Stripe Routes', () => {
         processed_at: '2026-01-01T00:00:00+09:00',
       });
 
-      const webhookBody = makeWebhookBody({
+      const body = makeWebhookBody({
         id: 'evt_no_friend',
         data: {
           object: {
@@ -478,15 +485,7 @@ describe('Stripe Routes', () => {
           },
         },
       });
-      const res = await app.request(
-        '/api/integrations/stripe/webhook',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(webhookBody),
-        },
-        env,
-      );
+      const res = await signedPost(body, envWithSecret);
       expect(res.status).toBe(200);
       expect(mockApplyScoring).not.toHaveBeenCalled();
       expect(mockFireEvent).not.toHaveBeenCalled();
@@ -500,7 +499,7 @@ describe('Stripe Routes', () => {
       const mockPrepare = vi.fn(() => ({ bind: mockBind, first: vi.fn(), all: vi.fn(), run: vi.fn() }));
       (mockDb as unknown as { prepare: typeof mockPrepare }).prepare = mockPrepare;
 
-      const envWithDb = createMockEnv({ DB: mockDb });
+      const envWithDb = createMockEnv({ DB: mockDb, STRIPE_WEBHOOK_SECRET: STRIPE_SECRET });
 
       mockGetStripeEventByStripeId.mockResolvedValueOnce(null);
       mockCreateStripeEvent.mockResolvedValueOnce({
@@ -510,7 +509,7 @@ describe('Stripe Routes', () => {
         processed_at: '2026-01-01T00:00:00+09:00',
       });
 
-      const webhookBody = makeWebhookBody({
+      const body = makeWebhookBody({
         id: 'evt_sub_deleted',
         type: 'customer.subscription.deleted',
         data: {
@@ -522,35 +521,18 @@ describe('Stripe Routes', () => {
         },
       });
 
-      const res = await app.request(
-        '/api/integrations/stripe/webhook',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(webhookBody),
-        },
-        envWithDb,
-      );
+      const res = await signedPost(body, envWithDb);
       expect(res.status).toBe(200);
-      // Verify subscription_cancelled tag lookup
       expect(mockPrepare).toHaveBeenCalledWith(
         expect.stringContaining("subscription_cancelled"),
       );
     });
 
     it('returns 500 on internal error', async () => {
+      const envWithSecret = createMockEnv({ STRIPE_WEBHOOK_SECRET: STRIPE_SECRET });
       mockGetStripeEventByStripeId.mockRejectedValueOnce(new Error('DB failure'));
 
-      const webhookBody = makeWebhookBody();
-      const res = await app.request(
-        '/api/integrations/stripe/webhook',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(webhookBody),
-        },
-        env,
-      );
+      const res = await signedPost(makeWebhookBody(), envWithSecret);
       expect(res.status).toBe(500);
       const body = (await res.json()) as { success: boolean; error: string };
       expect(body.success).toBe(false);

@@ -70,13 +70,10 @@ vi.mock('@line-crm/db', async (importOriginal) => {
       }
       return null;
     }),
-    getShopifyProducts: vi.fn(async () => ({
-      products: [
-        { id: 'p1', shopify_product_id: 'sp1', title: 'naturism Blue', price: 2376, compare_at_price: null, image_url: 'https://img.example.com/blue.jpg', handle: 'naturism-blue', status: 'active' },
-        { id: 'p2', shopify_product_id: 'sp2', title: 'naturism Pink', price: 2830, compare_at_price: null, image_url: 'https://img.example.com/pink.jpg', handle: 'naturism-pink', status: 'active' },
-      ],
-      total: 2,
-    })),
+    getShopifyProducts: vi.fn(async () => [
+      { id: 'p1', shopify_product_id: 'sp1', title: 'naturism Blue', price: 2376, compare_at_price: null, image_url: 'https://img.example.com/blue.jpg', handle: 'naturism-blue', status: 'active' },
+      { id: 'p2', shopify_product_id: 'sp2', title: 'naturism Pink', price: 2830, compare_at_price: null, image_url: 'https://img.example.com/pink.jpg', handle: 'naturism-pink', status: 'active' },
+    ]),
     createIntakeLog: vi.fn(async () => ({ id: 'il-1', streak_count: 3, logged_at: '2026-04-06T08:00:00+09:00' })),
     getIntakeLogs: vi.fn(async () => [
       { id: 'il-1', product_name: 'naturism Blue', streak_count: 3, logged_at: '2026-04-06T08:00:00+09:00', note: null },

@@ -146,6 +146,7 @@ vi.mock('@line-crm/line-sdk', () => ({
 // ---------------------------------------------------------------------------
 
 import { liffRoutes } from '../routes/liff.js';
+import { getFriendByLineUserId } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 // ---------------------------------------------------------------------------
@@ -187,8 +188,31 @@ function createMockEnv(): Env['Bindings'] {
 
 function createApp() {
   const app = new Hono<Env>();
+  // 本番の liffAuthMiddleware は idToken を LINE Platform で検証するが
+  // テストでは外部 fetch を回避するため、body.lineUserId を直接使って
+  // friend lookup + liffUser set を行う簡易 middleware を適用する。
+  // これにより以前 lineUserId フォールバックで動いていたテストの 400/404/200
+  // セマンティクスを維持する。
+  app.use('/api/liff/orders', testLiffAuth);
+  app.use('/api/liff/orders/*', testLiffAuth);
+  app.use('/api/liff/orders-summary', testLiffAuth);
   app.route('/', liffRoutes);
   return app;
+}
+
+async function testLiffAuth(c: any, next: () => Promise<void>): Promise<Response | void> {
+  if (c.req.method === 'GET') return next();
+  let body: { lineUserId?: string } = {};
+  try { body = await c.req.json(); } catch { /* empty body */ }
+  if (!body.lineUserId) {
+    return c.json({ success: false, error: 'lineUserId is required' }, 400);
+  }
+  const friend = await (getFriendByLineUserId as any)(c.env.DB, body.lineUserId);
+  if (!friend) {
+    return c.json({ success: false, error: 'Friend not found' }, 404);
+  }
+  c.set('liffUser', { lineUserId: body.lineUserId, friendId: friend.id });
+  return next();
 }
 
 // ---------------------------------------------------------------------------

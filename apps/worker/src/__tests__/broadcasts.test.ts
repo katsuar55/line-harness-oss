@@ -255,6 +255,8 @@ describe('Broadcasts API', () => {
         totalCount: 0,
         successCount: 0,
         createdAt: '2026-03-31T12:00:00+09:00',
+        lineRequestId: null,
+        insightsFetchedAt: null,
       });
     });
 

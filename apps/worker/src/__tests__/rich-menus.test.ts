@@ -689,7 +689,8 @@ describe('Rich Menus Routes', () => {
       const json = (await res.json()) as { success: boolean; error: string };
 
       expect(res.status).toBe(400);
-      expect(json.error).toContain('Content-Type must be');
+      // 新実装は "Unsupported Content-Type" で弾く
+      expect(json.error).toContain('Unsupported Content-Type');
     });
 
     it('returns 500 on LINE API error', async () => {
@@ -709,7 +710,8 @@ describe('Rich Menus Routes', () => {
 
       expect(res.status).toBe(500);
       expect(json.success).toBe(false);
-      expect(json.error).toContain('Failed to upload rich menu image');
+      // 新実装は LINE API 側のエラー message をそのまま返す
+      expect(json.error).toContain('upload error');
     });
   });
 
