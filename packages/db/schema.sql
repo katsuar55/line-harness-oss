@@ -14,8 +14,22 @@ CREATE TABLE IF NOT EXISTS friends (
   user_id          TEXT,
   score            INTEGER NOT NULL DEFAULT 0,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+
+  ref_code             TEXT,
+  metadata             TEXT NOT NULL DEFAULT '{}',
+  line_account_id      TEXT REFERENCES line_accounts(id),
+  gender               TEXT,
+  birthday             TEXT,
+  first_purchase_date  TEXT,
+  preferred_language   TEXT DEFAULT 'ja' CHECK (preferred_language IN ('ja', 'en', 'ko', 'zh', 'th')),
+  is_blacklisted       INTEGER NOT NULL DEFAULT 0,
+  status               TEXT NOT NULL DEFAULT 'none',
+  phone                TEXT,
+  email                TEXT,
+  address              TEXT,
+  memo                 TEXT,
+  assigned_staff_id    TEXT REFERENCES staff_members(id) ON DELETE SET NULL);
 
 CREATE INDEX IF NOT EXISTS idx_friends_line_user_id ON friends (line_user_id);
 CREATE INDEX IF NOT EXISTS idx_friends_user_id ON friends (user_id);
@@ -53,8 +67,9 @@ CREATE TABLE IF NOT EXISTS scenarios (
   trigger_tag_id  TEXT REFERENCES tags (id) ON DELETE SET NULL,
   is_active       INTEGER NOT NULL DEFAULT 1,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+
+  line_account_id      TEXT);
 
 -- ============================================================
 -- Scenario Steps
@@ -67,6 +82,9 @@ CREATE TABLE IF NOT EXISTS scenario_steps (
   message_type    TEXT NOT NULL CHECK (message_type IN ('text', 'image', 'flex')),
   message_content TEXT NOT NULL,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  condition_type       TEXT,
+  condition_value      TEXT,
+  next_step_on_false   INTEGER,
   UNIQUE (scenario_id, step_order)
 );
 
@@ -108,8 +126,10 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   line_request_id TEXT,
   insights_json   TEXT,
   insights_fetched_at TEXT,
-  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+
+  line_account_id      TEXT,
+  alt_text             TEXT);
 
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts (status);
 CREATE INDEX IF NOT EXISTS idx_broadcasts_line_request_id ON broadcasts (line_request_id);
@@ -126,8 +146,9 @@ CREATE TABLE IF NOT EXISTS messages_log (
   broadcast_id     TEXT REFERENCES broadcasts (id) ON DELETE SET NULL,
   scenario_step_id TEXT REFERENCES scenario_steps (id) ON DELETE SET NULL,
   delivery_type    TEXT CHECK (delivery_type IN ('push', 'reply')),
-  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+
+  ab_test_id           TEXT REFERENCES ab_tests (id) ON DELETE SET NULL);
 
 CREATE INDEX IF NOT EXISTS idx_messages_log_friend_id ON messages_log (friend_id);
 CREATE INDEX IF NOT EXISTS idx_messages_log_created_at ON messages_log (created_at);
@@ -183,8 +204,13 @@ CREATE TABLE IF NOT EXISTS line_accounts (
   channel_secret       TEXT NOT NULL,
   is_active            INTEGER NOT NULL DEFAULT 1,
   created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+  updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+
+  login_channel_id     TEXT,
+  login_channel_secret TEXT,
+  liff_id              TEXT,
+  token_expires_at     TEXT,
+  bot_user_id          TEXT);
 
 -- ============================================================
 -- Round 2: Conversion Points (CV Tracking)
@@ -304,8 +330,9 @@ CREATE TABLE IF NOT EXISTS reminders (
   description TEXT,
   is_active   INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+
+  line_account_id      TEXT);
 
 CREATE TABLE IF NOT EXISTS reminder_steps (
   id              TEXT PRIMARY KEY,
@@ -400,8 +427,9 @@ CREATE TABLE IF NOT EXISTS chats (
   notes         TEXT,
   last_message_at TEXT,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+
+  line_account_id      TEXT);
 
 CREATE INDEX IF NOT EXISTS idx_chats_friend ON chats (friend_id);
 CREATE INDEX IF NOT EXISTS idx_chats_operator ON chats (operator_id);
@@ -492,8 +520,9 @@ CREATE TABLE IF NOT EXISTS automations (
   is_active   INTEGER NOT NULL DEFAULT 1,
   priority    INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+
+  line_account_id      TEXT);
 
 CREATE INDEX IF NOT EXISTS idx_automations_event ON automations (event_type);
 CREATE INDEX IF NOT EXISTS idx_automations_active ON automations (is_active);
@@ -559,3 +588,862 @@ CREATE TABLE IF NOT EXISTS staff_members (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_members_api_key ON staff_members(api_key);
 CREATE INDEX IF NOT EXISTS idx_staff_members_role ON staff_members(role);
+
+-- ============================================================
+-- AUTO-APPENDED from migrations/*.sql
+-- Regenerated by scripts/regenerate-schema.mjs
+-- Do NOT edit this section by hand; rerun the script instead.
+-- ============================================================
+
+-- from 003_entry_routes.sql
+CREATE TABLE IF NOT EXISTS entry_routes (
+  id          TEXT PRIMARY KEY,
+  ref_code    TEXT UNIQUE NOT NULL,
+  name        TEXT NOT NULL,
+  tag_id      TEXT REFERENCES tags (id) ON DELETE SET NULL,
+  scenario_id TEXT REFERENCES scenarios (id) ON DELETE SET NULL,
+  redirect_url TEXT,
+  is_active   INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- from 003_entry_routes.sql
+CREATE TABLE IF NOT EXISTS ref_tracking (
+  id              TEXT PRIMARY KEY,
+  ref_code        TEXT NOT NULL,
+  friend_id       TEXT REFERENCES friends (id) ON DELETE CASCADE,
+  entry_route_id  TEXT REFERENCES entry_routes (id) ON DELETE SET NULL,
+  source_url      TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- from 006_tracked_links.sql
+CREATE TABLE IF NOT EXISTS tracked_links (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  original_url TEXT NOT NULL,
+  tag_id TEXT REFERENCES tags (id) ON DELETE SET NULL,
+  scenario_id TEXT REFERENCES scenarios (id) ON DELETE SET NULL,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  click_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- from 006_tracked_links.sql
+CREATE TABLE IF NOT EXISTS link_clicks (
+  id TEXT PRIMARY KEY,
+  tracked_link_id TEXT NOT NULL REFERENCES tracked_links (id) ON DELETE CASCADE,
+  friend_id TEXT REFERENCES friends (id) ON DELETE SET NULL,
+  clicked_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- from 007_forms.sql
+CREATE TABLE IF NOT EXISTS forms (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  fields TEXT NOT NULL DEFAULT '[]',
+  on_submit_tag_id TEXT REFERENCES tags (id) ON DELETE SET NULL,
+  on_submit_scenario_id TEXT REFERENCES scenarios (id) ON DELETE SET NULL,
+  save_to_metadata INTEGER NOT NULL DEFAULT 1,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  submit_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- from 007_forms.sql
+CREATE TABLE IF NOT EXISTS form_submissions (
+  id TEXT PRIMARY KEY,
+  form_id TEXT NOT NULL REFERENCES forms (id) ON DELETE CASCADE,
+  friend_id TEXT REFERENCES friends (id) ON DELETE SET NULL,
+  data TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- from 014_shopify.sql
+CREATE TABLE IF NOT EXISTS shopify_orders (
+  id TEXT PRIMARY KEY,
+  shopify_order_id TEXT NOT NULL UNIQUE,
+  shopify_customer_id TEXT,
+  friend_id TEXT REFERENCES friends(id) ON DELETE SET NULL,
+  email TEXT,
+  phone TEXT,
+  total_price REAL,
+  currency TEXT DEFAULT 'JPY',
+  financial_status TEXT,
+  fulfillment_status TEXT,
+  order_number INTEGER,
+  line_items TEXT,
+  tags TEXT,
+  metadata TEXT DEFAULT '{}',
+  created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 014_shopify.sql
+CREATE TABLE IF NOT EXISTS shopify_customers (
+  id TEXT PRIMARY KEY,
+  shopify_customer_id TEXT NOT NULL UNIQUE,
+  friend_id TEXT REFERENCES friends(id) ON DELETE SET NULL,
+  email TEXT,
+  phone TEXT,
+  first_name TEXT,
+  last_name TEXT,
+  orders_count INTEGER DEFAULT 0,
+  total_spent REAL DEFAULT 0,
+  tags TEXT,
+  metadata TEXT DEFAULT '{}',
+  created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 014_shopify.sql
+CREATE TABLE IF NOT EXISTS shopify_tokens (
+  id TEXT PRIMARY KEY DEFAULT 'default',
+  access_token TEXT NOT NULL,
+  scope TEXT,
+  expires_at TEXT NOT NULL,
+  created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 015_shopify_phase2a.sql
+CREATE TABLE IF NOT EXISTS abandoned_carts (
+  id                        TEXT PRIMARY KEY,
+  shopify_checkout_id       TEXT NOT NULL UNIQUE,
+  friend_id                 TEXT REFERENCES friends(id) ON DELETE SET NULL,
+  shopify_customer_id       TEXT,
+  cart_token                TEXT,
+  email                     TEXT,
+  line_items                TEXT DEFAULT '[]',
+  total_price               REAL DEFAULT 0,
+  currency                  TEXT DEFAULT 'JPY',
+  checkout_url              TEXT,
+  status                    TEXT NOT NULL DEFAULT 'pending',
+  notification_scheduled_at TEXT,
+  notified_at               TEXT,
+  recovered_at              TEXT,
+  recovered_order_id        TEXT,
+  metadata                  TEXT DEFAULT '{}',
+  created_at                TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at                TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 015_shopify_phase2a.sql
+CREATE TABLE IF NOT EXISTS restock_requests (
+  id                   TEXT PRIMARY KEY,
+  friend_id            TEXT REFERENCES friends(id) ON DELETE SET NULL,
+  shopify_product_id   TEXT NOT NULL,
+  shopify_variant_id   TEXT NOT NULL,
+  product_title        TEXT,
+  variant_title        TEXT,
+  status               TEXT NOT NULL DEFAULT 'waiting',
+  notified_at          TEXT,
+  cancelled_at         TEXT,
+  metadata             TEXT DEFAULT '{}',
+  created_at           TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at           TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 015_shopify_phase2a.sql
+CREATE TABLE IF NOT EXISTS shopify_fulfillments (
+  id                      TEXT PRIMARY KEY,
+  shopify_order_id        TEXT NOT NULL,
+  shopify_fulfillment_id  TEXT NOT NULL UNIQUE,
+  order_id                TEXT REFERENCES shopify_orders(id) ON DELETE SET NULL,
+  friend_id               TEXT REFERENCES friends(id) ON DELETE SET NULL,
+  tracking_number         TEXT,
+  tracking_url            TEXT,
+  tracking_company        TEXT,
+  status                  TEXT NOT NULL DEFAULT 'pending',
+  line_items              TEXT DEFAULT '[]',
+  notified_at             TEXT,
+  metadata                TEXT DEFAULT '{}',
+  created_at              TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at              TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 015_shopify_phase2a.sql
+CREATE TABLE IF NOT EXISTS shopify_payment_notifications (
+  id                TEXT PRIMARY KEY,
+  shopify_order_id  TEXT NOT NULL,
+  order_id          TEXT REFERENCES shopify_orders(id) ON DELETE SET NULL,
+  friend_id         TEXT REFERENCES friends(id) ON DELETE SET NULL,
+  financial_status  TEXT NOT NULL,
+  total_price       REAL,
+  currency          TEXT DEFAULT 'JPY',
+  notified_at       TEXT,
+  metadata          TEXT DEFAULT '{}',
+  created_at        TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 015_shopify_phase2a.sql
+CREATE TABLE IF NOT EXISTS shopify_coupons (
+  id                    TEXT PRIMARY KEY,
+  code                  TEXT NOT NULL UNIQUE,
+  shopify_price_rule_id TEXT,
+  shopify_discount_id   TEXT,
+  title                 TEXT,
+  description           TEXT,
+  discount_type         TEXT NOT NULL DEFAULT 'percentage',
+  discount_value        REAL NOT NULL DEFAULT 0,
+  minimum_order_amount  REAL,
+  usage_limit           INTEGER,
+  usage_count           INTEGER DEFAULT 0,
+  starts_at             TEXT,
+  expires_at            TEXT,
+  status                TEXT NOT NULL DEFAULT 'active',
+  metadata              TEXT DEFAULT '{}',
+  created_at            TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at            TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 015_shopify_phase2a.sql
+CREATE TABLE IF NOT EXISTS shopify_coupon_assignments (
+  id              TEXT PRIMARY KEY,
+  coupon_id       TEXT NOT NULL REFERENCES shopify_coupons(id) ON DELETE CASCADE,
+  friend_id       TEXT REFERENCES friends(id) ON DELETE SET NULL,
+  assigned_at     TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  used_at         TEXT,
+  shopify_order_id TEXT,
+  metadata        TEXT DEFAULT '{}',
+  created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 015_shopify_phase2a.sql
+CREATE TABLE IF NOT EXISTS rank_settings (
+  id                     TEXT PRIMARY KEY DEFAULT 'default',
+  update_interval_days   INTEGER NOT NULL DEFAULT 30,
+  calculation_period_months INTEGER NOT NULL DEFAULT 12,
+  next_update_at         TEXT,
+  metadata               TEXT DEFAULT '{}',
+  created_at             TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at             TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 015_shopify_phase2a.sql
+CREATE TABLE IF NOT EXISTS member_ranks (
+  id               TEXT PRIMARY KEY,
+  name             TEXT NOT NULL UNIQUE,
+  min_total_spent  REAL NOT NULL DEFAULT 0,
+  min_orders_count INTEGER NOT NULL DEFAULT 0,
+  color            TEXT,
+  icon             TEXT,
+  benefits_json    TEXT DEFAULT '[]',
+  sort_order       INTEGER NOT NULL DEFAULT 0,
+  is_active        INTEGER NOT NULL DEFAULT 1,
+  metadata         TEXT DEFAULT '{}',
+  created_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 015_shopify_phase2a.sql
+CREATE TABLE IF NOT EXISTS rank_coupon_rewards (
+  id          TEXT PRIMARY KEY,
+  rank_id     TEXT NOT NULL REFERENCES member_ranks(id) ON DELETE CASCADE,
+  coupon_id   TEXT NOT NULL REFERENCES shopify_coupons(id) ON DELETE CASCADE,
+  reward_type TEXT NOT NULL DEFAULT 'periodic',
+  metadata    TEXT DEFAULT '{}',
+  created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 015_shopify_phase2a.sql
+CREATE TABLE IF NOT EXISTS friend_ranks (
+  id            TEXT PRIMARY KEY,
+  friend_id     TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  rank_id       TEXT NOT NULL REFERENCES member_ranks(id) ON DELETE CASCADE,
+  total_spent   REAL NOT NULL DEFAULT 0,
+  orders_count  INTEGER NOT NULL DEFAULT 0,
+  previous_rank_id TEXT,
+  calculated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  created_at    TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at    TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 016_ab_tests.sql
+CREATE TABLE IF NOT EXISTS ab_tests (
+  id                        TEXT PRIMARY KEY,
+  title                     TEXT NOT NULL,
+  -- バリアントA
+  variant_a_message_type    TEXT NOT NULL CHECK (variant_a_message_type IN ('text', 'image', 'flex')),
+  variant_a_message_content TEXT NOT NULL,
+  variant_a_alt_text        TEXT,
+  -- バリアントB
+  variant_b_message_type    TEXT NOT NULL CHECK (variant_b_message_type IN ('text', 'image', 'flex')),
+  variant_b_message_content TEXT NOT NULL,
+  variant_b_alt_text        TEXT,
+  -- ターゲティング（broadcastsと同一パターン）
+  target_type               TEXT NOT NULL CHECK (target_type IN ('all', 'tag')) DEFAULT 'all',
+  target_tag_id             TEXT REFERENCES tags (id) ON DELETE SET NULL,
+  -- 分割比率: バリアントAに割り当てる割合（1-99）。残りがB
+  split_ratio               INTEGER NOT NULL DEFAULT 50 CHECK (split_ratio BETWEEN 1 AND 99),
+  -- ステータス: draft → scheduled → sending → test_sent → winner_sent
+  status                    TEXT NOT NULL CHECK (status IN ('draft', 'scheduled', 'sending', 'test_sent', 'winner_sent')) DEFAULT 'draft',
+  scheduled_at              TEXT,
+  sent_at                   TEXT,
+  -- バリアント別カウント
+  variant_a_total           INTEGER NOT NULL DEFAULT 0,
+  variant_a_success         INTEGER NOT NULL DEFAULT 0,
+  variant_b_total           INTEGER NOT NULL DEFAULT 0,
+  variant_b_success         INTEGER NOT NULL DEFAULT 0,
+  -- 勝者（未決定: NULL, 決定後: 'A' or 'B'）
+  winner                    TEXT CHECK (winner IN ('A', 'B')),
+  winner_total              INTEGER NOT NULL DEFAULT 0,
+  winner_success            INTEGER NOT NULL DEFAULT 0,
+  -- トラッキングリンクID（JSON配列）
+  variant_a_tracked_link_ids TEXT,
+  variant_b_tracked_link_ids TEXT,
+  -- マルチアカウント
+  line_account_id           TEXT REFERENCES line_accounts (id) ON DELETE SET NULL,
+  created_at                TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 016_ab_tests.sql
+CREATE TABLE IF NOT EXISTS ab_test_assignments (
+  id            TEXT PRIMARY KEY,
+  ab_test_id    TEXT NOT NULL REFERENCES ab_tests (id) ON DELETE CASCADE,
+  friend_id     TEXT NOT NULL REFERENCES friends (id) ON DELETE CASCADE,
+  variant       TEXT NOT NULL CHECK (variant IN ('A', 'B')),
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 017_shopify_products.sql
+CREATE TABLE IF NOT EXISTS shopify_products (
+  id                  TEXT PRIMARY KEY,
+  shopify_product_id  TEXT NOT NULL UNIQUE,
+  title               TEXT NOT NULL,
+  description         TEXT,
+  vendor              TEXT,
+  product_type        TEXT,
+  handle              TEXT,
+  status              TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'draft', 'archived')),
+  image_url           TEXT,
+  price               TEXT,
+  compare_at_price    TEXT,
+  tags                TEXT,
+  variants_json       TEXT,
+  store_url           TEXT,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 017_shopify_products.sql
+CREATE TABLE IF NOT EXISTS product_recommendations (
+  id                  TEXT PRIMARY KEY,
+  friend_id           TEXT NOT NULL REFERENCES friends (id) ON DELETE CASCADE,
+  shopify_product_id  TEXT NOT NULL,
+  trigger_type        TEXT NOT NULL CHECK (trigger_type IN ('purchase', 'browse', 'restock', 'manual', 'scheduled')),
+  sent_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 018_analytics.sql
+CREATE TABLE IF NOT EXISTS analytics_settings (
+  id TEXT PRIMARY KEY,
+  line_account_id TEXT,
+  provider TEXT NOT NULL DEFAULT 'ga4',
+  measurement_id TEXT,           -- G-XXXXXXXXXX
+  api_secret TEXT,               -- Measurement Protocol API secret
+  enabled INTEGER NOT NULL DEFAULT 1,
+  config TEXT NOT NULL DEFAULT '{}',  -- JSON: 追加設定
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
+);
+
+-- from 018_analytics.sql
+CREATE TABLE IF NOT EXISTS analytics_events (
+  id TEXT PRIMARY KEY,
+  friend_id TEXT,
+  event_name TEXT NOT NULL,       -- friend_add, message_open, link_click, purchase
+  event_params TEXT DEFAULT '{}', -- JSON: GA4 event parameters
+  measurement_id TEXT,
+  status TEXT NOT NULL DEFAULT 'sent',  -- sent, failed
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (friend_id) REFERENCES friends(id)
+);
+
+-- from 018_analytics.sql
+CREATE TABLE IF NOT EXISTS utm_templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  utm_source TEXT NOT NULL DEFAULT 'line',
+  utm_medium TEXT NOT NULL DEFAULT 'message',
+  utm_campaign TEXT,
+  utm_content TEXT,
+  utm_term TEXT,
+  line_account_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
+);
+
+-- from 019_liff_portal.sql
+CREATE TABLE IF NOT EXISTS intake_logs (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6)))),
+  friend_id TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  product_name TEXT,
+  shopify_product_id TEXT,
+  streak_count INTEGER NOT NULL DEFAULT 1,
+  note TEXT,
+  logged_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours'))
+);
+
+-- from 019_liff_portal.sql
+CREATE TABLE IF NOT EXISTS intake_reminders (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6)))),
+  friend_id TEXT NOT NULL UNIQUE REFERENCES friends(id) ON DELETE CASCADE,
+  reminder_time TEXT NOT NULL DEFAULT '08:00',
+  timezone TEXT NOT NULL DEFAULT 'Asia/Tokyo',
+  reminder_type TEXT NOT NULL DEFAULT 'morning_push' CHECK(reminder_type IN ('morning_push', 'streak_only')),
+  is_active INTEGER NOT NULL DEFAULT 1,
+  last_sent_at TEXT,
+  snooze_until TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours'))
+);
+
+-- from 019_liff_portal.sql
+CREATE TABLE IF NOT EXISTS referral_links (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6)))),
+  friend_id TEXT NOT NULL UNIQUE REFERENCES friends(id) ON DELETE CASCADE,
+  ref_code TEXT NOT NULL UNIQUE,
+  referrer_coupon_id TEXT REFERENCES shopify_coupons(id) ON DELETE SET NULL,
+  referred_coupon_id TEXT REFERENCES shopify_coupons(id) ON DELETE SET NULL,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours'))
+);
+
+-- from 019_liff_portal.sql
+CREATE TABLE IF NOT EXISTS referral_rewards (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6)))),
+  referrer_friend_id TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  referred_friend_id TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  referrer_coupon_id TEXT REFERENCES shopify_coupons(id) ON DELETE SET NULL,
+  referred_coupon_id TEXT REFERENCES shopify_coupons(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'rewarded', 'expired')),
+  rewarded_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours'))
+);
+
+-- from 019_liff_portal.sql
+CREATE TABLE IF NOT EXISTS recommendation_results (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6)))),
+  friend_id TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  quiz_answers TEXT NOT NULL DEFAULT '{}',
+  recommended_product TEXT NOT NULL,
+  recommended_product_id TEXT,
+  score_breakdown TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours'))
+);
+
+-- from 019_liff_portal.sql
+CREATE TABLE IF NOT EXISTS health_logs (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6)))),
+  friend_id TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  log_date TEXT NOT NULL,
+  weight REAL,
+  condition TEXT CHECK(condition IN ('good', 'normal', 'bad')),
+  skin_condition TEXT CHECK(skin_condition IN ('good', 'normal', 'bad')),
+  meals TEXT DEFAULT '{}',
+  sleep_hours REAL,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours'))
+);
+
+-- from 019_liff_portal.sql
+CREATE TABLE IF NOT EXISTS ambassadors (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6)))),
+  friend_id TEXT NOT NULL UNIQUE REFERENCES friends(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'invited' CHECK(status IN ('active', 'inactive', 'invited')),
+  tier TEXT NOT NULL DEFAULT 'standard' CHECK(tier IN ('standard', 'premium')),
+  enrolled_at TEXT,
+  total_surveys_completed INTEGER NOT NULL DEFAULT 0,
+  total_product_tests INTEGER NOT NULL DEFAULT 0,
+  feedback_score REAL,
+  preferences TEXT NOT NULL DEFAULT '{"survey_ok":true,"product_test_ok":true,"sns_share_ok":false}',
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours'))
+);
+
+-- from 019_liff_portal.sql
+CREATE TABLE IF NOT EXISTS daily_tips (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6)))),
+  tip_date TEXT NOT NULL UNIQUE,
+  category TEXT NOT NULL DEFAULT 'nutrition' CHECK(category IN ('nutrition', 'sleep', 'exercise', 'skincare', 'mental')),
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  image_url TEXT,
+  source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual', 'ai_generated')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours'))
+);
+
+-- from 020_friend_profile_and_dashboard.sql
+CREATE TABLE IF NOT EXISTS daily_stats (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  stat_date TEXT NOT NULL,            -- 'YYYY-MM-DD'
+  new_friends INTEGER DEFAULT 0,      -- 新規友だち数
+  unfollowed INTEGER DEFAULT 0,       -- ブロック/解除数
+  total_friends INTEGER DEFAULT 0,    -- 累計友だち数
+  orders_count INTEGER DEFAULT 0,     -- 注文件数
+  orders_revenue REAL DEFAULT 0,      -- 売上合計
+  intake_logs_count INTEGER DEFAULT 0, -- 服用記録数
+  referrals_count INTEGER DEFAULT 0,  -- 紹介成立数
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(stat_date)
+);
+
+-- from 020_friend_profile_and_dashboard.sql
+CREATE TABLE IF NOT EXISTS referral_coupons (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  code TEXT NOT NULL UNIQUE,
+  discount_type TEXT NOT NULL DEFAULT 'fixed',  -- 'fixed' | 'percent'
+  discount_value REAL NOT NULL DEFAULT 500,
+  minimum_order_amount REAL DEFAULT 0,
+  expires_days INTEGER NOT NULL DEFAULT 30,     -- 発行日から何日有効
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- from 021_multi_reminders_and_templates.sql
+CREATE TABLE IF NOT EXISTS intake_reminders_new (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6)))),
+  friend_id TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  label TEXT NOT NULL DEFAULT '朝食前',
+  reminder_time TEXT NOT NULL DEFAULT '08:00',
+  timezone TEXT NOT NULL DEFAULT 'Asia/Tokyo',
+  reminder_type TEXT NOT NULL DEFAULT 'morning_push' CHECK(reminder_type IN ('morning_push', 'streak_only')),
+  is_active INTEGER NOT NULL DEFAULT 1,
+  last_sent_at TEXT,
+  snooze_until TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours'))
+);
+
+-- from 021_multi_reminders_and_templates.sql
+CREATE TABLE IF NOT EXISTS reminder_messages (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6)))),
+  time_slot TEXT NOT NULL DEFAULT 'any' CHECK(time_slot IN ('morning', 'noon', 'evening', 'any')),
+  message TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'general',
+  weight INTEGER NOT NULL DEFAULT 1,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours'))
+);
+
+-- from 021_multi_reminders_and_templates.sql
+CREATE TABLE IF NOT EXISTS reminder_message_log (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6)))),
+  friend_id TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  reminder_message_id TEXT NOT NULL REFERENCES reminder_messages(id) ON DELETE CASCADE,
+  sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours'))
+);
+
+-- from 024_ambassador_feedback.sql
+CREATE TABLE IF NOT EXISTS ambassador_feedback (
+  id TEXT PRIMARY KEY,
+  ambassador_id TEXT NOT NULL REFERENCES ambassadors(id),
+  friend_id TEXT NOT NULL REFERENCES friends(id),
+  type TEXT NOT NULL DEFAULT 'feedback' CHECK (type IN ('feedback', 'survey', 'product_review')),
+  category TEXT DEFAULT 'general' CHECK (category IN ('general', 'product', 'service', 'suggestion', 'other')),
+  content TEXT NOT NULL,
+  rating INTEGER CHECK (rating BETWEEN 1 AND 5),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S+09:00', 'now', '+9 hours'))
+);
+
+-- from 025_ambassador_surveys.sql
+CREATE TABLE IF NOT EXISTS ambassador_surveys (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT,
+  survey_type TEXT NOT NULL DEFAULT 'survey' CHECK (survey_type IN ('survey', 'product_test', 'nps')),
+  questions TEXT NOT NULL DEFAULT '[]',
+  -- questions JSON: [{ "id": "q1", "type": "rating|text|choice|multi_choice", "label": "...", "options": ["A","B","C"], "required": true }]
+  target_tier TEXT DEFAULT 'all' CHECK (target_tier IN ('all', 'standard', 'premium')),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'active', 'closed', 'archived')),
+  sent_count INTEGER NOT NULL DEFAULT 0,
+  response_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S+09:00', 'now', '+9 hours')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S+09:00', 'now', '+9 hours'))
+);
+
+-- from 025_ambassador_surveys.sql
+CREATE TABLE IF NOT EXISTS ambassador_survey_responses (
+  id TEXT PRIMARY KEY,
+  survey_id TEXT NOT NULL REFERENCES ambassador_surveys(id) ON DELETE CASCADE,
+  ambassador_id TEXT NOT NULL REFERENCES ambassadors(id),
+  friend_id TEXT NOT NULL REFERENCES friends(id),
+  answers TEXT NOT NULL DEFAULT '{}',
+  -- answers JSON: { "q1": 4, "q2": "テキスト回答", "q3": ["A","C"] }
+  submitted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S+09:00', 'now', '+9 hours'))
+);
+
+-- from 025_ambassador_surveys.sql
+CREATE TABLE IF NOT EXISTS ambassador_survey_deliveries (
+  id TEXT PRIMARY KEY,
+  survey_id TEXT NOT NULL REFERENCES ambassador_surveys(id) ON DELETE CASCADE,
+  ambassador_id TEXT NOT NULL REFERENCES ambassadors(id),
+  friend_id TEXT NOT NULL REFERENCES friends(id),
+  delivered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S+09:00', 'now', '+9 hours')),
+  responded INTEGER NOT NULL DEFAULT 0
+);
+
+-- from 026_i18n.sql
+CREATE TABLE IF NOT EXISTS translations (
+  id TEXT PRIMARY KEY,
+  source_text TEXT NOT NULL,
+  source_lang TEXT NOT NULL DEFAULT 'ja',
+  target_lang TEXT NOT NULL CHECK (target_lang IN ('ja', 'en', 'ko', 'zh', 'th')),
+  translated_text TEXT NOT NULL,
+  context TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S+09:00', 'now', '+9 hours'))
+);
+
+-- from 026_i18n.sql
+CREATE TABLE IF NOT EXISTS daily_tips_i18n (
+  id TEXT PRIMARY KEY,
+  tip_id TEXT NOT NULL,
+  lang TEXT NOT NULL CHECK (lang IN ('en', 'ko', 'zh', 'th')),
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S+09:00', 'now', '+9 hours'))
+);
+
+-- from 027_shopify_oauth.sql
+CREATE TABLE IF NOT EXISTS shopify_oauth_states (
+  id TEXT PRIMARY KEY,
+  nonce TEXT NOT NULL UNIQUE,
+  store_domain TEXT NOT NULL,
+  created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  expires_at TEXT NOT NULL
+);
+
+-- from 028_shopify_draft_orders.sql
+CREATE TABLE IF NOT EXISTS shopify_draft_orders (
+  id TEXT PRIMARY KEY,
+  friend_id TEXT REFERENCES friends(id),
+  shopify_draft_order_id TEXT NOT NULL,
+  shopify_draft_order_gid TEXT,
+  invoice_url TEXT,
+  status TEXT DEFAULT 'open',
+  total_price REAL,
+  currency TEXT DEFAULT 'JPY',
+  line_items TEXT,
+  source_order_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- from 029_notification_prefs_and_subscriptions.sql
+CREATE TABLE IF NOT EXISTS friend_notification_preferences (
+  id TEXT PRIMARY KEY,
+  friend_id TEXT NOT NULL REFERENCES friends(id),
+  restock_alert INTEGER DEFAULT 1,       -- 在庫復活通知
+  delivery_complete INTEGER DEFAULT 1,   -- 配送完了通知
+  order_confirm INTEGER DEFAULT 1,       -- 注文確認通知
+  campaign_message INTEGER DEFAULT 1,    -- キャンペーン通知
+  reorder_reminder INTEGER DEFAULT 1,    -- 再購入リマインダー
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- from 029_notification_prefs_and_subscriptions.sql
+CREATE TABLE IF NOT EXISTS subscription_reminders (
+  id TEXT PRIMARY KEY,
+  friend_id TEXT NOT NULL REFERENCES friends(id),
+  product_title TEXT NOT NULL,
+  variant_id TEXT,
+  interval_days INTEGER NOT NULL DEFAULT 30,  -- リマインド間隔（日）
+  next_reminder_at TEXT NOT NULL,
+  last_sent_at TEXT,
+  is_active INTEGER DEFAULT 1,
+  source_order_id TEXT,                       -- 元の注文ID
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- from 029_notification_prefs_and_subscriptions.sql
+CREATE TABLE IF NOT EXISTS faq_items (
+  id TEXT PRIMARY KEY,
+  question TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  category TEXT DEFAULT 'general',
+  sort_order INTEGER DEFAULT 0,
+  is_active INTEGER DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- from 030_shopify_webhook_log.sql
+CREATE TABLE IF NOT EXISTS shopify_webhook_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic TEXT NOT NULL,
+  shopify_id TEXT,
+  status TEXT NOT NULL DEFAULT 'received',
+  summary TEXT,
+  error TEXT,
+  received_at TEXT NOT NULL
+);
+
+-- from 031_feature_gap.sql
+CREATE TABLE IF NOT EXISTS groups (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  color       TEXT DEFAULT '#6B7280',
+  created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 031_feature_gap.sql
+CREATE TABLE IF NOT EXISTS friend_groups (
+  friend_id  TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  group_id   TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  assigned_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  PRIMARY KEY (friend_id, group_id)
+);
+
+-- from 031_feature_gap.sql
+CREATE TABLE IF NOT EXISTS tag_elapsed_deliveries (
+  id               TEXT PRIMARY KEY,
+  name             TEXT NOT NULL,
+  trigger_tag_id   TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  elapsed_days     INTEGER NOT NULL,
+  message_type     TEXT NOT NULL DEFAULT 'text',
+  message_content  TEXT NOT NULL,
+  is_active        INTEGER NOT NULL DEFAULT 1,
+  send_hour        INTEGER NOT NULL DEFAULT 10,
+  created_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 031_feature_gap.sql
+CREATE TABLE IF NOT EXISTS tag_elapsed_delivery_logs (
+  id           TEXT PRIMARY KEY,
+  delivery_id  TEXT NOT NULL REFERENCES tag_elapsed_deliveries(id) ON DELETE CASCADE,
+  friend_id    TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  sent_at      TEXT NOT NULL,
+  UNIQUE(delivery_id, friend_id)
+);
+
+-- from 032_feature_gap_v2.sql
+CREATE TABLE IF NOT EXISTS liff_carts (
+  id                TEXT PRIMARY KEY,
+  friend_id         TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  shopify_variant_id TEXT NOT NULL,
+  shopify_product_id TEXT,
+  title             TEXT,
+  image_url         TEXT,
+  price             REAL NOT NULL DEFAULT 0,
+  quantity          INTEGER NOT NULL DEFAULT 1,
+  created_at        TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at        TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- Indexes from migrations
+CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
+CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
+CREATE INDEX IF NOT EXISTS idx_ref_tracking_friend ON ref_tracking (friend_id);
+CREATE INDEX IF NOT EXISTS idx_link_clicks_link ON link_clicks (tracked_link_id);
+CREATE INDEX IF NOT EXISTS idx_link_clicks_friend ON link_clicks (friend_id);
+CREATE INDEX IF NOT EXISTS idx_form_submissions_form ON form_submissions (form_id);
+CREATE INDEX IF NOT EXISTS idx_form_submissions_friend ON form_submissions (friend_id);
+CREATE INDEX IF NOT EXISTS idx_line_accounts_bot_user_id ON line_accounts(bot_user_id);
+CREATE INDEX IF NOT EXISTS idx_shopify_orders_friend ON shopify_orders(friend_id);
+CREATE INDEX IF NOT EXISTS idx_shopify_orders_email ON shopify_orders(email);
+CREATE INDEX IF NOT EXISTS idx_shopify_orders_shopify_customer ON shopify_orders(shopify_customer_id);
+CREATE INDEX IF NOT EXISTS idx_shopify_customers_friend ON shopify_customers(friend_id);
+CREATE INDEX IF NOT EXISTS idx_shopify_customers_email ON shopify_customers(email);
+CREATE INDEX IF NOT EXISTS idx_shopify_customers_phone ON shopify_customers(phone);
+CREATE INDEX IF NOT EXISTS idx_abandoned_carts_friend ON abandoned_carts(friend_id);
+CREATE INDEX IF NOT EXISTS idx_abandoned_carts_status ON abandoned_carts(status);
+CREATE INDEX IF NOT EXISTS idx_abandoned_carts_scheduled ON abandoned_carts(status, notification_scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_abandoned_carts_cart_token ON abandoned_carts(cart_token);
+CREATE INDEX IF NOT EXISTS idx_abandoned_carts_email ON abandoned_carts(email);
+CREATE INDEX IF NOT EXISTS idx_restock_requests_friend ON restock_requests(friend_id);
+CREATE INDEX IF NOT EXISTS idx_restock_requests_variant ON restock_requests(shopify_variant_id, status);
+CREATE INDEX IF NOT EXISTS idx_restock_requests_product ON restock_requests(shopify_product_id, status);
+CREATE INDEX IF NOT EXISTS idx_restock_requests_status ON restock_requests(status);
+CREATE INDEX IF NOT EXISTS idx_shopify_fulfillments_order ON shopify_fulfillments(shopify_order_id);
+CREATE INDEX IF NOT EXISTS idx_shopify_fulfillments_friend ON shopify_fulfillments(friend_id);
+CREATE INDEX IF NOT EXISTS idx_shopify_fulfillments_status ON shopify_fulfillments(status);
+CREATE INDEX IF NOT EXISTS idx_payment_notifications_order ON shopify_payment_notifications(shopify_order_id);
+CREATE INDEX IF NOT EXISTS idx_payment_notifications_friend ON shopify_payment_notifications(friend_id);
+CREATE INDEX IF NOT EXISTS idx_shopify_coupons_code ON shopify_coupons(code);
+CREATE INDEX IF NOT EXISTS idx_shopify_coupons_status ON shopify_coupons(status);
+CREATE INDEX IF NOT EXISTS idx_coupon_assignments_coupon ON shopify_coupon_assignments(coupon_id);
+CREATE INDEX IF NOT EXISTS idx_coupon_assignments_friend ON shopify_coupon_assignments(friend_id);
+CREATE INDEX IF NOT EXISTS idx_member_ranks_sort ON member_ranks(sort_order);
+CREATE INDEX IF NOT EXISTS idx_rank_coupon_rewards_rank ON rank_coupon_rewards(rank_id);
+CREATE INDEX IF NOT EXISTS idx_rank_coupon_rewards_type ON rank_coupon_rewards(rank_id, reward_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_friend_ranks_friend ON friend_ranks(friend_id);
+CREATE INDEX IF NOT EXISTS idx_friend_ranks_rank ON friend_ranks(rank_id);
+CREATE INDEX IF NOT EXISTS idx_ab_tests_status ON ab_tests (status);
+CREATE INDEX IF NOT EXISTS idx_ab_tests_line_account ON ab_tests (line_account_id);
+CREATE INDEX IF NOT EXISTS idx_ab_assign_test ON ab_test_assignments (ab_test_id);
+CREATE INDEX IF NOT EXISTS idx_ab_assign_friend ON ab_test_assignments (friend_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ab_assign_unique ON ab_test_assignments (ab_test_id, friend_id);
+CREATE INDEX IF NOT EXISTS idx_shopify_products_status ON shopify_products (status);
+CREATE INDEX IF NOT EXISTS idx_shopify_products_type ON shopify_products (product_type);
+CREATE INDEX IF NOT EXISTS idx_prod_rec_friend ON product_recommendations (friend_id);
+CREATE INDEX IF NOT EXISTS idx_prod_rec_product ON product_recommendations (shopify_product_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prod_rec_unique ON product_recommendations (friend_id, shopify_product_id, trigger_type);
+CREATE INDEX IF NOT EXISTS idx_analytics_events_friend ON analytics_events(friend_id);
+CREATE INDEX IF NOT EXISTS idx_analytics_events_name ON analytics_events(event_name);
+CREATE INDEX IF NOT EXISTS idx_analytics_events_created ON analytics_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_utm_templates_account ON utm_templates(line_account_id);
+CREATE INDEX IF NOT EXISTS idx_intake_logs_friend ON intake_logs(friend_id);
+CREATE INDEX IF NOT EXISTS idx_intake_logs_logged ON intake_logs(friend_id, logged_at);
+CREATE INDEX IF NOT EXISTS idx_intake_reminders_active ON intake_reminders(is_active, reminder_time);
+CREATE INDEX IF NOT EXISTS idx_referral_links_ref ON referral_links(ref_code);
+CREATE INDEX IF NOT EXISTS idx_referral_rewards_referrer ON referral_rewards(referrer_friend_id);
+CREATE INDEX IF NOT EXISTS idx_referral_rewards_referred ON referral_rewards(referred_friend_id);
+CREATE INDEX IF NOT EXISTS idx_recommendation_friend ON recommendation_results(friend_id);
+CREATE INDEX IF NOT EXISTS idx_health_logs_friend ON health_logs(friend_id);
+CREATE INDEX IF NOT EXISTS idx_health_logs_date ON health_logs(friend_id, log_date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_health_logs_unique ON health_logs(friend_id, log_date);
+CREATE INDEX IF NOT EXISTS idx_ambassadors_status ON ambassadors(status);
+CREATE INDEX IF NOT EXISTS idx_ambassadors_friend ON ambassadors(friend_id);
+CREATE INDEX IF NOT EXISTS idx_daily_tips_date ON daily_tips(tip_date);
+CREATE INDEX IF NOT EXISTS idx_intake_reminders_active_time ON intake_reminders(is_active, reminder_time);
+CREATE INDEX IF NOT EXISTS idx_intake_reminders_friend ON intake_reminders(friend_id);
+CREATE INDEX IF NOT EXISTS idx_intake_reminders_friend_count ON intake_reminders(friend_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_reminder_messages_slot ON reminder_messages(time_slot, is_active);
+CREATE INDEX IF NOT EXISTS idx_reminder_msg_log_friend ON reminder_message_log(friend_id, sent_at);
+CREATE INDEX IF NOT EXISTS idx_reminder_msg_log_msg ON reminder_message_log(reminder_message_id);
+CREATE INDEX IF NOT EXISTS idx_ambassador_feedback_ambassador ON ambassador_feedback(ambassador_id);
+CREATE INDEX IF NOT EXISTS idx_ambassador_feedback_type ON ambassador_feedback(type);
+CREATE INDEX IF NOT EXISTS idx_ambassador_surveys_status ON ambassador_surveys(status);
+CREATE INDEX IF NOT EXISTS idx_ambassador_surveys_type ON ambassador_surveys(survey_type);
+CREATE INDEX IF NOT EXISTS idx_survey_responses_survey ON ambassador_survey_responses(survey_id);
+CREATE INDEX IF NOT EXISTS idx_survey_responses_ambassador ON ambassador_survey_responses(ambassador_id);
+CREATE INDEX IF NOT EXISTS idx_survey_deliveries_survey ON ambassador_survey_deliveries(survey_id);
+CREATE INDEX IF NOT EXISTS idx_survey_deliveries_ambassador ON ambassador_survey_deliveries(ambassador_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_survey_responses_unique ON ambassador_survey_responses(survey_id, ambassador_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_survey_deliveries_unique ON ambassador_survey_deliveries(survey_id, ambassador_id);
+CREATE INDEX IF NOT EXISTS idx_translations_lookup ON translations(source_lang, target_lang, source_text);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_translations_unique ON translations(source_text, source_lang, target_lang);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tips_i18n_unique ON daily_tips_i18n(tip_id, lang);
+CREATE INDEX IF NOT EXISTS idx_tips_i18n_lang ON daily_tips_i18n(lang);
+CREATE INDEX IF NOT EXISTS idx_shopify_draft_orders_friend
+  ON shopify_draft_orders(friend_id);
+CREATE INDEX IF NOT EXISTS idx_shopify_draft_orders_shopify_id
+  ON shopify_draft_orders(shopify_draft_order_id);
+CREATE INDEX IF NOT EXISTS idx_notif_prefs_friend ON friend_notification_preferences(friend_id);
+CREATE INDEX IF NOT EXISTS idx_sub_reminders_friend ON subscription_reminders(friend_id);
+CREATE INDEX IF NOT EXISTS idx_sub_reminders_next ON subscription_reminders(next_reminder_at, is_active);
+CREATE INDEX IF NOT EXISTS idx_webhook_log_topic ON shopify_webhook_log(topic);
+CREATE INDEX IF NOT EXISTS idx_webhook_log_received ON shopify_webhook_log(received_at);
+CREATE INDEX IF NOT EXISTS idx_friends_blacklisted ON friends(is_blacklisted);
+CREATE INDEX IF NOT EXISTS idx_friend_groups_group_id ON friend_groups(group_id);
+CREATE INDEX IF NOT EXISTS idx_tag_elapsed_tag ON tag_elapsed_deliveries(trigger_tag_id);
+CREATE INDEX IF NOT EXISTS idx_tag_elapsed_logs_delivery ON tag_elapsed_delivery_logs(delivery_id);
+CREATE INDEX IF NOT EXISTS idx_friends_status ON friends(status);
+CREATE INDEX IF NOT EXISTS idx_friends_assigned_staff ON friends(assigned_staff_id);
+CREATE INDEX IF NOT EXISTS idx_liff_carts_friend ON liff_carts(friend_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_liff_carts_friend_variant ON liff_carts(friend_id, shopify_variant_id);

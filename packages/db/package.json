@@ -8,10 +8,12 @@
   "files": [
     "src",
     "schema.sql",
-    "migrations"
+    "migrations",
+    "scripts"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "regenerate-schema": "node scripts/regenerate-schema.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241205.0",
