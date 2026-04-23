@@ -217,7 +217,7 @@ shopifyAuth.get('/auth/shopify/callback', async (c) => {
       .bind(tokenData.access_token, tokenData.scope, farFuture)
       .run();
 
-    console.log(`✅ Shopify app installed on ${shop}, scopes: ${tokenData.scope}`);
+    console.info(`Shopify app installed on ${shop}, scopes: ${tokenData.scope}`);
 
     // 5. 成功ページを表示
     const html = `<!DOCTYPE html>

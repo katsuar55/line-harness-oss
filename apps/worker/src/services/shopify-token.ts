@@ -174,7 +174,7 @@ export async function getShopifyAccessToken(
   const expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
   await cacheToken(db, tokenResponse.access_token, tokenResponse.scope, expiresAt, encryptionKey);
 
-  console.log(`Shopify token refreshed (expires ${expiresAt}, encrypted=${!!encryptionKey})`);
+  console.info(`Shopify token refreshed (expires ${expiresAt}, encrypted=${!!encryptionKey})`);
 
   return tokenResponse.access_token;
 }

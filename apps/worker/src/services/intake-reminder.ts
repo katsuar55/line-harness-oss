@@ -129,7 +129,7 @@ export async function processIntakeReminders(
   }
 
   if (sent > 0 || errors > 0) {
-    console.log(`Intake reminders: sent=${sent}, skipped=${skipped}, errors=${errors}`);
+    console.info(`Intake reminders: sent=${sent}, skipped=${skipped}, errors=${errors}`);
   }
 
   return { sent, skipped, errors };

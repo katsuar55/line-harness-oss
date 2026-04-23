@@ -383,17 +383,14 @@ async function submitForm(): Promise<void> {
 
   try {
     const data = collectFormData();
-    console.log('Form data collected:', JSON.stringify(data));
     const body: Record<string, unknown> = { data };
     if (state.profile?.userId) body.lineUserId = state.profile.userId;
     // Note: state.friendId is users.id (UUID), not friends.id — don't send as friendId
-    console.log('Submitting to:', `/api/forms/${state.formDef.id}/submit`);
 
     const res = await apiCall(`/api/forms/${state.formDef.id}/submit`, {
       method: 'POST',
       body: JSON.stringify(body),
     });
-    console.log('Response status:', res.status);
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');

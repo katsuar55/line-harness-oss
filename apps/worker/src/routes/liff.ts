@@ -389,7 +389,7 @@ liffRoutes.get('/auth/callback', async (c) => {
             .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
             .bind(JSON.stringify(meta), jstNow(), friend.id)
             .run();
-          console.log(`X Harness: linked @${xhResult.xUsername} to friend ${friend.id}`);
+          console.info(`X Harness: linked @${xhResult.xUsername} to friend ${friend.id}`);
         }
         // Apply gate actions (tag + scenario) from X Harness
         if (xhResult) {
@@ -601,7 +601,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
               .prepare('UPDATE friends SET metadata = ? WHERE id = ?')
               .bind(JSON.stringify(meta), friend.id)
               .run();
-            console.log(`X Harness: linked @${xhResult.xUsername} to friend ${friend.id}`);
+            console.info(`X Harness: linked @${xhResult.xUsername} to friend ${friend.id}`);
           }
           if (xhResult) {
             await applyXHarnessActions(db, friend.id, xhResult);
@@ -666,7 +666,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
             .prepare('UPDATE friends SET metadata = ? WHERE id = ?')
             .bind(JSON.stringify(meta), friend.id)
             .run();
-          console.log(`X Harness: linked @${xhResult.xUsername} to friend ${friend.id}`);
+          console.info(`X Harness: linked @${xhResult.xUsername} to friend ${friend.id}`);
         }
         if (xhResult) {
           await applyXHarnessActions(db, friend.id, xhResult);
@@ -1010,7 +1010,7 @@ async function applyXHarnessActions(
       if (tagRow) {
         const { addTagToFriend } = await import('@line-crm/db');
         await addTagToFriend(db, friendId, tagRow.id);
-        console.log(`X Harness: added tag "${result.tag}" to friend ${friendId}`);
+        console.info(`X Harness: added tag "${result.tag}" to friend ${friendId}`);
       }
     } catch (err) {
       console.error(`X Harness: failed to add tag "${result.tag}":`, err);
@@ -1022,7 +1022,7 @@ async function applyXHarnessActions(
     try {
       const { enrollFriendInScenario } = await import('@line-crm/db');
       await enrollFriendInScenario(db, friendId, result.scenarioId);
-      console.log(`X Harness: enrolled friend ${friendId} in scenario ${result.scenarioId}`);
+      console.info(`X Harness: enrolled friend ${friendId} in scenario ${result.scenarioId}`);
     } catch (err) {
       console.error(`X Harness: failed to enroll in scenario:`, err);
     }

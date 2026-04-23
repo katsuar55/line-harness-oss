@@ -260,10 +260,8 @@ forms.post('/api/forms/:id/submit', async (c) => {
       // Send confirmation message with submitted data back to user
       sideEffects.push(
         (async () => {
-          console.log('Form reply: starting for friendId', friendId);
           const friend = await getFriendById(db, friendId!);
-          if (!friend?.line_user_id) { console.log('Form reply: no line_user_id'); return; }
-          console.log('Form reply: sending to', friend.line_user_id);
+          if (!friend?.line_user_id) return;
           const { LineClient } = await import('@line-crm/line-sdk');
           // Resolve access token from friend's account (multi-account support)
           let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;

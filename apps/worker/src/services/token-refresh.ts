@@ -72,7 +72,7 @@ export async function refreshLineAccessTokens(db: D1Database): Promise<void> {
         token_expires_at: expiresAtJst,
       });
 
-      console.log(`🔄 Token refreshed: ${account.name} (expires ${expiresAtJst})`);
+      console.info(`Token refreshed: ${account.name} (expires ${expiresAtJst})`);
     } catch (err) {
       console.error(`❌ Token refresh failed for ${account.name}:`, err);
     }

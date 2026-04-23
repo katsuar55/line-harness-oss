@@ -326,7 +326,7 @@ async function handleEvent(
                 const expandedContent = expandVariables(firstStep.message_content, friend as { id: string; display_name: string | null; user_id: string | null });
                 const message = buildMessage(firstStep.message_type, expandedContent);
                 await lineClient.replyMessage(event.replyToken, [message]);
-                console.log(`Immediate delivery: sent step ${firstStep.id} to ${userId}`);
+                console.info(`Immediate delivery: sent step ${firstStep.id} to ${userId}`);
 
                 // Log outgoing message (replyMessage = 無料)
                 const logId = crypto.randomUUID();
@@ -728,7 +728,6 @@ async function handleEvent(
         // ローディングアニメーション表示（「...」を見せてユーザーを待たせない）
         try {
           await lineClient.showLoadingAnimation(userId, 20);
-          console.log('Loading animation sent successfully');
         } catch (loadErr) {
           console.error('Loading animation error:', loadErr instanceof Error ? loadErr.message : String(loadErr));
         }

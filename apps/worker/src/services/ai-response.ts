@@ -40,8 +40,6 @@ async function runAiWithFallback(
 
   for (const model of models) {
     try {
-      console.log(`Trying model: ${model}`);
-
       const messages: Array<{ role: string; content: string }> = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
@@ -58,8 +56,6 @@ async function runAiWithFallback(
         messages,
         max_tokens: maxTokens,
       }) as { response?: string };
-
-      console.log(`Model ${model} response:`, JSON.stringify(response).slice(0, 300));
 
       if (response?.response) {
         const cleaned = stripThinkingTags(response.response);

@@ -109,7 +109,7 @@ export async function processWeeklyReports(
   }
 
   if (sent > 0 || errors > 0) {
-    console.log(`Weekly reports: sent=${sent}, skipped=${skipped}, errors=${errors}`);
+    console.info(`Weekly reports: sent=${sent}, skipped=${skipped}, errors=${errors}`);
   }
 
   return { sent, skipped, errors };
