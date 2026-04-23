@@ -9,22 +9,31 @@ import { getIntakeStreak, getHealthSummary, jstNow } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import { addJitter, sleep } from './stealth.js';
 
+// 既存 altText "📋 ${name}さんの週次レポート" に含まれる固有フレーズをマーカーとして再利用
+const WEEKLY_REPORT_MARKER = 'さんの週次レポート';
+const DEDUP_WINDOW_DAYS = 6;
+
+function getJstDayOfWeek(jstIso: string): number {
+  const dateStr = jstIso.slice(0, 10);
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
 /**
  * メイン処理: 月曜日のみ実行 → 全フォロー中の友だちにレポート送信
+ * 同一週内で既送のfriendは必ずスキップ（cron多重発火でも1回まで）。
  */
 export async function processWeeklyReports(
   db: D1Database,
   lineClient: LineClient,
 ): Promise<{ sent: number; skipped: number; errors: number }> {
   const now = jstNow();
-  const dayOfWeek = new Date(now).getDay(); // 0=日, 1=月
+  const dayOfWeek = getJstDayOfWeek(now);
 
-  // 月曜以外はスキップ
   if (dayOfWeek !== 1) {
     return { sent: 0, skipped: 0, errors: 0 };
   }
 
-  // フォロー中の友だちを取得（最大5000件）
   const { results: friends } = await db
     .prepare(
       `SELECT id, line_user_id, display_name
@@ -35,6 +44,20 @@ export async function processWeeklyReports(
     )
     .all<{ id: string; line_user_id: string; display_name: string | null }>();
 
+  const dedupCutoff = new Date(new Date(now).getTime() - DEDUP_WINDOW_DAYS * 86_400_000).toISOString();
+  const { results: recentRows } = await db
+    .prepare(
+      `SELECT DISTINCT friend_id
+       FROM messages_log
+       WHERE direction = 'outgoing'
+         AND message_type = 'flex'
+         AND content LIKE ?
+         AND created_at > ?`,
+    )
+    .bind(`%${WEEKLY_REPORT_MARKER}%`, dedupCutoff)
+    .all<{ friend_id: string }>();
+  const alreadySent = new Set(recentRows.map((r) => r.friend_id));
+
   let sent = 0;
   let skipped = 0;
   let errors = 0;
@@ -42,12 +65,15 @@ export async function processWeeklyReports(
   for (let i = 0; i < friends.length; i++) {
     const friend = friends[i];
 
+    if (alreadySent.has(friend.id)) {
+      skipped++;
+      continue;
+    }
+
     try {
-      // streak + 体調データ取得
       const streak = await getIntakeStreak(db, friend.id);
       const health = await getHealthSummary(db, friend.id);
 
-      // データがない場合はスキップ
       if ((!streak || streak.totalDays === 0) && health.totalLogs === 0) {
         skipped++;
         continue;
