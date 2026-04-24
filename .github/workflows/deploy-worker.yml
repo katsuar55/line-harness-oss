@@ -1,20 +1,21 @@
 name: Deploy Worker
 
-# Configure CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets to enable auto-deploy
+# main への push で自動デプロイ。CI workflow (typecheck + test) が通った場合のみ走る。
+# Configure CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets to enable auto-deploy.
 on:
   workflow_dispatch:
-  push:
+  # CI が成功した時だけデプロイする (main への push 時の CI が通ると起動)
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
     branches: [main]
-    paths:
-      - 'apps/worker/**'
-      - 'packages/db/**'
-      - 'packages/shared/**'
-      - 'packages/line-sdk/**'
-      - '.github/workflows/deploy-worker.yml'
 
 jobs:
   deploy:
+    # CI が成功していない場合はデプロイしない (workflow_dispatch での手動起動時は常に走る)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -40,3 +41,12 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: apps/worker
           command: deploy
+
+      - name: Notify deploy result
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "::notice title=Worker deployed::Successfully deployed to Cloudflare Workers"
+          else
+            echo "::error title=Deploy failed::Worker deployment failed — investigate the log above"
+          fi

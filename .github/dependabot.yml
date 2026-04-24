@@ -1,0 +1,48 @@
+version: 2
+updates:
+  # npm 依存 (monorepo root でまとめて管理)
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # マイナー / パッチは一括でまとめる (アテンション分散を抑える)
+      minor-and-patch:
+        update-types: [minor, patch]
+      # types だけ分離
+      types:
+        patterns: ['@types/*']
+    ignore:
+      # 本番影響の大きい依存は major を自動 PR しない (CI が落ちるリスク)
+      - dependency-name: 'next'
+        update-types: [version-update:semver-major]
+      - dependency-name: 'react'
+        update-types: [version-update:semver-major]
+      - dependency-name: 'react-dom'
+        update-types: [version-update:semver-major]
+      - dependency-name: 'hono'
+        update-types: [version-update:semver-major]
+      - dependency-name: 'wrangler'
+        update-types: [version-update:semver-major]
+
+  # GitHub Actions 自体のアップデート
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+      time: '09:00'
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 3
+    labels:
+      - ci
+    commit-message:
+      prefix: ci

@@ -1,0 +1,81 @@
+name: D1 Daily Backup
+
+# 毎日 JST 03:00 (UTC 18:00) に D1 をエクスポートし、
+# 既存 R2 バケット naturism-line-crm-images の backups/ プレフィックスへ保存する。
+#
+# 必要な GitHub secrets:
+#   CLOUDFLARE_API_TOKEN    — wrangler d1 export + r2 object put 権限
+#   CLOUDFLARE_ACCOUNT_ID
+#
+# 復旧手順は docs/DR.md 参照。
+
+on:
+  workflow_dispatch:
+  schedule:
+    # UTC 18:00 = JST 03:00 (毎日)
+    - cron: '0 18 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set backup filename
+        id: filename
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          echo "file=naturism-d1-backup-${DATE}.sql" >> $GITHUB_OUTPUT
+          echo "key=backups/${DATE}/naturism-d1-backup-${DATE}.sql" >> $GITHUB_OUTPUT
+
+      - name: Export D1 remote
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler d1 export naturism-line-crm \
+            --remote \
+            --output=../../${{ steps.filename.outputs.file }}
+
+      - name: Verify backup size
+        run: |
+          SIZE=$(stat -c%s "${{ steps.filename.outputs.file }}")
+          echo "Backup size: ${SIZE} bytes"
+          # 100KB 未満は異常 (テーブル消失やエラー応答) と見なす
+          if [ "${SIZE}" -lt 102400 ]; then
+            echo "::error::Backup is too small (${SIZE} bytes < 100KB), aborting upload"
+            head -c 500 "${{ steps.filename.outputs.file }}"
+            exit 1
+          fi
+
+      - name: Upload to R2
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler r2 object put \
+            naturism-line-crm-images/${{ steps.filename.outputs.key }} \
+            --file=../../${{ steps.filename.outputs.file }} \
+            --remote
+
+      - name: Summary
+        run: |
+          echo "### D1 Backup Completed :floppy_disk:" >> $GITHUB_STEP_SUMMARY
+          echo "- File: \`${{ steps.filename.outputs.file }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- R2 key: \`${{ steps.filename.outputs.key }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Size: $(stat -c%s ${{ steps.filename.outputs.file }}) bytes" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Restore: see [docs/DR.md](../blob/main/docs/DR.md)" >> $GITHUB_STEP_SUMMARY

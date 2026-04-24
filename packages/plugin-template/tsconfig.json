@@ -3,7 +3,8 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": ".",
-    "types": ["@cloudflare/workers-types"]
+    // mcp-server/ は Node.js で動くため node 型を含む。worker 部分 (src/) は @cloudflare/workers-types で賄う。
+    "types": ["@cloudflare/workers-types", "node"]
   },
   "include": ["src/**/*.ts", "mcp-server/**/*.ts"]
 }

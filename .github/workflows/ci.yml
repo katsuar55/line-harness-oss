@@ -1,0 +1,76 @@
+name: CI
+
+# すべての PR と main への push で typecheck + test を走らせて品質ゲートとする。
+# これが通らない変更は deploy-worker.yml からデプロイされない (needs: ci)。
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck-and-test:
+    name: typecheck & test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 依存パッケージの型成果物を生成
+      - name: Build shared packages
+        run: pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db build
+
+      # TypeScript 型チェック (plugin-template は standalone template のため除外)
+      - name: Typecheck worker
+        run: pnpm --filter worker typecheck
+
+      - name: Typecheck line-sdk
+        run: pnpm --filter @line-crm/line-sdk typecheck
+
+      - name: Typecheck db
+        run: pnpm --filter @line-crm/db typecheck
+
+      - name: Typecheck sdk
+        run: pnpm --filter @line-harness/sdk typecheck
+
+      - name: Typecheck shared
+        run: pnpm --filter @line-crm/shared typecheck
+
+      - name: Typecheck plugin-template
+        run: pnpm --filter @line-harness/plugin-myservice typecheck
+
+      # Vitest — Worker (966 tests)
+      - name: Worker tests
+        run: pnpm --filter worker exec vitest run
+
+      # Vitest — SDK (43 tests)
+      - name: SDK tests
+        run: pnpm --filter @line-harness/sdk test
+
+      # schema.sql drift check: migrations から再生成して diff が無いことを確認
+      - name: schema.sql drift check
+        run: |
+          cd packages/db
+          cp schema.sql /tmp/schema.sql.before
+          node scripts/regenerate-schema.mjs
+          if ! diff -q /tmp/schema.sql.before schema.sql > /dev/null; then
+            echo "::error::schema.sql is out of sync with migrations/*.sql"
+            echo "Run 'pnpm regenerate-schema' locally and commit the result."
+            diff /tmp/schema.sql.before schema.sql | head -50
+            exit 1
+          fi
