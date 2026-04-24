@@ -31,9 +31,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # 依存パッケージの型成果物を生成
+      # 依存パッケージの型成果物を生成 (plugin-template は @line-harness/sdk の dist/ を参照)
       - name: Build shared packages
-        run: pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db build
+        run: pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-harness/sdk build
 
       # TypeScript 型チェック (plugin-template は standalone template のため除外)
       - name: Typecheck worker
