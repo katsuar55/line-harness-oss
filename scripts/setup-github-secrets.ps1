@@ -21,21 +21,38 @@
 
 $ErrorActionPreference = 'Stop'
 
-$GH_BIN = 'C:\Users\user\Desktop\line-harness-oss\.tools\gh\bin\gh.exe'
 $REPO = 'katsuar55/line-harness-oss'
 
-# gh.exe をローカルに配置
-if (-not (Test-Path $GH_BIN)) {
-    Write-Host "Downloading GitHub CLI..."
-    New-Item -ItemType Directory -Force -Path (Split-Path $GH_BIN -Parent) | Out-Null
+# gh.exe の解決順: (1) PATH (2) winget 標準インストール先 (3) ローカル .tools にダウンロード
+function Resolve-GhBinary {
+    $fromPath = Get-Command gh -ErrorAction SilentlyContinue
+    if ($fromPath) { return $fromPath.Source }
+
+    $standardPaths = @(
+        'C:\Program Files\GitHub CLI\gh.exe',
+        "$env:LOCALAPPDATA\Programs\GitHub CLI\gh.exe"
+    )
+    foreach ($p in $standardPaths) {
+        if (Test-Path $p) { return $p }
+    }
+
+    $localBin = 'C:\Users\user\Desktop\line-harness-oss\.tools\gh\bin\gh.exe'
+    if (Test-Path $localBin) { return $localBin }
+
+    Write-Host "gh not found anywhere. Downloading to .tools/gh ..." -ForegroundColor Yellow
+    New-Item -ItemType Directory -Force -Path (Split-Path $localBin -Parent) | Out-Null
     $zipUrl = 'https://github.com/cli/cli/releases/download/v2.91.0/gh_2.91.0_windows_amd64.zip'
     $tmpZip = "$env:TEMP\gh.zip"
     Invoke-WebRequest -Uri $zipUrl -OutFile $tmpZip
     Expand-Archive -Path $tmpZip -DestinationPath "$env:TEMP\gh-extract" -Force
-    Copy-Item -Recurse -Force "$env:TEMP\gh-extract\bin" (Split-Path $GH_BIN -Parent | Split-Path -Parent | Join-Path -ChildPath 'bin')
+    Copy-Item -Recurse -Force "$env:TEMP\gh-extract\bin" (Split-Path $localBin -Parent | Split-Path -Parent | Join-Path -ChildPath 'bin')
     Remove-Item $tmpZip -Force
-    if (-not (Test-Path $GH_BIN)) { throw "gh.exe download failed: $GH_BIN" }
+    if (-not (Test-Path $localBin)) { throw "gh.exe download failed: $localBin" }
+    return $localBin
 }
+
+$GH_BIN = Resolve-GhBinary
+Write-Host "Using gh at: $GH_BIN" -ForegroundColor DarkGray
 
 # GitHub 認証情報を Windows 資格情報マネージャから取得
 $cred = @"
