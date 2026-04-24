@@ -33,6 +33,17 @@ updates:
         update-types: [version-update:semver-major]
       - dependency-name: 'wrangler'
         update-types: [version-update:semver-major]
+      # ビルド/テストツールも major は手動レビューしたい
+      - dependency-name: 'vite'
+        update-types: [version-update:semver-major]
+      - dependency-name: 'vitest'
+        update-types: [version-update:semver-major]
+      - dependency-name: 'zod'
+        update-types: [version-update:semver-major]
+      - dependency-name: 'typescript'
+        update-types: [version-update:semver-major]
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
 
   # GitHub Actions 自体のアップデート
   - package-ecosystem: github-actions
