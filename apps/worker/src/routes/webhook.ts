@@ -14,8 +14,14 @@ import {
   getLineAccounts,
   getLineAccountByBotUserId,
   setLineAccountBotUserId,
+  setFriendMetadataField,
   jstNow,
 } from '@line-crm/db';
+import {
+  BIRTHDAY_METADATA_KEY,
+  buildBirthdayThanksText,
+  parseBirthdayMonthPostback,
+} from '../services/birthday-collection.js';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { generateAiResponse } from '../services/ai-response.js';
@@ -405,6 +411,33 @@ async function handleEvent(
     const data = (event as { postback?: { data?: string } }).postback?.data ?? '';
     const params = new URLSearchParams(data);
     const action = params.get('action');
+
+    // 誕生月収集 (DMM 解約前のデータ救出シナリオ)
+    if (action === 'birthday_month') {
+      const friend = await getFriendByLineUserId(db, userId);
+      if (!friend) return;
+
+      const month = parseBirthdayMonthPostback(data);
+      if (month === null) {
+        console.error('Invalid birthday_month postback:', data);
+        return;
+      }
+
+      try {
+        await setFriendMetadataField(
+          db,
+          friend.id,
+          BIRTHDAY_METADATA_KEY,
+          String(month),
+        );
+        await lineClient.replyMessage(event.replyToken, [
+          buildMessage('text', buildBirthdayThanksText(month)),
+        ]);
+      } catch (err) {
+        console.error('Birthday month postback error:', err);
+      }
+      return;
+    }
 
     if (action === 'daily_tip') {
       const friend = await getFriendByLineUserId(db, userId);

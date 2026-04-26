@@ -58,12 +58,14 @@ import { shopifyAuth } from './routes/shopify-auth.js';
 import { groups } from './routes/groups.js';
 import { tagElapsedDeliveries } from './routes/tag-elapsed-deliveries.js';
 import { liffCart } from './routes/liff-cart.js';
+import { birthdayCollection } from './routes/birthday-collection.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 // Phase 1 (2026-04-26): processIntakeReminders は能動pull化により cron 停止。
 // 既存 service コードは残置 (将来オプトイン式に再活性化する可能性あり)。
 // 友だちは LIFF Portal Top の「朝/昼/夜」3ボタンから自発的に記録するように変更。
 import { processWeeklyReports } from './services/weekly-report.js';
 import { processSubscriptionReminders } from './services/subscription-reminder.js';
+import { createLogger } from './services/logger.js';
 
 export type Env = {
   Bindings: {
@@ -88,6 +90,10 @@ export type Env = {
     SHOPIFY_CLIENT_ID?: string;
     SHOPIFY_CLIENT_SECRET?: string;
     SHOPIFY_LINE_NOTIFY_ENABLED?: string; // 'true' to enable LINE notifications from Shopify webhooks
+    // 監視 (オプショナル, secret 未登録時は no-op)
+    AXIOM_TOKEN?: string;
+    AXIOM_DATASET?: string;
+    DISCORD_WEBHOOK_URL?: string;
     WEBHOOK_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
     API_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
   };
@@ -171,6 +177,7 @@ app.route('/', shopifyAuth);
 app.route('/', groups);
 app.route('/', tagElapsedDeliveries);
 app.route('/', liffCart);
+app.route('/', birthdayCollection);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
@@ -211,6 +218,20 @@ h1{font-size:28px;font-weight:800;margin-bottom:8px}
 
 // Convenience redirect for /book path
 app.get('/book', (c) => c.redirect('/?page=book'));
+
+// 全ルート共通エラーハンドラ — Axiom + Discord 通知 (secret 未登録時は no-op)
+// 監視機能は fail-safe: ログ送信が失敗してもアプリ応答は通す
+app.onError((err, c) => {
+  const ctx = (c.executionCtx as unknown as { waitUntil?: (p: Promise<unknown>) => void }) ?? null;
+  const logCtx = ctx?.waitUntil ? { waitUntil: ctx.waitUntil.bind(ctx) } : null;
+  const log = createLogger(c.env, logCtx);
+  log.error('unhandled route error', {
+    path: new URL(c.req.url).pathname,
+    method: c.req.method,
+    err,
+  });
+  return c.json({ success: false, error: 'Internal server error' }, 500);
+});
 
 // 404 fallback — JSON for API paths, plain for others (Workers Assets SPA fallback handles it)
 app.notFound((c) => {

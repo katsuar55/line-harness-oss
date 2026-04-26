@@ -149,3 +149,43 @@ export async function getFriendCount(db: D1Database): Promise<number> {
     .first<{ count: number }>();
   return row?.count ?? 0;
 }
+
+/**
+ * friends.metadata (JSON) の特定キーを更新。
+ * - 未存在/空文字/不正JSON は {} から始める
+ * - value が空文字なら該当キーを削除する (segment フィルタの metadata_not_equals と整合させる)
+ */
+export async function setFriendMetadataField(
+  db: D1Database,
+  friendId: string,
+  key: string,
+  value: string,
+): Promise<void> {
+  const row = await db
+    .prepare(`SELECT metadata FROM friends WHERE id = ?`)
+    .bind(friendId)
+    .first<{ metadata: string | null }>();
+
+  let obj: Record<string, unknown> = {};
+  if (row?.metadata) {
+    try {
+      const parsed: unknown = JSON.parse(row.metadata);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        obj = parsed as Record<string, unknown>;
+      }
+    } catch {
+      obj = {};
+    }
+  }
+
+  if (value === '') {
+    delete obj[key];
+  } else {
+    obj[key] = value;
+  }
+
+  await db
+    .prepare(`UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?`)
+    .bind(JSON.stringify(obj), jstNow(), friendId)
+    .run();
+}
