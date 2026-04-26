@@ -3,6 +3,13 @@ main = "src/index.ts"
 compatibility_date = "2024-12-01"
 workers_dev = true
 
+# Cloudflare 公式 Workers Observability (logs / invocations / errors を Cloudflare コンソールで保存・検索)
+# Axiom + Discord (logger.ts) の前段として、24時間より先のログ保持と異常率の可視化を提供。
+# 詳細: https://developers.cloudflare.com/workers/observability/logs/workers-logs/
+[observability]
+enabled = true
+head_sampling_rate = 1  # 100% sampling (個人事業主規模なら無料枠で十分)
+
 # Workers AI binding
 [ai]
 binding = "AI"

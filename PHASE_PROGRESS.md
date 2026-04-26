@@ -104,6 +104,48 @@
 
 ---
 
+## ✅ 付随タスク (Phase 2 ↔ Phase 3 の間) — 完了 (2026-04-27)
+
+Phase 3 (Anthropic API 開設待ち) の間に、Phase ロードマップ外の P0/P1 を消化。
+commit `95cb97d`。
+
+### D. 誕生月再収集シナリオ (P0 — DMM 解約対策)
+
+**背景**: DMM チャットブースト解約 (2026-06〜07月) で誕生日データが消える。
+naturism-line-crm 側で先回り収集する仕組み。
+
+- `friends.metadata.birth_month` (TEXT "1"〜"12") に保存 — DB 変更なし
+- Quick Reply 12個 (1月〜12月) → postback `action=birthday_month&month=N`
+- `setFriendMetadataField()` で metadata JSON を安全に部分更新
+- 管理 API:
+  - `GET  /api/birthday-collection/stats`   — 登録済/未登録の件数
+  - `POST /api/birthday-collection/preview` — メッセージプレビュー
+  - `POST /api/birthday-collection/send`    — multicast (default `dryRun=true`)
+- multicast は 500件チャンク。`dryRun` デフォルト ON で誤発射防止
+- セグメントフィルタ `metadata_not_equals` で未登録者抽出可能
+
+### F. エラー監視スケルトン (P1)
+
+**背景**: Cloudflare Workers Logs は 24時間で消える → 重大エラーを長期保存 + 即時通知。
+
+- `apps/worker/src/services/logger.ts`: 軽量 logger
+  - **Axiom** (Free 500MB/月) で構造化ログ長期保存
+  - **Discord webhook** で error/fatal レベルを即時通知
+  - **secret 未登録時は完全 no-op** (fail-safe: 観測機能不在でアプリは止まらない)
+  - `waitUntil()` 経由 fire-and-forget で latency に影響しない
+- `app.onError` フックで全ルート横串補足
+- `docs/MONITORING.md`: Katsu 用の Axiom + Discord 開設手順 (4ステップ, 計15分)
+- 必要 secret (オプショナル):
+  - `AXIOM_TOKEN` / `AXIOM_DATASET` / `DISCORD_WEBHOOK_URL`
+
+### 検証
+- worker tests: 969 → **986 pass** (+17 birthday-collection)
+- SDK tests: 43/43 pass
+- typecheck: worker / db / line-sdk 全クリーン
+- CI + Deploy Worker 自動デプロイ成功
+
+---
+
 ## ⏸ Phase 3: AI 食事診断 + カロリー記録 + グラフ
 
 ### 計画
@@ -157,6 +199,7 @@
 | 2026-04-26 | PHASE_PROGRESS.md 新設、Phase 1 着手 |
 | 2026-04-26 | Phase 1 完了 (commit `5b0df90`) — 能動pull型 服用記録 + cron 停止 |
 | 2026-04-26 | Phase 2 完了 (commit `368515a`) — バッジ + レベル制度 (969 tests pass) |
+| 2026-04-27 | 付随セクション (D + F) 完了 (commit `95cb97d`) — 誕生月再収集 (DMM 解約対策) + 監視スケルトン (986 tests pass) |
 
 ---
 
