@@ -10,8 +10,8 @@
 | Phase | 内容 | 期間目安 | 状態 |
 |---|---|---|---|
 | 1 | 能動pull化 + 服用記録 | 1〜2日 | ✅ **完了** (2026-04-26 commit `5b0df90`) |
-| 2 | ゲーミフィケーション基盤 (バッジ/レベル) | 2〜3日 | 🚧 着手 (2026-04-26) |
-| 3 | AI 食事診断 + カロリー記録 + グラフ | 5〜7日 | ⏸ 待機 |
+| 2 | ゲーミフィケーション基盤 (バッジ/レベル) | 2〜3日 | ✅ **完了** (2026-04-26 commit `368515a`) |
+| 3 | AI 食事診断 + カロリー記録 + グラフ | 5〜7日 | ⏸ 待機 (Anthropic API キー登録待ち) |
 | 4 | ガチャ/季節イベント/アバター/投票 | 3〜4日 | ⏸ 待機 |
 | Final | 管理者+ユーザー向けマニュアル + NotebookLM 投入 | 2日 | ⏸ 待機 |
 
@@ -45,48 +45,23 @@
 
 ---
 
-## 🚧 Phase 2: ゲーミフィケーション基盤 — 着手中 (2026-04-26)
+## ✅ Phase 2: ゲーミフィケーション基盤 — 完了 (2026-04-26)
 
-### 目的
-- 受動 push の服用リマインダーを停止 → LINE 課金を激減
-- LIFF Top に「朝/昼/夜」3ボタンの能動pull UI
-- 押すたびにスコア +10 加算 → 既存 ranking と連動
+### 完了内容
+- migration 035 適用: `badges` (定義11種 seed) + `friend_badges` (獲得記録)
+- `packages/db/src/badges.ts`: クエリ関数 (awardBadge / getAllBadges / getFriendBadges / getIntakeTotalCount / calculateLevel など)
+- `apps/worker/src/services/badge-evaluator.ts`: イベント駆動の判定ロジック (intake_log / cv_fire / referral_completed)
+- `apps/worker/src/services/event-bus.ts`: fireEvent Phase1 に processBadgeEvaluation を追加 (Promise.allSettled で並列実行)
+- `GET /api/liff/badges` 新設: 全バッジ + 自分の獲得バッジ + level + 次レベルまでのpt
+- LIFF HOME に「レベル & バッジ」カード追加 (経験値プログレスバー + 5列バッジグリッド)
+- レベル計算は DB 不要、`Math.floor(friends.score / 100) + 1` で表示時計算
 
-### 仕様
-| 項目 | 内容 |
-|---|---|
-| UI 場所 | LIFF Portal Top (`apps/worker/src/routes/liff-pages.ts` の portalPage) |
-| ボタン | 朝 ○ / 昼 ○ / 夜 ○ (押したら ●、再押し不可) |
-| API | `POST /api/liff/intake` を `meal_type` 受け取りに拡張 |
-| 重複防止 | 同日 + 同 meal_type で UNIQUE (DB制約) |
-| ポイント | event_bus で `intake_log` イベント発火 → 既存 applyScoring が拾う |
-| 累計表示 | LIFF 内に「累計記録: N日」「今月ポイント: Mpt」 |
+### 検証
+- worker tests 969/969 pass
+- CI + Deploy Worker 成功
+- 本番 D1 に migration 035 適用済
 
-### スキーマ変更 (migration 034)
-- `intake_logs.meal_type` TEXT (`breakfast`/`lunch`/`dinner`/`snack`) を追加
-- `(friend_id, logged_at_date, meal_type)` で UNIQUE INDEX
-
-### Cron 停止
-- `apps/worker/src/index.ts` の `processIntakeReminders` 呼出を削除
-- `intake-reminder.ts` のコードは残置 (将来オプトイン用)
-
-### 実装チェックリスト
-- [ ] migration 034 作成
-- [ ] schema.sql 再生成
-- [ ] `createIntakeLog` を meal_type 対応に
-- [ ] `POST /api/liff/intake` を meal_type 対応に
-- [ ] 同日同 meal_type 重複防止 (DB UNIQUE + アプリ層 try/catch)
-- [ ] event_bus で `intake_log` イベント発火
-- [ ] LIFF Top の UI 3ボタン化
-- [ ] cron 停止 (index.ts)
-- [ ] 既存テスト更新 (liff-portal.test.ts の mock)
-- [ ] 新規テスト追加 (meal_type / 重複防止)
-- [ ] typecheck パス
-- [ ] commit + push (CI 自動デプロイ)
-
----
-
-### Phase 2 実装スコープ
+### Phase 2 実装スコープ (実装内容詳細)
 - **migration 035**: `badges` (定義テーブル) + `friend_badges` (獲得記録テーブル) + 初期 seed
 - **バッジ判定サービス** (`apps/worker/src/services/badge-evaluator.ts`):
   - intake_log イベントで「服用ストリーク 7/30/100日」を判定
@@ -180,6 +155,8 @@
 | 日付 | 変更 |
 |---|---|
 | 2026-04-26 | PHASE_PROGRESS.md 新設、Phase 1 着手 |
+| 2026-04-26 | Phase 1 完了 (commit `5b0df90`) — 能動pull型 服用記録 + cron 停止 |
+| 2026-04-26 | Phase 2 完了 (commit `368515a`) — バッジ + レベル制度 (969 tests pass) |
 
 ---
 
