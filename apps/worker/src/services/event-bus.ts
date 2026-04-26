@@ -84,6 +84,7 @@ export async function fireEvent(
   const phase1: Promise<unknown>[] = [
     fireOutgoingWebhooks(db, eventType, payload),
     processScoring(db, eventType, payload),
+    processBadgeEvaluation(db, eventType, payload),
   ];
   if (payload.friendId && payload.conversionEventName) {
     phase1.push(
@@ -156,6 +157,24 @@ async function fireOutgoingWebhooks(
     }
   } catch (err) {
     console.error('fireOutgoingWebhooks error:', err);
+  }
+}
+
+/** Phase 2: バッジ判定 (intake_log / cv_fire / referral_completed) */
+async function processBadgeEvaluation(
+  db: D1Database,
+  eventType: string,
+  payload: EventPayload,
+): Promise<void> {
+  if (!payload.friendId) return;
+  try {
+    const { evaluateBadgesForEvent } = await import('./badge-evaluator.js');
+    await evaluateBadgesForEvent(db, eventType, {
+      friendId: payload.friendId,
+      eventData: payload.eventData,
+    });
+  } catch (err) {
+    console.error('processBadgeEvaluation error:', err);
   }
 }
 

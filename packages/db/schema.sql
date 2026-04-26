@@ -1345,6 +1345,29 @@ CREATE TABLE IF NOT EXISTS liff_carts (
   updated_at        TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+-- from 035_badges.sql
+CREATE TABLE IF NOT EXISTS badges (
+  code        TEXT PRIMARY KEY,                  -- intake_streak_7 等
+  category    TEXT NOT NULL,                     -- intake / purchase / referral / seasonal
+  name        TEXT NOT NULL,                     -- 7日連続
+  description TEXT,                              -- バッジの説明文
+  icon        TEXT,                              -- 絵文字 or icon URL
+  threshold   INTEGER,                           -- 獲得閾値 (streak日数 / 購入回数 等)
+  rarity      TEXT NOT NULL DEFAULT 'common',    -- common / rare / epic / legendary
+  is_active   INTEGER NOT NULL DEFAULT 1,        -- 0 = 廃止
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 035_badges.sql
+CREATE TABLE IF NOT EXISTS friend_badges (
+  id         TEXT PRIMARY KEY,
+  friend_id  TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  badge_code TEXT NOT NULL REFERENCES badges(code) ON DELETE CASCADE,
+  earned_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE (friend_id, badge_code)                 -- 同一バッジの重複獲得防止
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -1452,3 +1475,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_intake_logs_unique_meal
   WHERE meal_type IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_intake_logs_friend_date
   ON intake_logs (friend_id, logged_at);
+CREATE INDEX IF NOT EXISTS idx_badges_category ON badges (category, sort_order);
+CREATE INDEX IF NOT EXISTS idx_friend_badges_friend ON friend_badges (friend_id);
+CREATE INDEX IF NOT EXISTS idx_friend_badges_earned ON friend_badges (earned_at);

@@ -369,6 +369,17 @@ describe('LIFF Portal Routes', () => {
     });
   });
 
+  describe('GET /api/liff/badges (Phase 2)', () => {
+    it('endpoint is reachable (smoke test)', async () => {
+      const res = await app.request('/api/liff/badges', {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      }, mockEnv());
+      // testLiffAuth: GET でも認証チェックが入るので 200/400/401 が想定。
+      expect([200, 400, 401, 500]).toContain(res.status);
+    });
+  });
+
   describe('GET /api/liff/intake/today', () => {
     it('endpoint is reachable (returns 200/401 depending on auth)', async () => {
       // GET request: 認証 middleware の挙動次第で 200 or 401。

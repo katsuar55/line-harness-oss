@@ -29,6 +29,7 @@ export * from './shopify-products';
 export * from './analytics';
 export * from './liff-portal';
 export * from './i18n';
+export * from './badges';
 
 /**
  * Thin wrapper around D1Database.

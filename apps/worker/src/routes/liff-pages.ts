@@ -120,6 +120,29 @@ function portalPage(liffId: string, apiBase: string): string {
         <div class="skeleton h-24 rounded-lg"></div>
       </div>
 
+      <!-- Level + Badges (Phase 2: ゲーミフィケーション) -->
+      <div id="badge-card" class="card p-4">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-sm font-bold text-gray-700">🏆 レベル & バッジ</p>
+          <p id="badge-level-mini" class="text-xs font-bold text-green-600">Lv.<span id="badge-level-num">-</span></p>
+        </div>
+        <!-- 経験値バー -->
+        <div class="mb-3">
+          <div class="flex justify-between text-xs text-gray-500 mb-1">
+            <span><span id="badge-score">0</span> pt</span>
+            <span>次まで <span id="badge-pts-next">-</span> pt</span>
+          </div>
+          <div class="h-2 bg-gray-200 rounded-full overflow-hidden">
+            <div id="badge-progress-bar" class="h-full bg-gradient-to-r from-green-400 to-green-600 transition-all" style="width:0%"></div>
+          </div>
+        </div>
+        <!-- バッジグリッド -->
+        <div id="badge-grid" class="grid grid-cols-5 gap-2 mt-2">
+          <div class="skeleton h-12 rounded-lg col-span-5"></div>
+        </div>
+        <p class="text-xs text-gray-400 text-center mt-3">タップしてバッジ詳細を見る</p>
+      </div>
+
       <!-- Today's Intake (Phase 1: 能動pull型) -->
       <div id="intake-today-card" class="card p-4">
         <div class="flex items-center justify-between mb-3">
@@ -682,7 +705,7 @@ async function initLiff() {
       document.getElementById('user-avatar').innerHTML =
         '<img src="' + profile.pictureUrl + '" class="w-8 h-8 rounded-full">';
     }
-    await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake()]);
+    await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake(), loadBadges()]);
     await loadRank();
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
@@ -1097,6 +1120,59 @@ function markMealDone(mealType) {
   btn.classList.add('border-green-400', 'bg-green-50');
   var status = btn.querySelector('.meal-status');
   if (status) status.textContent = '●';
+}
+
+// Phase 2: バッジ + レベルロード
+async function loadBadges() {
+  if (isDemo) {
+    // demo data
+    var demoLevel = 3;
+    var demoScore = 250;
+    document.getElementById('badge-level-num').textContent = demoLevel;
+    document.getElementById('badge-score').textContent = demoScore;
+    document.getElementById('badge-pts-next').textContent = (demoLevel * 100 - demoScore);
+    document.getElementById('badge-progress-bar').style.width = (demoScore % 100) + '%';
+    document.getElementById('badge-grid').innerHTML =
+      '<div class="aspect-square flex flex-col items-center justify-center bg-green-50 rounded-lg border-2 border-green-200"><span class="text-xl">🌱</span><span class="text-xs">7日</span></div>' +
+      '<div class="aspect-square flex flex-col items-center justify-center bg-gray-50 rounded-lg border border-gray-200 opacity-40"><span class="text-xl">🌿</span><span class="text-xs text-gray-400">30日</span></div>' +
+      '<div class="aspect-square flex flex-col items-center justify-center bg-gray-50 rounded-lg border border-gray-200 opacity-40"><span class="text-xl">🌳</span><span class="text-xs text-gray-400">100日</span></div>' +
+      '<div class="aspect-square flex flex-col items-center justify-center bg-green-50 rounded-lg border-2 border-green-200"><span class="text-xl">🎉</span><span class="text-xs">初購入</span></div>' +
+      '<div class="aspect-square flex flex-col items-center justify-center bg-gray-50 rounded-lg border border-gray-200 opacity-40"><span class="text-xl">💎</span><span class="text-xs text-gray-400">5回</span></div>';
+    return;
+  }
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (idToken) headers['Authorization'] = 'Bearer ' + idToken;
+    const res = await fetch(API_BASE + '/api/liff/badges', { method: 'GET', headers });
+    const json = await res.json();
+    if (!json || !json.data) return;
+
+    const data = json.data;
+    document.getElementById('badge-level-num').textContent = data.level;
+    document.getElementById('badge-score').textContent = data.score;
+    document.getElementById('badge-pts-next').textContent = data.pointsToNext;
+    var barPct = ((data.score % 100) / 100) * 100;
+    document.getElementById('badge-progress-bar').style.width = barPct + '%';
+
+    // earned codes Set
+    var earnedSet = {};
+    (data.earnedBadges || []).forEach(function (b) { earnedSet[b.code] = true; });
+
+    // Grid (最初の10個まで表示)
+    var html = '';
+    var badges = (data.allBadges || []).slice(0, 10);
+    badges.forEach(function (b) {
+      var earned = !!earnedSet[b.code];
+      var cls = earned
+        ? 'bg-green-50 rounded-lg border-2 border-green-200'
+        : 'bg-gray-50 rounded-lg border border-gray-200 opacity-40';
+      html += '<div class="aspect-square flex flex-col items-center justify-center ' + cls + '" title="' + (b.description || '').replace(/"/g, '') + '">' +
+        '<span class="text-xl">' + (b.icon || '🎖') + '</span>' +
+        '<span class="text-[10px] ' + (earned ? '' : 'text-gray-400') + ' mt-1 px-1 text-center leading-tight">' + b.name + '</span>' +
+        '</div>';
+    });
+    document.getElementById('badge-grid').innerHTML = html;
+  } catch {}
 }
 
 async function loadTodayIntake() {

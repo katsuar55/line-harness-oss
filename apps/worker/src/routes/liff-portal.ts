@@ -495,6 +495,46 @@ liffPortal.post('/api/liff/intake', async (c) => {
 });
 
 /**
+ * GET /api/liff/badges — Phase 2: 自分の獲得バッジ + 全バッジ + レベル
+ *
+ * Response:
+ *   data.allBadges       全 active バッジ定義
+ *   data.earnedBadges    自分の獲得バッジ (badge_code 配列)
+ *   data.level           現在レベル (Math.floor(score / 100) + 1)
+ *   data.score           現在スコア
+ *   data.pointsToNext    次のレベルまでのポイント
+ */
+liffPortal.get('/api/liff/badges', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const { getAllBadges, getFriendBadges, calculateLevel, pointsToNextLevel } = await import('@line-crm/db');
+
+    const [allBadges, earned, scoreRow] = await Promise.all([
+      getAllBadges(c.env.DB),
+      getFriendBadges(c.env.DB, user.friendId),
+      c.env.DB.prepare(`SELECT score FROM friends WHERE id = ?`).bind(user.friendId).first<{ score: number }>(),
+    ]);
+
+    const score = scoreRow?.score ?? 0;
+    return c.json({
+      success: true,
+      data: {
+        allBadges,
+        earnedBadges: earned.map((b) => ({ code: b.badge_code, earnedAt: b.earned_at })),
+        level: calculateLevel(score),
+        score,
+        pointsToNext: pointsToNextLevel(score),
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/liff/badges error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
  * GET /api/liff/intake/today — 今日の各 meal_type 記録状況
  *
  * 能動pull UI 用に、朝/昼/夜/おやつの記録済み状態を一括取得。

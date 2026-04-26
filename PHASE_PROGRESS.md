@@ -9,8 +9,8 @@
 
 | Phase | 内容 | 期間目安 | 状態 |
 |---|---|---|---|
-| 1 | 能動pull化 + 服用記録 | 1〜2日 | 🚧 着手 (2026-04-26) |
-| 2 | ゲーミフィケーション基盤 (バッジ/レベル) | 2〜3日 | ⏸ 待機 |
+| 1 | 能動pull化 + 服用記録 | 1〜2日 | ✅ **完了** (2026-04-26 commit `5b0df90`) |
+| 2 | ゲーミフィケーション基盤 (バッジ/レベル) | 2〜3日 | 🚧 着手 (2026-04-26) |
 | 3 | AI 食事診断 + カロリー記録 + グラフ | 5〜7日 | ⏸ 待機 |
 | 4 | ガチャ/季節イベント/アバター/投票 | 3〜4日 | ⏸ 待機 |
 | Final | 管理者+ユーザー向けマニュアル + NotebookLM 投入 | 2日 | ⏸ 待機 |
@@ -28,7 +28,24 @@
 
 ---
 
-## 🚧 Phase 1: 能動pull化 + 服用記録
+## ✅ Phase 1: 能動pull化 + 服用記録 — 完了 (2026-04-26)
+
+### 完了内容
+- Cron 停止: `processIntakeReminders` を index.ts から外した (LINE 月数十万通の課金回避)
+- migration 034 適用: `intake_logs.meal_type` カラム追加 + UNIQUE INDEX
+- `POST /api/liff/intake` を `mealType` 対応に拡張 + 同日同 meal_type 重複防止
+- `GET /api/liff/intake/today` 新設: 朝/昼/夜の状態を一括取得
+- LIFF Top に「今日の服用」3ボタンカード (☀️朝/🌤昼/🌙夜)
+- event_bus で `intake_log` イベント発火 (ポイント加算ルックフック)
+
+### 検証
+- worker tests 968/968 pass
+- CI 54s + Deploy Worker 43s 成功
+- 本番 D1 に migration 034 適用済 (10行書込)
+
+---
+
+## 🚧 Phase 2: ゲーミフィケーション基盤 — 着手中 (2026-04-26)
 
 ### 目的
 - 受動 push の服用リマインダーを停止 → LINE 課金を激減
@@ -69,14 +86,29 @@
 
 ---
 
-## ⏸ Phase 2: ゲーミフィケーション基盤
+### Phase 2 実装スコープ
+- **migration 035**: `badges` (定義テーブル) + `friend_badges` (獲得記録テーブル) + 初期 seed
+- **バッジ判定サービス** (`apps/worker/src/services/badge-evaluator.ts`):
+  - intake_log イベントで「服用ストリーク 7/30/100日」を判定
+  - cv_fire / purchase イベントで「購入 1/5/10回」を判定
+  - referral_completed イベントで「紹介 1/5/10人」を判定
+- **API** (`GET /api/liff/badges`): 自分の獲得バッジ + 全バッジ一覧
+- **LIFF UI**: バッジ図鑑カード (Home に追加) + レベル表示
+- **レベル計算**: `Math.floor(friends.score / 100) + 1` (DB不要、表示時計算)
 
-### 計画 (Phase 1 完了後に詳細化)
-- migration 035: `badges` (定義) + `friend_badges` (獲得記録)
-- バッジ判定ロジック (服用ストリーク / 購入回数 / 紹介数)
-- LIFF にバッジ図鑑画面
-- ストリークは「累計優先」設計 (途切れてもリセットされない)
-- レベル制度: `friends.score / 100` で level 計算 (テーブル不要)
+### バッジ初期セット (seed で定義)
+| code | カテゴリ | 名称 | 条件 |
+|---|---|---|---|
+| `intake_streak_7` | 服用 | 7日連続 | streak_count >= 7 |
+| `intake_streak_30` | 服用 | 30日連続 | streak_count >= 30 |
+| `intake_streak_100` | 服用 | 100日連続 | streak_count >= 100 |
+| `intake_total_30` | 服用 | 累計30回 | 累計記録 >= 30 |
+| `intake_total_100` | 服用 | 累計100回 | 累計記録 >= 100 |
+| `purchase_first` | 購入 | 初回購入 | 1回目の cv_fire |
+| `purchase_5` | 購入 | リピーター | 5回目の cv_fire |
+| `purchase_10` | 購入 | 常連様 | 10回目の cv_fire |
+| `referral_first` | 紹介 | 初紹介 | 1人目紹介成立 |
+| `referral_5` | 紹介 | アンバサダー | 5人紹介成立 |
 
 ### 採用するゲーミフィケーション要素
 | # | 要素 | プレッシャー軽減 |
