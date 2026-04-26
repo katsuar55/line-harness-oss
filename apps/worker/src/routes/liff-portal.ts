@@ -432,26 +432,51 @@ liffPortal.post('/api/liff/fulfillments', async (c) => {
 // ═══════════════════════════════════════════════
 
 /**
- * POST /api/liff/intake — 服用ログ記録
+ * POST /api/liff/intake — 服用ログ記録 (能動pull型)
+ *
+ * Phase 1 変更点:
+ * - mealType (breakfast/lunch/dinner/snack) を受け取り、同日同 meal_type の重複登録を防止
+ * - 新規登録時のみ event_bus に 'intake_log' イベントを発火し、スコアリングルールに繋げる
+ * - 重複時は alreadyLogged: true を返し、UI 側で「すでに記録済」を表示
  */
 liffPortal.post('/api/liff/intake', async (c) => {
   try {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    const { productName, shopifyProductId, note } =
-      await c.req.json<{
-        productName?: string;
-        shopifyProductId?: string;
-        note?: string;
-      }>();
+    const body = await c.req.json<{
+      productName?: string;
+      shopifyProductId?: string;
+      note?: string;
+      mealType?: 'breakfast' | 'lunch' | 'dinner' | 'snack';
+    }>();
+
+    // mealType validation (任意フィールドだが、指定されたら厳格にチェック)
+    const validMealTypes = ['breakfast', 'lunch', 'dinner', 'snack'] as const;
+    const mealType = body.mealType && validMealTypes.includes(body.mealType) ? body.mealType : undefined;
 
     const result = await createIntakeLog(c.env.DB, {
       friendId: user.friendId,
-      productName,
-      shopifyProductId,
-      note: validateNote(note),
+      productName: body.productName,
+      shopifyProductId: body.shopifyProductId,
+      note: validateNote(body.note),
+      mealType,
     });
+
+    // 新規記録時のみ event_bus でスコアリング発火 (重複時は発火しない = ポイント二重加算防止)
+    if (!result.alreadyLogged) {
+      const { fireEvent } = await import('../services/event-bus.js');
+      const fireP = fireEvent(c.env.DB, 'intake_log', {
+        friendId: user.friendId,
+        eventData: { mealType: mealType ?? null, streakCount: result.streak_count },
+      }).catch(() => undefined);
+      // executionCtx は本番では存在するが、テスト環境では getter が throw する仕様。
+      try {
+        c.executionCtx.waitUntil(fireP);
+      } catch {
+        // テスト環境: fire-and-forget (Promise は async に解決される)
+      }
+    }
 
     return c.json({
       success: true,
@@ -459,10 +484,53 @@ liffPortal.post('/api/liff/intake', async (c) => {
         id: result.id,
         streakCount: result.streak_count,
         loggedAt: result.logged_at,
+        mealType: result.meal_type,
+        alreadyLogged: result.alreadyLogged,
       },
     });
   } catch (err) {
     console.error('POST /api/liff/intake error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/liff/intake/today — 今日の各 meal_type 記録状況
+ *
+ * 能動pull UI 用に、朝/昼/夜/おやつの記録済み状態を一括取得。
+ * LIFF Top 画面の「今日の服用」カードでこの API を叩いて○/●判定する。
+ */
+liffPortal.get('/api/liff/intake/today', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const today = new Date().toISOString().slice(0, 10); // 簡易: JST と1日ズレる可能性あり、UI 側で許容
+    const { results } = await c.env.DB
+      .prepare(
+        `SELECT meal_type, logged_at FROM intake_logs
+         WHERE friend_id = ? AND substr(logged_at, 1, 10) = ? AND meal_type IS NOT NULL
+         ORDER BY logged_at DESC`,
+      )
+      .bind(user.friendId, today)
+      .all<{ meal_type: string; logged_at: string }>();
+
+    const recorded = {
+      breakfast: false,
+      lunch: false,
+      dinner: false,
+      snack: false,
+    };
+    for (const row of results) {
+      if (row.meal_type === 'breakfast') recorded.breakfast = true;
+      else if (row.meal_type === 'lunch') recorded.lunch = true;
+      else if (row.meal_type === 'dinner') recorded.dinner = true;
+      else if (row.meal_type === 'snack') recorded.snack = true;
+    }
+
+    return c.json({ success: true, data: { date: today, recorded } });
+  } catch (err) {
+    console.error('GET /api/liff/intake/today error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

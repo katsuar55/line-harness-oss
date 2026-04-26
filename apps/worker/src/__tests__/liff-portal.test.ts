@@ -74,7 +74,7 @@ vi.mock('@line-crm/db', async (importOriginal) => {
       { id: 'p1', shopify_product_id: 'sp1', title: 'naturism Blue', price: 2376, compare_at_price: null, image_url: 'https://img.example.com/blue.jpg', handle: 'naturism-blue', status: 'active' },
       { id: 'p2', shopify_product_id: 'sp2', title: 'naturism Pink', price: 2830, compare_at_price: null, image_url: 'https://img.example.com/pink.jpg', handle: 'naturism-pink', status: 'active' },
     ]),
-    createIntakeLog: vi.fn(async () => ({ id: 'il-1', streak_count: 3, logged_at: '2026-04-06T08:00:00+09:00' })),
+    createIntakeLog: vi.fn(async () => ({ id: 'il-1', streak_count: 3, logged_at: '2026-04-06T08:00:00+09:00', meal_type: null, alreadyLogged: false })),
     getIntakeLogs: vi.fn(async () => [
       { id: 'il-1', product_name: 'naturism Blue', streak_count: 3, logged_at: '2026-04-06T08:00:00+09:00', note: null },
     ]),
@@ -354,6 +354,32 @@ describe('LIFF Portal Routes', () => {
     it('returns 404 for unknown user', async () => {
       const res = await post(app, '/api/liff/intake', { lineUserId: 'U_UNKNOWN' });
       expect(res.status).toBe(404);
+    });
+
+    it('Phase 1: accepts mealType (breakfast/lunch/dinner/snack)', async () => {
+      const res = await post(app, '/api/liff/intake', {
+        lineUserId: 'U_EXISTING',
+        productName: 'naturism Blue',
+        mealType: 'breakfast',
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean; data: { streakCount: number; alreadyLogged: boolean } };
+      expect(json.success).toBe(true);
+      expect(json.data.alreadyLogged).toBe(false);
+    });
+  });
+
+  describe('GET /api/liff/intake/today', () => {
+    it('endpoint is reachable (returns 200/401 depending on auth)', async () => {
+      // GET request: 認証 middleware の挙動次第で 200 or 401。
+      // クラッシュしないこと(500以外)を確認するスモークテスト。
+      const res = await app.request('/api/liff/intake/today', {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      }, mockEnv());
+      // testLiffAuth は GET でも body を読みに行くため 400 (lineUserId required) になる場合がある。
+      // 本番では Authorization Bearer 経由で 200 になる。スモーク用に 4xx 系も許容。
+      expect([200, 400, 401]).toContain(res.status);
     });
   });
 

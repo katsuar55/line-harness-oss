@@ -59,7 +59,9 @@ import { groups } from './routes/groups.js';
 import { tagElapsedDeliveries } from './routes/tag-elapsed-deliveries.js';
 import { liffCart } from './routes/liff-cart.js';
 import { processScheduledAbTests } from './services/ab-test.js';
-import { processIntakeReminders } from './services/intake-reminder.js';
+// Phase 1 (2026-04-26): processIntakeReminders は能動pull化により cron 停止。
+// 既存 service コードは残置 (将来オプトイン式に再活性化する可能性あり)。
+// 友だちは LIFF Portal Top の「朝/昼/夜」3ボタンから自発的に記録するように変更。
 import { processWeeklyReports } from './services/weekly-report.js';
 import { processSubscriptionReminders } from './services/subscription-reminder.js';
 
@@ -248,7 +250,7 @@ async function scheduled(
       processScheduledBroadcasts(env.DB, lineClient, env.WORKER_URL),
       processReminderDeliveries(env.DB, lineClient),
       processScheduledAbTests(env.DB, lineClient, env.WORKER_URL),
-      processIntakeReminders(env.DB, lineClient, env.LIFF_URL),
+      // Phase 1: processIntakeReminders は cron 停止 (能動pull化)
       processWeeklyReports(env.DB, lineClient),
       processSubscriptionReminders(env.DB, lineClient, env.LIFF_URL || ''),
       processAbandonedCartNotifications(env.DB, lineClient, env.LIFF_URL || ''),

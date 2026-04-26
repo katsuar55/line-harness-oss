@@ -120,6 +120,35 @@ function portalPage(liffId: string, apiBase: string): string {
         <div class="skeleton h-24 rounded-lg"></div>
       </div>
 
+      <!-- Today's Intake (Phase 1: 能動pull型) -->
+      <div id="intake-today-card" class="card p-4">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-sm font-bold text-gray-700">🌿 今日の服用</p>
+          <p id="intake-streak-mini" class="text-xs text-gray-400">連続 <span id="intake-streak-num">-</span> 日</p>
+        </div>
+        <div class="grid grid-cols-3 gap-2">
+          <button onclick="logMeal('breakfast')" id="meal-breakfast" data-meal="breakfast"
+            class="meal-btn flex flex-col items-center justify-center py-3 rounded-2xl border-2 border-gray-200 bg-white transition-all">
+            <span class="text-2xl mb-1">☀️</span>
+            <span class="text-xs font-bold text-gray-600">朝</span>
+            <span class="meal-status text-lg mt-1">○</span>
+          </button>
+          <button onclick="logMeal('lunch')" id="meal-lunch" data-meal="lunch"
+            class="meal-btn flex flex-col items-center justify-center py-3 rounded-2xl border-2 border-gray-200 bg-white transition-all">
+            <span class="text-2xl mb-1">🌤</span>
+            <span class="text-xs font-bold text-gray-600">昼</span>
+            <span class="meal-status text-lg mt-1">○</span>
+          </button>
+          <button onclick="logMeal('dinner')" id="meal-dinner" data-meal="dinner"
+            class="meal-btn flex flex-col items-center justify-center py-3 rounded-2xl border-2 border-gray-200 bg-white transition-all">
+            <span class="text-2xl mb-1">🌙</span>
+            <span class="text-xs font-bold text-gray-600">夜</span>
+            <span class="meal-status text-lg mt-1">○</span>
+          </button>
+        </div>
+        <p class="text-xs text-gray-400 text-center mt-2">タップして記録 (1日1回ずつ、押し忘れOK)</p>
+      </div>
+
       <!-- Today's Tip -->
       <div id="tip-card" class="card p-4">
         <div class="skeleton h-16 rounded-lg"></div>
@@ -653,7 +682,7 @@ async function initLiff() {
       document.getElementById('user-avatar').innerHTML =
         '<img src="' + profile.pictureUrl + '" class="w-8 h-8 rounded-full">';
     }
-    await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile()]);
+    await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake()]);
     await loadRank();
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
@@ -1022,6 +1051,78 @@ async function logIntake() {
   } catch { showToast('記録に失敗しました'); }
   btn.disabled = false;
   btn.textContent = '服用を記録する';
+}
+
+// Phase 1: 能動pull 型の朝/昼/夜 ボタン処理
+async function logMeal(mealType) {
+  if (isDemo) {
+    showToast('DEMO: ' + mealLabel(mealType) + 'を記録しました!');
+    markMealDone(mealType);
+    return;
+  }
+  var btn = document.getElementById('meal-' + mealType);
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const { data } = await api('/api/liff/intake', {
+      productName: 'naturism ' + (selectedProduct || 'Blue'),
+      mealType: mealType,
+    });
+    if (data) {
+      if (data.alreadyLogged) {
+        showToast(mealLabel(mealType) + 'は既に記録済みです');
+      } else {
+        showToast('🎉 ' + mealLabel(mealType) + 'を記録しました! +10pt');
+        showConfetti();
+      }
+      markMealDone(mealType);
+      var num = document.getElementById('intake-streak-num');
+      if (num && data.streakCount) num.textContent = data.streakCount;
+    }
+  } catch {
+    showToast('記録に失敗しました');
+    btn.disabled = false;
+  }
+}
+
+function mealLabel(mealType) {
+  return ({ breakfast: '朝', lunch: '昼', dinner: '夜', snack: 'おやつ' })[mealType] || '';
+}
+
+function markMealDone(mealType) {
+  var btn = document.getElementById('meal-' + mealType);
+  if (!btn) return;
+  btn.disabled = true;
+  btn.classList.remove('border-gray-200', 'bg-white');
+  btn.classList.add('border-green-400', 'bg-green-50');
+  var status = btn.querySelector('.meal-status');
+  if (status) status.textContent = '●';
+}
+
+async function loadTodayIntake() {
+  if (isDemo) {
+    var num = document.getElementById('intake-streak-num');
+    if (num) num.textContent = '6';
+    return;
+  }
+  try {
+    // GET request: idToken は Authorization header で送る
+    const headers = { 'Content-Type': 'application/json' };
+    if (idToken) headers['Authorization'] = 'Bearer ' + idToken;
+    const res = await fetch(API_BASE + '/api/liff/intake/today', { method: 'GET', headers });
+    const json = await res.json();
+    if (json && json.data && json.data.recorded) {
+      ['breakfast', 'lunch', 'dinner'].forEach(function (m) {
+        if (json.data.recorded[m]) markMealDone(m);
+      });
+    }
+    // streak 取得
+    const streakRes = await api('/api/liff/intake/streak', { days: 7 });
+    if (streakRes && streakRes.data && streakRes.data.streak) {
+      var num = document.getElementById('intake-streak-num');
+      if (num) num.textContent = streakRes.data.streak.currentStreak || 0;
+    }
+  } catch {}
 }
 
 // ─── Reminders (複数対応) ───

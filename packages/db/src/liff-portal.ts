@@ -2,6 +2,17 @@ import { jstNow } from './utils.js';
 
 // ===== Intake Logs =====
 
+export type MealType = 'breakfast' | 'lunch' | 'dinner' | 'snack';
+
+export interface CreateIntakeLogResult {
+  id: string;
+  streak_count: number;
+  logged_at: string;
+  meal_type: MealType | null;
+  /** 同日同 meal_type が既に記録済みだった場合 true (重複は記録されず既存データを返す) */
+  alreadyLogged: boolean;
+}
+
 export async function createIntakeLog(
   db: D1Database,
   data: {
@@ -9,19 +20,35 @@ export async function createIntakeLog(
     productName?: string;
     shopifyProductId?: string;
     note?: string;
+    mealType?: MealType;
   },
-): Promise<{ id: string; streak_count: number; logged_at: string }> {
+): Promise<CreateIntakeLogResult> {
   const now = jstNow();
   const today = now.slice(0, 10); // YYYY-MM-DD
+
+  // 同日同 meal_type で既に記録があるか確認 (能動pull設計: 重複は無視して既存値を返す)
+  if (data.mealType) {
+    const existing = await db
+      .prepare(
+        `SELECT id, streak_count, logged_at, meal_type FROM intake_logs
+         WHERE friend_id = ? AND substr(logged_at, 1, 10) = ? AND meal_type = ?
+         LIMIT 1`,
+      )
+      .bind(data.friendId, today, data.mealType)
+      .first<{ id: string; streak_count: number; logged_at: string; meal_type: MealType }>();
+    if (existing) {
+      return { ...existing, alreadyLogged: true };
+    }
+  }
 
   // Calculate streak: count consecutive days backwards from today
   const streak = await calculateStreak(db, data.friendId, today);
 
   const result = await db
     .prepare(
-      `INSERT INTO intake_logs (friend_id, product_name, shopify_product_id, streak_count, note, logged_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       RETURNING id, streak_count, logged_at`,
+      `INSERT INTO intake_logs (friend_id, product_name, shopify_product_id, streak_count, note, meal_type, logged_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       RETURNING id, streak_count, logged_at, meal_type`,
     )
     .bind(
       data.friendId,
@@ -29,13 +56,14 @@ export async function createIntakeLog(
       data.shopifyProductId ?? null,
       streak + 1,
       data.note ?? null,
+      data.mealType ?? null,
       now,
       now,
     )
-    .first<{ id: string; streak_count: number; logged_at: string }>();
+    .first<{ id: string; streak_count: number; logged_at: string; meal_type: MealType | null }>();
 
   if (!result) throw new Error('createIntakeLog: INSERT returned null');
-  return result;
+  return { ...result, alreadyLogged: false };
 }
 
 export async function getIntakeLogs(

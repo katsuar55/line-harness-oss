@@ -1447,3 +1447,8 @@ CREATE INDEX IF NOT EXISTS idx_friends_status ON friends(status);
 CREATE INDEX IF NOT EXISTS idx_friends_assigned_staff ON friends(assigned_staff_id);
 CREATE INDEX IF NOT EXISTS idx_liff_carts_friend ON liff_carts(friend_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_liff_carts_friend_variant ON liff_carts(friend_id, shopify_variant_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_intake_logs_unique_meal
+  ON intake_logs (friend_id, substr(logged_at, 1, 10), meal_type)
+  WHERE meal_type IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_intake_logs_friend_date
+  ON intake_logs (friend_id, logged_at);
