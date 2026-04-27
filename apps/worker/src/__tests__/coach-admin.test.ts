@@ -67,13 +67,25 @@ function createTestApp(): InstanceType<typeof Hono<Env>> {
 interface MockDbOptions {
   byDeficitRows?: unknown[];
   recoRows?: unknown[];
+  /** Phase 5: summary endpoint の集計 row (COUNT(*) AS generated, ...) */
+  summaryAggRow?: unknown | null;
+  /** Phase 5: summary endpoint の recent rows */
+  summaryRecentRows?: unknown[];
   throwOnPrepare?: boolean;
 }
 
 function createMockDb(opts: MockDbOptions = {}): D1Database {
-  function pickResults(sql: string): { results: unknown[]; success: true } {
+  function pickAllResults(sql: string): { results: unknown[]; success: true } {
     if (sql.includes('json_each')) {
       return { results: opts.byDeficitRows ?? [], success: true };
+    }
+    // Phase 4 recommendations query: LEFT JOIN friends で friend 名を取る
+    if (sql.includes('LEFT JOIN friends')) {
+      return { results: opts.recoRows ?? [], success: true };
+    }
+    // Phase 5 summary recent query: ai_message + nutrition_recommendations、JOIN 無し
+    if (sql.includes('ai_message') && sql.includes('nutrition_recommendations')) {
+      return { results: opts.summaryRecentRows ?? [], success: true };
     }
     if (sql.includes('nutrition_recommendations')) {
       return { results: opts.recoRows ?? [], success: true };
@@ -81,16 +93,25 @@ function createMockDb(opts: MockDbOptions = {}): D1Database {
     return { results: [], success: true };
   }
 
+  function pickFirst(sql: string): unknown | null {
+    // Phase 5 summary 集計 row (COUNT + SUM) は first() で取る
+    if (sql.includes('COUNT(*)') && sql.includes('AS generated')) {
+      return opts.summaryAggRow ?? null;
+    }
+    return null;
+  }
+
   const prepare = vi.fn((sql: string) => {
     if (opts.throwOnPrepare) throw new Error('DB failure');
-    const allFn = vi.fn(async () => pickResults(sql));
+    const allFn = vi.fn(async () => pickAllResults(sql));
+    const firstFn = vi.fn(async () => pickFirst(sql));
     return {
       bind: () => ({
-        first: vi.fn(async () => null),
+        first: firstFn,
         all: allFn,
         run: vi.fn(async () => ({ success: true })),
       }),
-      first: vi.fn(async () => null),
+      first: firstFn,
       all: allFn,
       run: vi.fn(async () => ({ success: true })),
     };
@@ -456,6 +477,191 @@ describe('coach-admin routes', () => {
         copyTemplate: 'バランスのきっかけに',
         isActive: true,
       });
+    });
+  });
+
+  // ── GET /api/admin/coach/summary (Phase 5 PR-1) ────────────────────────
+
+  describe('GET /api/admin/coach/summary', () => {
+    it('returns zeros when no recommendations exist', async () => {
+      const env = createMockEnv({
+        summaryAggRow: { generated: 0, pushed: 0, clicked: 0, converted: 0 },
+        summaryRecentRows: [],
+      });
+      const res = await app.request(
+        '/api/admin/coach/summary',
+        { method: 'GET', headers: authHeaders() },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as {
+        success: boolean;
+        data: {
+          generated: number;
+          pushed: number;
+          clicked: number;
+          converted: number;
+          ctr: number;
+          cvr: number;
+          recent: unknown[];
+        };
+      };
+      expect(json.success).toBe(true);
+      expect(json.data.generated).toBe(0);
+      expect(json.data.pushed).toBe(0);
+      expect(json.data.ctr).toBe(0);
+      expect(json.data.cvr).toBe(0);
+      expect(Number.isNaN(json.data.ctr)).toBe(false);
+      expect(Number.isNaN(json.data.cvr)).toBe(false);
+      expect(json.data.recent).toEqual([]);
+    });
+
+    it('computes ctr correctly with mixed statuses', async () => {
+      const env = createMockEnv({
+        summaryAggRow: { generated: 100, pushed: 80, clicked: 25, converted: 5 },
+        summaryRecentRows: [],
+      });
+      const res = await app.request(
+        '/api/admin/coach/summary?days=7',
+        { method: 'GET', headers: authHeaders() },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as {
+        success: boolean;
+        data: { ctr: number; cvr: number; pushed: number };
+      };
+      expect(json.data.ctr).toBe(0.25);
+      expect(json.data.cvr).toBe(0.05);
+      expect(json.data.pushed).toBe(80);
+    });
+
+    it('cvr only counts converted (not clicked)', async () => {
+      const env = createMockEnv({
+        summaryAggRow: { generated: 50, pushed: 50, clicked: 30, converted: 10 },
+      });
+      const res = await app.request(
+        '/api/admin/coach/summary',
+        { method: 'GET', headers: authHeaders() },
+        env,
+      );
+      const json = (await res.json()) as { data: { cvr: number; ctr: number } };
+      expect(json.data.cvr).toBe(0.2);   // 10 / 50
+      expect(json.data.ctr).toBe(0.6);   // 30 / 50
+    });
+
+    it('respects days param and clamps to 90 days max', async () => {
+      const env = createMockEnv({
+        summaryAggRow: { generated: 0, pushed: 0, clicked: 0, converted: 0 },
+      });
+      const res = await app.request(
+        '/api/admin/coach/summary?days=999',
+        { method: 'GET', headers: authHeaders() },
+        env,
+      );
+      const json = (await res.json()) as { data: { days: number } };
+      expect(json.data.days).toBe(90); // clamped
+    });
+
+    it('falls back to default 7 days when days param is invalid', async () => {
+      const env = createMockEnv({
+        summaryAggRow: { generated: 0, pushed: 0, clicked: 0, converted: 0 },
+      });
+      const res = await app.request(
+        '/api/admin/coach/summary?days=abc',
+        { method: 'GET', headers: authHeaders() },
+        env,
+      );
+      const json = (await res.json()) as { data: { days: number } };
+      expect(json.data.days).toBe(7);
+    });
+
+    it('truncates ai_message to 80 chars in recent', async () => {
+      const longMsg = 'あ'.repeat(120); // 120 全角文字
+      const env = createMockEnv({
+        summaryAggRow: { generated: 1, pushed: 0, clicked: 0, converted: 0 },
+        summaryRecentRows: [
+          {
+            id: 'r1',
+            friend_id: 'f1',
+            generated_at: '2026-04-28T10:00:00.000',
+            status: 'active',
+            ai_message: longMsg,
+          },
+        ],
+      });
+      const res = await app.request(
+        '/api/admin/coach/summary',
+        { method: 'GET', headers: authHeaders() },
+        env,
+      );
+      const json = (await res.json()) as {
+        data: { recent: Array<{ aiMessageExcerpt: string }> };
+      };
+      const excerpt = json.data.recent[0].aiMessageExcerpt;
+      // 80 文字 + '…' = Array.from で 81 要素
+      expect(Array.from(excerpt)).toHaveLength(81);
+      expect(excerpt.endsWith('…')).toBe(true);
+    });
+
+    it('requires auth (401 without API key)', async () => {
+      const env = createMockEnv();
+      const res = await app.request(
+        '/api/admin/coach/summary',
+        { method: 'GET' }, // no auth header
+        env,
+      );
+      expect(res.status).toBe(401);
+    });
+
+    it('returns full CoachSummary shape (generated/pushed/clicked/converted/recent)', async () => {
+      const env = createMockEnv({
+        summaryAggRow: { generated: 5, pushed: 4, clicked: 2, converted: 1 },
+        summaryRecentRows: [
+          {
+            id: 'a',
+            friend_id: 'f-a',
+            generated_at: '2026-04-28T01:00:00.000',
+            status: 'clicked',
+            ai_message: 'hi',
+          },
+        ],
+      });
+      const res = await app.request(
+        '/api/admin/coach/summary?days=14',
+        { method: 'GET', headers: authHeaders() },
+        env,
+      );
+      const json = (await res.json()) as {
+        data: {
+          generated: number;
+          pushed: number;
+          clicked: number;
+          converted: number;
+          ctr: number;
+          cvr: number;
+          fromDate: string;
+          toDate: string;
+          days: number;
+          recent: Array<{
+            id: string;
+            friendId: string;
+            generatedAt: string;
+            status: string;
+            aiMessageExcerpt: string;
+          }>;
+        };
+      };
+      expect(json.data.generated).toBe(5);
+      expect(json.data.pushed).toBe(4);
+      expect(json.data.clicked).toBe(2);
+      expect(json.data.converted).toBe(1);
+      expect(json.data.days).toBe(14);
+      expect(typeof json.data.fromDate).toBe('string');
+      expect(typeof json.data.toDate).toBe('string');
+      expect(json.data.recent).toHaveLength(1);
+      expect(json.data.recent[0].friendId).toBe('f-a');
+      expect(json.data.recent[0].aiMessageExcerpt).toBe('hi');
     });
   });
 });
