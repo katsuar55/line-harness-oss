@@ -15,11 +15,14 @@ import {
   listMigrationFiles,
   findMigrationGaps,
   findMigrationDuplicates,
+  isKnownDuplicateException,
   compareSecrets,
   summarizeReport,
   runChecks,
   REQUIRED_SECRETS,
   OPTIONAL_SECRETS,
+  KNOWN_DUPLICATE_EXCEPTIONS,
+  KNOWN_GAP_EXCEPTIONS,
 } from './preflight.mjs';
 
 // ─────────────────────────────────────
@@ -101,6 +104,66 @@ test('findMigrationDuplicates returns [] when all unique', () => {
 });
 
 // ─────────────────────────────────────
+// isKnownDuplicateException
+// ─────────────────────────────────────
+test('isKnownDuplicateException recognizes 009 historical duplicate', () => {
+  const dup = {
+    num: 9,
+    files: ['009_delivery_type.sql', '009_token_expiry.sql'],
+  };
+  assert.equal(isKnownDuplicateException(dup), true);
+});
+
+test('isKnownDuplicateException matches regardless of file order', () => {
+  const dup = {
+    num: 9,
+    files: ['009_token_expiry.sql', '009_delivery_type.sql'], // reversed
+  };
+  assert.equal(isKnownDuplicateException(dup), true);
+});
+
+test('isKnownDuplicateException rejects different file set with same number', () => {
+  const dup = {
+    num: 9,
+    files: ['009_delivery_type.sql', '009_other.sql'], // wrong second file
+  };
+  assert.equal(isKnownDuplicateException(dup), false);
+});
+
+test('isKnownDuplicateException rejects partial set', () => {
+  const dup = {
+    num: 9,
+    files: ['009_delivery_type.sql'], // missing the second
+  };
+  assert.equal(isKnownDuplicateException(dup), false);
+});
+
+test('isKnownDuplicateException rejects unknown numbers', () => {
+  const dup = {
+    num: 42,
+    files: ['042_a.sql', '042_b.sql'],
+  };
+  assert.equal(isKnownDuplicateException(dup), false);
+});
+
+test('KNOWN_DUPLICATE_EXCEPTIONS exposes the 009 entry with reason', () => {
+  assert.ok(Array.isArray(KNOWN_DUPLICATE_EXCEPTIONS));
+  const e = KNOWN_DUPLICATE_EXCEPTIONS.find((ex) => ex.num === 9);
+  assert.ok(e, 'expected 009 exception');
+  assert.deepEqual(
+    [...e.files].sort(),
+    ['009_delivery_type.sql', '009_token_expiry.sql'],
+  );
+  assert.match(e.reason, /d1_migrations/);
+});
+
+test('KNOWN_GAP_EXCEPTIONS reserves 038 for blocked PR-2', () => {
+  assert.ok(KNOWN_GAP_EXCEPTIONS.has(38));
+  const reason = KNOWN_GAP_EXCEPTIONS.get(38);
+  assert.match(reason, /PR-2/);
+});
+
+// ─────────────────────────────────────
 // compareSecrets
 // ─────────────────────────────────────
 test('compareSecrets reports missing required + extras + optional present', () => {
@@ -171,6 +234,77 @@ test('runChecks offline mode reports gap correctly', async () => {
     const warn = issues.filter((i) => i.severity === 'WARN' && i.check === 'migrations');
     assert.equal(warn.length, 1);
     assert.match(warn[0].message, /missing 2/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runChecks demotes known 009 duplicate to INFO (not CRITICAL)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-dup-known-'));
+  try {
+    writeFileSync(join(dir, '009_delivery_type.sql'), '');
+    writeFileSync(join(dir, '009_token_expiry.sql'), '');
+    writeFileSync(join(dir, '010_other.sql'), '');
+    const issues = await runChecks({ mode: 'offline', migrationsDir: dir });
+    const critical = issues.filter((i) => i.severity === 'CRITICAL' && i.check === 'migrations');
+    assert.equal(critical.length, 0, 'known 009 dup must not be CRITICAL');
+    const info = issues.filter(
+      (i) => i.severity === 'INFO' && i.check === 'migrations' && /Known duplicate/.test(i.message),
+    );
+    assert.equal(info.length, 1, 'expected INFO entry describing known duplicate');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runChecks still flags unexpected duplicate as CRITICAL', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-dup-unknown-'));
+  try {
+    writeFileSync(join(dir, '050_a.sql'), '');
+    writeFileSync(join(dir, '050_b.sql'), '');           // unknown duplicate
+    const issues = await runChecks({ mode: 'offline', migrationsDir: dir });
+    const critical = issues.filter((i) => i.severity === 'CRITICAL' && i.check === 'migrations');
+    assert.equal(critical.length, 1);
+    assert.match(critical[0].message, /050/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runChecks treats reserved 038 gap as INFO not WARN', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-gap-reserved-'));
+  try {
+    writeFileSync(join(dir, '037_a.sql'), '');
+    writeFileSync(join(dir, '039_b.sql'), '');           // 038 reserved
+    const issues = await runChecks({ mode: 'offline', migrationsDir: dir });
+    const warn = issues.filter((i) => i.severity === 'WARN' && i.check === 'migrations');
+    assert.equal(warn.length, 0, 'reserved gap must not produce WARN');
+    const info = issues.filter(
+      (i) => i.severity === 'INFO' && i.check === 'migrations' && /Reserved migration gap/.test(i.message),
+    );
+    assert.equal(info.length, 1);
+    assert.match(info[0].detail, /PR-2/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runChecks splits known + unexpected gaps correctly', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-gap-mixed-'));
+  try {
+    writeFileSync(join(dir, '037_a.sql'), '');
+    // 038 reserved (INFO), 040 unexpected (WARN)
+    writeFileSync(join(dir, '039_b.sql'), '');
+    writeFileSync(join(dir, '041_c.sql'), '');
+    const issues = await runChecks({ mode: 'offline', migrationsDir: dir });
+    const warn = issues.filter((i) => i.severity === 'WARN' && i.check === 'migrations');
+    assert.equal(warn.length, 1);
+    assert.match(warn[0].message, /missing 40/);
+    const info = issues.filter(
+      (i) => i.severity === 'INFO' && i.check === 'migrations' && /Reserved migration gap/.test(i.message),
+    );
+    assert.equal(info.length, 1);
+    assert.match(info[0].message, /38/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -57,6 +57,45 @@ export const OPTIONAL_SECRETS = [
 ];
 
 // ============================================================
+// 既知の例外 (歴史的事項)
+// ============================================================
+
+/**
+ * 本番 d1_migrations に既登録のため、リネームすると `duplicate column name`
+ * 等で再実行が失敗する。番号重複だが意図的に許容している組合せを記録。
+ * `packages/db/migrations/README.md` の「既知の歴史的事項」と同期すること。
+ */
+export const KNOWN_DUPLICATE_EXCEPTIONS = [
+  {
+    num: 9,
+    files: ['009_delivery_type.sql', '009_token_expiry.sql'],
+    reason: '別ブランチ並行開発で両者とも 009 を取得済み。本番 d1_migrations 登録済みのためリネーム不可',
+  },
+];
+
+/**
+ * 採番ギャップで意図的に予約されている番号 (未着手 PR 用などのプレースホルダ)。
+ * 該当番号の WARN は INFO に降格する。
+ */
+export const KNOWN_GAP_EXCEPTIONS = new Map([
+  [38, 'Phase 5 PR-2 (nutrition_sku_map 実 GID 差し替え) 用に予約'],
+]);
+
+/**
+ * 検出された duplicate が既知例外かチェック。
+ * 番号 + ファイル名集合の完全一致で判定。
+ */
+export function isKnownDuplicateException(dup, exceptions = KNOWN_DUPLICATE_EXCEPTIONS) {
+  return exceptions.some((ex) => {
+    if (ex.num !== dup.num) return false;
+    if (ex.files.length !== dup.files.length) return false;
+    const exSorted = [...ex.files].sort();
+    const dupSorted = [...dup.files].sort();
+    return exSorted.every((f, i) => f === dupSorted[i]);
+  });
+}
+
+// ============================================================
 // Pure 関数 — テスト容易
 // ============================================================
 
@@ -218,21 +257,49 @@ export async function runChecks({
   } else {
     const { firstNum, lastNum, gaps } = findMigrationGaps(entries);
     if (gaps.length > 0) {
-      issues.push({
-        severity: 'WARN',
-        check: 'migrations',
-        message: `Migration number gap detected (range ${firstNum}-${lastNum}): missing ${gaps.join(', ')}`,
-        detail: '欠番は意図的か? 採番ミスならデプロイ前に解消すること',
-      });
+      // 既知の予約ギャップは INFO、それ以外は WARN として分離
+      const unexpectedGaps = gaps.filter((g) => !KNOWN_GAP_EXCEPTIONS.has(g));
+      const reservedGaps = gaps.filter((g) => KNOWN_GAP_EXCEPTIONS.has(g));
+      if (unexpectedGaps.length > 0) {
+        issues.push({
+          severity: 'WARN',
+          check: 'migrations',
+          message: `Migration number gap detected (range ${firstNum}-${lastNum}): missing ${unexpectedGaps.join(', ')}`,
+          detail: '欠番は意図的か? 採番ミスならデプロイ前に解消すること',
+        });
+      }
+      if (reservedGaps.length > 0) {
+        const detail = reservedGaps
+          .map((g) => `${g}: ${KNOWN_GAP_EXCEPTIONS.get(g)}`)
+          .join(' / ');
+        issues.push({
+          severity: 'INFO',
+          check: 'migrations',
+          message: `Reserved migration gap (intentional): ${reservedGaps.join(', ')}`,
+          detail,
+        });
+      }
     }
     const dups = findMigrationDuplicates(entries);
     if (dups.length > 0) {
-      issues.push({
-        severity: 'CRITICAL',
-        check: 'migrations',
-        message: `Duplicate migration numbers: ${dups.map((d) => `${d.num}(${d.files.join(',')})`).join('; ')}`,
-        detail: '同番号は適用順序が決まらない。リネームすること',
-      });
+      const unexpected = dups.filter((d) => !isKnownDuplicateException(d));
+      const known = dups.filter((d) => isKnownDuplicateException(d));
+      if (unexpected.length > 0) {
+        issues.push({
+          severity: 'CRITICAL',
+          check: 'migrations',
+          message: `Duplicate migration numbers: ${unexpected.map((d) => `${d.num}(${d.files.join(',')})`).join('; ')}`,
+          detail: '同番号は適用順序が決まらない。リネームすること',
+        });
+      }
+      if (known.length > 0) {
+        issues.push({
+          severity: 'INFO',
+          check: 'migrations',
+          message: `Known duplicate exceptions accepted: ${known.map((d) => `${d.num}(${d.files.join(',')})`).join('; ')}`,
+          detail: 'README.md の「既知の歴史的事項」に従い本番 d1_migrations 登録済み・リネーム禁止',
+        });
+      }
     }
     issues.push({
       severity: 'INFO',
