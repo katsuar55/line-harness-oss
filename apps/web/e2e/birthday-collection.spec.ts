@@ -147,11 +147,9 @@ async function setupAuthedPage(
 }
 
 test.describe('birthday-collection page', () => {
-  test('redirects unauthenticated users to /login', async ({ page }) => {
-    await page.goto('/birthday-collection')
-    await page.waitForURL('**/login', { timeout: 10_000 })
-    await expect(page).toHaveURL(/\/login$/)
-  })
+  // The unauthenticated-redirect contract for /birthday-collection is
+  // exercised in apps/web/e2e/auth-guard.spec.ts (canonical home for
+  // cross-cutting auth behavior). Don't duplicate it here.
 
   test('renders registered / unregistered stats after authentication', async ({ page }) => {
     await setupAuthedPage(page, { total: 1000, registered: 600, unregistered: 400 })
@@ -161,12 +159,14 @@ test.describe('birthday-collection page', () => {
     await expect(page.getByRole('heading', { name: '誕生月収集' })).toBeVisible()
     await expect(page.getByText('合計フォロワー')).toBeVisible()
 
-    // The three stats cards each render the count above its label, so
-    // anchoring on the label and walking up to the card keeps assertions
-    // stable even if class names change.
-    const totalCard = page.locator('div', { hasText: /^合計フォロワー$/ }).first()
-    const registeredCard = page.locator('div', { hasText: /^誕生月 登録済$/ }).first()
-    const unregisteredCard = page.locator('div', { hasText: /^未登録 \(送信対象\)$/ }).first()
+    // Each stats card is `<div class="bg-gray-50 rounded-lg ...">` with
+    // a numeric <p> above its label <p>. Anchor on the card class and
+    // filter by the label substring — Playwright's `filter({ hasText })`
+    // matches descendants, so this works regardless of which child holds
+    // the label text.
+    const totalCard = page.locator('.bg-gray-50.rounded-lg').filter({ hasText: '合計フォロワー' })
+    const registeredCard = page.locator('.bg-gray-50.rounded-lg').filter({ hasText: '誕生月 登録済' })
+    const unregisteredCard = page.locator('.bg-gray-50.rounded-lg').filter({ hasText: '未登録 (送信対象)' })
 
     await expect(totalCard).toContainText('1000')
     await expect(registeredCard).toContainText('600')

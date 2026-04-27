@@ -118,33 +118,44 @@ npx wrangler secret put LINE_LOGIN_CHANNEL_SECRET
 
 ### 4.3 API_KEY (自家生成)
 
-**生成 + 反映**
+**生成 + Worker 側に反映**
 
 ```powershell
 cd C:\dev\line-harness-oss\apps\worker
 
 # 新しい値を生成 (UUID v4 を 2 個連結 = 64 文字)
 $new = "$([guid]::NewGuid().Guid)$([guid]::NewGuid().Guid)" -replace '-',''
-$new   # コピー先: 1) wrangler  2) 管理画面 (Cloudflare Pages) の環境変数
+$new   # この値を 1) wrangler のプロンプトに貼り付け  2) 管理画面の再ログイン時に貼り付け
 
 npx wrangler secret put API_KEY
-# プロンプトに $new を貼り付け
+# プロンプトに $new を貼り付け (コマンド引数として渡さないこと — 履歴に残るため)
 ```
 
-**管理画面側にも同じ値を反映**
+**管理画面側に新キーを反映**
 
-1. Cloudflare Dashboard → Pages → `naturism-admin` → Settings → Environment variables
-2. `NEXT_PUBLIC_API_KEY` (または `API_KEY`) を新値に更新 → Save → Re-deploy
+管理画面の API キーは **localStorage の `lh_api_key`** にログイン時に書き込まれる方式 (`apps/web/src/lib/api.ts`)。
+Cloudflare Pages の環境変数には保存しない (`NEXT_PUBLIC_*` に置くと client bundle に焼き込まれて漏洩する)。
+
+1. https://naturism-admin.pages.dev を開き、**右上メニューからログアウト**
+2. ログイン画面で **新しい API キー (`$new` の値)** を貼り付けて再ログイン
+3. **旧 key を持つ別ブラウザ・別タブ・別端末・協力者の PC** も同様にログアウト → 再ログインさせる
+   - これを忘れると、古い key で開いていたタブは Worker から 401 を返されるまで気づけない
 
 **検証**
 
 ```powershell
+# 1. Worker が新 key を受け付けるか
 curl -H "Authorization: Bearer $new" `
   "https://naturism-line-crm.katsu-7d5.workers.dev/api/health"
 # {"status":"ok"} が返れば成功
+
+# 2. 旧 key が拒否されるか (rotation の意義はここ)
+curl -H "Authorization: Bearer 旧key" `
+  "https://naturism-line-crm.katsu-7d5.workers.dev/api/health"
+# 401 Unauthorized が返れば成功
 ```
 
-管理画面 (https://naturism-admin.pages.dev) の友だち一覧が表示されれば管理画面側の更新も成功。
+管理画面 (再ログイン後) で友だち一覧が表示されれば、UI 側の `lh_api_key` 更新も成功。
 
 ---
 
