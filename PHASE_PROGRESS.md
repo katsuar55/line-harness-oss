@@ -200,6 +200,7 @@ naturism-line-crm 側で先回り収集する仕組み。
 | 2026-04-26 | Phase 1 完了 (commit `5b0df90`) — 能動pull型 服用記録 + cron 停止 |
 | 2026-04-26 | Phase 2 完了 (commit `368515a`) — バッジ + レベル制度 (969 tests pass) |
 | 2026-04-27 | 付随セクション (D + F) 完了 (commit `95cb97d`) — 誕生月再収集 (DMM 解約対策) + 監視スケルトン (986 tests pass) |
+| 2026-04-27 | 管理画面に「誕生月収集」ページ追加 (commit `530c8a2`) + migrations README 整備 (`a26a6a4`) + Playwright E2E ベースライン (`307e12c`) |
 
 ---
 
