@@ -122,3 +122,58 @@ WORKER_URL: string
 ## 現在のフェーズ
 
 **Phase 1: 基盤構築** — Worker + D1 + Webhook + AI自動応答 + 管理画面
+
+## シェル運用ルール (絶対遵守 — 再発防止)
+
+過去 2 セッションで「実行中シェルが残り続け、6 時間以上ハング」事故が発生。Celeron 8GB の低スペック環境では致命的。以下を厳守する。
+
+### 禁止パターン
+
+| パターン | 理由 |
+|---|---|
+| `until …; do sleep N; done` で別 bash の完了を待つ | run_in_background 通知が届くため不要。output ファイルが空のままだと永久ループする |
+| `tail -f file` (`-F` 含む) | 自然終了しない |
+| `watch …` / `while true; do …; done` | 同上 |
+| `sleep N && command` を 60 秒以上 | 進捗が見えず、キャンセル困難 |
+| `pnpm dev` / `npm start` 等の常駐サーバーを Bash で起動したまま | プロセスが残り続ける。dev サーバーが必要なら preview_start か Playwright `webServer` 設定を使う |
+| `& disown` 等の手動デーモン化 | 制御不能になる |
+
+### 推奨パターン
+
+| やりたいこと | 正しい方法 |
+|---|---|
+| background bash の完了を待つ | **何もしない**。`run_in_background: true` の通知を受信するまで他作業を進めるか、ScheduleWakeup で再開 |
+| 完了後にログを見る | 通知到着後、`Read` ツールまたは `tail -n 100 file` を **1 回だけ** |
+| 進捗を能動的に見たい | `Monitor` ツール (selective grep + 自然終了する command) を使う |
+| dev サーバーで動作確認 | preview_start (1 つだけ) または Playwright `webServer` (テスト終了時に自動停止) |
+| 「ビルド成功か?」だけ知りたい | exit code を返す one-shot コマンド (`npm run build && echo OK`) を `run_in_background: true` で投げ、通知を待つ |
+
+### 自己点検チェックリスト (Bash 実行前)
+
+- [ ] このコマンドは **何秒以内に確実に終わる** か?
+- [ ] 終了条件は **プロセス自体の exit** か (output 文字列マッチではなく)?
+- [ ] 既に同じ目的の background bash が走っていないか?
+- [ ] 別 background の完了を待つ目的なら、それは **不要** ではないか (通知が来る)?
+
+1 つでも怪しければコマンドを変更するか、ユーザーに方針確認する。
+
+### Bash 実行時の自己宣言 (必須)
+
+すべての Bash ツール呼び出し時、コマンド前にコメントで予想実行時間を宣言する:
+
+```bash
+# expected: <30s | 30s-2min | 2min-10min | >10min(needs-confirmation)
+```
+
+`>10min` を選ぶ場合は実行前にユーザー承認を取る。
+
+### ユーザー側監視
+
+- 2 分以上「実行中」が残るタスクがあれば、ユーザーは即「タスクパネルの状態を分析して」と質問する
+- Claude Code は自分の実行中タスクを `Get-CimInstance Win32_Process` 等で確認して報告
+- 該当 bash の生存状況に応じて `TaskStop` または継続判断
+
+### 違反時の必須アクション
+
+新パターンでハングした場合、本ファイルの「禁止パターン」表に該当パターンを追記してから次の作業に移る。
+追記なき再発は同じ穴を踏み続けるため、必ずルール側にフィードバックする。
