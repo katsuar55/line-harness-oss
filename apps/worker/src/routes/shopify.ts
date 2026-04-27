@@ -209,6 +209,23 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
                 friendId,
                 eventData: { source: 'shopify', shopifyOrderId, amount: totalPrice },
               });
+
+              // Phase 6 PR-2: 再購入リマインダー自動 enroll (orders/create のみ)
+              if (topic === 'orders/create' && lineItemsRaw && lineItemsRaw.length > 0) {
+                try {
+                  const { enrollSubscriptionsFromOrder } = await import(
+                    '../services/subscription-enroller.js'
+                  );
+                  await enrollSubscriptionsFromOrder({
+                    db,
+                    friendId,
+                    shopifyOrderId,
+                    lineItems: lineItemsRaw,
+                  });
+                } catch (enrollErr) {
+                  console.error('subscription enroll failed:', enrollErr);
+                }
+              }
             }
           } catch (err) {
             console.error('Shopify webhook async processing error (order):', err);
