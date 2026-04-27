@@ -1675,9 +1675,26 @@ liffPortal.get('/api/liff/subscriptions', async (c) => {
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
     const subs = await c.env.DB
-      .prepare('SELECT id, product_title, interval_days, next_reminder_at, is_active, created_at FROM subscription_reminders WHERE friend_id = ? ORDER BY created_at DESC')
+      .prepare(
+        `SELECT id, product_title, interval_days, next_reminder_at, last_sent_at,
+                is_active, created_at, shopify_product_id, interval_source, sample_size
+         FROM subscription_reminders
+         WHERE friend_id = ?
+         ORDER BY is_active DESC, next_reminder_at ASC`,
+      )
       .bind(user.friendId)
-      .all<{ id: string; product_title: string; interval_days: number; next_reminder_at: string; is_active: number; created_at: string }>();
+      .all<{
+        id: string;
+        product_title: string;
+        interval_days: number;
+        next_reminder_at: string;
+        last_sent_at: string | null;
+        is_active: number;
+        created_at: string;
+        shopify_product_id: string | null;
+        interval_source: string | null;
+        sample_size: number | null;
+      }>();
 
     return c.json({ success: true, data: { subscriptions: subs.results || [] } });
   } catch (err) {
