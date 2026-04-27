@@ -37,6 +37,14 @@ import {
   getFriendLanguage,
   setFriendLanguage,
   getTipTranslation,
+  insertFoodLog,
+  updateFoodLogAnalysis,
+  getFoodLogsByFriend,
+  getFoodLogById,
+  deleteFoodLog,
+  getDailyFoodStatsForToday,
+  getDailyFoodStatsRange,
+  getMonthlyFoodReport,
   jstNow,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
@@ -1765,6 +1773,359 @@ liffPortal.get('/api/liff/faq', async (c) => {
     return c.json({ success: true, data: { faqs: faqs.results || [] } });
   } catch (err) {
     console.error('GET /api/liff/faq error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ═══════════════════════════════════════════════
+// Phase 3: Food Log (LIFF)
+// ═══════════════════════════════════════════════
+
+// ─── Food validation helpers ───
+const FOOD_RAW_TEXT_MAX = 500;
+const FOOD_CALORIES_MAX = 10000;
+const FOOD_PFC_MAX = 1000;
+const FOOD_STATS_RANGE_MAX_DAYS = 90;
+const ISO8601_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:?\d{2})?$/;
+const YEAR_MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+/**
+ * ISO8601 日付バリデーション + 妥当な時間範囲チェック。
+ * 食事ログは「現在から ±7 日 (= 直前/直後 1 週間)」のみ許容する。
+ * これにより 1970 年や 2099 年のような非現実的な日付による daily_food_stats
+ * 汚染を防ぐ。
+ */
+const ATE_AT_PAST_LIMIT_MS = 7 * 24 * 60 * 60 * 1000;   // 7日前まで遡れる
+const ATE_AT_FUTURE_LIMIT_MS = 1 * 24 * 60 * 60 * 1000; // 1日先まで許容 (時差/誤入力対応)
+
+function isValidIsoDate(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  if (!ISO8601_RE.test(value)) return false;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return false;
+  const nowMs = Date.now();
+  if (ms < nowMs - ATE_AT_PAST_LIMIT_MS) return false;
+  if (ms > nowMs + ATE_AT_FUTURE_LIMIT_MS) return false;
+  return true;
+}
+
+function clampNumber(
+  value: unknown,
+  min: number,
+  max: number,
+): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  if (value < min || value > max) return null;
+  return value;
+}
+
+/**
+ * POST /api/liff/food/log — 手動入力で食事ログ登録
+ * 数値が指定されていれば即 'completed' に遷移し daily_food_stats も加算。
+ * 数値未指定なら 'pending' のまま (LIFF 上であとで栄養計算)。
+ */
+liffPortal.post('/api/liff/food/log', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const body = await c.req.json<{
+      ateAt?: string;
+      mealType?: string;
+      rawText?: string;
+      calories?: number;
+      proteinG?: number;
+      fatG?: number;
+      carbsG?: number;
+    }>();
+
+    if (!isValidIsoDate(body.ateAt)) {
+      return c.json({ success: false, error: 'ateAt must be ISO8601' }, 400);
+    }
+
+    const rawText =
+      typeof body.rawText === 'string'
+        ? body.rawText.slice(0, FOOD_RAW_TEXT_MAX)
+        : null;
+    const mealType = typeof body.mealType === 'string' ? body.mealType : null;
+
+    // numeric fields: only keep when ALL ranges valid
+    const calories =
+      body.calories !== undefined
+        ? clampNumber(body.calories, 0, FOOD_CALORIES_MAX)
+        : null;
+    const proteinG =
+      body.proteinG !== undefined ? clampNumber(body.proteinG, 0, FOOD_PFC_MAX) : null;
+    const fatG =
+      body.fatG !== undefined ? clampNumber(body.fatG, 0, FOOD_PFC_MAX) : null;
+    const carbsG =
+      body.carbsG !== undefined ? clampNumber(body.carbsG, 0, FOOD_PFC_MAX) : null;
+
+    const numericProvided =
+      body.calories !== undefined ||
+      body.proteinG !== undefined ||
+      body.fatG !== undefined ||
+      body.carbsG !== undefined;
+    if (numericProvided) {
+      // any provided value out of range → reject
+      if (
+        (body.calories !== undefined && calories === null) ||
+        (body.proteinG !== undefined && proteinG === null) ||
+        (body.fatG !== undefined && fatG === null) ||
+        (body.carbsG !== undefined && carbsG === null)
+      ) {
+        return c.json(
+          { success: false, error: 'numeric field out of range' },
+          400,
+        );
+      }
+    }
+
+    const id = crypto.randomUUID();
+    const log = await insertFoodLog(
+      c.env.DB,
+      {
+        friendId: user.friendId,
+        ateAt: body.ateAt,
+        mealType,
+        rawText,
+        imageUrl: null,
+      },
+      id,
+    );
+
+    // Promote to 'completed' immediately when caller supplied nutrition values.
+    if (numericProvided) {
+      await updateFoodLogAnalysis(c.env.DB, id, {
+        calories: calories ?? 0,
+        protein_g: proteinG ?? 0,
+        fat_g: fatG ?? 0,
+        carbs_g: carbsG ?? 0,
+        items: [],
+        model_version: 'manual',
+      });
+
+      // Reflect updated values in returned object (best-effort, no extra DB read).
+      log.total_calories = Math.round(calories ?? 0);
+      log.total_protein_g = proteinG ?? 0;
+      log.total_fat_g = fatG ?? 0;
+      log.total_carbs_g = carbsG ?? 0;
+      log.analysis_status = 'completed';
+      log.ai_analysis = JSON.stringify({
+        calories: calories ?? 0,
+        protein_g: proteinG ?? 0,
+        fat_g: fatG ?? 0,
+        carbs_g: carbsG ?? 0,
+        items: [],
+        model_version: 'manual',
+      });
+    }
+
+    return c.json({ success: true, data: log });
+  } catch (err) {
+    console.error('POST /api/liff/food/log error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/liff/food/logs — 食事ログ履歴 (cursor pagination)
+ */
+liffPortal.get('/api/liff/food/logs', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const url = new URL(c.req.url);
+    const limitParam = url.searchParams.get('limit');
+    const cursor = url.searchParams.get('cursor') ?? undefined;
+    const fromDateRaw = url.searchParams.get('fromDate');
+    const toDateRaw = url.searchParams.get('toDate');
+
+    // YYYY-MM-DD または ISO8601 datetime を許容。SQL は文字列比較なのでどちらでも整合する。
+    // format 不一致は 400 を返す (NaN/SQLi 防御)。
+    const isAllowedDateLike = (s: string): boolean =>
+      DATE_RE.test(s) || ISO8601_RE.test(s);
+    if (fromDateRaw !== null && !isAllowedDateLike(fromDateRaw)) {
+      return c.json(
+        { success: false, error: 'fromDate must be YYYY-MM-DD or ISO8601' },
+        400,
+      );
+    }
+    if (toDateRaw !== null && !isAllowedDateLike(toDateRaw)) {
+      return c.json(
+        { success: false, error: 'toDate must be YYYY-MM-DD or ISO8601' },
+        400,
+      );
+    }
+    const fromDate = fromDateRaw ?? undefined;
+    const toDate = toDateRaw ?? undefined;
+
+    let limit = 20;
+    if (limitParam !== null) {
+      const parsed = Number.parseInt(limitParam, 10);
+      if (Number.isFinite(parsed)) {
+        limit = Math.min(Math.max(1, parsed), 100);
+      }
+    }
+
+    const page = await getFoodLogsByFriend(c.env.DB, user.friendId, {
+      limit,
+      cursor,
+      fromDate,
+      toDate,
+    });
+
+    return c.json({ success: true, data: page });
+  } catch (err) {
+    console.error('GET /api/liff/food/logs error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * DELETE /api/liff/food/logs/:id — 食事ログ削除 (本人所有のみ)
+ * 画像があれば R2 (IMAGES) からも best-effort で削除する。
+ */
+liffPortal.delete('/api/liff/food/logs/:id', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const id = c.req.param('id');
+    // image_url を先に拾うために existing は読むが、所有権 + 削除はアトミックに
+    // (friendId 引数で SQL レベルで保証)。TOCTOU 排除。
+    const existing = await getFoodLogById(c.env.DB, id);
+    if (!existing || existing.friend_id !== user.friendId) {
+      // 他人 / 存在しない → どちらも 404 で存在を漏らさない
+      return c.json({ success: false, error: 'Not found' }, 404);
+    }
+
+    const deleted = await deleteFoodLog(c.env.DB, id, user.friendId);
+    if (!deleted) {
+      // existing 取得後〜DELETE までに別経路で削除された場合 (race) も 404 で OK
+      return c.json({ success: false, error: 'Not found' }, 404);
+    }
+
+    // R2 best-effort cleanup: only when image_url looks like an in-bucket key.
+    if (existing.image_url && c.env.IMAGES) {
+      try {
+        const key = extractR2Key(existing.image_url);
+        if (key) await c.env.IMAGES.delete(key);
+      } catch (r2err) {
+        console.error('food_log image R2 delete failed:', r2err);
+      }
+    }
+
+    return c.json({ success: true, data: null });
+  } catch (err) {
+    console.error('DELETE /api/liff/food/logs/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * /api/images/:key 形式の URL から R2 key を抜き出す。
+ *
+ * セキュリティ: webhook (PR-3) が書く image_url は `food/<uuid>.<ext>` 接頭辞
+ * のみ。それ以外 (path traversal "../" 含むキー、外部 URL、不正接頭辞) は null。
+ */
+function extractR2Key(imageUrl: string): string | null {
+  const marker = '/api/images/';
+  const idx = imageUrl.indexOf(marker);
+  if (idx < 0) return null;
+  const tail = imageUrl.slice(idx + marker.length);
+  const key = tail.split('?')[0]?.split('#')[0];
+  if (!key || key.length === 0) return null;
+  // 接頭辞 / traversal 防御
+  if (!key.startsWith('food/')) return null;
+  if (key.includes('..') || key.includes('\\')) return null;
+  return key;
+}
+
+/**
+ * GET /api/liff/food/stats/today — 今日の食事集計 (PFC + カロリー)
+ */
+liffPortal.get('/api/liff/food/stats/today', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const stats = await getDailyFoodStatsForToday(c.env.DB, user.friendId);
+    return c.json({ success: true, data: stats });
+  } catch (err) {
+    console.error('GET /api/liff/food/stats/today error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/liff/food/stats/range — 期間集計 (グラフ表示用)
+ * Query: from, to (YYYY-MM-DD)。期間最大 90 日。
+ */
+liffPortal.get('/api/liff/food/stats/range', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const url = new URL(c.req.url);
+    const from = url.searchParams.get('from');
+    const to = url.searchParams.get('to');
+    if (!from || !DATE_RE.test(from) || !to || !DATE_RE.test(to)) {
+      return c.json(
+        { success: false, error: 'from and to must be YYYY-MM-DD' },
+        400,
+      );
+    }
+    if (from > to) {
+      return c.json({ success: false, error: 'from must be <= to' }, 400);
+    }
+    const fromMs = Date.parse(`${from}T00:00:00Z`);
+    const toMs = Date.parse(`${to}T00:00:00Z`);
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+      return c.json({ success: false, error: 'invalid date' }, 400);
+    }
+    const diffDays = Math.floor((toMs - fromMs) / 86_400_000);
+    if (diffDays > FOOD_STATS_RANGE_MAX_DAYS) {
+      return c.json(
+        { success: false, error: 'range exceeds 90 days' },
+        400,
+      );
+    }
+
+    const stats = await getDailyFoodStatsRange(c.env.DB, user.friendId, from, to);
+    return c.json({ success: true, data: stats });
+  } catch (err) {
+    console.error('GET /api/liff/food/stats/range error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/liff/food/report/:yearMonth — 月次 AI レポート取得 (pull 型)
+ * yearMonth: YYYY-MM。null の場合 (PR-7 で生成前) は data: null。
+ */
+liffPortal.get('/api/liff/food/report/:yearMonth', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const yearMonth = c.req.param('yearMonth');
+    if (!YEAR_MONTH_RE.test(yearMonth)) {
+      return c.json(
+        { success: false, error: 'yearMonth must be YYYY-MM' },
+        400,
+      );
+    }
+
+    const report = await getMonthlyFoodReport(
+      c.env.DB,
+      user.friendId,
+      yearMonth,
+    );
+    return c.json({ success: true, data: report });
+  } catch (err) {
+    console.error('GET /api/liff/food/report/:yearMonth error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
