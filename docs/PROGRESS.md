@@ -56,6 +56,18 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - [x] エントリールート — 流入元トラッキング
 - [x] friends.scoreカラム追加 — マイグレーション漏れ修正
 
+### Phase 3: AI 食事診断 + カロリー記録 ✅ 完了 2026-04-27 (naturism)
+- [x] PR-1: D1 マイグレーション 036 (`food_logs` / `daily_food_stats` / `monthly_food_reports`)
+- [x] PR-2: Anthropic Claude Vision wrapper + LINE Content downloader (Zod / 薬機 redaction / 5MB cap)
+- [x] PR-3: webhook image branch — 即時返信 + ctx.waitUntil() で AI 解析パイプライン
+- [x] PR-4: LIFF API 6 endpoints (log/list/delete/stats/report) — TOCTOU 排除
+- [x] PR-5: LIFF UI `/liff/food` — 履歴 + 手動入力 + 削除
+- [x] PR-6: LIFF UI `/liff/food/graph` — Chart.js (カロリー / PFC / レンジ切替)
+- [x] PR-7: 月次 AI レポート cron (毎月 1 日, idempotent, テンプレフォールバック)
+- 検証: 1079 tests pass / 50 files (worker package), typecheck green
+- 本番デプロイ: 別途 wrangler deploy 承認待ち
+- 関連 secret: ANTHROPIC_API_KEY (登録済)
+
 ### Round 4 (予定)
 - [ ] メール配信連携 (SendGrid/SES)
 - [ ] SMS連携
