@@ -75,6 +75,7 @@ export type Env = {
     LINE_CHANNEL_SECRET: string;
     LINE_CHANNEL_ACCESS_TOKEN: string;
     API_KEY: string;
+    ANTHROPIC_API_KEY?: string;  // Phase 3: AI 食事画像解析。未設定時は image webhook 側で skip
     LIFF_URL: string;
     LINE_CHANNEL_ID: string;
     LINE_LOGIN_CHANNEL_ID: string;
