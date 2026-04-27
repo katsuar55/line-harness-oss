@@ -93,9 +93,36 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - 自動化済 PR: 4 件 (PR-1/3/4/5)
 - ブロック理由: PR-2 は naturism Shopify ストアの実商品 GID が必要。PR-6 は本番 deploy 承認 (CLAUDE.md 厳守)。
 - preflight 実行で発見された pre-existing 課題:
-  - CRITICAL: migration 009 duplicate (009_delivery_type.sql + 009_token_expiry.sql) — リネーム未実施
-  - WARN: migration gap at 038 (PR-2 用に予約)
+  - ~~CRITICAL: migration 009 duplicate~~ → **2026-04-28 解決**: README の「既知の歴史的事項」に従い preflight 側で allowlist 化 (commit fdcd1d9)
+  - ~~WARN: migration gap at 038~~ → 同上、KNOWN_GAP_EXCEPTIONS で INFO に降格
 - git tag: v0.11.0-phase5-partial
+
+### Phase 6: 再購入リマインダー強化 ⚠️ 部分完了 2026-04-28 (naturism)
+**Ultraplan で TOP 2 として選定**。既存 `subscription_reminders` (migration 029) を強化し、Phase 3/4 食事/栄養データと連動させた閉ループ完成。
+- [x] PR-1: 商品別再購入間隔推定 (migration 040 + `repurchase-estimator` service)
+  - 4段階フォールバック: user_history → product_default → auto_estimated (商品名 keyword) → fallback
+  - clamp [7, 90] 日で異常値の暴発を防止
+  - vitest 31 件 (estimator 19 + db helper 12) green
+- [x] PR-2: Shopify webhook 自動 enrollment (`subscription-enroller` service)
+  - orders/create で line_items の各商品を recipient friend に自動紐付け
+  - 既存 active リマインダーは skip、1 商品の失敗が他を止めない
+  - vitest 15 件 green
+- [x] PR-3: Cross-sell 推奨マップ (migration 041 + `purchase_cross_sell_map`)
+  - `subscription-reminder` push の Flex bubble に最大 2 件のクロスセル添付
+  - shopify_products から商品タイトル解決、reason 表示
+  - vitest 14 件 green
+- [x] PR-4: LIFF `/liff/reorder` UI
+  - 一覧 / 間隔変更 (preset 7-90日) / 停止・再開 / 削除
+  - 既存 `/api/liff/subscriptions*` を活用、Phase 6 拡張カラム (interval_source) も表示
+  - vitest 7 件 green
+- [ ] **PR-5**: 管理画面 KPI ダッシュボード (push/CTR/CVR) — 次セッション
+- [ ] **PR-6**: cron-monitor に subscription-reminder 統合 — 次セッション
+- [ ] **PR-7**: wrangler deploy + smoke runbook ← **オーナー承認待ち**
+- [ ] **PR-8**: 7 日観測 + reminder copy A/B ← PR-7 完了後
+- 自律実行済 PR: 4 件 (PR-1〜PR-4)
+- ブロック理由: PR-7 は本番 deploy 承認 (CLAUDE.md 厳守)
+- worker 全テスト: **1280 tests pass / 62 files** (Phase 6 PR-1〜PR-4 で計 +67 件追加: estimator 19 + db helper 12 + enroller 15 + cross-sell 14 + liff-reorder 7)
+- git tag: v0.12.0-phase6-partial
 
 ### Round 4 (予定)
 - [ ] メール配信連携 (SendGrid/SES)
