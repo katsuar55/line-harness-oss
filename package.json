@@ -12,7 +12,10 @@
     "db:migrate": "wrangler d1 execute line-crm --file=packages/db/schema.sql",
     "db:migrate:local": "wrangler d1 execute line-crm --file=packages/db/schema.sql --local",
     "deploy:setup": "node packages/create-line-harness/dist/index.js",
-    "deploy:update": "node packages/create-line-harness/dist/index.js update"
+    "deploy:update": "node packages/create-line-harness/dist/index.js update",
+    "preflight": "node scripts/preflight.mjs",
+    "preflight:full": "node scripts/preflight.mjs --full",
+    "preflight:test": "node --test scripts/preflight.test.mjs"
   },
   "packageManager": "pnpm@9.15.4",
   "engines": {
