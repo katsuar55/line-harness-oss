@@ -1,0 +1,353 @@
+/**
+ * 栄養コーチ (Phase 4) — 管理画面用 API
+ *
+ * エンドポイント:
+ *   GET  /api/admin/coach/analytics       — 期間内の生成 / クリック / CV / CTR / CVR + 不足キー別集計
+ *   GET  /api/admin/coach/recommendations — 直近のレコメンド一覧 (friend 名と LEFT JOIN)
+ *   GET  /api/admin/coach/sku-map         — SKU マッピング一覧
+ *   PUT  /api/admin/coach/sku-map         — SKU マッピング upsert
+ *
+ * 認証は親 app の authMiddleware が `/api/*` 全体に効いている前提。
+ */
+import { Hono } from 'hono';
+import {
+  getCoachAnalytics,
+  listSkuMaps,
+  upsertSkuMap,
+  type CoachAnalytics,
+  type SkuMapRow,
+} from '@line-crm/db';
+import type { Env } from '../index.js';
+
+const coachAdmin = new Hono<Env>();
+
+// ============================================================
+// 定数 / バリデーション
+// ============================================================
+
+const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
+const ALLOWED_DEFICIT_KEYS = [
+  'protein_low',
+  'fiber_low',
+  'iron_low',
+  'calorie_low',
+  'calorie_high',
+] as const;
+type AllowedDeficitKey = (typeof ALLOWED_DEFICIT_KEYS)[number];
+
+const PRODUCT_TITLE_MAX = 100;
+const COPY_TEMPLATE_MAX = 200;
+
+interface ByDeficitRow {
+  deficitKey: string;
+  generatedCount: number;
+  clickedCount: number;
+  convertedCount: number;
+  ctr: number;
+  cvr: number;
+}
+
+interface AnalyticsResponseData {
+  totals: CoachAnalytics;
+  byDeficit: ByDeficitRow[];
+}
+
+interface RecommendationListItem {
+  id: string;
+  friendId: string;
+  friendName: string | null;
+  generatedAt: string;
+  status: string;
+  aiMessage: string;
+  deficitCount: number;
+  skuCount: number;
+}
+
+// ============================================================
+// GET /api/admin/coach/analytics
+// ============================================================
+coachAdmin.get('/api/admin/coach/analytics', async (c) => {
+  try {
+    const from = c.req.query('from');
+    const to = c.req.query('to');
+
+    if (!from || !to) {
+      return c.json(
+        { success: false, error: 'from / to are required (YYYY-MM-DD)' },
+        400,
+      );
+    }
+
+    if (!DATE_REGEX.test(from) || !DATE_REGEX.test(to)) {
+      return c.json(
+        { success: false, error: 'from / to must be in YYYY-MM-DD format' },
+        400,
+      );
+    }
+
+    if (from > to) {
+      return c.json(
+        { success: false, error: 'from must be <= to' },
+        400,
+      );
+    }
+
+    // 期間境界は generated_at の TEXT 比較で行うため、「to」は当日の終わりまで含める。
+    const fromBoundary = `${from}T00:00:00`;
+    const toBoundary = `${to}T23:59:59`;
+
+    const totals = await getCoachAnalytics(c.env.DB, fromBoundary, toBoundary);
+
+    // 不足キー別集計 — sku_suggestions_json は SkuSuggestion[] なので
+    // json_each で要素を展開し、deficitKey でグルーピングする。
+    interface ByDeficitDbRow {
+      deficit_key: string | null;
+      generated_count: number;
+      clicked_count: number | null;
+      converted_count: number | null;
+    }
+
+    const byDeficitResult = await c.env.DB
+      .prepare(
+        `SELECT
+           json_extract(value, '$.deficitKey') AS deficit_key,
+           COUNT(*) AS generated_count,
+           SUM(CASE WHEN nr.status IN ('clicked', 'converted') THEN 1 ELSE 0 END) AS clicked_count,
+           SUM(CASE WHEN nr.status = 'converted' THEN 1 ELSE 0 END) AS converted_count
+         FROM nutrition_recommendations nr,
+              json_each(nr.sku_suggestions_json)
+         WHERE nr.generated_at >= ? AND nr.generated_at <= ?
+         GROUP BY deficit_key
+         ORDER BY generated_count DESC`,
+      )
+      .bind(fromBoundary, toBoundary)
+      .all<ByDeficitDbRow>();
+
+    const byDeficit: ByDeficitRow[] = (byDeficitResult.results ?? [])
+      .filter((row) => row.deficit_key !== null)
+      .map((row) => {
+        const generated = row.generated_count ?? 0;
+        const clicked = row.clicked_count ?? 0;
+        const converted = row.converted_count ?? 0;
+        return {
+          deficitKey: String(row.deficit_key),
+          generatedCount: generated,
+          clickedCount: clicked,
+          convertedCount: converted,
+          ctr: generated > 0 ? clicked / generated : 0,
+          cvr: generated > 0 ? converted / generated : 0,
+        };
+      });
+
+    const data: AnalyticsResponseData = { totals, byDeficit };
+    return c.json({ success: true, data });
+  } catch (err) {
+    console.error('GET /api/admin/coach/analytics error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ============================================================
+// GET /api/admin/coach/recommendations
+// ============================================================
+coachAdmin.get('/api/admin/coach/recommendations', async (c) => {
+  try {
+    const limitParam = c.req.query('limit');
+    const status = c.req.query('status') ?? 'active';
+
+    const parsedLimit = Number.parseInt(limitParam ?? '50', 10);
+    const safeLimit = Number.isFinite(parsedLimit)
+      ? Math.min(Math.max(1, parsedLimit), 200)
+      : 50;
+
+    const allowedStatuses = ['active', 'all'] as const;
+    if (!allowedStatuses.includes(status as (typeof allowedStatuses)[number])) {
+      return c.json(
+        { success: false, error: "status must be 'active' or 'all'" },
+        400,
+      );
+    }
+
+    interface RecoDbRow {
+      id: string;
+      friend_id: string;
+      friend_name: string | null;
+      generated_at: string;
+      status: string;
+      ai_message: string;
+      deficit_json: string;
+      sku_suggestions_json: string;
+    }
+
+    const sql =
+      status === 'active'
+        ? `SELECT nr.id, nr.friend_id, f.display_name AS friend_name,
+                  nr.generated_at, nr.status, nr.ai_message,
+                  nr.deficit_json, nr.sku_suggestions_json
+             FROM nutrition_recommendations nr
+             LEFT JOIN friends f ON f.id = nr.friend_id
+            WHERE nr.status = 'active'
+            ORDER BY nr.generated_at DESC
+            LIMIT ?`
+        : `SELECT nr.id, nr.friend_id, f.display_name AS friend_name,
+                  nr.generated_at, nr.status, nr.ai_message,
+                  nr.deficit_json, nr.sku_suggestions_json
+             FROM nutrition_recommendations nr
+             LEFT JOIN friends f ON f.id = nr.friend_id
+            ORDER BY nr.generated_at DESC
+            LIMIT ?`;
+
+    const result = await c.env.DB
+      .prepare(sql)
+      .bind(safeLimit)
+      .all<RecoDbRow>();
+
+    const data: RecommendationListItem[] = (result.results ?? []).map((row) => {
+      let deficitCount = 0;
+      let skuCount = 0;
+      try {
+        const parsed = JSON.parse(row.deficit_json);
+        if (Array.isArray(parsed)) deficitCount = parsed.length;
+      } catch {
+        deficitCount = 0;
+      }
+      try {
+        const parsed = JSON.parse(row.sku_suggestions_json);
+        if (Array.isArray(parsed)) skuCount = parsed.length;
+      } catch {
+        skuCount = 0;
+      }
+      return {
+        id: row.id,
+        friendId: row.friend_id,
+        friendName: row.friend_name,
+        generatedAt: row.generated_at,
+        status: row.status,
+        aiMessage: row.ai_message,
+        deficitCount,
+        skuCount,
+      };
+    });
+
+    return c.json({ success: true, data });
+  } catch (err) {
+    console.error('GET /api/admin/coach/recommendations error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ============================================================
+// GET /api/admin/coach/sku-map
+// ============================================================
+coachAdmin.get('/api/admin/coach/sku-map', async (c) => {
+  try {
+    const data: SkuMapRow[] = await listSkuMaps(c.env.DB);
+    return c.json({ success: true, data });
+  } catch (err) {
+    console.error('GET /api/admin/coach/sku-map error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ============================================================
+// PUT /api/admin/coach/sku-map
+// ============================================================
+interface PutSkuMapBody {
+  deficitKey?: unknown;
+  shopifyProductId?: unknown;
+  productTitle?: unknown;
+  copyTemplate?: unknown;
+  isActive?: unknown;
+}
+
+function isAllowedDeficitKey(value: unknown): value is AllowedDeficitKey {
+  return (
+    typeof value === 'string' &&
+    (ALLOWED_DEFICIT_KEYS as readonly string[]).includes(value)
+  );
+}
+
+coachAdmin.put('/api/admin/coach/sku-map', async (c) => {
+  try {
+    const body: PutSkuMapBody = await c.req
+      .json<PutSkuMapBody>()
+      .catch((): PutSkuMapBody => ({}));
+
+    if (!isAllowedDeficitKey(body.deficitKey)) {
+      return c.json(
+        {
+          success: false,
+          error: `deficitKey must be one of: ${ALLOWED_DEFICIT_KEYS.join(', ')}`,
+        },
+        400,
+      );
+    }
+
+    if (
+      typeof body.shopifyProductId !== 'string' ||
+      body.shopifyProductId.trim() === ''
+    ) {
+      return c.json(
+        { success: false, error: 'shopifyProductId is required' },
+        400,
+      );
+    }
+
+    if (
+      typeof body.productTitle !== 'string' ||
+      body.productTitle.trim() === ''
+    ) {
+      return c.json(
+        { success: false, error: 'productTitle is required' },
+        400,
+      );
+    }
+    if (body.productTitle.length > PRODUCT_TITLE_MAX) {
+      return c.json(
+        {
+          success: false,
+          error: `productTitle must be <= ${PRODUCT_TITLE_MAX} chars`,
+        },
+        400,
+      );
+    }
+
+    if (
+      typeof body.copyTemplate !== 'string' ||
+      body.copyTemplate.trim() === ''
+    ) {
+      return c.json(
+        { success: false, error: 'copyTemplate is required' },
+        400,
+      );
+    }
+    if (body.copyTemplate.length > COPY_TEMPLATE_MAX) {
+      return c.json(
+        {
+          success: false,
+          error: `copyTemplate must be <= ${COPY_TEMPLATE_MAX} chars`,
+        },
+        400,
+      );
+    }
+
+    const isActive =
+      typeof body.isActive === 'boolean' ? body.isActive : undefined;
+
+    await upsertSkuMap(c.env.DB, {
+      deficitKey: body.deficitKey,
+      shopifyProductId: body.shopifyProductId,
+      productTitle: body.productTitle,
+      copyTemplate: body.copyTemplate,
+      isActive,
+    });
+
+    return c.json({ success: true, data: null });
+  } catch (err) {
+    console.error('PUT /api/admin/coach/sku-map error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+export { coachAdmin };

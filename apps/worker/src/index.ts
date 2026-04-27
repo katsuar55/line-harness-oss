@@ -62,6 +62,7 @@ import { groups } from './routes/groups.js';
 import { tagElapsedDeliveries } from './routes/tag-elapsed-deliveries.js';
 import { liffCart } from './routes/liff-cart.js';
 import { birthdayCollection } from './routes/birthday-collection.js';
+import { coachAdmin } from './routes/coach-admin.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 // Phase 1 (2026-04-26): processIntakeReminders は能動pull化により cron 停止。
 // 既存 service コードは残置 (将来オプトイン式に再活性化する可能性あり)。
@@ -69,6 +70,7 @@ import { processScheduledAbTests } from './services/ab-test.js';
 import { processWeeklyReports } from './services/weekly-report.js';
 import { processSubscriptionReminders } from './services/subscription-reminder.js';
 import { processMonthlyFoodReports } from './services/monthly-food-report.js';
+import { processWeeklyCoachPush } from './services/weekly-coach-push.js';
 import { createLogger } from './services/logger.js';
 
 export type Env = {
@@ -186,6 +188,7 @@ app.route('/', groups);
 app.route('/', tagElapsedDeliveries);
 app.route('/', liffCart);
 app.route('/', birthdayCollection);
+app.route('/', coachAdmin);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
@@ -297,6 +300,13 @@ async function scheduled(
           `monthly food reports: generated=${r.generated} skipped=${r.skipped} errors=${r.errors}`,
         );
       }
+    }),
+  );
+
+  // Phase 4 PR-5: 週次栄養コーチ push (火曜 10:00 JST のみ trigger、サービス側で gating)
+  jobs.push(
+    processWeeklyCoachPush(env).catch((err) => {
+      console.error('weekly-coach-push failed', err instanceof Error ? err.name : 'unknown');
     }),
   );
 
