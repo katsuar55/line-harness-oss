@@ -67,6 +67,7 @@ import { processScheduledAbTests } from './services/ab-test.js';
 // 友だちは LIFF Portal Top の「朝/昼/夜」3ボタンから自発的に記録するように変更。
 import { processWeeklyReports } from './services/weekly-report.js';
 import { processSubscriptionReminders } from './services/subscription-reminder.js';
+import { processMonthlyFoodReports } from './services/monthly-food-report.js';
 import { createLogger } from './services/logger.js';
 
 export type Env = {
@@ -285,6 +286,17 @@ async function scheduled(
   }
   jobs.push(checkAccountHealth(env.DB));
   jobs.push(refreshLineAccessTokens(env.DB));
+
+  // Phase 3: 月次食事レポート (毎月 1 日のみ実行、サービス側で gating)
+  jobs.push(
+    processMonthlyFoodReports(env.DB, env.ANTHROPIC_API_KEY).then((r) => {
+      if (r.generated > 0 || r.errors > 0) {
+        console.info(
+          `monthly food reports: generated=${r.generated} skipped=${r.skipped} errors=${r.errors}`,
+        );
+      }
+    }),
+  );
 
   // Shopify顧客同期（5分ごと実行、冪等なので安全）
   jobs.push(
