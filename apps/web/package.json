@@ -5,7 +5,10 @@
   "scripts": {
     "dev": "next dev --port 3001",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:install": "playwright install --with-deps chromium"
   },
   "dependencies": {
     "@line-crm/shared": "workspace:*",
@@ -14,6 +17,7 @@
     "react-dom": "^19.2.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.49.0",
     "@tailwindcss/postcss": "^4.2.4",
     "@types/node": "25.5.0",
     "@types/react": "^19.0.0",

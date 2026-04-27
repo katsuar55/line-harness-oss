@@ -21,3 +21,8 @@ apps/worker/AI_SYSTEM_PROMPT.txt
 backups/
 *.tsbuildinfo
 apps/web/tsconfig.tsbuildinfo
+
+# Playwright
+apps/web/playwright-report/
+apps/web/test-results/
+apps/web/.playwright/
