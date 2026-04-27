@@ -67,6 +67,18 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - 検証: 1079 tests pass / 50 files (worker package), typecheck green
 - 本番デプロイ: 別途 wrangler deploy 承認待ち
 - 関連 secret: ANTHROPIC_API_KEY (登録済)
+- git tag: v0.9.0-phase3 / D1 backup: backups/naturism-d1-backup-2026-04-27-phase3.sql
+
+### Phase 4: AI 栄養コーチ + サプリ クロスセル ✅ 完了 2026-04-28 (naturism)
+- [x] PR-1: D1 マイグレーション 037 (`nutrition_recommendations` / `nutrition_sku_map` seed 5件)
+- [x] PR-2: `services/nutrition-analyzer.ts` — 決定論的 PFC 7 日窓 deficit 判定 (AI 不使用)
+- [x] PR-3: `services/nutrition-recommender.ts` — Claude Haiku コピー生成 + 薬機 redaction + テンプレフォールバック
+- [x] PR-4: LIFF API 4 endpoints (`/api/liff/coach/{latest,dismiss,click,regenerate}`) + UI `/liff/coach`
+- [x] PR-5: 週次 push cron (火曜 10:00 JST gating, 7 日内 reco 持ち除外)
+- [x] PR-6: 管理画面 `/coach` (KPI / by-deficit / SKU マップ管理) + Worker `/api/admin/coach/*` 4 endpoints
+- 設計方針: Phase 3 で集めた `daily_food_stats` を消費 → naturism サプリ売上に変換する閉ループ
+- 出口側 (CV): `nutrition_recommendations.conversion_event_id` で既存 CV 計測基盤と紐付け
+- 関連 secret: ANTHROPIC_API_KEY (Phase 3 と共用)
 
 ### Round 4 (予定)
 - [ ] メール配信連携 (SendGrid/SES)
