@@ -71,6 +71,7 @@ import { processWeeklyReports } from './services/weekly-report.js';
 import { processSubscriptionReminders } from './services/subscription-reminder.js';
 import { processMonthlyFoodReports } from './services/monthly-food-report.js';
 import { processWeeklyCoachPush } from './services/weekly-coach-push.js';
+import { processCronMonitor } from './services/cron-monitor.js';
 import { createLogger } from './services/logger.js';
 
 export type Env = {
@@ -101,6 +102,8 @@ export type Env = {
     AXIOM_TOKEN?: string;
     AXIOM_DATASET?: string;
     DISCORD_WEBHOOK_URL?: string;
+    /** Phase 5 PR-4: 'true' で cron-monitor の gating を bypass (テスト/手動用) */
+    CRON_MONITOR_FORCE?: string;
     WEBHOOK_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
     API_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
   };
@@ -317,6 +320,13 @@ async function scheduled(
         if (r.synced > 0) console.info(`Shopify customer sync: ${r.synced} customers`);
         if (r.error) console.warn(`Shopify customer sync warning: ${r.error}`);
       }),
+  );
+
+  // Phase 5 PR-4: 低頻度 cron の死活監視 (JST 09:00 ウィンドウのみ trigger)
+  jobs.push(
+    processCronMonitor(env).catch((err) =>
+      console.error('cron-monitor failed', err instanceof Error ? err.name : 'unknown'),
+    ),
   );
 
   await Promise.allSettled(jobs);

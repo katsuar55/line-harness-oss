@@ -24,8 +24,11 @@
 
 import { LineClient, flexMessage, flexBubble, flexBox, flexText, flexButton } from '@line-crm/line-sdk';
 import type { FlexBubble, Message } from '@line-crm/line-sdk';
+import { insertCronRunLog } from '@line-crm/db';
 import { analyzeFriendNutrition } from './nutrition-analyzer.js';
 import { generateAndStoreRecommendation } from './nutrition-recommender.js';
+
+const CRON_JOB_NAME = 'weekly-coach-push';
 
 // ============================================================
 // 型
@@ -131,6 +134,8 @@ export async function processWeeklyCoachPush(
   const force = options.force ?? false;
 
   if (!force && !isTriggerWindow(now)) {
+    // 5 分毎 cron で gating skip するたびに log を残すと DB が膨らむため、
+    // skipped 時は cron_run_logs に書かない (DB を触らない既存挙動を維持)。
     return {
       triggered: false,
       evaluated: 0,
@@ -143,6 +148,7 @@ export async function processWeeklyCoachPush(
 
   const batchSize = clampBatchSize(options.batchSize ?? DEFAULT_BATCH_SIZE);
 
+  try {
   // ---- 候補抽出 ----
   // 直近 7 日以内に reco がある friend は除外
   // active = is_following=1 AND is_blacklisted=0 AND line_user_id IS NOT NULL
@@ -151,6 +157,10 @@ export async function processWeeklyCoachPush(
 
   if (candidates.length === 0) {
     console.log('[weekly-coach-push] triggered=true evaluated=0 generated=0 pushed=0');
+    await safeRecordRun(env.DB, {
+      status: 'success',
+      metrics: { evaluated: 0, generated: 0, pushed: 0, skipped: 0, errors: 0 },
+    });
     return {
       triggered: true,
       evaluated: 0,
@@ -233,6 +243,18 @@ export async function processWeeklyCoachPush(
     `[weekly-coach-push] triggered=true evaluated=${candidates.length} generated=${generated} pushed=${pushed} skipped=${skipped} errors=${errors}`,
   );
 
+  await safeRecordRun(env.DB, {
+    status: errors > 0 ? 'partial' : 'success',
+    metrics: {
+      evaluated: candidates.length,
+      generated,
+      pushed,
+      skipped,
+      errors,
+    },
+    errorSummary: errors > 0 ? `${errors} friend(s) failed during analyze/recommend/push` : undefined,
+  });
+
   return {
     triggered: true,
     evaluated: candidates.length,
@@ -241,6 +263,13 @@ export async function processWeeklyCoachPush(
     pushed,
     errors,
   };
+  } catch (err) {
+    await safeRecordRun(env.DB, {
+      status: 'error',
+      errorSummary: err instanceof Error ? `${err.name}: ${err.message}` : 'unknown error',
+    });
+    throw err;
+  }
 }
 
 // ============================================================
@@ -350,6 +379,32 @@ function jstNowIso(): string {
   const now = new Date();
   const jst = new Date(now.getTime() + 9 * 3600 * 1000);
   return jst.toISOString().replace('Z', '');
+}
+
+/**
+ * cron_run_logs に 1 行追加。失敗してもメイン処理を止めない (fail-safe)。
+ */
+async function safeRecordRun(
+  db: D1Database,
+  input: {
+    status: 'success' | 'skipped' | 'error' | 'partial';
+    metrics?: object;
+    errorSummary?: string;
+  },
+): Promise<void> {
+  try {
+    await insertCronRunLog(db, {
+      jobName: CRON_JOB_NAME,
+      status: input.status,
+      metrics: input.metrics,
+      errorSummary: input.errorSummary,
+    });
+  } catch (err) {
+    console.error(
+      '[weekly-coach-push] cron_run_logs insert failed',
+      err instanceof Error ? err.name : 'unknown',
+    );
+  }
 }
 
 // ============================================================

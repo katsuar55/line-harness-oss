@@ -20,10 +20,13 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   getDailyFoodStatsRange,
   getMonthlyFoodReport,
+  insertCronRunLog,
   insertMonthlyFoodReport,
   jstNow,
 } from '@line-crm/db';
 import type { DailyFoodStats } from '@line-crm/db';
+
+const CRON_JOB_NAME = 'monthly-food-report';
 
 // ----------------------------------------------------------------
 // 定数
@@ -116,6 +119,8 @@ export async function processMonthlyFoodReports(
   // 月初 (JST 1 日) のみ実行
   const dayOfMonth = parseInt(now.slice(8, 10), 10);
   if (dayOfMonth !== 1) {
+    // 5 分毎 cron で gating skip するたびに log を残すと DB が膨らむため、
+    // skipped 時は cron_run_logs に書かない。
     return { generated: 0, skipped: 0, errors: 0 };
   }
 
@@ -136,6 +141,7 @@ export async function processMonthlyFoodReports(
   let skipped = 0;
   let errors = 0;
 
+  try {
   // 直列処理 (Anthropic rate limit 安全側)。10 名/秒以内ならまったく問題ない。
   for (const row of friends.results) {
     const friendId = row.friend_id;
@@ -179,7 +185,46 @@ export async function processMonthlyFoodReports(
     }
   }
 
+  await safeRecordCronRun(db, {
+    status: errors > 0 ? 'partial' : 'success',
+    metrics: { generated, skipped, errors },
+    errorSummary: errors > 0 ? `${errors} friend(s) failed during summary generation` : undefined,
+  });
+
   return { generated, skipped, errors };
+  } catch (err) {
+    await safeRecordCronRun(db, {
+      status: 'error',
+      errorSummary: err instanceof Error ? `${err.name}: ${err.message}` : 'unknown error',
+    });
+    throw err;
+  }
+}
+
+/**
+ * cron_run_logs に 1 行追加。失敗してもメイン処理を止めない (fail-safe)。
+ */
+async function safeRecordCronRun(
+  db: D1Database,
+  input: {
+    status: 'success' | 'skipped' | 'error' | 'partial';
+    metrics?: object;
+    errorSummary?: string;
+  },
+): Promise<void> {
+  try {
+    await insertCronRunLog(db, {
+      jobName: CRON_JOB_NAME,
+      status: input.status,
+      metrics: input.metrics,
+      errorSummary: input.errorSummary,
+    });
+  } catch (err) {
+    console.error(
+      '[monthly-food-report] cron_run_logs insert failed',
+      err instanceof Error ? err.name : 'unknown',
+    );
+  }
 }
 
 // ----------------------------------------------------------------

@@ -32,6 +32,7 @@ export * from './i18n';
 export * from './badges';
 export * from './food-logs';
 export * from './nutrition-coach';
+export * from './cron-logs';
 
 /**
  * Thin wrapper around D1Database.
