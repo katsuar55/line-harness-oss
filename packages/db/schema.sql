@@ -1410,6 +1410,40 @@ CREATE TABLE IF NOT EXISTS monthly_food_reports (
   PRIMARY KEY (friend_id, year_month)
 );
 
+-- from 037_nutrition_coach.sql
+CREATE TABLE IF NOT EXISTS nutrition_recommendations (
+  id                     TEXT PRIMARY KEY,
+  friend_id              TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  generated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  -- 栄養不足の解析結果 (JSON 配列):
+  --   [{ key:'protein_low', observedAvg:55, targetAvg:80, severity:'mild' }, ...]
+  deficit_json           TEXT NOT NULL,
+  -- 提案 SKU 群 (JSON 配列):
+  --   [{ shopifyProductId:'gid://shopify/Product/...', productTitle:'...',
+  --      copy:'...', deficitKey:'protein_low' }, ...]
+  sku_suggestions_json   TEXT NOT NULL,
+  -- AI 生成のパーソナルメッセージ (薬機ガード後)。失敗時はテンプレ
+  ai_message             TEXT NOT NULL,
+  -- ステート: active (生成直後) / dismissed (友だちが却下) / clicked / converted
+  status                 TEXT NOT NULL DEFAULT 'active',
+  -- 配信タイミング (push 送信時刻)。LIFF 単体表示時は NULL
+  sent_at                TEXT,
+  clicked_at             TEXT,
+  converted_at           TEXT,
+  -- CV 連動: クリック → 購入したら conversion_events.id を紐付け
+  conversion_event_id    TEXT REFERENCES conversion_events(id) ON DELETE SET NULL
+);
+
+-- from 037_nutrition_coach.sql
+CREATE TABLE IF NOT EXISTS nutrition_sku_map (
+  deficit_key         TEXT PRIMARY KEY,
+  shopify_product_id  TEXT NOT NULL,
+  product_title       TEXT NOT NULL,
+  copy_template       TEXT NOT NULL,
+  is_active           INTEGER NOT NULL DEFAULT 1,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -1531,3 +1565,10 @@ CREATE INDEX IF NOT EXISTS idx_food_logs_pending
   WHERE analysis_status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_monthly_food_reports_generated
   ON monthly_food_reports (friend_id, generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_nutrition_reco_friend
+  ON nutrition_recommendations (friend_id, generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_nutrition_reco_active
+  ON nutrition_recommendations (status, generated_at)
+  WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_nutrition_reco_status_generated
+  ON nutrition_recommendations (status, generated_at DESC);
