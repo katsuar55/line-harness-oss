@@ -132,8 +132,9 @@ export async function insertFoodLog(
 /**
  * AI 解析完了時の更新。`food_logs` を 'completed' に遷移し、`daily_food_stats` を加算 upsert。
  *
- * 注意: このメソッドは **1 ログにつき 1 回のみ呼ぶ前提** (再解析の二重加算を防ぐため
- *       caller 側で analysis_status を確認すること)。
+ * 二重加算防止: WHERE 句に `analysis_status = 'pending'` を含むため、
+ * すでに 'completed' / 'failed' のログに対する再呼び出しは何もしない (no-op)。
+ * これは webhook 再試行 や 競合 update 経路でも安全 (atomic guard)。
  */
 export async function updateFoodLogAnalysis(
   db: D1Database,
@@ -156,7 +157,7 @@ export async function updateFoodLogAnalysis(
               total_carbs_g  = ?,
               analysis_status = 'completed',
               error_message  = NULL
-        WHERE id = ?
+        WHERE id = ? AND analysis_status = 'pending'
         RETURNING friend_id, ate_at`,
     )
     .bind(ai, calories, protein, fat, carbs, id)
@@ -172,6 +173,21 @@ export async function updateFoodLogAnalysis(
     carbs,
     mealCountDelta: 1,
   });
+}
+
+/**
+ * food_logs.image_url を更新する helper。
+ * pending 状態で先に row を作り、後から R2 にアップロードした画像 URL を紐付けるために使う。
+ */
+export async function setFoodLogImageUrl(
+  db: D1Database,
+  id: string,
+  imageUrl: string,
+): Promise<void> {
+  await db
+    .prepare(`UPDATE food_logs SET image_url = ? WHERE id = ?`)
+    .bind(imageUrl, id)
+    .run();
 }
 
 /** AI 解析失敗をマーク。集計テーブルは触らない (まだ加算されていないため)。 */
@@ -300,6 +316,20 @@ export async function getFoodLogsByFriend(
   };
 }
 
+/**
+ * 食事ログを id で取得 (所有者確認用)。
+ * LIFF DELETE 等で「他人のログを操作されないか」をチェックするのに使う。
+ */
+export async function getFoodLogById(
+  db: D1Database,
+  id: string,
+): Promise<FoodLog | null> {
+  return await db
+    .prepare(`SELECT * FROM food_logs WHERE id = ?`)
+    .bind(id)
+    .first<FoodLog>();
+}
+
 /** 友だちの今日の食事集計 (PFC + カロリー + 食事回数)。未登録なら null */
 export async function getDailyFoodStatsForToday(
   db: D1Database,
@@ -332,29 +362,38 @@ export async function getDailyFoodStatsRange(
 
 /**
  * 食事ログを削除し、completed なら集計から差し引く。
- * 戻り値: 削除されたら true、見つからなければ false。
+ * 戻り値: 削除されたら true、見つからなければ false (= friendId 不一致 or 既に削除済)。
+ *
+ * 認可は SQL レベルで担保: `friendId` が undefined のときは旧挙動 (任意削除) だが、
+ * **LIFF/webhook 経由の呼び出しでは必ず friendId を渡すこと**。
+ * 渡すと TOCTOU を排し、他人の食事ログを誤削除する経路を塞ぐ。
  */
 export async function deleteFoodLog(
   db: D1Database,
   id: string,
+  friendId?: string,
 ): Promise<boolean> {
-  const deleted = await db
-    .prepare(
-      `DELETE FROM food_logs
+  const sql = friendId
+    ? `DELETE FROM food_logs
+        WHERE id = ? AND friend_id = ?
+        RETURNING friend_id, ate_at, total_calories,
+                  total_protein_g, total_fat_g, total_carbs_g, analysis_status`
+    : `DELETE FROM food_logs
         WHERE id = ?
         RETURNING friend_id, ate_at, total_calories,
-                  total_protein_g, total_fat_g, total_carbs_g, analysis_status`,
-    )
-    .bind(id)
-    .first<{
-      friend_id: string;
-      ate_at: string;
-      total_calories: number | null;
-      total_protein_g: number | null;
-      total_fat_g: number | null;
-      total_carbs_g: number | null;
-      analysis_status: string;
-    }>();
+                  total_protein_g, total_fat_g, total_carbs_g, analysis_status`;
+
+  const stmt = db.prepare(sql);
+  const bound = friendId ? stmt.bind(id, friendId) : stmt.bind(id);
+  const deleted = await bound.first<{
+    friend_id: string;
+    ate_at: string;
+    total_calories: number | null;
+    total_protein_g: number | null;
+    total_fat_g: number | null;
+    total_carbs_g: number | null;
+    analysis_status: string;
+  }>();
 
   if (!deleted) return false;
 

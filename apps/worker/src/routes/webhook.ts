@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { verifySignature, LineClient } from '@line-crm/line-sdk';
-import type { WebhookRequestBody, WebhookEvent, TextEventMessage } from '@line-crm/line-sdk';
+import type { WebhookRequestBody, WebhookEvent, TextEventMessage, ImageEventMessage } from '@line-crm/line-sdk';
 import {
   upsertFriend,
   updateFriendFollowStatus,
@@ -15,6 +15,10 @@ import {
   getLineAccountByBotUserId,
   setLineAccountBotUserId,
   setFriendMetadataField,
+  insertFoodLog,
+  setFoodLogImageUrl,
+  updateFoodLogAnalysis,
+  markFoodLogFailed,
   jstNow,
 } from '@line-crm/db';
 import {
@@ -25,6 +29,8 @@ import {
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { generateAiResponse } from '../services/ai-response.js';
+import { analyzeFoodImage, FoodAnalyzerError } from '../services/food-analyzer.js';
+import { downloadLineContent, LineContentError } from '../services/line-content.js';
 import type { Env } from '../index.js';
 
 /**
@@ -263,7 +269,7 @@ webhook.post('/webhook', async (c) => {
   const processingPromise = (async () => {
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env);
+        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env, c.executionCtx);
       } catch (err) {
         console.error('Error handling webhook event:', err);
       }
@@ -283,6 +289,8 @@ async function handleEvent(
   lineAccountId: string | null = null,
   workerUrl?: string,
   env?: Env['Bindings'],
+  /** ctx?: バックグラウンド処理 (画像解析等) を後続イベントのブロックなしに走らせるため */
+  ctx?: { waitUntil: (p: Promise<unknown>) => void },
 ): Promise<void> {
   if (event.type === 'follow') {
     const userId =
@@ -805,6 +813,263 @@ async function handleEvent(
       replyToken: replyTokenConsumed ? undefined : event.replyToken,
     }, lineAccessToken, lineAccountId);
 
+    return;
+  }
+
+  // ── Image message → AI 食事画像解析 (Phase 3) ──
+  if (event.type === 'message' && event.message.type === 'image') {
+    const imageMessage = event.message as ImageEventMessage;
+    const userId = event.source.type === 'user' ? event.source.userId : undefined;
+    if (!userId) return;
+
+    const friend = await getFriendByLineUserId(db, userId);
+    if (!friend) return;
+
+    const messageId = imageMessage.id;
+    const foodLogId = crypto.randomUUID();
+    const now = jstNow();
+
+    // 受信ログ (image)
+    try {
+      await db
+        .prepare(
+          `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
+           VALUES (?, ?, 'incoming', 'image', ?, NULL, NULL, ?)`,
+        )
+        .bind(crypto.randomUUID(), friend.id, `[image:${messageId}]`, now)
+        .run();
+    } catch (err) {
+      console.error('Failed to log incoming image message:', err);
+    }
+
+    // food_logs に pending 行を先に作る (失敗してもログは残す方針)
+    try {
+      await insertFoodLog(
+        db,
+        { friendId: friend.id, ateAt: now, imageUrl: null, mealType: null },
+        foodLogId,
+      );
+    } catch (err) {
+      console.error('Failed to insert pending food_log:', err);
+      return;
+    }
+
+    // 即座に「解析中」を返信 (LINE は 1 秒応答制限のため reply token は同期消費)
+    try {
+      await lineClient.replyMessage(event.replyToken, [
+        buildMessage('text', '🍽 食事の写真を受け取りました！解析中です…少々お待ちください 🙏'),
+      ]);
+    } catch (err) {
+      console.error('Failed to send analyzing reply:', err);
+    }
+
+    // バックグラウンド処理: ダウンロード → R2 → AI 解析 → push 結果通知
+    const friendLineUserId = userId;
+    const friendId = friend.id;
+    const apiKey = env?.ANTHROPIC_API_KEY;
+    const r2 = env?.IMAGES;
+    const baseWorkerUrl = workerUrl || env?.WORKER_URL || '';
+
+    const sendErrorPush = async (errMessage: string): Promise<void> => {
+      try {
+        await lineClient.pushMessage(friendLineUserId, [
+          buildMessage('text', `🙏 ${errMessage}`),
+        ]);
+      } catch (err) {
+        console.error('Failed to push error message:', err);
+      }
+    };
+
+    const sendSuccessPush = async (
+      analysis: { calories: number; protein_g: number; fat_g: number; carbs_g: number; items: ReadonlyArray<{ name: string; qty?: string }> },
+    ): Promise<void> => {
+      const itemsLine = analysis.items
+        .slice(0, 5)
+        .map((it) => (it.qty ? `${it.name} (${it.qty})` : it.name))
+        .join(' / ');
+      const bubble = {
+        type: 'bubble',
+        header: {
+          type: 'box', layout: 'horizontal',
+          backgroundColor: '#06C755', paddingAll: '12px',
+          contents: [
+            { type: 'text', text: '🍽', size: 'sm', flex: 0 },
+            { type: 'text', text: '食事を記録しました',
+              size: 'sm', color: '#ffffff', weight: 'bold',
+              gravity: 'center', margin: 'sm' },
+          ],
+        },
+        body: {
+          type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'sm',
+          contents: [
+            { type: 'box', layout: 'horizontal', spacing: 'md',
+              contents: [
+                { type: 'text', text: 'カロリー', size: 'xs', color: '#15803d', weight: 'bold', flex: 3 },
+                { type: 'text', text: `${Math.round(analysis.calories)} kcal`, size: 'sm', color: '#1e293b', flex: 7, weight: 'bold' },
+              ],
+            },
+            { type: 'separator', margin: 'sm', color: '#e2e8f0' },
+            { type: 'box', layout: 'horizontal', spacing: 'md',
+              contents: [
+                { type: 'text', text: 'たんぱく質', size: 'xs', color: '#15803d', weight: 'bold', flex: 3 },
+                { type: 'text', text: `${analysis.protein_g} g`, size: 'sm', color: '#1e293b', flex: 7 },
+              ],
+            },
+            { type: 'box', layout: 'horizontal', spacing: 'md',
+              contents: [
+                { type: 'text', text: '脂質', size: 'xs', color: '#15803d', weight: 'bold', flex: 3 },
+                { type: 'text', text: `${analysis.fat_g} g`, size: 'sm', color: '#1e293b', flex: 7 },
+              ],
+            },
+            { type: 'box', layout: 'horizontal', spacing: 'md',
+              contents: [
+                { type: 'text', text: '炭水化物', size: 'xs', color: '#15803d', weight: 'bold', flex: 3 },
+                { type: 'text', text: `${analysis.carbs_g} g`, size: 'sm', color: '#1e293b', flex: 7 },
+              ],
+            },
+            ...(itemsLine
+              ? [
+                  { type: 'separator', margin: 'md', color: '#e2e8f0' },
+                  { type: 'text', text: itemsLine, size: 'xs', color: '#64748b', wrap: true, margin: 'md' },
+                ]
+              : []),
+          ],
+        },
+      };
+      try {
+        await lineClient.pushMessage(friendLineUserId, [
+          buildMessage('flex', JSON.stringify(bubble)),
+        ]);
+      } catch (err) {
+        console.error('Failed to push food analysis result:', err);
+      }
+    };
+
+    // バックグラウンド処理本体: 後続イベントをブロックしないよう waitUntil で独立スケジュール
+    const runImagePipeline = async (): Promise<void> => {
+      if (!apiKey) {
+        await markFoodLogFailed(db, foodLogId, 'AI解析が無効です');
+        await sendErrorPush('AI解析機能は現在ご利用いただけません。');
+        return;
+      }
+
+      // 1) LINE Content API で画像取得
+      let blob;
+      try {
+        blob = await downloadLineContent(messageId, lineAccessToken);
+      } catch (err) {
+        if (err instanceof LineContentError) {
+          if (err.code === 'size_exceeded') {
+            await markFoodLogFailed(db, foodLogId, '画像サイズが大きすぎます (5MB上限)');
+            await sendErrorPush('画像サイズが大きすぎます (5MB上限)。もう少し小さい写真でお試しください。');
+            return;
+          }
+          if (err.code === 'timeout') {
+            await markFoodLogFailed(db, foodLogId, '画像取得がタイムアウトしました');
+            await sendErrorPush('画像の取得に時間がかかりすぎました。もう一度お試しください。');
+            return;
+          }
+          await markFoodLogFailed(db, foodLogId, `画像取得エラー: ${err.code}`);
+          await sendErrorPush('画像を取得できませんでした。もう一度お試しください。');
+          return;
+        }
+        throw err;
+      }
+
+      // 2) R2 へアップロード (best-effort: 失敗しても解析は続ける)
+      if (r2) {
+        try {
+          const subtype = (blob.contentType.split('/')[1] || 'jpg').toLowerCase();
+          const ext = subtype === 'jpeg' ? 'jpg' : subtype.replace(/[^a-z0-9]/g, '') || 'jpg';
+          const key = `food/${foodLogId}.${ext}`;
+          await r2.put(key, blob.bytes as unknown as ArrayBuffer, {
+            httpMetadata: { contentType: blob.contentType },
+            customMetadata: { foodLogId, friendId },
+          });
+          if (baseWorkerUrl) {
+            const publicUrl = `${baseWorkerUrl.replace(/\/$/, '')}/images/${key}`;
+            try {
+              await setFoodLogImageUrl(db, foodLogId, publicUrl);
+            } catch (urlErr) {
+              console.error('Failed to set food_log image_url:', urlErr);
+            }
+          }
+        } catch (uploadErr) {
+          console.error('R2 upload failed (non-fatal):', uploadErr);
+        }
+      }
+
+      // 3) Anthropic Vision で解析
+      let analysis;
+      try {
+        analysis = await analyzeFoodImage({
+          imageBytes: blob.bytes,
+          mimeType: blob.contentType,
+          apiKey,
+        });
+      } catch (err) {
+        if (err instanceof FoodAnalyzerError) {
+          if (err.code === 'timeout') {
+            await markFoodLogFailed(db, foodLogId, '解析がタイムアウトしました');
+            await sendErrorPush('解析に時間がかかりすぎました。もう一度お試しください。');
+            return;
+          }
+          if (err.code === 'invalid_mime_type') {
+            await markFoodLogFailed(db, foodLogId, '対応していない画像形式です');
+            await sendErrorPush('対応していない画像形式です。JPEG/PNG/WebP/GIF でお試しください。');
+            return;
+          }
+          await markFoodLogFailed(db, foodLogId, `解析エラー: ${err.code}`);
+          await sendErrorPush('解析できませんでした。もう一度お試しください 🙏');
+          return;
+        }
+        throw err;
+      }
+
+      // 4) 成功 → DB 更新 + push
+      await updateFoodLogAnalysis(db, foodLogId, analysis);
+      await sendSuccessPush(analysis);
+
+      // 5) イベントバス通知 (将来の自動化向け)
+      try {
+        await fireEvent(
+          db,
+          'food_logged',
+          {
+            friendId,
+            eventData: {
+              foodLogId,
+              calories: analysis.calories,
+              protein_g: analysis.protein_g,
+              fat_g: analysis.fat_g,
+              carbs_g: analysis.carbs_g,
+            },
+          },
+          lineAccessToken,
+          lineAccountId,
+        );
+      } catch (eventErr) {
+        // err 全体ではなく要約のみログ (secret leak 対策)
+        console.error('food_logged event fire failed (non-fatal):', eventErr instanceof Error ? eventErr.name : 'unknown');
+      }
+    };
+
+    // pipeline を non-blocking で実行 (後続 webhook event を待たせない)
+    const pipeline = runImagePipeline().catch(async (err) => {
+      // pipeline 全体の最終 catch — 安全に救済 + 友だち通知
+      // err 全体ではなく name のみログに出す (lineAccessToken / apiKey の closure を持つ scope のため)
+      console.error('Unexpected error in image webhook handler:', err instanceof Error ? err.name : 'unknown');
+      try {
+        await markFoodLogFailed(db, foodLogId, '予期せぬエラー');
+      } catch { /* best effort */ }
+      await sendErrorPush('解析できませんでした。もう一度お試しください 🙏');
+    });
+    if (ctx) {
+      ctx.waitUntil(pipeline);
+    } else {
+      // ctx が無いケース (テスト等) は await して挙動を維持
+      await pipeline;
+    }
     return;
   }
 }
