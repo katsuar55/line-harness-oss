@@ -45,8 +45,17 @@ import {
   getDailyFoodStatsForToday,
   getDailyFoodStatsRange,
   getMonthlyFoodReport,
+  getLatestActiveRecommendation,
+  markRecommendationStatus,
   jstNow,
 } from '@line-crm/db';
+import type {
+  NutritionDeficit,
+  NutritionRecommendation,
+  SkuSuggestion,
+} from '@line-crm/db';
+import { analyzeFriendNutrition } from '../services/nutrition-analyzer.js';
+import { generateAndStoreRecommendation } from '../services/nutrition-recommender.js';
 import type { Env } from '../index.js';
 
 const liffPortal = new Hono<Env>();
@@ -2126,6 +2135,241 @@ liffPortal.get('/api/liff/food/report/:yearMonth', async (c) => {
     return c.json({ success: true, data: report });
   } catch (err) {
     console.error('GET /api/liff/food/report/:yearMonth error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ═══════════════════════════════════════════════
+// Phase 4: Nutrition Coach (LIFF)
+// ═══════════════════════════════════════════════
+
+/** レコメンド再生成のクールダウン: 24h */
+const COACH_REGENERATE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Parse JSON column safely. Always returns the fallback ([]) on error so the
+ * LIFF UI can render even with corrupted historical rows.
+ */
+function safeJsonParseArray<T>(s: string | null | undefined): T[] {
+  if (!s || typeof s !== 'string') return [];
+  try {
+    const v = JSON.parse(s);
+    return Array.isArray(v) ? (v as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+interface CoachLatestPayload {
+  id: string;
+  generated_at: string;
+  ai_message: string;
+  status: NutritionRecommendation['status'];
+  deficits: NutritionDeficit[];
+  suggestions: SkuSuggestion[];
+}
+
+function shapeRecommendation(row: NutritionRecommendation): CoachLatestPayload {
+  return {
+    id: row.id,
+    generated_at: row.generated_at,
+    ai_message: row.ai_message,
+    status: row.status,
+    deficits: safeJsonParseArray<NutritionDeficit>(row.deficit_json),
+    suggestions: safeJsonParseArray<SkuSuggestion>(row.sku_suggestions_json),
+  };
+}
+
+/**
+ * GET /api/liff/coach/latest — 最新 active レコメンドを取得
+ * 無ければ data: null を返す (LIFF 側でプレースホルダ表示)。
+ */
+liffPortal.get('/api/liff/coach/latest', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const row = await getLatestActiveRecommendation(c.env.DB, user.friendId);
+    if (!row) {
+      return c.json({ success: true, data: null });
+    }
+    return c.json({ success: true, data: shapeRecommendation(row) });
+  } catch (err) {
+    console.error('GET /api/liff/coach/latest error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/coach/dismiss — レコメンドを「却下」に遷移
+ * Body: { id: string }
+ *
+ * 所有者ガード: latest active を SELECT して friend_id 一致を確認 (TOCTOU は
+ * markRecommendationStatus 内の WHERE status='active' で最終ガード)。
+ */
+liffPortal.post('/api/liff/coach/dismiss', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const body = await c.req.json<{ id?: string }>().catch(() => ({} as { id?: string }));
+    const id = typeof body.id === 'string' ? body.id : '';
+    if (!id) {
+      return c.json({ success: false, error: 'id is required' }, 400);
+    }
+
+    const row = await getLatestActiveRecommendation(c.env.DB, user.friendId);
+    if (!row || row.id !== id || row.friend_id !== user.friendId) {
+      return c.json({ success: false, error: 'Forbidden' }, 403);
+    }
+
+    await markRecommendationStatus(c.env.DB, id, 'dismissed');
+    return c.json({ success: true, data: null });
+  } catch (err) {
+    console.error('POST /api/liff/coach/dismiss error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/coach/click — SKU カードクリックを記録
+ * Body: { id: string, suggestionIndex?: number }
+ *
+ * 戻り値に `shopifyProductId` を含めるので LIFF 側はその値を `liff.openWindow`
+ * に渡せる。SKU index が範囲外なら 400。
+ */
+liffPortal.post('/api/liff/coach/click', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const body = await c.req
+      .json<{ id?: string; suggestionIndex?: number }>()
+      .catch(() => ({} as { id?: string; suggestionIndex?: number }));
+    const id = typeof body.id === 'string' ? body.id : '';
+    if (!id) {
+      return c.json({ success: false, error: 'id is required' }, 400);
+    }
+    const idx =
+      typeof body.suggestionIndex === 'number' && Number.isInteger(body.suggestionIndex)
+        ? body.suggestionIndex
+        : 0;
+
+    const row = await getLatestActiveRecommendation(c.env.DB, user.friendId);
+    if (!row || row.id !== id || row.friend_id !== user.friendId) {
+      return c.json({ success: false, error: 'Forbidden' }, 403);
+    }
+
+    const suggestions = safeJsonParseArray<SkuSuggestion>(row.sku_suggestions_json);
+    if (idx < 0 || idx >= suggestions.length) {
+      return c.json({ success: false, error: 'suggestionIndex out of range' }, 400);
+    }
+
+    await markRecommendationStatus(c.env.DB, id, 'clicked');
+
+    const sku = suggestions[idx];
+    return c.json({
+      success: true,
+      data: {
+        shopifyProductId: sku.shopifyProductId,
+        productTitle: sku.productTitle,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/liff/coach/click error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/coach/regenerate — レコメンド再生成
+ *
+ * - 24h クールダウン: 直近 active が 24h 以内なら 429
+ * - analyzer.skipReason ('no_data' / 'insufficient_data') → skipped: true で返す
+ * - deficits があれば recommender が AI コピー生成 + DB insert
+ *
+ * 注意: friendName は省略 (PR-3 が undefined を許容)。
+ */
+liffPortal.post('/api/liff/coach/regenerate', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    // 24h クールダウン
+    const latest = await getLatestActiveRecommendation(c.env.DB, user.friendId);
+    if (latest && latest.generated_at) {
+      const lastMs = Date.parse(latest.generated_at);
+      if (Number.isFinite(lastMs) && Date.now() - lastMs < COACH_REGENERATE_COOLDOWN_MS) {
+        return c.json(
+          {
+            success: false,
+            error: 'rate_limited',
+            message: '次の再生成は 24 時間後から利用できます',
+          },
+          429,
+        );
+      }
+    }
+
+    const analysis = await analyzeFriendNutrition({
+      db: c.env.DB,
+      friendId: user.friendId,
+    });
+
+    if (analysis.skipReason) {
+      return c.json({
+        success: true,
+        data: {
+          skipped: true as const,
+          reason: analysis.skipReason,
+          daysWithData: analysis.daysWithData,
+        },
+      });
+    }
+
+    if (analysis.deficits.length === 0) {
+      return c.json({
+        success: true,
+        data: {
+          skipped: true as const,
+          reason: 'no_deficit' as const,
+          daysWithData: analysis.daysWithData,
+        },
+      });
+    }
+
+    const result = await generateAndStoreRecommendation({
+      db: c.env.DB,
+      friendId: user.friendId,
+      apiKey: c.env.ANTHROPIC_API_KEY,
+      deficits: analysis.deficits,
+    });
+
+    if (!result) {
+      // SKU map 全件不在 (運用ミス) — レコメンド出せず
+      return c.json({
+        success: true,
+        data: {
+          skipped: true as const,
+          reason: 'no_sku' as const,
+          daysWithData: analysis.daysWithData,
+        },
+      });
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        skipped: false as const,
+        id: result.id,
+        aiMessage: result.aiMessage,
+        suggestions: result.suggestions,
+        source: result.source,
+        daysWithData: analysis.daysWithData,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/liff/coach/regenerate error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
