@@ -1368,6 +1368,48 @@ CREATE TABLE IF NOT EXISTS friend_badges (
   UNIQUE (friend_id, badge_code)                 -- 同一バッジの重複獲得防止
 );
 
+-- from 036_food_logs.sql
+CREATE TABLE IF NOT EXISTS food_logs (
+  id              TEXT PRIMARY KEY,
+  friend_id       TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  ate_at          TEXT NOT NULL,                    -- ISO8601 JST (撮影時刻 or 手動入力時刻)
+  meal_type       TEXT,                             -- breakfast / lunch / dinner / snack / NULL
+  image_url       TEXT,                             -- R2 公開 URL (NULL なら手動テキスト入力のみ)
+  raw_text        TEXT,                             -- ユーザ入力 / キャプション (検索用)
+  ai_analysis     TEXT,                             -- JSON: {calories, protein_g, fat_g, carbs_g, fiber_g, items[{name,qty}], notes, model_version}
+  total_calories  INTEGER,                          -- ai_analysis.calories の冗長キャッシュ
+  total_protein_g REAL,
+  total_fat_g     REAL,
+  total_carbs_g   REAL,
+  analysis_status TEXT NOT NULL DEFAULT 'pending',  -- pending / completed / failed
+  error_message   TEXT,                             -- 解析失敗時のエラー要約 (ユーザ表示用)
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 036_food_logs.sql
+CREATE TABLE IF NOT EXISTS daily_food_stats (
+  friend_id        TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  date             TEXT NOT NULL,                   -- YYYY-MM-DD (JST)
+  total_calories   INTEGER NOT NULL DEFAULT 0,
+  total_protein_g  REAL NOT NULL DEFAULT 0,
+  total_fat_g      REAL NOT NULL DEFAULT 0,
+  total_carbs_g    REAL NOT NULL DEFAULT 0,
+  meal_count       INTEGER NOT NULL DEFAULT 0,
+  last_updated     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  PRIMARY KEY (friend_id, date)
+);
+
+-- from 036_food_logs.sql
+CREATE TABLE IF NOT EXISTS monthly_food_reports (
+  friend_id    TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  year_month   TEXT NOT NULL,                    -- "2026-04" (JST)
+  summary_text TEXT NOT NULL,                    -- AI 生成テキスト (薬機ガード後)
+  meal_count   INTEGER NOT NULL DEFAULT 0,       -- 集計対象になった食事ログ数
+  avg_calories INTEGER,                          -- 月平均カロリー (NULL=データ不足)
+  generated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  PRIMARY KEY (friend_id, year_month)
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -1478,3 +1520,14 @@ CREATE INDEX IF NOT EXISTS idx_intake_logs_friend_date
 CREATE INDEX IF NOT EXISTS idx_badges_category ON badges (category, sort_order);
 CREATE INDEX IF NOT EXISTS idx_friend_badges_friend ON friend_badges (friend_id);
 CREATE INDEX IF NOT EXISTS idx_friend_badges_earned ON friend_badges (earned_at);
+CREATE INDEX IF NOT EXISTS idx_food_logs_friend_ate
+  ON food_logs (friend_id, ate_at DESC);
+CREATE INDEX IF NOT EXISTS idx_food_logs_friend_date
+  ON food_logs (friend_id, substr(ate_at, 1, 10));
+CREATE INDEX IF NOT EXISTS idx_daily_food_stats_friend
+  ON daily_food_stats (friend_id, date DESC);
+CREATE INDEX IF NOT EXISTS idx_food_logs_pending
+  ON food_logs (friend_id, created_at)
+  WHERE analysis_status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_monthly_food_reports_generated
+  ON monthly_food_reports (friend_id, generated_at DESC);

@@ -30,6 +30,7 @@ export * from './analytics';
 export * from './liff-portal';
 export * from './i18n';
 export * from './badges';
+export * from './food-logs';
 
 /**
  * Thin wrapper around D1Database.
