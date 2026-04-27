@@ -79,6 +79,23 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - 設計方針: Phase 3 で集めた `daily_food_stats` を消費 → naturism サプリ売上に変換する閉ループ
 - 出口側 (CV): `nutrition_recommendations.conversion_event_id` で既存 CV 計測基盤と紐付け
 - 関連 secret: ANTHROPIC_API_KEY (Phase 3 と共用)
+- git tag: v0.10.0-phase4
+
+### Phase 5: Production Hardening + Phase 3/4 Revenue Activation ⚠️ 部分完了 2026-04-28 (naturism)
+**Ultraplan で TOP 1 として選定**。Phase 3+4 を本番に投入する前提整備。
+- [x] PR-1: Sidebar に `/coach` リンク + Worker `/api/admin/coach/summary` (push 数を独立メトリクスで返す)
+- [x] PR-3: Playwright E2E 6 本 (`coach.spec.ts` 4 + `food-log.spec.ts` 2) — `page.route()` で全 worker API モック
+- [x] PR-4: Cron 死活監視 (`cron_run_logs` table + `processCronMonitor` + Discord アラート JST 09:00 gating)
+- [x] PR-5: Pre-deploy preflight checker (`pnpm preflight` / `--full` / `:test`) — REQUIRED_SECRETS / migration 整合性
+- [ ] **PR-2**: 実 Shopify GID で `nutrition_sku_map` を差し替え (migration 038) ← **オーナー承認 (実 GID 提供) 待ち**
+- [ ] **PR-6**: wrangler deploy + Axiom dashboard + smoke runbook ← **オーナー承認待ち**
+- [ ] **PR-7**: 7 日観測 + SKU copy_template A/B テスト ← PR-6 完了後
+- 自動化済 PR: 4 件 (PR-1/3/4/5)
+- ブロック理由: PR-2 は naturism Shopify ストアの実商品 GID が必要。PR-6 は本番 deploy 承認 (CLAUDE.md 厳守)。
+- preflight 実行で発見された pre-existing 課題:
+  - CRITICAL: migration 009 duplicate (009_delivery_type.sql + 009_token_expiry.sql) — リネーム未実施
+  - WARN: migration gap at 038 (PR-2 用に予約)
+- git tag: v0.11.0-phase5-partial
 
 ### Round 4 (予定)
 - [ ] メール配信連携 (SendGrid/SES)
