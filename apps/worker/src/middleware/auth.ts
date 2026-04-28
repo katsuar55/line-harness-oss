@@ -15,8 +15,11 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path.startsWith('/r/') ||
     path.startsWith('/images/') ||
     path.startsWith('/api/liff/') ||
-    path === '/liff/portal' ||
-    path === '/liff/portal/' ||
+    // LIFF HTML ページは API ではなく SPA エントリ (内部の API 呼び出しは
+    // liffAuthMiddleware が `/api/liff/*` で別途 idToken 検証する)。
+    // ハードコードしていた `/liff/portal` だけだと、/liff/coach や /liff/food
+    // /liff/reorder /liff/food/graph /liff/cart 等が 401 になっていた (2026-04-28 顕在化)。
+    path.startsWith('/liff/') ||
     path.startsWith('/auth/') ||
     path === '/api/integrations/stripe/webhook' ||
     path === '/api/integrations/shopify/webhook' ||

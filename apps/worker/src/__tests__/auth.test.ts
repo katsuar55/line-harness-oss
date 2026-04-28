@@ -98,6 +98,13 @@ function createTestApp(): InstanceType<typeof Hono<Env>> {
   app.get('/docs', (c) => c.text('docs'));
   app.get('/openapi.json', (c) => c.json({}));
   app.get('/api/liff/profile', (c) => c.json({ ok: true }));
+  // LIFF SPA HTML pages — skip auth (idToken は内部 API 呼び出しで liffAuthMiddleware が検証する)
+  app.get('/liff/portal', (c) => c.html('<html>portal</html>'));
+  app.get('/liff/coach', (c) => c.html('<html>coach</html>'));
+  app.get('/liff/food', (c) => c.html('<html>food</html>'));
+  app.get('/liff/food/graph', (c) => c.html('<html>food graph</html>'));
+  app.get('/liff/reorder', (c) => c.html('<html>reorder</html>'));
+  app.get('/liff/cart', (c) => c.html('<html>cart</html>'));
 
   return app;
 }
@@ -290,6 +297,22 @@ describe('Auth Middleware', () => {
 
     it('GET /api/liff/* is accessible without auth', async () => {
       const res = await app.request('/api/liff/profile', {}, env);
+      expect(res.status).toBe(200);
+    });
+
+    // ── 2026-04-28 顕在化バグの回帰テスト ──
+    // 全 LIFF SPA HTML ページ (/liff/*) が認証なしで取得できること。
+    // 旧コードでは /liff/portal だけハードコード skip だったため、
+    // /liff/coach や /liff/food /liff/reorder 等が 401 になっていた。
+    it.each([
+      '/liff/portal',
+      '/liff/coach',
+      '/liff/food',
+      '/liff/food/graph',
+      '/liff/reorder',
+      '/liff/cart',
+    ])('GET %s is accessible without auth (LIFF SPA)', async (path) => {
+      const res = await app.request(path, {}, env);
       expect(res.status).toBe(200);
     });
   });
