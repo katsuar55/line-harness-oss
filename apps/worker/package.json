@@ -19,15 +19,15 @@
     "@line-crm/db": "workspace:*",
     "@line-crm/line-sdk": "workspace:*",
     "@line-crm/shared": "workspace:*",
-    "hono": "^4.12.14",
+    "hono": "^4.12.15",
     "zod": "^3.24.4"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.33.1",
-    "@cloudflare/workers-types": "^4.20260424.1",
+    "@cloudflare/vite-plugin": "^1.33.2",
+    "@cloudflare/workers-types": "^4.20260426.1",
     "typescript": "^5.7.0",
-    "vite": "^6.0.0",
+    "vite": "^6.4.2",
     "vitest": "^2.0.0",
-    "wrangler": "^4.84.1"
+    "wrangler": "^4.85.0"
   }
 }
