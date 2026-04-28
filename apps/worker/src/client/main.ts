@@ -39,12 +39,10 @@ function detectLiffId(): string {
   return import.meta.env?.VITE_LIFF_ID || '';
 }
 const LIFF_ID = detectLiffId();
-if (!LIFF_ID && !new URLSearchParams(window.location.search).get('liffId')) {
-  throw new Error(
-    'VITE_LIFF_ID is not set and no liffId query param provided. ' +
-    'Set VITE_LIFF_ID in .env (local) or GitHub Secrets (CI).'
-  )
-}
+// NOTE: main.ts の最上位で throw すると ESM module init エラーで `<div id="app">` の
+//       「読み込み中...」スピナーが永久に止まる (visible エラーが出ない) ため、
+//       ここではスローせず、後続の main() 内で showError() を呼ぶ。
+//       `main.ts is not loaded` (本番事故 2026-04-28) の再発防止。
 const UUID_STORAGE_KEY = 'lh_uuid';
 // LINE公式アカウントの友だち追加URL（LINE Developers Console → Messaging API → Bot basic ID）
 const BOT_BASIC_ID = import.meta.env?.VITE_BOT_BASIC_ID || '';
@@ -260,6 +258,16 @@ async function linkAndAddFlow() {
 // ─── Entry Point ────────────────────────────────────────
 
 async function main() {
+  // ── LIFF_ID guard (visible error instead of silent module init failure) ──
+  if (!LIFF_ID) {
+    showError(
+      'LIFF ID が未設定です。\n\n' +
+      '・本番ビルド時: VITE_LIFF_ID を渡してください (apps/worker/.env または CI Secret)\n' +
+      '・テスト時: URL に ?liffId=<LIFF_ID> を付けて再読み込みしてください',
+    );
+    return;
+  }
+
   try {
     await liff.init({ liffId: LIFF_ID });
 

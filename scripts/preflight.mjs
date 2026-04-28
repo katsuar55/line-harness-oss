@@ -243,6 +243,7 @@ export async function runChecks({
   mode = 'offline',
   migrationsDir = join(REPO_ROOT, 'packages/db/migrations'),
   fetchSecrets = fetchRemoteSecrets,
+  clientDistDir = join(REPO_ROOT, 'apps/worker/dist/client/assets'),
 } = {}) {
   const issues = [];
 
@@ -361,7 +362,82 @@ export async function runChecks({
     }
   }
 
-  // 4. wrangler.toml が naturism account を指しているか軽くチェック
+  // 4. LIFF client bundle 検証 (本番事故 2026-04-28 再発防止)
+  //    `vite build` 後の dist/client/assets/index-*.js が VITE_LIFF_ID を埋め込んでいるか
+  //    `LIFF ID が未設定です` が showError 経由で出ること = main.ts の throw 削除済み
+  try {
+    if (existsSync(clientDistDir)) {
+      const jsFiles = readdirSync(clientDistDir).filter((f) => /^index-.+\.js$/.test(f));
+      if (jsFiles.length === 0) {
+        issues.push({
+          severity: 'WARN',
+          check: 'liff-bundle',
+          message: 'apps/worker/dist/client/assets/index-*.js not found',
+          detail: 'pnpm --filter worker build を deploy 前に実行すること',
+        });
+      } else {
+        // 最新の index-*.js を 1 つ検証
+        const latest = jsFiles
+          .map((f) => ({ f, t: 0 }))
+          .map((x) => {
+            try {
+              const stat = readFileSync(join(clientDistDir, x.f));
+              return { f: x.f, len: stat.length, content: stat.toString('utf8') };
+            } catch {
+              return { f: x.f, len: 0, content: '' };
+            }
+          })
+          .filter((x) => x.len > 0)[0];
+
+        if (latest) {
+          const hasOldThrow =
+            /throw new Error\([^)]*VITE_LIFF_ID is not set/i.test(latest.content);
+          const hasNewError = /LIFF ID が未設定/.test(latest.content);
+          // VITE_LIFF_ID の値が埋め込まれているか (LIFF ID 形式: 数字10桁 + '-' + 英数字8桁)
+          const liffIdEmbedded = /\d{10}-[A-Za-z0-9]{8,}/.test(latest.content);
+
+          if (hasOldThrow) {
+            issues.push({
+              severity: 'CRITICAL',
+              check: 'liff-bundle',
+              message: 'Bundled JS contains module-top-level `throw new Error(VITE_LIFF_ID is not set...)`',
+              detail: '無音で「読み込み中...」固着の原因。main.ts の throw を showError() に置換すること',
+            });
+          }
+          if (!liffIdEmbedded) {
+            issues.push({
+              severity: 'CRITICAL',
+              check: 'liff-bundle',
+              message: 'Bundled JS does not contain a LIFF ID (10digits-base62) — VITE_LIFF_ID may not be set at build time',
+              detail: 'apps/worker/.env または CI Secret に VITE_LIFF_ID=2009XXXXXXX-XXXXXXXX を設定して再 build',
+            });
+          }
+          if (!hasOldThrow && liffIdEmbedded) {
+            issues.push({
+              severity: 'INFO',
+              check: 'liff-bundle',
+              message: `LIFF bundle OK (${latest.f}, ${latest.len} bytes)${hasNewError ? ', visible-error fallback present' : ''}`,
+            });
+          }
+        }
+      }
+    } else {
+      issues.push({
+        severity: 'INFO',
+        check: 'liff-bundle',
+        message: 'apps/worker/dist/client not found — run `pnpm --filter worker build` to verify LIFF bundle',
+      });
+    }
+  } catch (err) {
+    // best-effort — preflight 自体を落とさない
+    issues.push({
+      severity: 'WARN',
+      check: 'liff-bundle',
+      message: `LIFF bundle check failed: ${err instanceof Error ? err.message.slice(0, 200) : 'unknown'}`,
+    });
+  }
+
+  // 5. wrangler.toml が naturism account を指しているか軽くチェック
   try {
     const tomlPath = join(REPO_ROOT, 'apps/worker/wrangler.toml');
     if (existsSync(tomlPath)) {

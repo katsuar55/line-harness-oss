@@ -8,12 +8,17 @@
 import { describe, it, expect } from 'vitest';
 import { liffReorderPage } from '../routes/liff-reorder-page.js';
 
-const baseEnv = {
+interface MinimalEnv {
+  LIFF_URL: string;
+  WORKER_URL: string;
+}
+
+const baseEnv: MinimalEnv = {
   LIFF_URL: 'https://liff.line.me/2000000000-abcd1234',
   WORKER_URL: 'https://example.workers.dev',
-} as const;
+};
 
-async function fetchPage(path: string, env = baseEnv): Promise<{ status: number; body: string }> {
+async function fetchPage(path: string, env: MinimalEnv = baseEnv): Promise<{ status: number; body: string }> {
   const res = await liffReorderPage.request(path, {}, env as unknown as Record<string, unknown>);
   return { status: res.status, body: await res.text() };
 }

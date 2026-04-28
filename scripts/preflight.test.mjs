@@ -356,6 +356,131 @@ test('runChecks full mode flags missing required secrets', async () => {
   }
 });
 
+// ─────────────────────────────────────
+// runChecks — liff-bundle check (Phase 6 / 2026-04-28 事故対策)
+// ─────────────────────────────────────
+
+test('runChecks liff-bundle: missing dist directory → INFO only (does not block)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-liff-nodir-'));
+  try {
+    writeFileSync(join(dir, '040_a.sql'), '');
+    const issues = await runChecks({
+      mode: 'offline',
+      migrationsDir: dir,
+      clientDistDir: '/non/existent/dir/xyz123',
+    });
+    const liff = issues.filter((i) => i.check === 'liff-bundle');
+    const critical = liff.filter((i) => i.severity === 'CRITICAL');
+    assert.equal(critical.length, 0);
+    const info = liff.filter((i) => i.severity === 'INFO');
+    assert.ok(info.length >= 1, 'expected INFO entry suggesting build');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runChecks liff-bundle: empty dist directory → WARN', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-liff-empty-'));
+  const distDir = mkdtempSync(join(tmpdir(), 'pf-liff-empty-dist-'));
+  try {
+    writeFileSync(join(dir, '040_a.sql'), '');
+    const issues = await runChecks({
+      mode: 'offline',
+      migrationsDir: dir,
+      clientDistDir: distDir,
+    });
+    const liff = issues.filter((i) => i.check === 'liff-bundle');
+    const warn = liff.filter((i) => i.severity === 'WARN');
+    assert.equal(warn.length, 1);
+    assert.match(warn[0].message, /not found/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(distDir, { recursive: true, force: true });
+  }
+});
+
+test('runChecks liff-bundle: bundle with VITE_LIFF_ID throw → CRITICAL', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-liff-throw-'));
+  const distDir = mkdtempSync(join(tmpdir(), 'pf-liff-throw-dist-'));
+  try {
+    writeFileSync(join(dir, '040_a.sql'), '');
+    // Simulate broken bundle (old throw retained, no LIFF ID embedded)
+    writeFileSync(
+      join(distDir, 'index-OLD.js'),
+      'function x(){}throw new Error("VITE_LIFF_ID is not set and no liffId query param provided. Set VITE_LIFF_ID in .env (local) or GitHub Secrets (CI).");',
+    );
+    const issues = await runChecks({
+      mode: 'offline',
+      migrationsDir: dir,
+      clientDistDir: distDir,
+    });
+    const liff = issues.filter((i) => i.check === 'liff-bundle');
+    const critical = liff.filter((i) => i.severity === 'CRITICAL');
+    // 旧 throw 残存 + LIFF ID 不在の 2 つの CRITICAL
+    assert.ok(critical.length >= 1);
+    assert.ok(
+      critical.some((c) => /throw/i.test(c.message)),
+      'expected CRITICAL about throw',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(distDir, { recursive: true, force: true });
+  }
+});
+
+test('runChecks liff-bundle: healthy bundle → INFO OK', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-liff-ok-'));
+  const distDir = mkdtempSync(join(tmpdir(), 'pf-liff-ok-dist-'));
+  try {
+    writeFileSync(join(dir, '040_a.sql'), '');
+    // Healthy bundle: LIFF ID embedded, no module-top throw, has visible-error fallback
+    writeFileSync(
+      join(distDir, 'index-NEW.js'),
+      'function x(){return "2009713578-NbdHyFZf"}var Y=x();if(!Y)showError("LIFF ID が未設定です");',
+    );
+    const issues = await runChecks({
+      mode: 'offline',
+      migrationsDir: dir,
+      clientDistDir: distDir,
+    });
+    const liff = issues.filter((i) => i.check === 'liff-bundle');
+    const critical = liff.filter((i) => i.severity === 'CRITICAL');
+    assert.equal(critical.length, 0, 'healthy bundle must not produce CRITICAL');
+    const ok = liff.find((i) => i.severity === 'INFO' && /OK/.test(i.message));
+    assert.ok(ok, 'expected INFO OK entry');
+    assert.match(ok.message, /index-NEW\.js/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(distDir, { recursive: true, force: true });
+  }
+});
+
+test('runChecks liff-bundle: bundle without LIFF ID → CRITICAL', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-liff-noliff-'));
+  const distDir = mkdtempSync(join(tmpdir(), 'pf-liff-noliff-dist-'));
+  try {
+    writeFileSync(join(dir, '040_a.sql'), '');
+    // No LIFF ID pattern at all
+    writeFileSync(
+      join(distDir, 'index-X.js'),
+      'function x(){return ""}var Y=x();if(!Y)showError("LIFF ID が未設定です");',
+    );
+    const issues = await runChecks({
+      mode: 'offline',
+      migrationsDir: dir,
+      clientDistDir: distDir,
+    });
+    const critical = issues.filter(
+      (i) => i.check === 'liff-bundle' && i.severity === 'CRITICAL',
+    );
+    assert.equal(critical.length, 1);
+    assert.match(critical[0].message, /does not contain a LIFF ID/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(distDir, { recursive: true, force: true });
+  }
+});
+
 test('runChecks full mode tolerates wrangler failure (WARN not CRITICAL)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pf-wfail-'));
   try {
