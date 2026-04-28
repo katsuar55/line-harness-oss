@@ -136,6 +136,56 @@ function showFriendAdd(profile: { displayName: string; pictureUrl?: string }) {
 function showCompletion(profile: { displayName: string; pictureUrl?: string }, isRecovery: boolean) {
   const container = document.getElementById('app')!;
   const ref = getRef();
+
+  // LINE 内ブラウザかどうかで導線を出し分ける
+  // - LINE 内 + BOT_BASIC_ID あり: 2 秒後にトーク画面に自動リダイレクト (UX 維持)
+  // - それ以外: マイページ / 機能メニューへのナビゲーションボタンを表示
+  const isInLineApp = (() => {
+    try {
+      return typeof liff !== 'undefined' && liff.isInClient && liff.isInClient();
+    } catch {
+      return false;
+    }
+  })();
+
+  const closeMessage =
+    isInLineApp && BOT_BASIC_ID
+      ? '<br>このページは閉じて大丈夫です。'
+      : '';
+
+  // メニューボタン (LINE 外 or BOT_BASIC_ID 未設定の場合に表示)
+  const menuButtons =
+    !isInLineApp || !BOT_BASIC_ID
+      ? `
+    <div class="menu-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:20px;">
+      <a href="/liff/portal" class="menu-btn">🏠<br>マイページ</a>
+      <a href="/liff/coach" class="menu-btn">🌿<br>栄養コーチ</a>
+      <a href="/liff/food" class="menu-btn">🍱<br>食事記録</a>
+      <a href="/liff/reorder" class="menu-btn">📦<br>再購入</a>
+    </div>
+    <style>
+      .menu-btn {
+        display: block;
+        padding: 16px 12px;
+        background: #fff;
+        border: 1.5px solid #06C755;
+        border-radius: 12px;
+        color: #06C755;
+        font-weight: 600;
+        font-size: 13px;
+        text-decoration: none;
+        text-align: center;
+        line-height: 1.5;
+        transition: all .15s;
+      }
+      .menu-btn:active {
+        background: #e8faf0;
+        transform: scale(0.98);
+      }
+    </style>
+  `
+      : '';
+
   container.innerHTML = `
     <div class="card">
       <div class="check-icon">${isRecovery ? '🔄' : '✓'}</div>
@@ -148,15 +198,15 @@ function showCompletion(profile: { displayName: string; pictureUrl?: string }, i
         ${isRecovery
           ? '以前のアカウント情報を引き継ぎました。'
           : 'ありがとうございます！これからお役立ち情報をお届けします。'
-        }
-        <br>このページは閉じて大丈夫です。
+        }${closeMessage}
       </p>
+      ${menuButtons}
       ${ref ? `<p class="ref-badge">${escapeHtml(ref)}</p>` : ''}
     </div>
   `;
 
-  // 2秒後にトーク画面に遷移（BOT_BASIC_ID が設定されている場合のみ）
-  if (BOT_BASIC_ID) {
+  // 2 秒後にトーク画面に遷移（LINE 内 + BOT_BASIC_ID 設定済みの場合のみ）
+  if (isInLineApp && BOT_BASIC_ID) {
     setTimeout(() => {
       window.location.href = `https://line.me/R/oaMessage/${BOT_BASIC_ID}/`;
     }, 2000);
