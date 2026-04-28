@@ -11,7 +11,10 @@
  */
 
 import type { LineClient } from '@line-crm/line-sdk';
-import { getCrossSellSuggestions } from '@line-crm/db';
+import { getCrossSellSuggestions, insertCronRunLog } from '@line-crm/db';
+
+/** cron-monitor が監視する job 名と一致させる */
+export const SUBSCRIPTION_REMINDER_JOB_NAME = 'subscription-reminder';
 
 interface ReminderRow {
   id: string;
@@ -109,12 +112,22 @@ export function buildCrossSellComponents(entries: CrossSellEntry[]): unknown[] {
   return items;
 }
 
+export interface SubscriptionReminderResult {
+  /** due (送信対象) と判定された件数 */
+  dueCount: number;
+  /** 実際に push が成功した件数 */
+  sentCount: number;
+  /** push 中に発生した例外件数 */
+  errorCount: number;
+}
+
 export async function processSubscriptionReminders(
   db: D1Database,
   lineClient: LineClient,
   liffUrl: string,
-): Promise<void> {
+): Promise<SubscriptionReminderResult> {
   const now = new Date().toISOString();
+  const metrics: SubscriptionReminderResult = { dueCount: 0, sentCount: 0, errorCount: 0 };
 
   // 1. Get due reminders
   const { results: dueReminders } = await db
@@ -128,7 +141,13 @@ export async function processSubscriptionReminders(
     .bind(now)
     .all<ReminderRow>();
 
-  if (!dueReminders || dueReminders.length === 0) return;
+  metrics.dueCount = dueReminders?.length ?? 0;
+
+  if (!dueReminders || dueReminders.length === 0) {
+    // due 0 件でも cron 死活監視のため heartbeat を残す (Phase 6 PR-6)
+    await recordCronHeartbeat(db, metrics);
+    return metrics;
+  }
 
   for (const reminder of dueReminders) {
     try {
@@ -219,6 +238,7 @@ export async function processSubscriptionReminders(
       };
 
       await lineClient.pushMessage(friend.line_user_id, [message]);
+      metrics.sentCount++;
 
       // 6. Update next_reminder_at
       const nextAt = new Date(Date.now() + reminder.interval_days * 86400000).toISOString();
@@ -228,6 +248,41 @@ export async function processSubscriptionReminders(
         .run();
     } catch {
       // Continue with next reminder on failure
+      metrics.errorCount++;
     }
+  }
+
+  // Phase 6 PR-6: cron-monitor 連携用 heartbeat (success として記録)
+  await recordCronHeartbeat(db, metrics);
+
+  return metrics;
+}
+
+/**
+ * cron_run_logs に subscription-reminder の実行結果を記録する。
+ * cron-monitor.ts の DEFAULT_RULES に同名 job を登録すると、
+ * 24 時間以上 silent な場合に Discord アラートが出る。
+ *
+ * fail-safe: 記録失敗で cron 全体を止めない。
+ */
+async function recordCronHeartbeat(
+  db: D1Database,
+  metrics: SubscriptionReminderResult,
+): Promise<void> {
+  try {
+    await insertCronRunLog(db, {
+      jobName: SUBSCRIPTION_REMINDER_JOB_NAME,
+      status: 'success',
+      metrics: {
+        due: metrics.dueCount,
+        sent: metrics.sentCount,
+        errors: metrics.errorCount,
+      },
+    });
+  } catch (err) {
+    console.error(
+      '[subscription-reminder] cron_run_logs insert failed',
+      err instanceof Error ? err.name : 'unknown',
+    );
   }
 }

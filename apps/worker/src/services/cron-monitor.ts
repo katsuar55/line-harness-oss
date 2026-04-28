@@ -81,6 +81,9 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
   { jobName: 'weekly-coach-push', maxSilentHours: 7 * 24 + 12 },
   // 月次レポート: 31 日 + 12 時間で許容
   { jobName: 'monthly-food-report', maxSilentHours: 31 * 24 + 12 },
+  // 再購入リマインダー (Phase 6 PR-6): cron は 5 分間隔。24 時間 silent で異常。
+  // deploy 直後など短期間 stale を許容する余裕を含む。
+  { jobName: 'subscription-reminder', maxSilentHours: 24 },
 ];
 
 // ============================================================
