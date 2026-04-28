@@ -237,6 +237,11 @@ h1{font-size:28px;font-weight:800;margin-bottom:8px}
 // Convenience redirect for /book path
 app.get('/book', (c) => c.redirect('/?page=book'));
 
+// /liff/cart は単独 SPA ページ未実装。reorder.ts にカートバーが統合されているため
+// /liff/reorder に redirect する (2026-04-29 本番 500 hotfix)。
+app.get('/liff/cart', (c) => c.redirect('/liff/reorder'));
+app.get('/liff/cart/', (c) => c.redirect('/liff/reorder'));
+
 // 全ルート共通エラーハンドラ — Axiom + Discord 通知 (secret 未登録時は no-op)
 // 監視機能は fail-safe: ログ送信が失敗してもアプリ応答は通す
 app.onError((err, c) => {
@@ -252,12 +257,15 @@ app.onError((err, c) => {
 });
 
 // 404 fallback — JSON for API paths, plain for others (Workers Assets SPA fallback handles it)
+// 注意: app.notFound 内で c.notFound() を呼ぶと Hono v4 では再帰呼び出しになり
+// stack overflow → onError で 500 を返してしまう (2026-04-29 hotfix で発覚)。
+// 必ず Response を直接 return すること。
 app.notFound((c) => {
   const path = new URL(c.req.url).pathname;
   if (path.startsWith('/api/') || path === '/webhook' || path === '/docs' || path === '/openapi.json') {
     return c.json({ success: false, error: 'Not found' }, 404);
   }
-  return c.notFound();
+  return c.text('Not Found', 404);
 });
 
 // Scheduled handler for cron triggers — runs for all active LINE accounts
