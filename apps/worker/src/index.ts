@@ -237,10 +237,21 @@ h1{font-size:28px;font-weight:800;margin-bottom:8px}
 // Convenience redirect for /book path
 app.get('/book', (c) => c.redirect('/?page=book'));
 
-// /liff/cart は単独 SPA ページ未実装。reorder.ts にカートバーが統合されているため
-// /liff/reorder に redirect する (2026-04-29 本番 500 hotfix)。
-app.get('/liff/cart', (c) => c.redirect('/liff/reorder'));
-app.get('/liff/cart/', (c) => c.redirect('/liff/reorder'));
+// /liff/cart の SPA は未実装 (/api/liff/cart endpoints は dead code 相当)。
+// 当初 /liff/reorder に redirect したが、/liff/reorder は subscription_reminders
+// 編集 SPA (Phase 6 PR-4) であってカート機能ではないことが判明 (2026-04-29 自己レビュー)。
+// LIFF Top メニュー (マイページ/栄養コーチ/食事記録/再購入) に着地させる。
+// クエリ文字列 (utm 等) は引き継ぐ。
+app.get('/liff/cart', (c) => {
+  const url = new URL(c.req.url);
+  const target = url.search ? `/liff/portal${url.search}` : '/liff/portal';
+  return c.redirect(target);
+});
+app.get('/liff/cart/', (c) => {
+  const url = new URL(c.req.url);
+  const target = url.search ? `/liff/portal${url.search}` : '/liff/portal';
+  return c.redirect(target);
+});
 
 // 全ルート共通エラーハンドラ — Axiom + Discord 通知 (secret 未登録時は no-op)
 // 監視機能は fail-safe: ログ送信が失敗してもアプリ応答は通す

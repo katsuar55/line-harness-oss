@@ -27,8 +27,15 @@ function createMinimalApp(): InstanceType<typeof Hono> {
   const app = new Hono();
 
   // Mirror the production redirect for /liff/cart
-  app.get('/liff/cart', (c) => c.redirect('/liff/reorder'));
-  app.get('/liff/cart/', (c) => c.redirect('/liff/reorder'));
+  // クエリ文字列 (utm 等) は引き継ぐ。/liff/reorder ではなく /liff/portal に着地させる
+  // (前者は subscription_reminders 編集 SPA であってカートではないため)。
+  const cartHandler = (c: { req: { url: string }; redirect: (url: string) => Response }) => {
+    const url = new URL(c.req.url);
+    const target = url.search ? `/liff/portal${url.search}` : '/liff/portal';
+    return c.redirect(target);
+  };
+  app.get('/liff/cart', cartHandler as never);
+  app.get('/liff/cart/', cartHandler as never);
 
   // A known-good route to confirm the app routes normal requests
   app.get('/liff/portal', (c) => c.html('<html>portal</html>'));
@@ -92,17 +99,39 @@ describe('Global notFound handler', () => {
 });
 
 describe('/liff/cart redirect', () => {
-  it('redirects /liff/cart to /liff/reorder', async () => {
+  it('redirects /liff/cart to /liff/portal (LIFF メニューハブ)', async () => {
     const app = createMinimalApp();
     const res = await app.request('/liff/cart');
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe('/liff/reorder');
+    expect(res.headers.get('location')).toBe('/liff/portal');
   });
 
-  it('redirects /liff/cart/ (trailing slash) to /liff/reorder', async () => {
+  it('redirects /liff/cart/ (trailing slash) to /liff/portal', async () => {
     const app = createMinimalApp();
     const res = await app.request('/liff/cart/');
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe('/liff/reorder');
+    expect(res.headers.get('location')).toBe('/liff/portal');
+  });
+
+  it('preserves query string on redirect (utm tracking)', async () => {
+    const app = createMinimalApp();
+    const res = await app.request('/liff/cart?utm_source=line&utm_campaign=spring');
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/liff/portal?utm_source=line&utm_campaign=spring');
+  });
+
+  it('preserves query string on trailing-slash variant', async () => {
+    const app = createMinimalApp();
+    const res = await app.request('/liff/cart/?ref=abc');
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/liff/portal?ref=abc');
+  });
+
+  it('uppercase /liff/CART falls through to 404 (paths are case-sensitive)', async () => {
+    const app = createMinimalApp();
+    const res = await app.request('/liff/CART');
+    // Hono のデフォルトはパス case-sensitive。case-insensitive にしたいなら
+    // 別途 redirect を増やす必要があるが現状 LINE 内リンクは小文字統一前提。
+    expect(res.status).toBe(404);
   });
 });
