@@ -112,12 +112,27 @@ LIFF_URL: string
 WORKER_URL: string
 ```
 
-## デプロイルール
+## デプロイルール (案 A: 全権限委譲, 改訂 2026-04-28)
 
-- `wrangler deploy` は必ずオーナー（Katsu）の承認を得てから実行
-- `wrangler d1 create` はオーナーが PowerShell で実行 → database_id を受け取る
+- Claude Code は本リポジトリの全コマンドを自律実行してよい (deploy / d1 / secret 含む)
+- 実行前に必ず `pnpm preflight` で All green を確認すること
+- ただし以下は**必ず実行前にチャットで報告し承認を待つ** (不可逆操作・実費・公開影響):
+  - 本番 D1 データの破壊的変更 (`DROP TABLE` / `DELETE FROM ... WHERE` を伴う migration)
+  - `wrangler d1 create` (新 DB 作成)
+  - 実費が発生する Cloudflare プラン変更 (Workers Paid / R2 課金 / Workers AI 有料モデル切替 等)
+  - 公開済み LINE Official Account への broadcast (1万件以上)
+  - 公開チャンネルの Webhook URL 変更
+- `pnpm --filter worker deploy` (vite build && wrangler deploy) は事前承認なしで実行可
+  - 完了後に必ず本番 HTML の bundle ID + LIFF ID 埋め込みを `curl` で検証してチャットに報告
+  - preflight CRITICAL がある状態で deploy しないこと (deploy 自動ブロック)
 - シークレットは `wrangler secret put` でのみ設定。コード・ログ・CLAUDE.md に含めない
+  - secret 値そのもののチャットへのエコーバックも禁止 (PII / 認証情報の漏洩防止)
 - 薬機法に抵触する表現（効能効果の断定）をAIプロンプトに含めない
+
+**事故時のロールバック手順** (2026-04-28 「読み込み中...」固着事故の教訓):
+- 直近 deploy で本番が壊れたら即 `wrangler rollback` または前 commit を checkout して再 deploy
+- 復旧 deploy 後、必ず `curl -s https://<worker-url>/ | grep "src=\"/assets/"` で
+  bundle ID が変わったことを確認 (Cloudflare CDN キャッシュは数十秒で剥がれる)
 
 ## 現在のフェーズ
 
