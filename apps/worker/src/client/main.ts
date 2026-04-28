@@ -223,6 +223,45 @@ function showError(message: string) {
   `;
 }
 
+/**
+ * 接続中の進捗を視覚化 (デフォルトの「読み込み中...」を上書き)。
+ * liff.init / liff.login の各段階で呼ぶ。
+ */
+function showProgress(message: string) {
+  const container = document.getElementById('app');
+  if (!container) return;
+  container.innerHTML = `
+    <div class="card">
+      <div class="loading-spinner"></div>
+      <p class="message">${escapeHtml(message)}</p>
+    </div>
+  `;
+}
+
+/**
+ * LIFF init/login が想定時間内に完了しなかった場合の救済 UI。
+ * LINE 内ブラウザで worker URL を直接開いた時の hang 対策 (2026-04-28 事故)。
+ * LIFF URL に切り替えて開き直すよう案内する。
+ */
+function showLiffFallback(liffId: string) {
+  const container = document.getElementById('app');
+  if (!container) return;
+  const liffUrl = `https://liff.line.me/${liffId}`;
+  container.innerHTML = `
+    <div class="card">
+      <h2>LINE で開き直してください</h2>
+      <p class="message">
+        この URL を直接ブラウザで開くと、LIFF が正しく初期化されない場合があります。<br>
+        下のボタンから LINE 経由で再度開いてください。
+      </p>
+      <a href="${liffUrl}" class="add-friend-btn">
+        LINE で開く
+      </a>
+      <p class="sub-message">${escapeHtml(liffUrl)}</p>
+    </div>
+  `;
+}
+
 // ─── Core Flow ──────────────────────────────────────────
 
 async function linkAndAddFlow() {
@@ -318,11 +357,31 @@ async function main() {
     return;
   }
 
+  // ── タイムアウトフォールバック ──
+  // LINE 内ブラウザで worker URL を直接開いた時、liff.init / liff.login が
+  // 静かに hang して「読み込み中...」が永久に消えない事象 (2026-04-28 発生) を救済する。
+  // 8 秒で完了しない場合は LIFF URL への手動切り替えを案内。
+  let completed = false;
+  const fallbackTimer = window.setTimeout(() => {
+    if (!completed) showLiffFallback(LIFF_ID);
+  }, 8000);
+
+  showProgress('LINE と接続しています...');
+
   try {
     await liff.init({ liffId: LIFF_ID });
 
     if (!liff.isLoggedIn()) {
-      liff.login({ redirectUri: window.location.href });
+      // login() は通常リダイレクトするが、In-App ブラウザで遅延する場合があるため
+      // 視覚的に何が起きているかをユーザーに伝える。
+      showProgress('LINE Login に移動中...');
+      try {
+        liff.login({ redirectUri: window.location.href });
+      } catch (loginErr) {
+        completed = true;
+        window.clearTimeout(fallbackTimer);
+        showError(loginErr instanceof Error ? loginErr.message : 'LINE Login 起動に失敗');
+      }
       return;
     }
 
@@ -340,7 +399,11 @@ async function main() {
     } else {
       await linkAndAddFlow();
     }
+    completed = true;
+    window.clearTimeout(fallbackTimer);
   } catch (err) {
+    completed = true;
+    window.clearTimeout(fallbackTimer);
     showError(err instanceof Error ? err.message : 'LIFF初期化エラー');
   }
 }
