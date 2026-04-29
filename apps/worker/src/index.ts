@@ -61,7 +61,6 @@ import { surveys } from './routes/surveys.js';
 import { shopifyAuth } from './routes/shopify-auth.js';
 import { groups } from './routes/groups.js';
 import { tagElapsedDeliveries } from './routes/tag-elapsed-deliveries.js';
-import { liffCart } from './routes/liff-cart.js';
 import { birthdayCollection } from './routes/birthday-collection.js';
 import { coachAdmin } from './routes/coach-admin.js';
 import { reorderAdmin } from './routes/reorder-admin.js';
@@ -192,7 +191,9 @@ app.route('/', surveys);
 app.route('/', shopifyAuth);
 app.route('/', groups);
 app.route('/', tagElapsedDeliveries);
-app.route('/', liffCart);
+// liffCart route 削除 (2026-04-29): /api/liff/cart endpoints は dead code
+// (どのクライアントも未使用)。liff_carts table は本番に残置 (DROP は不可逆のため避ける)。
+// 必要なら git history (commit 0b32cac) から復活可能。
 app.route('/', birthdayCollection);
 app.route('/', coachAdmin);
 app.route('/', reorderAdmin);

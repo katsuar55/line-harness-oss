@@ -40,6 +40,99 @@ async function logWebhook(
   }
 }
 
+// ========== ヘルパー: friend マッチング + users.email/phone back-fill (Round 4 PR-0) ==========
+//
+// Phase 6 KPI レポートで判明した課題:
+//   users.email が常に NULL → email マッチング 0 件 → Phase 6 PR-2 enroll が永遠に発火しない
+//
+// 対策:
+//   1. 既存通り email → phone の順で friend を引き当てる
+//   2. **片方で見つかった時、もう片方が NULL なら Shopify 側の値で back-fill**
+//      (email で見つかったら phone を、phone で見つかったら email を埋める)
+//   3. これにより LINE Console の email scope 申請承認が遅れていても、
+//      Shopify 注文経由で users.email を蓄積できる
+//
+// 副次効果: 将来 LIFF login で email scope 取得が動き出した時、
+//   既に email が入っていれば再度同期する必要なし。
+
+export interface MatchResult {
+  friendId: string | null;
+  matchedBy: 'email' | 'phone' | null;
+  backfilled: 'email' | 'phone' | 'none';
+}
+
+export async function findFriendAndBackfill(
+  db: D1Database,
+  email: string | undefined,
+  phone: string | undefined,
+): Promise<MatchResult> {
+  let userId: string | null = null;
+  let userRow: { id: string; email: string | null; phone: string | null } | null = null;
+  let matchedBy: 'email' | 'phone' | null = null;
+
+  // 1. email 優先で user を検索
+  if (email) {
+    const u = await db
+      .prepare(`SELECT id, email, phone FROM users WHERE email = ?`)
+      .bind(email)
+      .first<{ id: string; email: string | null; phone: string | null }>();
+    if (u) {
+      userId = u.id;
+      userRow = u;
+      matchedBy = 'email';
+    }
+  }
+
+  // 2. phone fallback
+  const normalizedPhone = phone ? phone.replace(/[^0-9+]/g, '') : null;
+  if (!userId && normalizedPhone) {
+    const u = await db
+      .prepare(`SELECT id, email, phone FROM users WHERE phone = ?`)
+      .bind(normalizedPhone)
+      .first<{ id: string; email: string | null; phone: string | null }>();
+    if (u) {
+      userId = u.id;
+      userRow = u;
+      matchedBy = 'phone';
+    }
+  }
+
+  // 3. 見つからない場合は何もせず null を返す
+  if (!userId || !userRow) {
+    return { friendId: null, matchedBy: null, backfilled: 'none' };
+  }
+
+  // 4. 反対側のフィールドが NULL なら Shopify 値で back-fill
+  let backfilled: MatchResult['backfilled'] = 'none';
+  if (matchedBy === 'phone' && email && (!userRow.email || userRow.email === '')) {
+    // phone で見つかったが email が空 → Shopify email を埋める
+    await db
+      .prepare(`UPDATE users SET email = ? WHERE id = ? AND (email IS NULL OR email = '')`)
+      .bind(email, userId)
+      .run();
+    backfilled = 'email';
+  } else if (matchedBy === 'email' && normalizedPhone && (!userRow.phone || userRow.phone === '')) {
+    // email で見つかったが phone が空 → Shopify phone を埋める
+    await db
+      .prepare(`UPDATE users SET phone = ? WHERE id = ? AND (phone IS NULL OR phone = '')`)
+      .bind(normalizedPhone, userId)
+      .run();
+    backfilled = 'phone';
+  }
+
+  // 5. friend を取得
+  const friend = await db
+    .prepare(`SELECT id FROM friends WHERE user_id = ?`)
+    .bind(userId)
+    .first<{ id: string }>();
+
+  return {
+    friendId: friend?.id ?? null,
+    matchedBy,
+    backfilled,
+  };
+}
+
 // ========== Shopify Webhookレシーバー ==========
 
 shopify.post('/api/integrations/shopify/webhook', async (c) => {
@@ -130,41 +223,15 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
       // 非同期処理: フレンドマッチング・タグ付け・イベント発火
       const orderAsyncWork = (async () => {
           try {
-            let friendId: string | null = null;
+            // Round 4 PR-0: 共通ヘルパーで match + back-fill (email/phone 相互補完)
+            const matchResult = await findFriendAndBackfill(db, email, phone);
+            const friendId = matchResult.friendId;
 
-            // メールでフレンドを検索
-            if (email) {
-              const userByEmail = await db
-                .prepare(`SELECT id FROM users WHERE email = ?`)
-                .bind(email)
-                .first<{ id: string }>();
-              if (userByEmail) {
-                const friendByUser = await db
-                  .prepare(`SELECT id FROM friends WHERE user_id = ?`)
-                  .bind(userByEmail.id)
-                  .first<{ id: string }>();
-                if (friendByUser) {
-                  friendId = friendByUser.id;
-                }
-              }
-            }
-
-            // 電話番号でフレンドを検索（メールで見つからない場合）
-            if (!friendId && phone) {
-              const normalizedPhone = phone.replace(/[^0-9+]/g, '');
-              const userByPhone = await db
-                .prepare(`SELECT id FROM users WHERE phone = ?`)
-                .bind(normalizedPhone)
-                .first<{ id: string }>();
-              if (userByPhone) {
-                const friendByUser = await db
-                  .prepare(`SELECT id FROM friends WHERE user_id = ?`)
-                  .bind(userByPhone.id)
-                  .first<{ id: string }>();
-                if (friendByUser) {
-                  friendId = friendByUser.id;
-                }
-              }
+            if (matchResult.backfilled !== 'none') {
+              await logWebhook(
+                db, topic, shopifyOrderId, 'backfilled',
+                `users.${matchResult.backfilled} populated from Shopify ${topic}`,
+              );
             }
 
             if (friendId) {
@@ -258,46 +325,20 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
 
       await logWebhook(db, topic, shopifyCustomerId, 'processed', `saved as ${customer.id}`);
 
-      // 非同期処理: フレンドマッチング
+      // 非同期処理: フレンドマッチング (Round 4 PR-0: 共通ヘルパー化)
       const customerAsyncWork = (async () => {
           try {
-            let friendId: string | null = null;
+            const matchResult = await findFriendAndBackfill(db, email, phone);
 
-            if (email) {
-              const userByEmail = await db
-                .prepare(`SELECT id FROM users WHERE email = ?`)
-                .bind(email)
-                .first<{ id: string }>();
-              if (userByEmail) {
-                const friendByUser = await db
-                  .prepare(`SELECT id FROM friends WHERE user_id = ?`)
-                  .bind(userByEmail.id)
-                  .first<{ id: string }>();
-                if (friendByUser) {
-                  friendId = friendByUser.id;
-                }
-              }
+            if (matchResult.backfilled !== 'none') {
+              await logWebhook(
+                db, topic, shopifyCustomerId, 'backfilled',
+                `users.${matchResult.backfilled} populated from Shopify ${topic}`,
+              );
             }
 
-            if (!friendId && phone) {
-              const normalizedPhone = phone.replace(/[^0-9+]/g, '');
-              const userByPhone = await db
-                .prepare(`SELECT id FROM users WHERE phone = ?`)
-                .bind(normalizedPhone)
-                .first<{ id: string }>();
-              if (userByPhone) {
-                const friendByUser = await db
-                  .prepare(`SELECT id FROM friends WHERE user_id = ?`)
-                  .bind(userByPhone.id)
-                  .first<{ id: string }>();
-                if (friendByUser) {
-                  friendId = friendByUser.id;
-                }
-              }
-            }
-
-            if (friendId) {
-              await linkShopifyCustomerToFriend(db, shopifyCustomerId, friendId);
+            if (matchResult.friendId) {
+              await linkShopifyCustomerToFriend(db, shopifyCustomerId, matchResult.friendId);
             }
           } catch (err) {
             console.error('Shopify webhook async processing error (customer):', err);
