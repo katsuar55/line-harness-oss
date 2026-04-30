@@ -137,13 +137,18 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - git tag: v0.13.0-phase6-complete (Phase 5 PR-2 = naturism Shopify GID 投入は別途)
 
 ### Round 4 (予定)
-- [ ] メール配信連携 (SendGrid/SES)
+- [ ] メール配信連携 (Resend primary + SendGrid fallback) — **Ultraplan 完成 2026-04-29**: `docs/ROUND4_EMAIL_ULTRAPLAN.md` 8 PR / 約 6 日。オーナー §11 の 6 項目承認待ち
 - [ ] SMS連携
 - [ ] Instagram DM連携
 - [ ] LTV予測・チャーン予測
 - [ ] ポイントシステム
 - [ ] 抽選/くじ機能
 - [ ] ファネルビルダー（LIFF + CF Pages）
+
+### Phase 6 観測結果 (2026-04-29 18 時間時点 KPI 速報)
+- レポート: `docs/PHASE6_KPI_REPORT_2026-04-29.md`
+- 主な発見: ① 本番 D1 に migration 039 (`cron_run_logs`) が未適用だった → 本セッションで適用済み (additive only) ② Phase 6 PR-2 が一度も発火していない (orders/create 0 件 + users.email NULL) ③ product_repurchase_intervals / cross_sell_map 共に 0 件 (seed 必要)
+- /liff/cart 500 hotfix 同時投入 (commit `322bb46`)
 
 ## テスト済み機能 (2026-03-22 周アカウントで実施)
 
