@@ -74,6 +74,7 @@ import { processSubscriptionReminders } from './services/subscription-reminder.j
 import { processMonthlyFoodReports } from './services/monthly-food-report.js';
 import { processWeeklyCoachPush } from './services/weekly-coach-push.js';
 import { processCronMonitor } from './services/cron-monitor.js';
+import { withHeartbeat } from './services/cron-heartbeat.js';
 import { createLogger } from './services/logger.js';
 
 export type Env = {
@@ -281,23 +282,34 @@ async function scheduled(
   }
 
   // Run delivery for each account
+  // Phase 7 (2026-04-29): 各 cron を withHeartbeat() でラップし cron_run_logs に書き込み。
+  // 既に内部で insertCronRunLog 呼んでいるもの (subscription-reminder / monthly-food-report
+  // / weekly-coach-push) はラップしない (重複書き込み防止)。
   const jobs = [];
   for (const token of activeTokens) {
     const lineClient = new LineClient(token);
     jobs.push(
-      processStepDeliveries(env.DB, lineClient, env.WORKER_URL),
-      processScheduledBroadcasts(env.DB, lineClient, env.WORKER_URL),
-      processReminderDeliveries(env.DB, lineClient),
-      processScheduledAbTests(env.DB, lineClient, env.WORKER_URL),
+      withHeartbeat(env.DB, 'step-delivery', () =>
+        processStepDeliveries(env.DB, lineClient, env.WORKER_URL)),
+      withHeartbeat(env.DB, 'scheduled-broadcasts', () =>
+        processScheduledBroadcasts(env.DB, lineClient, env.WORKER_URL)),
+      withHeartbeat(env.DB, 'reminder-delivery', () =>
+        processReminderDeliveries(env.DB, lineClient)),
+      withHeartbeat(env.DB, 'scheduled-ab-tests', () =>
+        processScheduledAbTests(env.DB, lineClient, env.WORKER_URL)),
       // Phase 1: processIntakeReminders は cron 停止 (能動pull化)
-      processWeeklyReports(env.DB, lineClient),
+      withHeartbeat(env.DB, 'weekly-reports', () =>
+        processWeeklyReports(env.DB, lineClient)),
+      // subscription-reminder は内部で insertCronRunLog 呼ぶため wrap しない
       processSubscriptionReminders(env.DB, lineClient, env.LIFF_URL || ''),
-      processAbandonedCartNotifications(env.DB, lineClient, env.LIFF_URL || ''),
-      processTagElapsedDeliveries(env.DB, lineClient, env.WORKER_URL),
+      withHeartbeat(env.DB, 'abandoned-cart-notify', () =>
+        processAbandonedCartNotifications(env.DB, lineClient, env.LIFF_URL || '')),
+      withHeartbeat(env.DB, 'tag-elapsed-deliveries', () =>
+        processTagElapsedDeliveries(env.DB, lineClient, env.WORKER_URL)),
     );
   }
-  jobs.push(checkAccountHealth(env.DB));
-  jobs.push(refreshLineAccessTokens(env.DB));
+  jobs.push(withHeartbeat(env.DB, 'ban-monitor', () => checkAccountHealth(env.DB)));
+  jobs.push(withHeartbeat(env.DB, 'token-refresh', () => refreshLineAccessTokens(env.DB)));
 
   // Phase 3: 月次食事レポート (毎月 1 日のみ実行、サービス側で gating)
   jobs.push(
@@ -319,11 +331,13 @@ async function scheduled(
 
   // Shopify顧客同期（5分ごと実行、冪等なので安全）
   jobs.push(
-    syncShopifyCustomers(env.DB, env as unknown as Record<string, string | undefined>)
-      .then((r) => {
-        if (r.synced > 0) console.info(`Shopify customer sync: ${r.synced} customers`);
-        if (r.error) console.warn(`Shopify customer sync warning: ${r.error}`);
-      }),
+    withHeartbeat(env.DB, 'shopify-customer-sync', () =>
+      syncShopifyCustomers(env.DB, env as unknown as Record<string, string | undefined>),
+      (r) => ({ synced: r.synced, error: r.error ?? null }),
+    ).then((r) => {
+      if (r.synced > 0) console.info(`Shopify customer sync: ${r.synced} customers`);
+      if (r.error) console.warn(`Shopify customer sync warning: ${r.error}`);
+    }),
   );
 
   // Phase 5 PR-4: 低頻度 cron の死活監視 (JST 09:00 ウィンドウのみ trigger)

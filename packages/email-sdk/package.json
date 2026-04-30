@@ -1,0 +1,28 @@
+{
+  "name": "@line-crm/email-sdk",
+  "version": "0.1.0",
+  "description": "Email channel SDK — Resend client + EmailRenderer (Round 4)",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260424.1",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.9"
+  },
+  "keywords": [
+    "email",
+    "resend",
+    "line-crm"
+  ]
+}

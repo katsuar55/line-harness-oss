@@ -84,6 +84,21 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
   // 再購入リマインダー (Phase 6 PR-6): cron は 5 分間隔。24 時間 silent で異常。
   // deploy 直後など短期間 stale を許容する余裕を含む。
   { jobName: 'subscription-reminder', maxSilentHours: 24 },
+  // Phase 7 (2026-04-29): 5 分間隔 cron 群を heartbeat 化。2 時間 silent = 異常。
+  // 各 job は 5 分毎に走るため 2 時間 (= 24 ティック分) 失敗が連続したら検知。
+  { jobName: 'step-delivery', maxSilentHours: 2 },
+  { jobName: 'scheduled-broadcasts', maxSilentHours: 2 },
+  { jobName: 'reminder-delivery', maxSilentHours: 2 },
+  { jobName: 'scheduled-ab-tests', maxSilentHours: 2 },
+  { jobName: 'abandoned-cart-notify', maxSilentHours: 2 },
+  { jobName: 'tag-elapsed-deliveries', maxSilentHours: 2 },
+  { jobName: 'ban-monitor', maxSilentHours: 2 },
+  { jobName: 'shopify-customer-sync', maxSilentHours: 2 },
+  // 週次レポート: 内部 gating があるため 7 日 + 12 時間
+  { jobName: 'weekly-reports', maxSilentHours: 7 * 24 + 12 },
+  // token-refresh: LINE access token は 30 日有効、1 日 1 回更新で十分。
+  // 内部で 27 日経過してから更新する gating の可能性を考慮し 30 日 + 12 時間。
+  { jobName: 'token-refresh', maxSilentHours: 30 * 24 + 12 },
 ];
 
 // ============================================================
