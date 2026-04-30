@@ -35,6 +35,9 @@ export * from './nutrition-coach';
 export * from './cron-logs';
 export * from './repurchase-intervals';
 export * from './cross-sell';
+export * from './email-subscribers';
+export * from './email-logs';
+export * from './email-templates';
 
 /**
  * Thin wrapper around D1Database.

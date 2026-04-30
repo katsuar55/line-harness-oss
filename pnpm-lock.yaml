@@ -126,6 +126,22 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/email-sdk:
+    dependencies:
+      zod:
+        specifier: ^3.24.4
+        version: 3.25.76
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20260424.1
+        version: 4.20260424.1
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@25.5.0)(lightningcss@1.32.0)
+
   packages/line-sdk:
     devDependencies:
       typescript:
