@@ -136,8 +136,36 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - worker 全テスト: **1309 tests pass / 64 files** (Phase 6 PR-1〜PR-6 + hotfix で計 +96 件追加)
 - git tag: v0.13.0-phase6-complete (Phase 5 PR-2 = naturism Shopify GID 投入は別途)
 
-### Round 4 (予定)
-- [ ] メール配信連携 (Resend primary + SendGrid fallback) — **Ultraplan 完成 2026-04-29**: `docs/ROUND4_EMAIL_ULTRAPLAN.md` 8 PR / 約 6 日。オーナー §11 の 6 項目承認待ち
+### Round 4 (進行中 — 2026-04-30 大幅前進)
+**完了 PR**:
+- [x] PR-0: users.email/phone Shopify backfill (2026-04-29)
+- [x] PR-1: @line-crm/email-sdk 新規パッケージ — Resend client + EmailRenderer + Zod (2026-04-29)
+- [x] PR-2: migration 042 + email_subscribers/templates/messages_log helpers (2026-04-29)
+  - 本番 D1 に migration 042 適用済 (2026-04-30): 4 tables + 9 indexes
+- [x] PR-3: services/channel-dispatcher.ts — channel 抽象化 + 法令ゲート (2026-04-30)
+  - 23 vitest 全パス。既存 5 call-site 改修は behavior 不変のため PR-6 へ後回し
+- [x] PR-5: routes/email-unsubscribe.ts — GET/POST + RFC 8058 One-Click + HMAC 検証 (2026-04-30)
+  - 24 vitest 全パス。本番 deploy 済 — `/email/unsubscribe` 経路 200/400/404 動作確認
+
+**残 PR (オーナー作業 + 後続)**:
+- [ ] **オーナー作業 (deploy ブロッカー)**:
+  - LINE Console email permission 承認待ち (申請済 2026-04-29)
+  - Resend API Key 発行 + `wrangler secret put RESEND_API_KEY`
+  - Resend ダッシュで DNS verify (DKIM/MX/SPF レコード追加済 2026-04-29)
+  - support@naturism-diet.com の存在確認 (なければ wrangler.toml の EMAIL_REPLY_TO 差し替え)
+- [ ] PR-4: Resend webhook 受信 + bounce/complaint 自動 suppress
+- [ ] PR-6: 既存 LINE 配信 (subscription-reminder / event-bus / broadcast / scenarios / automations) を ChannelDispatcher 経由化 + email fallback 統合
+- [ ] PR-7: 管理画面 (`/email` ページ群) + admin API
+- [ ] PR-8: ドメイン認証 + DMARC 段階移行 (p=none → quarantine → reject) + EMAIL_RUNBOOK.md
+
+**Phase 7 (cron 死活監視) 拡張**: 10 cron jobs を `withHeartbeat()` で wrap (2026-04-30 deploy 済)。本番で 2 サイクル全成功確認済。
+
+**worker 全テスト**: **1401 tests pass / 71 files** (Round 4 + Phase 7 で計 +92 件追加)
+
+**未 push commits (GitHub auth 切れ)**: bb39c14 (Merge PR #11) / 42aa6ee (Merge PR #12) / 3b5c248 (PR-3+PR-5)
+
+### Round 4 拡張予定
+- [ ] メール配信連携 (Resend primary + SendGrid fallback) — Ultraplan: `docs/ROUND4_EMAIL_ULTRAPLAN.md` 8 PR
 - [ ] SMS連携
 - [ ] Instagram DM連携
 - [ ] LTV予測・チャーン予測
