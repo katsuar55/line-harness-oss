@@ -21,6 +21,10 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     // /liff/reorder /liff/food/graph /liff/cart 等が 401 になっていた (2026-04-28 顕在化)。
     path.startsWith('/liff/') ||
     path.startsWith('/auth/') ||
+    // Round 4 PR-5: 配信停止リンクはメール受信者 (= 認証不可能な外部ユーザー) が叩く。
+    // HMAC token 検証で代替認証する (routes/email-unsubscribe.ts)。
+    path === '/email/unsubscribe' ||
+    path === '/email/resubscribe' ||
     path === '/api/integrations/stripe/webhook' ||
     path === '/api/integrations/shopify/webhook' ||
     path === '/api/integrations/shopify/webhook/checkout' ||

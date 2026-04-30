@@ -17,6 +17,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",
     "@line-crm/db": "workspace:*",
+    "@line-crm/email-sdk": "workspace:*",
     "@line-crm/line-sdk": "workspace:*",
     "@line-crm/shared": "workspace:*",
     "hono": "^4.12.14",

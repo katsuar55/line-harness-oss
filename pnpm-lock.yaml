@@ -63,6 +63,9 @@ importers:
       '@line-crm/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@line-crm/email-sdk':
+        specifier: workspace:*
+        version: link:../../packages/email-sdk
       '@line-crm/line-sdk':
         specifier: workspace:*
         version: link:../../packages/line-sdk

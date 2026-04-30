@@ -61,6 +61,7 @@ import { surveys } from './routes/surveys.js';
 import { shopifyAuth } from './routes/shopify-auth.js';
 import { groups } from './routes/groups.js';
 import { tagElapsedDeliveries } from './routes/tag-elapsed-deliveries.js';
+import { emailUnsubscribe } from './routes/email-unsubscribe.js';
 import { birthdayCollection } from './routes/birthday-collection.js';
 import { coachAdmin } from './routes/coach-admin.js';
 import { reorderAdmin } from './routes/reorder-admin.js';
@@ -108,6 +109,14 @@ export type Env = {
     CRON_MONITOR_FORCE?: string;
     WEBHOOK_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
     API_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
+    // Round 4: Email channel (Resend). Secret は wrangler secret put で別途登録
+    RESEND_API_KEY?: string;
+    EMAIL_FROM?: string;
+    EMAIL_REPLY_TO?: string;
+    EMAIL_UNSUBSCRIBE_BASE_URL?: string;
+    EMAIL_UNSUBSCRIBE_HMAC_KEY?: string;
+    EMAIL_LEGAL_FOOTER_HTML?: string;
+    EMAIL_LEGAL_FOOTER_TEXT?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -192,6 +201,7 @@ app.route('/', surveys);
 app.route('/', shopifyAuth);
 app.route('/', groups);
 app.route('/', tagElapsedDeliveries);
+app.route('/', emailUnsubscribe);
 // liffCart route 削除 (2026-04-29): /api/liff/cart endpoints は dead code
 // (どのクライアントも未使用)。liff_carts table は本番に残置 (DROP は不可逆のため避ける)。
 // 必要なら git history (commit 0b32cac) から復活可能。

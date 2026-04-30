@@ -38,6 +38,38 @@ AI_MODEL_PRIMARY = "@cf/qwen/qwen3-30b-a3b-fp8"
 AI_MODEL_FALLBACK = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 # AI_SYSTEM_PROMPT is set via: npx wrangler secret put AI_SYSTEM_PROMPT
 
+# ============================================================
+# Round 4: Email channel (Resend)
+# ============================================================
+# 送信元 (Resend で verify 済の subdomain を使用)
+EMAIL_FROM = "naturism <noreply@mail.naturism-diet.com>"
+# 返信先 (サポート問い合わせ用; 当面 noreply と同一にしておき、support@ メアド作成後に差し替え)
+EMAIL_REPLY_TO = "support@naturism-diet.com"
+# 配信停止リンクの base URL (HMAC token 付与は EmailRenderer 側で実施)
+EMAIL_UNSUBSCRIBE_BASE_URL = "https://naturism-line-crm.katsu-7d5.workers.dev/email/unsubscribe"
+# 法定フッター HTML (特定電子メール法準拠: 送信者名・住所・連絡先 必須)
+EMAIL_LEGAL_FOOTER_HTML = """
+<div style="font-size:11px;color:#888888;line-height:1.6;margin-top:24px;font-family:sans-serif;">
+<p style="margin:4px 0;"><strong>株式会社ケンコーエクスプレス</strong>（naturism ブランド）</p>
+<p style="margin:4px 0;">〒103-0028 東京都中央区八重洲1-5-15 荘栄建物ビル5F</p>
+<p style="margin:4px 0;">公式サイト: <a href="https://naturism-diet.com" style="color:#888888;text-decoration:underline;">naturism-diet.com</a>　｜　お問い合わせ: <a href="mailto:support@naturism-diet.com" style="color:#888888;text-decoration:underline;">support@naturism-diet.com</a></p>
+<p style="margin:4px 0;font-size:10px;">本メールは naturism のお客様にお送りしています。</p>
+</div>
+"""
+# 法定フッター text 版 (HTML 同等)
+EMAIL_LEGAL_FOOTER_TEXT = """
+
+---
+株式会社ケンコーエクスプレス（naturism ブランド）
+〒103-0028 東京都中央区八重洲1-5-15 荘栄建物ビル5F
+公式サイト: https://naturism-diet.com
+お問い合わせ: support@naturism-diet.com
+
+本メールは naturism のお客様にお送りしています。
+"""
+# RESEND_API_KEY は wrangler secret put で別途登録 (オーナー作業 — Resend 管理画面で発行)
+# EMAIL_UNSUBSCRIBE_HMAC_KEY は wrangler secret put で登録済 (2026-04-30)
+
 # Cloudflare分散レート制限（全エッジロケーションで共有、in-memoryより堅牢）
 [[ratelimits]]
 name = "WEBHOOK_RATE_LIMITER"
