@@ -426,14 +426,22 @@ describe('Stripe Routes', () => {
       const res = await signedPost(makeWebhookBody(), envWithSecret);
       expect(res.status).toBe(200);
       expect(mockApplyScoring).toHaveBeenCalledWith(envWithSecret.DB, 'friend-abc', 'purchase');
-      expect(mockFireEvent).toHaveBeenCalledWith(envWithSecret.DB, 'cv_fire', {
-        friendId: 'friend-abc',
-        eventData: {
-          type: 'purchase',
-          amount: 3980,
-          stripeEventId: 'evt_test_001',
+      // Round 4 PR-6: fireEvent now accepts emailConfig as 6th arg (null when env lacks RESEND_API_KEY)
+      expect(mockFireEvent).toHaveBeenCalledWith(
+        envWithSecret.DB,
+        'cv_fire',
+        {
+          friendId: 'friend-abc',
+          eventData: {
+            type: 'purchase',
+            amount: 3980,
+            stripeEventId: 'evt_test_001',
+          },
         },
-      });
+        undefined,
+        undefined,
+        null,
+      );
     });
 
     it('queries tag for auto-tagging when product_id is in metadata', async () => {

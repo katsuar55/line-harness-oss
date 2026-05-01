@@ -27,6 +27,7 @@ import {
   parseBirthdayMonthPostback,
 } from '../services/birthday-collection.js';
 import { fireEvent } from '../services/event-bus.js';
+import { buildEmailDispatchConfig } from '../services/email-dispatch-config.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { generateAiResponse } from '../services/ai-response.js';
 import { analyzeFoodImage, FoodAnalyzerError } from '../services/food-analyzer.js';
@@ -398,7 +399,14 @@ async function handleEvent(
     }
 
     // イベントバス発火: friend_add（replyToken は Step 0 で使用済みの可能性あり）
-    await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name } }, lineAccessToken, lineAccountId);
+    await fireEvent(
+      db,
+      'friend_add',
+      { friendId: friend.id, eventData: { displayName: friend.display_name } },
+      lineAccessToken,
+      lineAccountId,
+      env ? buildEmailDispatchConfig(env) : null,
+    );
     return;
   }
 
@@ -807,11 +815,18 @@ async function handleEvent(
 
     // イベントバス発火: message_received
     // Pass replyToken only when auto_reply didn't actually consume it
-    await fireEvent(db, 'message_received', {
-      friendId: friend.id,
-      eventData: { text: incomingText, matched },
-      replyToken: replyTokenConsumed ? undefined : event.replyToken,
-    }, lineAccessToken, lineAccountId);
+    await fireEvent(
+      db,
+      'message_received',
+      {
+        friendId: friend.id,
+        eventData: { text: incomingText, matched },
+        replyToken: replyTokenConsumed ? undefined : event.replyToken,
+      },
+      lineAccessToken,
+      lineAccountId,
+      env ? buildEmailDispatchConfig(env) : null,
+    );
 
     return;
   }
@@ -1047,6 +1062,7 @@ async function handleEvent(
           },
           lineAccessToken,
           lineAccountId,
+          env ? buildEmailDispatchConfig(env) : null,
         );
       } catch (eventErr) {
         // err 全体ではなく要約のみログ (secret leak 対策)

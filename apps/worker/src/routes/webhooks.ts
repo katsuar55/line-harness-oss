@@ -149,10 +149,16 @@ webhooks.post('/api/webhooks/incoming/:id/receive', async (c) => {
 
     // イベントバスに発火: source_type をイベントタイプとして使用
     const { fireEvent } = await import('../services/event-bus.js');
+    const { buildEmailDispatchConfig } = await import('../services/email-dispatch-config.js');
     const eventType = `incoming_webhook.${wh.source_type}`;
-    await fireEvent(c.env.DB, eventType, {
-      eventData: { webhookId: wh.id, source: wh.source_type, payload: body },
-    });
+    await fireEvent(
+      c.env.DB,
+      eventType,
+      { eventData: { webhookId: wh.id, source: wh.source_type, payload: body } },
+      undefined,
+      undefined,
+      buildEmailDispatchConfig(c.env),
+    );
 
     return c.json({ success: true, data: { received: true, source: wh.source_type } });
   } catch (err) {

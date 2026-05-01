@@ -55,6 +55,8 @@ import {
 import { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { sendAdConversions } from './ad-conversion.js';
+import { executeSendEmailAction, type SendEmailActionParams } from './send-email-action.js';
+import type { EmailDispatchConfig } from './email-dispatch-config.js';
 
 export interface EventPayload {
   friendId?: string;
@@ -79,6 +81,11 @@ export async function fireEvent(
   payload: EventPayload,
   lineAccessToken?: string,
   lineAccountId?: string | null,
+  /**
+   * Round 4 PR-6: 'send_email' automation action 用。null/undefined なら send_email は skip。
+   * `buildEmailDispatchConfig(env)` で組み立てる (services/email-dispatch-config.ts)。
+   */
+  emailConfig?: EmailDispatchConfig | null,
 ): Promise<void> {
   // Phase 1: fire webhooks, apply scoring rules, and ad conversion postback concurrently.
   const phase1: Promise<unknown>[] = [
@@ -106,7 +113,7 @@ export async function fireEvent(
 
   // Phase 2: evaluate automations and create notifications concurrently.
   await Promise.allSettled([
-    processAutomations(db, eventType, enrichedPayload, lineAccessToken, lineAccountId),
+    processAutomations(db, eventType, enrichedPayload, lineAccessToken, lineAccountId, emailConfig),
     processNotifications(db, eventType, enrichedPayload, lineAccountId),
   ]);
 }
@@ -199,6 +206,7 @@ async function processAutomations(
   payload: EventPayload,
   lineAccessToken?: string,
   lineAccountId?: string | null,
+  emailConfig?: EmailDispatchConfig | null,
 ): Promise<void> {
   try {
     const allAutomations = await getActiveAutomationsByEvent(db, eventType);
@@ -218,7 +226,7 @@ async function processAutomations(
 
       for (const action of actions) {
         try {
-          await executeAction(db, action, payload, lineAccessToken);
+          await executeAction(db, action, payload, lineAccessToken, emailConfig);
           results.push({ action: action.type, success: true });
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
@@ -278,6 +286,7 @@ async function executeAction(
   action: { type: string; params: Record<string, string> },
   payload: EventPayload,
   lineAccessToken?: string,
+  emailConfig?: EmailDispatchConfig | null,
 ): Promise<void> {
   const friendId = payload.friendId;
   if (!friendId && action.type !== 'send_webhook') {
@@ -387,6 +396,34 @@ async function executeAction(
         .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
         .bind(JSON.stringify(merged), jstNow(), friendId)
         .run();
+      break;
+    }
+
+    case 'send_email': {
+      // Round 4 PR-6: ChannelDispatcher 経由でメール送信
+      // emailConfig 未設定 (= RESEND_API_KEY 等の env 不足) なら無音 skip。
+      if (!friendId || !emailConfig) break;
+      const params: SendEmailActionParams = {
+        templateId: action.params.templateId || undefined,
+        subject: action.params.subject || undefined,
+        htmlContent: action.params.htmlContent || undefined,
+        textContent: action.params.textContent || undefined,
+        preheader: action.params.preheader || undefined,
+        category:
+          action.params.category === 'transactional' ? 'transactional' : 'marketing',
+      };
+      const r = await executeSendEmailAction(
+        { db, friendId, emailConfig },
+        params,
+      );
+      // skipped/failed は throw しない (= 他 action を巻き込まない)。
+      // 結果は automation_logs の results 配列で success=true として残るが、
+      // KPI は email_messages_log で別途集計。
+      if (r.status === 'failed') {
+        console.warn(
+          `[event-bus] send_email failed for friend ${friendId}: ${r.reason}`,
+        );
+      }
       break;
     }
 

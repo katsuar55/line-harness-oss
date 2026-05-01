@@ -12,6 +12,7 @@ import {
 } from '@line-crm/db';
 import type { Friend as DbFriend, Tag as DbTag } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
+import { buildEmailDispatchConfig } from '../services/email-dispatch-config.js';
 import { buildMessage } from '../services/step-delivery.js';
 import type { Env } from '../index.js';
 
@@ -228,8 +229,15 @@ friends.post('/api/friends/:id/tags', async (c) => {
       }
     }
 
-    // イベントバス発火: tag_change
-    await fireEvent(db, 'tag_change', { friendId, eventData: { tagId: body.tagId, action: 'add' } });
+    // イベントバス発火: tag_change (Round 4 PR-6: email automation 用 config を渡す)
+    await fireEvent(
+      db,
+      'tag_change',
+      { friendId, eventData: { tagId: body.tagId, action: 'add' } },
+      undefined,
+      undefined,
+      buildEmailDispatchConfig(c.env),
+    );
 
     return c.json({ success: true, data: null }, 201);
   } catch (err) {
@@ -247,7 +255,14 @@ friends.delete('/api/friends/:id/tags/:tagId', async (c) => {
     await removeTagFromFriend(c.env.DB, friendId, tagId);
 
     // イベントバス発火: tag_change
-    await fireEvent(c.env.DB, 'tag_change', { friendId, eventData: { tagId, action: 'remove' } });
+    await fireEvent(
+      c.env.DB,
+      'tag_change',
+      { friendId, eventData: { tagId, action: 'remove' } },
+      undefined,
+      undefined,
+      buildEmailDispatchConfig(c.env),
+    );
 
     return c.json({ success: true, data: null });
   } catch (err) {

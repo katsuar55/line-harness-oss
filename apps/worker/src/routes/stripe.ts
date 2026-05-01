@@ -146,7 +146,15 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
 
       // イベントバスに発火（自動化ルール用）
       const { fireEvent } = await import('../services/event-bus.js');
-      await fireEvent(db, 'cv_fire', { friendId, eventData: { type: 'purchase', amount: obj.amount, stripeEventId: body.id } });
+      const { buildEmailDispatchConfig } = await import('../services/email-dispatch-config.js');
+      await fireEvent(
+        db,
+        'cv_fire',
+        { friendId, eventData: { type: 'purchase', amount: obj.amount, stripeEventId: body.id } },
+        undefined,
+        undefined,
+        buildEmailDispatchConfig(c.env),
+      );
     }
 
     // サブスクリプションイベント処理

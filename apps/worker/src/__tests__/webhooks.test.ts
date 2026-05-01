@@ -399,12 +399,16 @@ describe('Webhooks Routes', () => {
       expect(body.data.source).toBe('shopify');
 
       const { fireEvent } = await import('../services/event-bus.js');
+      // Round 4 PR-6: fireEvent now accepts emailConfig as 6th arg (null in test env)
       expect(fireEvent).toHaveBeenCalledWith(
         expect.anything(),
         'incoming_webhook.shopify',
         expect.objectContaining({
           eventData: expect.objectContaining({ webhookId: 'iw-1', source: 'shopify' }),
         }),
+        undefined,
+        undefined,
+        null,
       );
     });
   });

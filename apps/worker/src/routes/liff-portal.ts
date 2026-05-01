@@ -483,10 +483,18 @@ liffPortal.post('/api/liff/intake', async (c) => {
     // 新規記録時のみ event_bus でスコアリング発火 (重複時は発火しない = ポイント二重加算防止)
     if (!result.alreadyLogged) {
       const { fireEvent } = await import('../services/event-bus.js');
-      const fireP = fireEvent(c.env.DB, 'intake_log', {
-        friendId: user.friendId,
-        eventData: { mealType: mealType ?? null, streakCount: result.streak_count },
-      }).catch(() => undefined);
+      const { buildEmailDispatchConfig } = await import('../services/email-dispatch-config.js');
+      const fireP = fireEvent(
+        c.env.DB,
+        'intake_log',
+        {
+          friendId: user.friendId,
+          eventData: { mealType: mealType ?? null, streakCount: result.streak_count },
+        },
+        undefined,
+        undefined,
+        buildEmailDispatchConfig(c.env),
+      ).catch(() => undefined);
       // executionCtx は本番では存在するが、テスト環境では getter が throw する仕様。
       try {
         c.executionCtx.waitUntil(fireP);
