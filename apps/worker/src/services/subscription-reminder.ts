@@ -12,6 +12,7 @@
 
 import type { LineClient } from '@line-crm/line-sdk';
 import { getCrossSellSuggestions, insertCronRunLog } from '@line-crm/db';
+import { dispatch } from './channel-dispatcher.js';
 
 /** cron-monitor が監視する job 名と一致させる */
 export const SUBSCRIPTION_REMINDER_JOB_NAME = 'subscription-reminder';
@@ -237,17 +238,39 @@ export async function processSubscriptionReminders(
         },
       };
 
-      await lineClient.pushMessage(friend.line_user_id, [message]);
-      metrics.sentCount++;
+      // Round 4 PR-3 統合 (2026-05-01): 直接 pushMessage していたのを ChannelDispatcher 経由に。
+      // PR-6 で email fallback / channel='both' を導入する際、本 call-site だけ
+      // dispatch input.channel を切り替えれば対応できる。現状は LINE-only behavior 不変。
+      const dispatchResult = await dispatch(
+        { db, lineClient },
+        {
+          recipient: { friend: { id: reminder.friend_id, lineUserId: friend.line_user_id } },
+          channel: 'line',
+          // 法令上は marketing。PR-6 で email 配信を有効にしたとき自動で
+          // "配信停止リンク" 注入 + email_subscribers の opt-out 尊重がかかる。
+          category: 'marketing',
+          sourceKind: 'reorder',
+          linePayload: { messages: [message] },
+        },
+      );
 
-      // 6. Update next_reminder_at
-      const nextAt = new Date(Date.now() + reminder.interval_days * 86400000).toISOString();
-      await db
-        .prepare('UPDATE subscription_reminders SET next_reminder_at = ?, last_sent_at = ?, updated_at = ? WHERE id = ?')
-        .bind(nextAt, now, now, reminder.id)
-        .run();
+      const lineResult = dispatchResult.results.find((r) => r.channel === 'line');
+      if (lineResult?.status === 'sent') {
+        metrics.sentCount++;
+        // 6. Update next_reminder_at (送信成功時のみ)
+        const nextAt = new Date(Date.now() + reminder.interval_days * 86400000).toISOString();
+        await db
+          .prepare('UPDATE subscription_reminders SET next_reminder_at = ?, last_sent_at = ?, updated_at = ? WHERE id = ?')
+          .bind(nextAt, now, now, reminder.id)
+          .run();
+      } else if (lineResult?.status === 'failed') {
+        metrics.errorCount++;
+      }
+      // skipped (not_following / blacklisted / no_friend) は metrics に計上しない
+      // (旧コードでは not_following でも push API error になり errorCount に計上されていたが、
+      //  dispatcher の skip は legitimate gating として errorCount から除外する)
     } catch {
-      // Continue with next reminder on failure
+      // Continue with next reminder on failure (dispatcher 例外等の予期しないケース)
       metrics.errorCount++;
     }
   }

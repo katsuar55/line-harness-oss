@@ -62,6 +62,7 @@ import { shopifyAuth } from './routes/shopify-auth.js';
 import { groups } from './routes/groups.js';
 import { tagElapsedDeliveries } from './routes/tag-elapsed-deliveries.js';
 import { emailUnsubscribe } from './routes/email-unsubscribe.js';
+import { integrationsResend } from './routes/integrations-resend.js';
 import { birthdayCollection } from './routes/birthday-collection.js';
 import { coachAdmin } from './routes/coach-admin.js';
 import { reorderAdmin } from './routes/reorder-admin.js';
@@ -74,6 +75,7 @@ import { processSubscriptionReminders } from './services/subscription-reminder.j
 import { processMonthlyFoodReports } from './services/monthly-food-report.js';
 import { processWeeklyCoachPush } from './services/weekly-coach-push.js';
 import { processCronMonitor } from './services/cron-monitor.js';
+import { processCronCleanup } from './services/cron-cleanup.js';
 import { withHeartbeat } from './services/cron-heartbeat.js';
 import { createLogger } from './services/logger.js';
 
@@ -107,10 +109,13 @@ export type Env = {
     DISCORD_WEBHOOK_URL?: string;
     /** Phase 5 PR-4: 'true' で cron-monitor の gating を bypass (テスト/手動用) */
     CRON_MONITOR_FORCE?: string;
+    /** Phase 7 (2026-05-01): 'true' で cron-cleanup の 03:00 JST gating を bypass */
+    CRON_CLEANUP_FORCE?: string;
     WEBHOOK_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
     API_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
     // Round 4: Email channel (Resend). Secret は wrangler secret put で別途登録
     RESEND_API_KEY?: string;
+    RESEND_WEBHOOK_SECRET?: string; // Svix webhook signature 用 (whsec_... 形式)
     EMAIL_FROM?: string;
     EMAIL_REPLY_TO?: string;
     EMAIL_UNSUBSCRIBE_BASE_URL?: string;
@@ -202,6 +207,7 @@ app.route('/', shopifyAuth);
 app.route('/', groups);
 app.route('/', tagElapsedDeliveries);
 app.route('/', emailUnsubscribe);
+app.route('/', integrationsResend);
 // liffCart route 削除 (2026-04-29): /api/liff/cart endpoints は dead code
 // (どのクライアントも未使用)。liff_carts table は本番に残置 (DROP は不可逆のため避ける)。
 // 必要なら git history (commit 0b32cac) から復活可能。
@@ -374,6 +380,14 @@ async function scheduled(
   jobs.push(
     processCronMonitor(env).catch((err) =>
       console.error('cron-monitor failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // Phase 7 (2026-05-01): cron_run_logs の自動 cleanup (JST 03:00 のみ trigger、30 日保持)
+  // 月間 86k 行追加見込みなので 1 年放置で 100 万行になる前に対処。
+  jobs.push(
+    processCronCleanup(env).catch((err) =>
+      console.error('cron-cleanup failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 

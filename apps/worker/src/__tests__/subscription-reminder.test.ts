@@ -166,7 +166,8 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
           shopify_product_id: null,
         },
       ],
-      friendRow: { line_user_id: 'U-1' },
+      // Round 4 PR-3 統合: dispatcher が is_following / is_blacklisted も query する
+      friendRow: { line_user_id: 'U-1', is_following: 1, is_blacklisted: 0 },
       prefsRow: null, // default ON
       crossSellRows: [],
       captured: [],
@@ -185,6 +186,70 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
     expect(mockPushMessage).toHaveBeenCalledTimes(1);
     expect(mockHeartbeats.length).toBe(1);
     expect(mockHeartbeats[0].metrics).toEqual({ due: 1, sent: 1, errors: 0 });
+  });
+
+  it('Round 4 PR-3: is_following=0 → dispatcher が skip し sentCount=0 / errorCount=0 (旧 behavior は errorCount++ だった)', async () => {
+    const { processSubscriptionReminders } = await import(
+      '../services/subscription-reminder.js'
+    );
+    const store: FakeDbStore = {
+      dueReminders: [
+        {
+          id: 'sr-1',
+          friend_id: 'friend-1',
+          product_title: 'A',
+          interval_days: 30,
+          next_reminder_at: '2026-01-01',
+          shopify_product_id: null,
+        },
+      ],
+      friendRow: { line_user_id: 'U-1', is_following: 0, is_blacklisted: 0 },
+      prefsRow: null,
+      crossSellRows: [],
+      captured: [],
+      heartbeats: [],
+    };
+    const db = makeFakeDb(store);
+    const result = await processSubscriptionReminders(
+      db,
+      mockLineClient as never,
+      '',
+    );
+    expect(result.sentCount).toBe(0);
+    expect(result.errorCount).toBe(0); // skipped は errorCount に計上しない
+    expect(mockPushMessage).not.toHaveBeenCalled();
+  });
+
+  it('Round 4 PR-3: is_blacklisted=1 → dispatcher が skip', async () => {
+    const { processSubscriptionReminders } = await import(
+      '../services/subscription-reminder.js'
+    );
+    const store: FakeDbStore = {
+      dueReminders: [
+        {
+          id: 'sr-1',
+          friend_id: 'friend-1',
+          product_title: 'A',
+          interval_days: 30,
+          next_reminder_at: '2026-01-01',
+          shopify_product_id: null,
+        },
+      ],
+      friendRow: { line_user_id: 'U-1', is_following: 1, is_blacklisted: 1 },
+      prefsRow: null,
+      crossSellRows: [],
+      captured: [],
+      heartbeats: [],
+    };
+    const db = makeFakeDb(store);
+    const result = await processSubscriptionReminders(
+      db,
+      mockLineClient as never,
+      '',
+    );
+    expect(result.sentCount).toBe(0);
+    expect(result.errorCount).toBe(0);
+    expect(mockPushMessage).not.toHaveBeenCalled();
   });
 
   it('notification preference オフ → push されないが heartbeat は記録', async () => {

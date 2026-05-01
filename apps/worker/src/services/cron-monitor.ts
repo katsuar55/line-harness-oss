@@ -99,6 +99,9 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
   // token-refresh: LINE access token は 30 日有効、1 日 1 回更新で十分。
   // 内部で 27 日経過してから更新する gating の可能性を考慮し 30 日 + 12 時間。
   { jobName: 'token-refresh', maxSilentHours: 30 * 24 + 12 },
+  // Phase 7 (2026-05-01): cron_run_logs auto cleanup (1 日 1 回 03:00 JST)。
+  // deploy 直後の取りこぼし (1 日のみ skip) を許容する余裕を含む。
+  { jobName: 'cron-cleanup', maxSilentHours: 30 },
 ];
 
 // ============================================================
