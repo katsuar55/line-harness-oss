@@ -2,6 +2,8 @@ import { jstNow } from './utils.js';
 export type BroadcastTargetType = 'all' | 'tag';
 export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent';
 export type BroadcastMessageType = 'text' | 'image' | 'flex';
+/** Round 4 PR-6.2: dispatcher 経由の channel 区別 (migration 043) */
+export type BroadcastChannel = 'line' | 'email' | 'both';
 
 export interface Broadcast {
   id: string;
@@ -18,6 +20,10 @@ export interface Broadcast {
   line_request_id?: string | null;
   insights_json?: string | null;
   insights_fetched_at?: string | null;
+  /** migration 043 で追加。default 'line'。 */
+  channel?: BroadcastChannel;
+  /** migration 043 で追加。channel が 'email' | 'both' のときに email_templates(id) を指す */
+  email_template_id?: string | null;
   created_at: string;
 }
 
@@ -45,6 +51,10 @@ export interface CreateBroadcastInput {
   targetType: BroadcastTargetType;
   targetTagId?: string | null;
   scheduledAt?: string | null;
+  /** migration 043 で追加。省略時は 'line' (default) */
+  channel?: BroadcastChannel;
+  /** migration 043 で追加。channel が 'email' | 'both' のときに使う */
+  emailTemplateId?: string | null;
 }
 
 export async function createBroadcast(
@@ -59,8 +69,8 @@ export async function createBroadcast(
   await db
     .prepare(
       `INSERT INTO broadcasts
-         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?)`,
+         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, channel, email_template_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -71,6 +81,8 @@ export async function createBroadcast(
       input.targetTagId ?? null,
       initialStatus,
       input.scheduledAt ?? null,
+      input.channel ?? 'line',
+      input.emailTemplateId ?? null,
       now,
     )
     .run();
@@ -88,6 +100,8 @@ export type UpdateBroadcastInput = Partial<
     | 'target_tag_id'
     | 'status'
     | 'scheduled_at'
+    | 'channel'
+    | 'email_template_id'
   >
 >;
 
@@ -126,6 +140,14 @@ export async function updateBroadcast(
   if (updates.scheduled_at !== undefined) {
     fields.push('scheduled_at = ?');
     values.push(updates.scheduled_at);
+  }
+  if (updates.channel !== undefined) {
+    fields.push('channel = ?');
+    values.push(updates.channel);
+  }
+  if (updates.email_template_id !== undefined) {
+    fields.push('email_template_id = ?');
+    values.push(updates.email_template_id);
   }
 
   if (fields.length > 0) {

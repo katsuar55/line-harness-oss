@@ -17,6 +17,7 @@ import type {
   ScenarioStep as DbScenarioStep,
   FriendScenario as DbFriendScenario,
   ScenarioTriggerType,
+  ScenarioStepChannel,
   MessageType,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
@@ -49,8 +50,20 @@ function serializeStep(row: DbScenarioStep) {
     conditionType: row.condition_type ?? null,
     conditionValue: row.condition_value ?? null,
     nextStepOnFalse: row.next_step_on_false ?? null,
+    channel: row.channel ?? 'line',
+    emailTemplateId: row.email_template_id ?? null,
     createdAt: row.created_at,
   };
+}
+
+/**
+ * Validate channel field. Round 4 PR-6.2 — when channel is 'email' or 'both',
+ * an email_template_id is required so the dispatcher can look up the template.
+ */
+const VALID_CHANNELS: readonly ScenarioStepChannel[] = ['line', 'email', 'both'];
+
+function isValidChannel(value: unknown): value is ScenarioStepChannel {
+  return typeof value === 'string' && (VALID_CHANNELS as readonly string[]).includes(value);
 }
 
 /** Convert D1 snake_case FriendScenario row to shared camelCase shape */
@@ -221,11 +234,28 @@ scenarios.post('/api/scenarios/:id/steps', async (c) => {
       conditionType?: string | null;
       conditionValue?: string | null;
       nextStepOnFalse?: number | null;
+      channel?: ScenarioStepChannel;
+      emailTemplateId?: string | null;
     }>();
 
     if (body.stepOrder === undefined || !body.messageType || !body.messageContent) {
       return c.json(
         { success: false, error: 'stepOrder, messageType, and messageContent are required' },
+        400,
+      );
+    }
+
+    // Round 4 PR-6.2: channel + email_template_id validation
+    const channel: ScenarioStepChannel = body.channel ?? 'line';
+    if (body.channel !== undefined && !isValidChannel(body.channel)) {
+      return c.json(
+        { success: false, error: 'channel must be one of: line, email, both' },
+        400,
+      );
+    }
+    if ((channel === 'email' || channel === 'both') && !body.emailTemplateId) {
+      return c.json(
+        { success: false, error: 'emailTemplateId is required when channel is email or both' },
         400,
       );
     }
@@ -239,6 +269,8 @@ scenarios.post('/api/scenarios/:id/steps', async (c) => {
       conditionType: body.conditionType ?? null,
       conditionValue: body.conditionValue ?? null,
       nextStepOnFalse: body.nextStepOnFalse ?? null,
+      channel,
+      emailTemplateId: body.emailTemplateId ?? null,
     });
 
     return c.json({ success: true, data: serializeStep(step) }, 201);
@@ -260,7 +292,16 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', async (c) => {
       conditionType?: string | null;
       conditionValue?: string | null;
       nextStepOnFalse?: number | null;
+      channel?: ScenarioStepChannel;
+      emailTemplateId?: string | null;
     }>();
+
+    if (body.channel !== undefined && !isValidChannel(body.channel)) {
+      return c.json(
+        { success: false, error: 'channel must be one of: line, email, both' },
+        400,
+      );
+    }
 
     const updated = await updateScenarioStep(c.env.DB, stepId, {
       step_order: body.stepOrder,
@@ -270,6 +311,8 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', async (c) => {
       condition_type: body.conditionType,
       condition_value: body.conditionValue,
       next_step_on_false: body.nextStepOnFalse,
+      channel: body.channel,
+      email_template_id: body.emailTemplateId,
     });
 
     if (!updated) {

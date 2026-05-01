@@ -5,11 +5,20 @@ import {
   advanceFriendScenario,
   completeFriendScenario,
   getFriendById,
+  getEmailTemplateById,
   jstNow,
+  type ScenarioStep,
+  type EmailTemplate,
+  type Friend,
 } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
+import { dispatch, type ChannelDispatcherDeps } from './channel-dispatcher.js';
+import {
+  buildEmailDispatcherDeps,
+  type EmailDispatchConfig,
+} from './email-dispatch-config.js';
 
 /**
  * Replace template variables in message content.
@@ -71,6 +80,7 @@ export async function processStepDeliveries(
   db: D1Database,
   lineClient: LineClient,
   workerUrl?: string,
+  emailConfig?: EmailDispatchConfig | null,
 ): Promise<void> {
   // Skip delivery outside 9:00-23:00 JST window
   const jstHour = new Date(Date.now() + 9 * 60 * 60_000).getUTCHours();
@@ -86,7 +96,7 @@ export async function processStepDeliveries(
       if (i > 0) {
         await sleep(addJitter(50, 200));
       }
-      await processSingleDelivery(db, lineClient, fs, workerUrl);
+      await processSingleDelivery(db, lineClient, fs, workerUrl, emailConfig);
     } catch (err) {
       console.error(`Error processing friend_scenario ${fs.id}:`, err);
       // Continue with next one
@@ -106,6 +116,7 @@ async function processSingleDelivery(
     next_delivery_at: string | null;
   },
   workerUrl?: string,
+  emailConfig?: EmailDispatchConfig | null,
 ): Promise<void> {
   // Get friend first to read preferred delivery hour from metadata
   const friend = await getFriendById(db, fs.friend_id);
@@ -162,6 +173,49 @@ async function processSingleDelivery(
     }
   }
 
+  // Round 4 PR-6.2: route to channel-dispatcher when channel='email' / 'both'.
+  // Default 'line' (or undefined for backward compat) keeps existing pushMessage path.
+  const channel = currentStep.channel ?? 'line';
+
+  if (channel === 'line') {
+    await sendLineStep(db, lineClient, friend, currentStep, workerUrl);
+  } else if (channel === 'email') {
+    await sendEmailStep(db, friend, currentStep, emailConfig);
+  } else {
+    // 'both' — LINE is the primary channel for backward compat. Email is
+    // best-effort; failures inside dispatcher are already swallowed.
+    await sendLineStep(db, lineClient, friend, currentStep, workerUrl);
+    await sendEmailStep(db, friend, currentStep, emailConfig);
+  }
+
+  // Determine next step (find the step after currentStep in the sorted list)
+  const currentIndex = steps.indexOf(currentStep);
+  const nextStep = currentIndex + 1 < steps.length ? steps[currentIndex + 1] : null;
+
+  if (nextStep) {
+    // Schedule next delivery with stealth jitter + delivery window enforcement
+    const nextDeliveryDate = new Date(Date.now() + 9 * 60 * 60_000);
+    nextDeliveryDate.setMinutes(nextDeliveryDate.getMinutes() + nextStep.delay_minutes);
+    const windowedDate = enforceDeliveryWindow(nextDeliveryDate, preferredHour);
+    const jitteredDate = jitterDeliveryTime(windowedDate);
+    await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
+  } else {
+    // This was the last step
+    await completeFriendScenario(db, fs.id);
+  }
+}
+
+/**
+ * Send a LINE step (existing pushMessage path, factored out so dispatcher logic
+ * stays readable). Behavior is unchanged from before PR-6.2.
+ */
+async function sendLineStep(
+  db: D1Database,
+  lineClient: LineClient,
+  friend: Friend,
+  currentStep: ScenarioStep,
+  workerUrl?: string,
+): Promise<void> {
   // Expand template variables ({{name}}, {{uid}}, {{auth_url:CHANNEL_ID}}, etc.)
   const expandedContent = expandVariables(currentStep.message_content, friend, workerUrl);
   // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
@@ -185,22 +239,100 @@ async function processSingleDelivery(
     )
     .bind(logId, friend.id, currentStep.message_type, currentStep.message_content, currentStep.id, jstNow())
     .run();
+}
 
-  // Determine next step (find the step after currentStep in the sorted list)
-  const currentIndex = steps.indexOf(currentStep);
-  const nextStep = currentIndex + 1 < steps.length ? steps[currentIndex + 1] : null;
-
-  if (nextStep) {
-    // Schedule next delivery with stealth jitter + delivery window enforcement
-    const nextDeliveryDate = new Date(Date.now() + 9 * 60 * 60_000);
-    nextDeliveryDate.setMinutes(nextDeliveryDate.getMinutes() + nextStep.delay_minutes);
-    const windowedDate = enforceDeliveryWindow(nextDeliveryDate, preferredHour);
-    const jitteredDate = jitterDeliveryTime(windowedDate);
-    await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
-  } else {
-    // This was the last step
-    await completeFriendScenario(db, fs.id);
+/**
+ * Send an email step via channel-dispatcher.
+ *
+ * fail-soft semantics: any "skip" condition (no config, missing template, no
+ * email address) logs and returns. Caller advances the scenario regardless so
+ * we never get stuck in a retry loop.
+ */
+async function sendEmailStep(
+  db: D1Database,
+  friend: Friend,
+  currentStep: ScenarioStep,
+  emailConfig?: EmailDispatchConfig | null,
+): Promise<void> {
+  if (!emailConfig) {
+    console.warn(
+      `[step-delivery] email step ${currentStep.id} skipped: emailConfig not set`,
+    );
+    return;
   }
+
+  if (!currentStep.email_template_id) {
+    console.error(
+      `[step-delivery] email step ${currentStep.id} skipped: email_template_id missing`,
+    );
+    return;
+  }
+
+  const template = await getEmailTemplateById(db, currentStep.email_template_id);
+  if (!template) {
+    console.error(
+      `[step-delivery] email step ${currentStep.id} skipped: template ${currentStep.email_template_id} not found`,
+    );
+    return;
+  }
+  if (!template.is_active) {
+    console.error(
+      `[step-delivery] email step ${currentStep.id} skipped: template ${template.id} inactive`,
+    );
+    return;
+  }
+
+  // Resolve email — prefer email_subscribers (active marketing list), fall
+  // back to friends.email (identity column added by migration 032).
+  const subscriberRow = await db
+    .prepare(
+      `SELECT email FROM email_subscribers
+        WHERE friend_id = ? AND is_active = 1 LIMIT 1`,
+    )
+    .bind(friend.id)
+    .first<{ email: string }>();
+
+  const friendEmail =
+    (friend as Friend & { email?: string | null }).email ?? null;
+  const email = subscriberRow?.email ?? friendEmail;
+  if (!email) {
+    console.warn(
+      `[step-delivery] email step ${currentStep.id} skipped: no email for friend ${friend.id}`,
+    );
+    return;
+  }
+
+  // EmailRenderer expands {{name}} via the variables map. We intentionally
+  // pass display_name only — keeps parity with send_email automation action.
+  const variables: Record<string, string> = {
+    name: friend.display_name ?? '',
+  };
+
+  const deps: ChannelDispatcherDeps = {
+    db,
+    ...buildEmailDispatcherDeps(emailConfig),
+  };
+
+  await dispatch(deps, {
+    recipient: {
+      friend: { id: friend.id, lineUserId: friend.line_user_id },
+      email,
+    },
+    channel: 'email',
+    category: 'marketing',
+    // step-delivery is scenario-driven, not a one-off broadcast — 'manual' is
+    // the closest enum value (see EmailSourceKind).
+    sourceKind: 'manual',
+    emailPayload: {
+      subjectTemplate: template.subject,
+      htmlTemplate: template.html_content,
+      textTemplate: template.text_content,
+      preheader: template.preheader ?? undefined,
+      variables,
+      templateId: template.id,
+    },
+    source: { scenarioStepId: currentStep.id },
+  });
 }
 
 async function evaluateCondition(

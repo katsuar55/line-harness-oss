@@ -79,6 +79,7 @@ import { processCronMonitor } from './services/cron-monitor.js';
 import { processCronCleanup } from './services/cron-cleanup.js';
 import { withHeartbeat } from './services/cron-heartbeat.js';
 import { createLogger } from './services/logger.js';
+import { buildEmailDispatchConfig } from './services/email-dispatch-config.js';
 
 export type Env = {
   Bindings: {
@@ -323,14 +324,15 @@ async function scheduled(
   // Phase 7 (2026-04-29): 各 cron を withHeartbeat() でラップし cron_run_logs に書き込み。
   // 既に内部で insertCronRunLog 呼んでいるもの (subscription-reminder / monthly-food-report
   // / weekly-coach-push) はラップしない (重複書き込み防止)。
+  const emailConfig = buildEmailDispatchConfig(env);
   const jobs = [];
   for (const token of activeTokens) {
     const lineClient = new LineClient(token);
     jobs.push(
       withHeartbeat(env.DB, 'step-delivery', () =>
-        processStepDeliveries(env.DB, lineClient, env.WORKER_URL)),
+        processStepDeliveries(env.DB, lineClient, env.WORKER_URL, emailConfig)),
       withHeartbeat(env.DB, 'scheduled-broadcasts', () =>
-        processScheduledBroadcasts(env.DB, lineClient, env.WORKER_URL)),
+        processScheduledBroadcasts(env.DB, lineClient, env.WORKER_URL, emailConfig)),
       withHeartbeat(env.DB, 'reminder-delivery', () =>
         processReminderDeliveries(env.DB, lineClient)),
       withHeartbeat(env.DB, 'scheduled-ab-tests', () =>

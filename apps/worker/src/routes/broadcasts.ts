@@ -6,12 +6,24 @@ import {
   updateBroadcast,
   deleteBroadcast,
 } from '@line-crm/db';
-import type { Broadcast as DbBroadcast, BroadcastMessageType, BroadcastTargetType } from '@line-crm/db';
+import type {
+  Broadcast as DbBroadcast,
+  BroadcastChannel,
+  BroadcastMessageType,
+  BroadcastTargetType,
+} from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
 import { processBroadcastSend } from '../services/broadcast.js';
 import { processSegmentSend } from '../services/segment-send.js';
+import { buildEmailDispatchConfig } from '../services/email-dispatch-config.js';
 import type { SegmentCondition } from '../services/segment-query.js';
 import type { Env } from '../index.js';
+
+const VALID_CHANNELS: BroadcastChannel[] = ['line', 'email', 'both'];
+
+function isValidChannel(value: unknown): value is BroadcastChannel {
+  return typeof value === 'string' && (VALID_CHANNELS as string[]).includes(value);
+}
 
 const broadcasts = new Hono<Env>();
 
@@ -30,6 +42,8 @@ function serializeBroadcast(row: DbBroadcast) {
     successCount: row.success_count,
     lineRequestId: row.line_request_id ?? null,
     insightsFetchedAt: row.insights_fetched_at ?? null,
+    channel: (row.channel ?? 'line') as BroadcastChannel,
+    emailTemplateId: row.email_template_id ?? null,
     createdAt: row.created_at,
   };
 }
@@ -84,6 +98,8 @@ broadcasts.post('/api/broadcasts', async (c) => {
       scheduledAt?: string | null;
       lineAccountId?: string | null;
       altText?: string | null;
+      channel?: BroadcastChannel;
+      emailTemplateId?: string | null;
     }>();
 
     if (!body.title || !body.messageType || !body.messageContent || !body.targetType) {
@@ -100,6 +116,21 @@ broadcasts.post('/api/broadcasts', async (c) => {
       );
     }
 
+    if (body.channel !== undefined && !isValidChannel(body.channel)) {
+      return c.json(
+        { success: false, error: 'channel must be one of: line, email, both' },
+        400,
+      );
+    }
+
+    const channel: BroadcastChannel = body.channel ?? 'line';
+    if ((channel === 'email' || channel === 'both') && !body.emailTemplateId) {
+      return c.json(
+        { success: false, error: 'emailTemplateId is required when channel is "email" or "both"' },
+        400,
+      );
+    }
+
     const broadcast = await createBroadcast(c.env.DB, {
       title: body.title,
       messageType: body.messageType,
@@ -107,6 +138,8 @@ broadcasts.post('/api/broadcasts', async (c) => {
       targetType: body.targetType,
       targetTagId: body.targetTagId ?? null,
       scheduledAt: body.scheduledAt ?? null,
+      channel,
+      emailTemplateId: body.emailTemplateId ?? null,
     });
 
     // Save line_account_id and alt_text if provided
@@ -148,7 +181,31 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       targetType?: BroadcastTargetType;
       targetTagId?: string | null;
       scheduledAt?: string | null;
+      channel?: BroadcastChannel;
+      emailTemplateId?: string | null;
     }>();
+
+    if (body.channel !== undefined && !isValidChannel(body.channel)) {
+      return c.json(
+        { success: false, error: 'channel must be one of: line, email, both' },
+        400,
+      );
+    }
+
+    // 既存 broadcast の channel を尊重しつつ、リクエストでの override を許可
+    const effectiveChannel: BroadcastChannel =
+      body.channel ?? (existing.channel ?? 'line');
+    const effectiveEmailTemplateId =
+      body.emailTemplateId !== undefined ? body.emailTemplateId : existing.email_template_id;
+    if (
+      (effectiveChannel === 'email' || effectiveChannel === 'both') &&
+      !effectiveEmailTemplateId
+    ) {
+      return c.json(
+        { success: false, error: 'emailTemplateId is required when channel is "email" or "both"' },
+        400,
+      );
+    }
 
     // Keep status in sync with scheduledAt changes
     let statusUpdate: 'draft' | 'scheduled' | undefined;
@@ -163,6 +220,10 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       target_type: body.targetType,
       target_tag_id: body.targetTagId,
       scheduled_at: body.scheduledAt,
+      ...(body.channel !== undefined ? { channel: body.channel } : {}),
+      ...(body.emailTemplateId !== undefined
+        ? { email_template_id: body.emailTemplateId }
+        : {}),
       ...(statusUpdate !== undefined ? { status: statusUpdate } : {}),
     });
 
@@ -273,7 +334,8 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
     }
 
     const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
-    await processBroadcastSend(c.env.DB, lineClient, id, c.env.WORKER_URL);
+    const emailConfig = buildEmailDispatchConfig(c.env);
+    await processBroadcastSend(c.env.DB, lineClient, id, c.env.WORKER_URL, emailConfig);
 
     const result = await getBroadcastById(c.env.DB, id);
     return c.json({ success: true, data: result ? serializeBroadcast(result) : null });

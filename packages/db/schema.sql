@@ -85,10 +85,14 @@ CREATE TABLE IF NOT EXISTS scenario_steps (
   condition_type       TEXT,
   condition_value      TEXT,
   next_step_on_false   INTEGER,
+  -- Round 4 PR-6.2 (migration 043): dispatcher 経由の channel
+  channel              TEXT NOT NULL DEFAULT 'line',
+  email_template_id    TEXT,
   UNIQUE (scenario_id, step_order)
 );
 
 CREATE INDEX IF NOT EXISTS idx_scenario_steps_scenario_id ON scenario_steps (scenario_id);
+CREATE INDEX IF NOT EXISTS idx_scenario_steps_channel ON scenario_steps (channel);
 
 -- ============================================================
 -- Friend Scenario Enrollments
@@ -129,10 +133,14 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
 
   line_account_id      TEXT,
-  alt_text             TEXT);
+  alt_text             TEXT,
+  -- Round 4 PR-6.2 (migration 043): dispatcher 経由の channel
+  channel              TEXT NOT NULL DEFAULT 'line',
+  email_template_id    TEXT);
 
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts (status);
 CREATE INDEX IF NOT EXISTS idx_broadcasts_line_request_id ON broadcasts (line_request_id);
+CREATE INDEX IF NOT EXISTS idx_broadcasts_channel ON broadcasts (channel);
 
 -- ============================================================
 -- Messages Log

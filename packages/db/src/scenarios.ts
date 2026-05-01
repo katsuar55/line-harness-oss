@@ -2,6 +2,8 @@ import { jstNow } from './utils.js';
 export type ScenarioTriggerType = 'friend_add' | 'tag_added' | 'manual';
 export type MessageType = 'text' | 'image' | 'flex';
 export type FriendScenarioStatus = 'active' | 'paused' | 'completed';
+/** Round 4 PR-6.2: dispatcher 経由の channel 区別 (migration 043) */
+export type ScenarioStepChannel = 'line' | 'email' | 'both';
 
 export interface Scenario {
   id: string;
@@ -25,6 +27,10 @@ export interface ScenarioStep {
   condition_type: string | null;
   condition_value: string | null;
   next_step_on_false: number | null;
+  /** migration 043 で追加。default 'line'。 */
+  channel?: ScenarioStepChannel;
+  /** migration 043 で追加。channel が 'email' | 'both' のときに email_templates(id) を指す */
+  email_template_id?: string | null;
   created_at: string;
 }
 
@@ -192,6 +198,10 @@ export interface CreateScenarioStepInput {
   conditionType?: string | null;
   conditionValue?: string | null;
   nextStepOnFalse?: number | null;
+  /** migration 043 で追加。省略時は 'line' (default) */
+  channel?: ScenarioStepChannel;
+  /** migration 043 で追加。channel が 'email' | 'both' のときに使う */
+  emailTemplateId?: string | null;
 }
 
 export async function createScenarioStep(
@@ -203,8 +213,8 @@ export async function createScenarioStep(
 
   await db
     .prepare(
-      `INSERT INTO scenario_steps (id, scenario_id, step_order, delay_minutes, message_type, message_content, condition_type, condition_value, next_step_on_false, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO scenario_steps (id, scenario_id, step_order, delay_minutes, message_type, message_content, condition_type, condition_value, next_step_on_false, channel, email_template_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -216,6 +226,8 @@ export async function createScenarioStep(
       input.conditionType ?? null,
       input.conditionValue ?? null,
       input.nextStepOnFalse ?? null,
+      input.channel ?? 'line',
+      input.emailTemplateId ?? null,
       now,
     )
     .run();
@@ -227,7 +239,7 @@ export async function createScenarioStep(
 }
 
 export type UpdateScenarioStepInput = Partial<
-  Pick<ScenarioStep, 'step_order' | 'delay_minutes' | 'message_type' | 'message_content' | 'condition_type' | 'condition_value' | 'next_step_on_false'>
+  Pick<ScenarioStep, 'step_order' | 'delay_minutes' | 'message_type' | 'message_content' | 'condition_type' | 'condition_value' | 'next_step_on_false' | 'channel' | 'email_template_id'>
 >;
 
 export async function updateScenarioStep(
@@ -265,6 +277,14 @@ export async function updateScenarioStep(
   if (updates.next_step_on_false !== undefined) {
     fields.push('next_step_on_false = ?');
     values.push(updates.next_step_on_false);
+  }
+  if (updates.channel !== undefined) {
+    fields.push('channel = ?');
+    values.push(updates.channel);
+  }
+  if (updates.email_template_id !== undefined) {
+    fields.push('email_template_id = ?');
+    values.push(updates.email_template_id);
   }
 
   if (fields.length > 0) {

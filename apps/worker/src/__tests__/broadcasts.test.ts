@@ -257,6 +257,8 @@ describe('Broadcasts API', () => {
         createdAt: '2026-03-31T12:00:00+09:00',
         lineRequestId: null,
         insightsFetchedAt: null,
+        channel: 'line',
+        emailTemplateId: null,
       });
     });
 
@@ -472,6 +474,134 @@ describe('Broadcasts API', () => {
       expect(json.data.targetType).toBe('tag');
       expect(json.data.targetTagId).toBe('tag-001');
     });
+
+    // -----------------------------------------------------------------------
+    // Round 4 PR-6 段階 2: channel + emailTemplateId
+    // -----------------------------------------------------------------------
+
+    it("returns 400 when channel='email' but emailTemplateId is missing", async () => {
+      const res = await app.request(
+        '/api/broadcasts',
+        {
+          method: 'POST',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'Email Broadcast',
+            messageType: 'text',
+            messageContent: 'Hello',
+            targetType: 'all',
+            channel: 'email',
+          }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(400);
+      const json = (await res.json()) as { success: boolean; error: string };
+      expect(json.success).toBe(false);
+      expect(json.error).toContain('emailTemplateId');
+      expect(mockCreateBroadcast).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 when channel='both' but emailTemplateId is missing", async () => {
+      const res = await app.request(
+        '/api/broadcasts',
+        {
+          method: 'POST',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'Both Broadcast',
+            messageType: 'text',
+            messageContent: 'Hello',
+            targetType: 'all',
+            channel: 'both',
+          }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(400);
+      const json = (await res.json()) as { success: boolean; error: string };
+      expect(json.error).toContain('emailTemplateId');
+      expect(mockCreateBroadcast).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when channel value is unknown', async () => {
+      const res = await app.request(
+        '/api/broadcasts',
+        {
+          method: 'POST',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'Bad Channel',
+            messageType: 'text',
+            messageContent: 'Hello',
+            targetType: 'all',
+            channel: 'sms',
+          }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(400);
+    });
+
+    it("persists channel='email' + emailTemplateId on createBroadcast call", async () => {
+      mockCreateBroadcast.mockResolvedValue({
+        ...mockBroadcast,
+        channel: 'email',
+        email_template_id: 'tpl-1',
+      });
+      const res = await app.request(
+        '/api/broadcasts',
+        {
+          method: 'POST',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'Email Broadcast',
+            messageType: 'text',
+            messageContent: 'Hello',
+            targetType: 'all',
+            channel: 'email',
+            emailTemplateId: 'tpl-1',
+          }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(201);
+      expect(mockCreateBroadcast).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          channel: 'email',
+          emailTemplateId: 'tpl-1',
+        }),
+      );
+    });
+
+    it("defaults channel='line' when channel is omitted", async () => {
+      mockCreateBroadcast.mockResolvedValue(mockBroadcast);
+      const res = await app.request(
+        '/api/broadcasts',
+        {
+          method: 'POST',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'Default Channel',
+            messageType: 'text',
+            messageContent: 'Hello',
+            targetType: 'all',
+          }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(201);
+      expect(mockCreateBroadcast).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ channel: 'line', emailTemplateId: null }),
+      );
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -549,6 +679,52 @@ describe('Broadcasts API', () => {
       );
 
       expect(res.status).toBe(400);
+    });
+
+    it("returns 400 when switching channel to 'email' without emailTemplateId", async () => {
+      mockGetBroadcastById.mockResolvedValueOnce(mockBroadcast);
+      const res = await app.request(
+        '/api/broadcasts/bc-001',
+        {
+          method: 'PUT',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channel: 'email' }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(400);
+      const json = (await res.json()) as { error: string };
+      expect(json.error).toContain('emailTemplateId');
+      expect(mockUpdateBroadcast).not.toHaveBeenCalled();
+    });
+
+    it('passes channel + emailTemplateId through to updateBroadcast', async () => {
+      mockGetBroadcastById.mockResolvedValueOnce(mockBroadcast);
+      mockUpdateBroadcast.mockResolvedValue({
+        ...mockBroadcast,
+        channel: 'email',
+        email_template_id: 'tpl-9',
+      });
+      const res = await app.request(
+        '/api/broadcasts/bc-001',
+        {
+          method: 'PUT',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channel: 'email', emailTemplateId: 'tpl-9' }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockUpdateBroadcast).toHaveBeenCalledWith(
+        expect.anything(),
+        'bc-001',
+        expect.objectContaining({
+          channel: 'email',
+          email_template_id: 'tpl-9',
+        }),
+      );
     });
   });
 
