@@ -66,6 +66,7 @@ import { integrationsResend } from './routes/integrations-resend.js';
 import { birthdayCollection } from './routes/birthday-collection.js';
 import { coachAdmin } from './routes/coach-admin.js';
 import { reorderAdmin } from './routes/reorder-admin.js';
+import { emailAdmin } from './routes/email-admin.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 // Phase 1 (2026-04-26): processIntakeReminders は能動pull化により cron 停止。
 // 既存 service コードは残置 (将来オプトイン式に再活性化する可能性あり)。
@@ -214,6 +215,7 @@ app.route('/', integrationsResend);
 app.route('/', birthdayCollection);
 app.route('/', coachAdmin);
 app.route('/', reorderAdmin);
+app.route('/', emailAdmin);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
