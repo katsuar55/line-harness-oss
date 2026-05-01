@@ -149,6 +149,19 @@ L社/U社代替。AI（CC）ネイティブ設計。
   - 29 vitest (svix 10 + integrations-resend 19) 全パス。本番 deploy 済 (503 = secret 未登録の正常状態)
 - [x] PR-5: routes/email-unsubscribe.ts — GET/POST + RFC 8058 One-Click + HMAC 検証 (2026-04-30)
   - 24 vitest 全パス。本番 deploy 済 — `/email/unsubscribe` 経路 200/400/404 動作確認
+- [x] PR-6 段階 1: automations の send_email action 統合 (2026-05-01)
+  - services/email-dispatch-config.ts + services/send-email-action.ts 新規
+  - event-bus.ts: fireEvent → processAutomations → executeAction の 3 レイヤに emailConfig?: EmailDispatchConfig | null をスレッド (既存動作不変)
+  - case 'send_email' 実装: friend → subscriber 解決 → dispatcher 経由 (channel='email')
+  - templateId / 直接 content 両対応、{{name}} を friend.display_name で自動展開
+  - fireEvent コーラー 8 件更新 (friends/liff-portal/shopify/stripe/webhook/webhooks)
+  - 21 vitest 追加 (send-email-action 13 + email-dispatch-config 8)
+  - 既存 stripe/webhooks tests を fireEvent 新シグネチャに合わせて更新
+  - 本番 deploy 済 (Version `f86a75d9-f285-45d1-93c4-4d50e4833e6b`)
+  - Cloudflare Email Routing で `support@naturism-diet.com → info@kenkoex.com` も完成
+  - LINE Console email permission `Applied` (= 承認済) 確認済
+- [x] Cloudflare Email Routing 設定 (2026-05-01): apex MX を Cloudflare に切替 (X-Server MX 削除) + `support@naturism-diet.com → info@kenkoex.com` route 作成 + apex SPF を Cloudflare 用に更新
+  - Resend 用の `mail.naturism-diet.com` / `send.mail.naturism-diet.com` レコードは別 subdomain で独立 → 影響なし
 - [x] PR-6 部分: subscription-reminder を ChannelDispatcher 経由化 (2026-05-01)
   - 既存 5 call-site のうち 1 つ完了。残 4 (event-bus / broadcast / scenarios / automations) は LINE 承認後に実施
   - behavior 改善: is_following=0 / is_blacklisted=1 が legitimate skip 扱いに (旧コードは永久リトライ問題)
