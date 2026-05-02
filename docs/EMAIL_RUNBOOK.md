@@ -66,11 +66,12 @@
   - ダッシュ Webhooks → 新規作成 → endpoint URL `https://naturism-line-crm.katsu-7d5.workers.dev/api/integrations/resend/webhook`
   - イベント: `email.sent` `email.delivered` `email.bounced` `email.complained` `email.opened` `email.clicked`
   - Signing Secret をコピー → `npx wrangler secret put RESEND_WEBHOOK_SECRET`
-- [ ] **support@naturism-diet.com の存在確認**
-  - 存在しない場合: Cloudflare Email Routing で `support@naturism-diet.com → katsu@kenkoex.com` 転送を設定
-  - もしくは `wrangler.toml` の `EMAIL_REPLY_TO` を一時的に `katsu@kenkoex.com` に差し替え
-- [ ] **postmaster@naturism-diet.com の作成** (DMARC レポート受信用)
-  - 同様に Cloudflare Email Routing で転送ルール作成
+- [x] **support@naturism-diet.com の Routing 設定** (2026-05-01 完了)
+  - Cloudflare Email Routing で `support@naturism-diet.com → info@kenkoex.com` 転送済
+- [ ] **dmarc@naturism-diet.com の Routing 設定確認** (DMARC レポート受信用、§6-0 参照)
+  - Cloudflare ダッシュ → Email → Email Routing → Routes
+  - `dmarc@naturism-diet.com → info@kenkoex.com` の Forward rule が無ければ作成
+  - 既に `naturism-diet.com` 全体を `info@kenkoex.com` に Catch-all 設定している場合は追加不要
 
 ### 2-B. Claude / 設定済み (確認のみ)
 
@@ -330,22 +331,38 @@ curl -i "https://naturism-line-crm.katsu-7d5.workers.dev/email/unsubscribe?id=te
 
 **目的**: 大手 ISP (Google / Microsoft / Yahoo) から DMARC 集計レポートが日次で届くことを確認する。
 
+### 6-0. 現状ステータス (2026-05-02 確認)
+
+| 項目 | 状態 |
+|---|---|
+| DMARC stage | **Stage 1 (p=none)** で稼働中 — 観測フェーズ開始 2026-05-02 |
+| DMARC DNS レコード | 設定済 (詳細は 6-1) |
+| DKIM (Resend selector) | `resend._domainkey.mail.naturism-diet.com` で公開鍵確認済 |
+| SPF (apex) | `v=spf1 include:_spf.mx.cloudflare.net ~all` |
+| SPF (mail subdomain) | `v=spf1 include:amazonses.com ~all` (Resend 内部で AWS SES 利用) |
+| MX (apex) | Cloudflare Email Routing (`route1/2/3.mx.cloudflare.net`) に切替済 |
+| `dmarc@naturism-diet.com` Routing | **要確認** — Cloudflare ダッシュで `dmarc@→info@kenkoex.com` の forward が無ければ作成 (オーナー作業 5 分) |
+
+**次のアクション (2026-05-09 以降)**: 7 日観測してレポート pass 率 99%+ + 正規 source_ip のみであれば §7-2 の手順で `p=quarantine pct=10` に昇格。
+
 ### 6-1. DMARC DNS レコード確認
 
 ```bash
 dig TXT _dmarc.naturism-diet.com +short
 ```
 
-期待される現状 (`p=none` 段階):
+現在設定されている内容 (2026-05-02 確認):
 
 ```
-"v=DMARC1; p=none; rua=mailto:postmaster@naturism-diet.com; ruf=mailto:postmaster@naturism-diet.com; fo=1; adkim=r; aspf=r; pct=100"
+"v=DMARC1; p=none; rua=mailto:dmarc@naturism-diet.com; ruf=mailto:dmarc@naturism-diet.com; fo=1; aspf=r; adkim=r"
 ```
+
+(`pct=` タグは省略されている = 暗黙的に `pct=100`。動作上問題なし。)
 
 | タグ | 意味 | 推奨値 (現状) |
 |---|---|---|
 | `p=` | DMARC 違反時のポリシー | `none` (観測のみ) → 後で `quarantine` → `reject` |
-| `rua=` | 集計レポート送信先 (Aggregate) | `mailto:postmaster@naturism-diet.com` |
+| `rua=` | 集計レポート送信先 (Aggregate) | `mailto:dmarc@naturism-diet.com` |
 | `ruf=` | 違反レポート送信先 (Forensic) | 同上 |
 | `fo=1` | レポート発火条件 (1 = DKIM/SPF どちらか fail) | `1` |
 | `adkim/aspf=r` | アライメントモード | `r` (relaxed、subdomain 許容) |
@@ -353,11 +370,11 @@ dig TXT _dmarc.naturism-diet.com +short
 
 ### 6-2. レポート受信先の検査
 
-postmaster@naturism-diet.com → katsu@kenkoex.com の Email Routing 転送が動いていることを確認。
+dmarc@naturism-diet.com → katsu@kenkoex.com の Email Routing 転送が動いていることを確認。
 
 ```bash
 # テスト送信 (Cloudflare Email Routing 動作確認)
-echo "test" | mail -s "test postmaster@" postmaster@naturism-diet.com
+echo "test" | mail -s "test dmarc@" dmarc@naturism-diet.com
 ```
 
 数分後 katsu@kenkoex.com に届くこと。
@@ -391,7 +408,7 @@ DMARC aggregate report は **XML 添付** で日次に届く:
 
 ### 6-4. 簡易ビューア
 
-XML 直読みは辛いので **Postmark DMARC Digest** (https://dmarc.postmarkapp.com) や **dmarcian** (https://dmarcian.com) の無料プランに rua タグを向けると人間可読サマリーが届く。当面は `postmaster@naturism-diet.com` 直受けで運用、頻度が増えたら Digest 系に切り替え。
+XML 直読みは辛いので **Postmark DMARC Digest** (https://dmarc.postmarkapp.com) や **dmarcian** (https://dmarcian.com) の無料プランに rua タグを向けると人間可読サマリーが届く。当面は `dmarc@naturism-diet.com` 直受けで運用、頻度が増えたら Digest 系に切り替え。
 
 ---
 
@@ -416,7 +433,7 @@ XML 直読みは辛いので **Postmark DMARC Digest** (https://dmarc.postmarkap
 2. 異常なし → Cloudflare DNS で `_dmarc.naturism-diet.com` の TXT レコードを編集:
 
 ```
-v=DMARC1; p=quarantine; rua=mailto:postmaster@naturism-diet.com; ruf=mailto:postmaster@naturism-diet.com; fo=1; adkim=r; aspf=r; pct=10
+v=DMARC1; p=quarantine; rua=mailto:dmarc@naturism-diet.com; ruf=mailto:dmarc@naturism-diet.com; fo=1; adkim=r; aspf=r; pct=10
 ```
 
 **ポイント**: `pct=10` で 10% だけ quarantine 適用。残り 90% は p=none と同じ挙動。徐々に増やす。
@@ -429,7 +446,7 @@ v=DMARC1; p=quarantine; rua=mailto:postmaster@naturism-diet.com; ruf=mailto:post
 2. Cloudflare DNS で `_dmarc.naturism-diet.com` を更新:
 
 ```
-v=DMARC1; p=reject; rua=mailto:postmaster@naturism-diet.com; ruf=mailto:postmaster@naturism-diet.com; fo=1; adkim=r; aspf=r; pct=100
+v=DMARC1; p=reject; rua=mailto:dmarc@naturism-diet.com; ruf=mailto:dmarc@naturism-diet.com; fo=1; adkim=r; aspf=r; pct=100
 ```
 
 3. **本番反映後 24 時間は受信箱を集中監視**:

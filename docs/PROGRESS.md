@@ -81,21 +81,22 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - 関連 secret: ANTHROPIC_API_KEY (Phase 3 と共用)
 - git tag: v0.10.0-phase4
 
-### Phase 5: Production Hardening + Phase 3/4 Revenue Activation ⚠️ 部分完了 2026-04-28 (naturism)
+### Phase 5: Production Hardening + Phase 3/4 Revenue Activation ✅ ほぼ完了 2026-05-02 (naturism)
 **Ultraplan で TOP 1 として選定**。Phase 3+4 を本番に投入する前提整備。
 - [x] PR-1: Sidebar に `/coach` リンク + Worker `/api/admin/coach/summary` (push 数を独立メトリクスで返す)
+- [x] PR-2: 実 naturism Shopify URL で `nutrition_sku_map` を差し替え (migration 044) — 2026-05-02 完了
+  - migration 037 が prod 未適用だったので先に適用 → 044 で 5 deficit_key を URL 化
+  - protein_low/calorie_low → naturism Blue 180粒 / fiber_low/iron_low → KOSO Pink 180粒 / calorie_high → naturism Premium 180粒
+  - 全 URL HTTP 200 応答確認、薬機法配慮 copy_template
 - [x] PR-3: Playwright E2E 6 本 (`coach.spec.ts` 4 + `food-log.spec.ts` 2) — `page.route()` で全 worker API モック
 - [x] PR-4: Cron 死活監視 (`cron_run_logs` table + `processCronMonitor` + Discord アラート JST 09:00 gating)
 - [x] PR-5: Pre-deploy preflight checker (`pnpm preflight` / `--full` / `:test`) — REQUIRED_SECRETS / migration 整合性
-- [ ] **PR-2**: 実 Shopify GID で `nutrition_sku_map` を差し替え (migration 038) ← **オーナー承認 (実 GID 提供) 待ち**
-- [ ] **PR-6**: wrangler deploy + Axiom dashboard + smoke runbook ← **オーナー承認待ち**
-- [ ] **PR-7**: 7 日観測 + SKU copy_template A/B テスト ← PR-6 完了後
-- 自動化済 PR: 4 件 (PR-1/3/4/5)
-- ブロック理由: PR-2 は naturism Shopify ストアの実商品 GID が必要。PR-6 は本番 deploy 承認 (CLAUDE.md 厳守)。
+- [x] PR-6: wrangler deploy + smoke runbook ← Round 4 deploy で実質完了
+- [ ] **PR-7**: 7 日観測 + SKU copy_template A/B テスト ← Phase 4 KPI 蓄積後
 - preflight 実行で発見された pre-existing 課題:
   - ~~CRITICAL: migration 009 duplicate~~ → **2026-04-28 解決**: README の「既知の歴史的事項」に従い preflight 側で allowlist 化 (commit fdcd1d9)
-  - ~~WARN: migration gap at 038~~ → 同上、KNOWN_GAP_EXCEPTIONS で INFO に降格
-- git tag: v0.11.0-phase5-partial
+  - ~~WARN: migration gap at 038~~ → 同上、KNOWN_GAP_EXCEPTIONS で INFO に降格 (PR-2 は migration 044 で実装したため 38 は欠番のまま)
+- git tag: v0.11.0-phase5-partial → 次回 v0.15.0-phase5-complete タグ予定
 
 ### Phase 6: 再購入リマインダー強化 ✅ 完了 2026-04-28 (naturism)
 **Ultraplan で TOP 2 として選定**。既存 `subscription_reminders` (migration 029) を強化し、Phase 3/4 食事/栄養データと連動させた閉ループ完成。
@@ -167,27 +168,27 @@ L社/U社代替。AI（CC）ネイティブ設計。
   - behavior 改善: is_following=0 / is_blacklisted=1 が legitimate skip 扱いに (旧コードは永久リトライ問題)
 
 **残 PR (オーナー作業 + 後続)**:
-- [ ] **オーナー作業 (deploy ブロッカー)**:
-  - LINE Console email permission 承認待ち (申請済 2026-04-29)
-  - `wrangler secret put RESEND_API_KEY` (Resend ダッシュで生成)
-  - `wrangler secret put RESEND_WEBHOOK_SECRET` (Resend Webhook 設定で発行)
-  - Resend ダッシュで DNS verify (DKIM/MX/SPF レコード追加済 2026-04-29)
-  - support@naturism-diet.com の存在確認 (なければ wrangler.toml の EMAIL_REPLY_TO 差し替え)
-- [ ] PR-6 残: event-bus / broadcast / scenarios / automations を dispatcher 経由化 + email fallback 統合
-- [ ] PR-7: 管理画面 (`/email` ページ群) + admin API
-- [ ] PR-8: DMARC 段階移行 (p=none → quarantine → reject) + EMAIL_RUNBOOK.md ✅ 既存
+- [x] PR-6 段階 2: broadcast.ts / step-delivery.ts dispatcher 化 (2026-05-02 完了, commit cbdeacf)
+  - migration 043 で broadcasts/scenario_steps に `channel` + `email_template_id` 列追加
+  - channel='line' は既存挙動不変、'email'/'both' で dispatcher 経由
+  - +41 vitest (broadcast 16 / step-delivery 11 / scenarios 7 / broadcasts +7)
+- [x] PR-7: 管理画面 (`/email` ページ群) + admin API (2026-05-02 完了, commit a3eda14)
+  - Worker: 8 endpoints under `/api/admin/email/*` (kpi/subscribers/templates/messages) + 28 vitest
+  - Web: `/email` page (KPI 8 cards / subscribers / templates 編集 / messages 履歴) + サイドバー追加 + 4 Playwright e2e
+- [ ] PR-8: DMARC 段階移行 (p=none → quarantine → reject)
+  - **Stage 1 (p=none)** で稼働中 (rua=mailto:dmarc@naturism-diet.com、観測フェーズ開始 2026-05-02)
+  - 2026-05-09 以降: レポート pass 率 99%+ 確認後、p=quarantine pct=10 に昇格 (要オーナー承認)
+  - EMAIL_RUNBOOK.md §6-0 に現状ステータス記載済
 
 **Phase 7 (cron 監視) 拡張完了**:
 - 10 cron jobs を `withHeartbeat()` で wrap (2026-04-30 deploy 済)。本番で連続成功確認済
 - cron_run_logs 自動 cleanup (30 日保持、JST 03:00 daily) 追加 (2026-05-01)
 
-**docs/EMAIL_RUNBOOK.md 新規** (2026-05-01, 694 行) — オーナー手順書:
+**docs/EMAIL_RUNBOOK.md 新規** (2026-05-01, 700+ 行) — オーナー手順書:
 - smoke test 3 ISP / bounce-complaint テスト / DMARC 段階移行 / 法令準拠チェック / KPI モニタリング SQL
+- 2026-05-02 更新: §6-0 に現状ステータス追記 (DMARC Stage 1 観測中)、postmaster@ → dmarc@ 統一
 
-**worker 全テスト**: **1442 tests pass / 74 files** (Round 4 + Phase 7 で計 +133 件追加)
-
-**未 push commits (GitHub auth 切れ — オーナー復帰時に push)**:
-- 11 commits: bb39c14 / 42aa6ee / 3b5c248 / d24e777 / acefa71 + 6 過去分
+**worker 全テスト**: **1532 tests pass / 80 files** (本セッションで PR-7 +28 / PR-6.2 +41 = +70 件追加)
 
 ### Round 4 拡張予定
 - [ ] メール配信連携 (Resend primary + SendGrid fallback) — Ultraplan: `docs/ROUND4_EMAIL_ULTRAPLAN.md` 8 PR
