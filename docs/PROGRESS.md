@@ -204,6 +204,22 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - 主な発見: ① 本番 D1 に migration 039 (`cron_run_logs`) が未適用だった → 本セッションで適用済み (additive only) ② Phase 6 PR-2 が一度も発火していない (orders/create 0 件 + users.email NULL) ③ product_repurchase_intervals / cross_sell_map 共に 0 件 (seed 必要)
 - /liff/cart 500 hotfix 同時投入 (commit `322bb46`)
 
+### Phase 6 KPI seed 投入 ✅ 完了 2026-05-03 (naturism)
+**Round 4 PR-7 deploy 後の Phase 6 動線開通**。観測 KPI 速報 ③「seed 必要」課題を解消。
+- [x] migration 045 で `product_repurchase_intervals` に主要 3 SKU を seed
+  - 7694090469629 → naturism Blue 180粒(個包装6粒×約30日分) → **30 日**
+  - 7694096367869 → KOSO in naturism(Pink)180粒 (個包装6粒×30日分) → **30 日**
+  - 9081674006781 → naturism Premium 180粒(20日分)[機能性表示食品] → **20 日**
+  - source='seed'、後から user_history / 運用者編集で上書き可能
+- [x] migration 045 で `purchase_cross_sell_map` に 6 ペア (3×2 相互推奨) を seed
+  - 各ペアに薬機配慮 reason (成分・組成の客観的説明 + ライフスタイル提案のみ)
+  - priority 10/5 で表示順を制御 (push 時 limit=2 で上位 2 件採用)
+- 本番 D1 適用確認: intervals 3 行 / cross_sell 6 行 (`SELECT COUNT(*)` で検証)
+- worker コード変更なし → redeploy 不要、admin /api/admin/reorder/* は 401 正常応答
+- 期待効果: 次の Shopify orders/create webhook 発火時に
+  ① Premium ユーザーは 20 日サイクルで正確リマインド (旧: 一律 30 日 = 10 日切らし)
+  ② push に 「🎁 こちらもおすすめ」セクションが最大 2 件追加
+
 ## テスト済み機能 (2026-03-22 周アカウントで実施)
 
 | 機能 | API | LINE送信 | 備考 |
