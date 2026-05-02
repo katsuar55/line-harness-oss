@@ -78,7 +78,7 @@ export const KNOWN_DUPLICATE_EXCEPTIONS = [
  * 該当番号の WARN は INFO に降格する。
  */
 export const KNOWN_GAP_EXCEPTIONS = new Map([
-  [38, 'Phase 5 PR-2 (nutrition_sku_map 実 GID 差し替え) 用に予約'],
+  [38, 'Phase 5 PR-2 (nutrition_sku_map) は migration 044 で実装済み — 番号 38 は欠番のまま予約継続 (リネーム禁止)'],
 ]);
 
 /**
