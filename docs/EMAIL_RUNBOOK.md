@@ -68,10 +68,10 @@
   - Signing Secret をコピー → `npx wrangler secret put RESEND_WEBHOOK_SECRET`
 - [x] **support@naturism-diet.com の Routing 設定** (2026-05-01 完了)
   - Cloudflare Email Routing で `support@naturism-diet.com → info@kenkoex.com` 転送済
-- [ ] **dmarc@naturism-diet.com の Routing 設定確認** (DMARC レポート受信用、§6-0 参照)
-  - Cloudflare ダッシュ → Email → Email Routing → Routes
-  - `dmarc@naturism-diet.com → info@kenkoex.com` の Forward rule が無ければ作成
-  - 既に `naturism-diet.com` 全体を `info@kenkoex.com` に Catch-all 設定している場合は追加不要
+- [x] **dmarc@naturism-diet.com の Routing 設定** (2026-05-02 完了)
+  - Cloudflare API 経由で Forward rule 作成: `dmarc@naturism-diet.com → info@kenkoex.com`
+  - rule_id: `de629a79f0f04615a6755d4ac660d1ad` (status: enabled)
+  - DMARC レポート (XML 添付) が大手 ISP から数日内に届き始める想定
 
 ### 2-B. Claude / 設定済み (確認のみ)
 
@@ -341,7 +341,7 @@ curl -i "https://naturism-line-crm.katsu-7d5.workers.dev/email/unsubscribe?id=te
 | SPF (apex) | `v=spf1 include:_spf.mx.cloudflare.net ~all` |
 | SPF (mail subdomain) | `v=spf1 include:amazonses.com ~all` (Resend 内部で AWS SES 利用) |
 | MX (apex) | Cloudflare Email Routing (`route1/2/3.mx.cloudflare.net`) に切替済 |
-| `dmarc@naturism-diet.com` Routing | **要確認** — Cloudflare ダッシュで `dmarc@→info@kenkoex.com` の forward が無ければ作成 (オーナー作業 5 分) |
+| `dmarc@naturism-diet.com` Routing | ✅ 設定済 (2026-05-02) — Forward rule `dmarc@→info@kenkoex.com` 有効、rule_id `de629a79f0f04615a6755d4ac660d1ad` |
 
 **次のアクション (2026-05-09 以降)**: 7 日観測してレポート pass 率 99%+ + 正規 source_ip のみであれば §7-2 の手順で `p=quarantine pct=10` に昇格。
 
