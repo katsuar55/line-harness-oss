@@ -204,6 +204,21 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - 主な発見: ① 本番 D1 に migration 039 (`cron_run_logs`) が未適用だった → 本セッションで適用済み (additive only) ② Phase 6 PR-2 が一度も発火していない (orders/create 0 件 + users.email NULL) ③ product_repurchase_intervals / cross_sell_map 共に 0 件 (seed 必要)
 - /liff/cart 500 hotfix 同時投入 (commit `322bb46`)
 
+### naturism-diet.com Google Workspace 移管 ✅ 完了 2026-05-03 (naturism)
+**naturism ブランド専用メール基盤を Cloudflare Email Routing → Google Workspace に移管**。年商21億規模の対外メール環境を整備。
+- Google Workspace Business Starter (info@naturism-diet.com 1 ライセンス) 14日間トライアル開始
+- Cloudflare Domain Connect で apex MX 自動切替 (Cloudflare route1/2/3 → Google ASPMX 5 件)
+- apex SPF 更新: `v=spf1 include:_spf.google.com ~all`
+- DKIM 新設 (2048-bit): `google._domainkey.naturism-diet.com` (Cloudflare API 経由で TXT 追加 → 即時浸透 → Google Admin で「認証済」)
+- 6 alias 集約: support / contact / partnership / press / noreply / dmarc → 全て info@ inbox
+- Gmail Send-as 5 件設定 (info@ + 4 alias、表示名: naturism公式 / naturism Official / naturism カスタマーサポート / naturism パートナーシップ事務局 / naturism 広報 / naturism (自動送信))
+- デフォルト返信モード: 「メールを受信したアドレスから返信する」
+- 検証: 受信テスト (3 alias 同時受信) + 送信テスト (support@ alias from info@ → SPF/DKIM PASS、Spam 判定なし)
+- mail.naturism-diet.com (Resend) は完全独立で稼働継続 = LINE Harness のメール送信機能 (`noreply@mail.naturism-diet.com`) は不変
+- DMARC は変更なし (Stage 1 `p=none` 観測継続、rua=dmarc@→info@ alias 経由)
+- 後処理: Cloudflare Email Routing destination address (`info@kenkoex.com`) は後日削除予定
+- 関連ドキュメント: `docs/EMAIL_RUNBOOK.md` §6-0 全面更新
+
 ### Phase 6 KPI seed 投入 ✅ 完了 2026-05-03 (naturism)
 **Round 4 PR-7 deploy 後の Phase 6 動線開通**。観測 KPI 速報 ③「seed 必要」課題を解消。
 - [x] migration 045 で `product_repurchase_intervals` に主要 3 SKU を seed

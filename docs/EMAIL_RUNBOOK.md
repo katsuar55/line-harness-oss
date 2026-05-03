@@ -331,19 +331,26 @@ curl -i "https://naturism-line-crm.katsu-7d5.workers.dev/email/unsubscribe?id=te
 
 **目的**: 大手 ISP (Google / Microsoft / Yahoo) から DMARC 集計レポートが日次で届くことを確認する。
 
-### 6-0. 現状ステータス (2026-05-02 確認)
+### 6-0. 現状ステータス (2026-05-03 更新 — Google Workspace 移管後)
 
 | 項目 | 状態 |
 |---|---|
 | DMARC stage | **Stage 1 (p=none)** で稼働中 — 観測フェーズ開始 2026-05-02 |
-| DMARC DNS レコード | 設定済 (詳細は 6-1) |
-| DKIM (Resend selector) | `resend._domainkey.mail.naturism-diet.com` で公開鍵確認済 |
-| SPF (apex) | `v=spf1 include:_spf.mx.cloudflare.net ~all` |
-| SPF (mail subdomain) | `v=spf1 include:amazonses.com ~all` (Resend 内部で AWS SES 利用) |
-| MX (apex) | Cloudflare Email Routing (`route1/2/3.mx.cloudflare.net`) に切替済 |
-| `dmarc@naturism-diet.com` Routing | ✅ 設定済 (2026-05-02) — Forward rule `dmarc@→info@kenkoex.com` 有効、rule_id `de629a79f0f04615a6755d4ac660d1ad` |
+| DMARC DNS レコード | 設定済 (詳細は 6-1)、変更なし |
+| DKIM (Resend selector) | `resend._domainkey.mail.naturism-diet.com` で公開鍵確認済 (subdomain、Resend 送信用) |
+| **DKIM (Google selector)** | ✅ **新設 (2026-05-03)** — `google._domainkey.naturism-diet.com` 2048-bit、Google Admin で「認証済」 |
+| SPF (apex) | ✅ **更新 (2026-05-03)** — `v=spf1 include:_spf.google.com ~all` (Cloudflare → Google に切替) |
+| SPF (mail subdomain) | `v=spf1 include:amazonses.com ~all` (Resend 内部で AWS SES 利用、不変) |
+| MX (apex) | ✅ **更新 (2026-05-03)** — Google Workspace (`aspmx.l.google.com` 等 5 件、Cloudflare Domain Connect 自動切替) |
+| `dmarc@naturism-diet.com` 受信 | ✅ Google Workspace alias `dmarc@→info@naturism-diet.com inbox` で集約 |
+| `support@naturism-diet.com` 受信 | ✅ Google Workspace alias `support@→info@naturism-diet.com inbox` で集約 |
+| Cloudflare Email Routing | ❌ **無効化 (2026-05-03)** — Google Workspace に移管完了、destination address (`info@kenkoex.com`) は後日削除 |
 
 **次のアクション (2026-05-09 以降)**: 7 日観測してレポート pass 率 99%+ + 正規 source_ip のみであれば §7-2 の手順で `p=quarantine pct=10` に昇格。
+
+**移管時の検証実績 (2026-05-03)**:
+- 受信テスト: 個人 Gmail から `info@`, `support@`, `dmarc@` の 3 alias に同時送信 → すべて info@ inbox に集約成功
+- 送信テスト: info@ から `support@` alias で送信 → 受信側 Gmail で `送信元: naturism-diet.com` `署名元: naturism-diet.com` 表示、Spam 判定なし、TLS 暗号化済
 
 ### 6-1. DMARC DNS レコード確認
 
@@ -368,16 +375,17 @@ dig TXT _dmarc.naturism-diet.com +short
 | `adkim/aspf=r` | アライメントモード | `r` (relaxed、subdomain 許容) |
 | `pct=100` | ポリシー適用率 | `100` で運用 |
 
-### 6-2. レポート受信先の検査
+### 6-2. レポート受信先の検査 (2026-05-03 更新)
 
-dmarc@naturism-diet.com → katsu@kenkoex.com の Email Routing 転送が動いていることを確認。
+`dmarc@naturism-diet.com` への受信が **Google Workspace alias 経由で info@naturism-diet.com inbox に集約**されることを確認。
 
 ```bash
-# テスト送信 (Cloudflare Email Routing 動作確認)
-echo "test" | mail -s "test dmarc@" dmarc@naturism-diet.com
+# テスト送信 (Google Workspace 経由)
+# 個人 Gmail 等から dmarc@naturism-diet.com に通常メール送信
+# → 数秒で info@naturism-diet.com の inbox に届く
 ```
 
-数分後 katsu@kenkoex.com に届くこと。
+数秒〜数分後 info@naturism-diet.com inbox に届くこと。Cloudflare Email Routing は 2026-05-03 に無効化済、現在は Google Workspace alias で受信集約。
 
 ### 6-3. レポート内容の読み方
 
