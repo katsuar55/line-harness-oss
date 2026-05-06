@@ -9,7 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "predeploy": "pnpm --filter @line-crm/shared --filter @line-crm/line-sdk build",
-    "deploy": "vite build && wrangler deploy",
+    "deploy": "vite build && wrangler deploy && node ../../scripts/post-deploy-check.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

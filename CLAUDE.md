@@ -122,8 +122,10 @@ WORKER_URL: string
   - 実費が発生する Cloudflare プラン変更 (Workers Paid / R2 課金 / Workers AI 有料モデル切替 等)
   - 公開済み LINE Official Account への broadcast (1万件以上)
   - 公開チャンネルの Webhook URL 変更
-- `pnpm --filter worker deploy` (vite build && wrangler deploy) は事前承認なしで実行可
-  - 完了後に必ず本番 HTML の bundle ID + LIFF ID 埋め込みを `curl` で検証してチャットに報告
+- `pnpm --filter worker deploy` (vite build && wrangler deploy && post-deploy-check) は事前承認なしで実行可
+  - post-deploy-check が本番 bundle ID とローカル build を最大 30s (5s × 6 attempts) リトライで自動照合する
+  - 不一致なら exit 1 で警告を出すので、結果をチャットに報告すること
+  - LIFF ID 埋め込みは preflight `[liff-bundle]` チェックで build 前に検証済み
   - preflight CRITICAL がある状態で deploy しないこと (deploy 自動ブロック)
 - シークレットは `wrangler secret put` でのみ設定。コード・ログ・CLAUDE.md に含めない
   - secret 値そのもののチャットへのエコーバックも禁止 (PII / 認証情報の漏洩防止)
@@ -133,6 +135,8 @@ WORKER_URL: string
 - 直近 deploy で本番が壊れたら即 `wrangler rollback` または前 commit を checkout して再 deploy
 - 復旧 deploy 後、必ず `curl -s https://<worker-url>/ | grep "src=\"/assets/"` で
   bundle ID が変わったことを確認 (Cloudflare CDN キャッシュは数十秒で剥がれる)
+- **2026-05-07 改善**: `scripts/post-deploy-check.mjs` が deploy script に組み込まれ、
+  本番 HTML とローカル build を自動照合する (curl 手順は冗長確認用に残す)
 
 ## 現在のフェーズ
 
