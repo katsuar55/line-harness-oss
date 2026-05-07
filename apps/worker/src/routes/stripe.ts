@@ -53,18 +53,61 @@ stripe.get('/api/integrations/stripe/events', async (c) => {
 
 // ========== Stripe Webhookレシーバー ==========
 
-/** Stripe署名検証 */
-async function verifyStripeSignature(secret: string, rawBody: string, sigHeader: string): Promise<boolean> {
-  // Stripe署名形式: t=timestamp,v1=signature
-  const parts = Object.fromEntries(
-    sigHeader.split(',').map((p) => {
-      const [k, ...v] = p.split('=');
-      return [k, v.join('=')];
-    }),
-  );
-  const timestamp = parts.t;
-  const expectedSig = parts.v1;
-  if (!timestamp || !expectedSig) return false;
+interface VerifyOptions {
+  /** テスト時に現在時刻 (ms) を固定したい場合に渡す。default: Date.now() */
+  now?: number;
+  /** timestamp の許容差 (秒)。default: 300 (Stripe 公式推奨値) */
+  toleranceSec?: number;
+}
+
+/** hex 文字列を Uint8Array に変換 (奇数長や非 hex 文字は null を返す) */
+function hexToBytes(hex: string): Uint8Array | null {
+  if (hex.length === 0 || hex.length % 2 !== 0) return null;
+  if (!/^[a-f0-9]+$/i.test(hex)) return null;
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = Number.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+/**
+ * Stripe webhook 署名検証 (公式仕様準拠)。
+ * - 形式: `t=<unix_ts>,v1=<hex>[,v1=<hex>]` (シークレットローテーション中は v1 が複数)
+ * - timestamp 検証で replay 攻撃防止 (現在時刻と ±toleranceSec)
+ * - `crypto.subtle.verify` で timing-safe 比較
+ *
+ * @returns 検証 OK なら true、それ以外は false
+ */
+export async function verifyStripeSignature(
+  secret: string,
+  rawBody: string,
+  sigHeader: string,
+  opts?: VerifyOptions,
+): Promise<boolean> {
+  if (!sigHeader) return false;
+  const nowMs = opts?.now ?? Date.now();
+  const toleranceSec = opts?.toleranceSec ?? 300;
+
+  // Stripe署名形式: t=timestamp,v1=signature[,v1=signature2]
+  // signature ローテーション中は v1 が複数並ぶことがあるため、parts は配列で保持
+  const pairs = sigHeader
+    .split(',')
+    .map((p) => {
+      const idx = p.indexOf('=');
+      if (idx === -1) return null;
+      return [p.slice(0, idx).trim(), p.slice(idx + 1).trim()] as const;
+    })
+    .filter((x): x is readonly [string, string] => x !== null);
+  const timestamp = pairs.find(([k]) => k === 't')?.[1];
+  const expectedSigs = pairs.filter(([k]) => k === 'v1').map(([, v]) => v);
+  if (!timestamp || expectedSigs.length === 0) return false;
+
+  // timestamp 検証 (replay 防止)
+  const ts = Number.parseInt(timestamp, 10);
+  if (!Number.isFinite(ts) || ts <= 0) return false;
+  const ageSec = Math.abs(Math.floor(nowMs / 1000) - ts);
+  if (ageSec > toleranceSec) return false;
 
   const encoder = new TextEncoder();
   const signedPayload = `${timestamp}.${rawBody}`;
@@ -73,13 +116,21 @@ async function verifyStripeSignature(secret: string, rawBody: string, sigHeader:
     encoder.encode(secret),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
-    ['sign'],
+    ['verify'],
   );
-  const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(signedPayload));
-  const computedSig = Array.from(new Uint8Array(sig))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-  return computedSig === expectedSig;
+
+  // 各 v1 (hex 32 bytes = 64 chars) を Uint8Array 化して timing-safe 比較
+  for (const sigHex of expectedSigs) {
+    const sigBytes = hexToBytes(sigHex);
+    if (!sigBytes || sigBytes.byteLength !== 32) continue;
+    try {
+      const ok = await crypto.subtle.verify('HMAC', key, sigBytes, encoder.encode(signedPayload));
+      if (ok) return true;
+    } catch {
+      // 不正な signature 形式等は continue
+    }
+  }
+  return false;
 }
 
 stripe.post('/api/integrations/stripe/webhook', async (c) => {

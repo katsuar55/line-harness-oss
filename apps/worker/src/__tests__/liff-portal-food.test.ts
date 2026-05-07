@@ -206,6 +206,16 @@ function authedReq(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/**
+ * `ateAt` validation enforces ATE_AT_PAST_LIMIT_MS = 7 日。
+ * 絶対日付 fixture を使うとテストが時間経過で壊れるため、
+ * 実行時刻を基準に「数時間前」を返すヘルパで生成する。
+ */
+function recentIso(hoursAgo: number): string {
+  return new Date(Date.now() - hoursAgo * 60 * 60 * 1000).toISOString();
+}
+
 describe('LIFF Food Log Endpoints', () => {
   let app: ReturnType<typeof createApp>;
 
@@ -218,7 +228,7 @@ describe('LIFF Food Log Endpoints', () => {
   describe('POST /api/liff/food/log', () => {
     it('creates a pending log when no nutrition values are provided', async () => {
       const res = await authedReq(app, 'POST', '/api/liff/food/log', {
-        ateAt: '2026-04-27T08:00:00+09:00',
+        ateAt: recentIso(8),
         mealType: 'breakfast',
         rawText: 'toast and eggs',
       });
@@ -237,7 +247,7 @@ describe('LIFF Food Log Endpoints', () => {
 
     it('promotes to completed when calories+PFC are provided', async () => {
       const res = await authedReq(app, 'POST', '/api/liff/food/log', {
-        ateAt: '2026-04-27T12:00:00+09:00',
+        ateAt: recentIso(4),
         mealType: 'lunch',
         calories: 600,
         proteinG: 25,
@@ -271,7 +281,7 @@ describe('LIFF Food Log Endpoints', () => {
 
     it('rejects when calories exceed 10000', async () => {
       const res = await authedReq(app, 'POST', '/api/liff/food/log', {
-        ateAt: '2026-04-27T08:00:00+09:00',
+        ateAt: recentIso(8),
         calories: 99999,
       });
       expect(res.status).toBe(400);
@@ -279,7 +289,7 @@ describe('LIFF Food Log Endpoints', () => {
 
     it('rejects when proteinG is negative', async () => {
       const res = await authedReq(app, 'POST', '/api/liff/food/log', {
-        ateAt: '2026-04-27T08:00:00+09:00',
+        ateAt: recentIso(8),
         proteinG: -5,
       });
       expect(res.status).toBe(400);
@@ -287,7 +297,7 @@ describe('LIFF Food Log Endpoints', () => {
 
     it('truncates rawText longer than 500 chars', async () => {
       const res = await authedReq(app, 'POST', '/api/liff/food/log', {
-        ateAt: '2026-04-27T08:00:00+09:00',
+        ateAt: recentIso(8),
         rawText: 'a'.repeat(700),
       });
       expect(res.status).toBe(200);
@@ -300,7 +310,7 @@ describe('LIFF Food Log Endpoints', () => {
         app,
         'POST',
         '/api/liff/food/log',
-        { ateAt: '2026-04-27T08:00:00+09:00' },
+        { ateAt: recentIso(8) },
         false,
       );
       expect(res.status).toBe(401);

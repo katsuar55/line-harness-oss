@@ -37,11 +37,33 @@ export type EmailSourceKind = z.infer<typeof EmailSourceKind>;
 // EmailMessage (provider に渡す正規化された送信単位)
 // ============================================================
 
+/**
+ * From / Reply-To アドレスの簡易バリデーション。
+ * - bare: `noreply@example.com`
+ * - with display name: `naturism <noreply@example.com>` (RFC 5322 mailbox)
+ * `z.string().email()` では display name 付きを拒否してしまうので独立 schema にする。
+ */
+const emailMailboxSchema = z
+  .string()
+  .min(1)
+  .max(320)
+  .refine(
+    (val) => {
+      // bare email
+      const bare = /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/;
+      if (bare.test(val)) return true;
+      // "Display Name <addr@host>" — display name は空白含む任意文字
+      const named = /^[^<>]+\s<[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+>$/;
+      return named.test(val);
+    },
+    { message: 'must be a bare email or "Display Name <email>" mailbox' },
+  );
+
 export const EmailMessage = z.object({
   /** 受信者メールアドレス (1 件のみ。複数宛先は呼び出し側で展開) */
   to: z.string().email(),
-  /** 送信元 (例: noreply@mail.naturism.example) */
-  from: z.string().email(),
+  /** 送信元 (例: `noreply@mail.naturism-diet.com` または `naturism <noreply@mail.naturism-diet.com>`) */
+  from: emailMailboxSchema,
   /** 件名 (1 行) */
   subject: z.string().min(1).max(998), // RFC 5322 上限
   /** HTML 本文 (法定フッター + List-Unsubscribe は EmailRenderer が注入) */

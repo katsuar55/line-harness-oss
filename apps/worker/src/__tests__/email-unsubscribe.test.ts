@@ -108,7 +108,7 @@ function makeApp(state: FakeDbState) {
 
 function makeSubscriber(over: Partial<EmailSubscriber> = {}): EmailSubscriber {
   return {
-    id: 'sub-1',
+    id: '00000000-0000-0000-0000-000000000001',
     friend_id: null,
     email: 'tester@example.com',
     is_active: 1,
@@ -134,21 +134,21 @@ async function validToken(subscriberId: string): Promise<string> {
 
 describe('verifyUnsubscribeToken', () => {
   it('正しい token なら true', async () => {
-    const token = await __test__.hmacSha256Hex(HMAC_KEY, 'sub-1');
-    expect(await __test__.verifyUnsubscribeToken(HMAC_KEY, 'sub-1', token)).toBe(
+    const token = await __test__.hmacSha256Hex(HMAC_KEY, '00000000-0000-0000-0000-000000000001');
+    expect(await __test__.verifyUnsubscribeToken(HMAC_KEY, '00000000-0000-0000-0000-000000000001', token)).toBe(
       true,
     );
   });
 
   it('別 subscriber の token は false', async () => {
-    const token = await __test__.hmacSha256Hex(HMAC_KEY, 'sub-other');
-    expect(await __test__.verifyUnsubscribeToken(HMAC_KEY, 'sub-1', token)).toBe(
+    const token = await __test__.hmacSha256Hex(HMAC_KEY, '00000000-0000-0000-0000-000000000002');
+    expect(await __test__.verifyUnsubscribeToken(HMAC_KEY, '00000000-0000-0000-0000-000000000001', token)).toBe(
       false,
     );
   });
 
   it('token 形式不正 (hex 以外) は false', async () => {
-    expect(await __test__.verifyUnsubscribeToken(HMAC_KEY, 'sub-1', 'not-hex')).toBe(
+    expect(await __test__.verifyUnsubscribeToken(HMAC_KEY, '00000000-0000-0000-0000-000000000001', 'not-hex')).toBe(
       false,
     );
   });
@@ -157,7 +157,7 @@ describe('verifyUnsubscribeToken', () => {
     expect(await __test__.verifyUnsubscribeToken(HMAC_KEY, '', 'a'.repeat(64))).toBe(
       false,
     );
-    expect(await __test__.verifyUnsubscribeToken(HMAC_KEY, 'sub-1', '')).toBe(false);
+    expect(await __test__.verifyUnsubscribeToken(HMAC_KEY, '00000000-0000-0000-0000-000000000001', '')).toBe(false);
   });
 });
 
@@ -194,13 +194,13 @@ describe('constantTimeEqual', () => {
 describe('GET /email/unsubscribe', () => {
   let state: FakeDbState;
   beforeEach(() => {
-    state = { byId: { 'sub-1': makeSubscriber() }, updates: [] };
+    state = { byId: { '00000000-0000-0000-0000-000000000001': makeSubscriber() }, updates: [] };
   });
 
   it('正常: 確認ページ HTML を返す (200, "配信を停止する" ボタンあり)', async () => {
     const app = makeApp(state);
-    const token = await validToken('sub-1');
-    const res = await app.request(`/email/unsubscribe?id=sub-1&token=${token}`);
+    const token = await validToken('00000000-0000-0000-0000-000000000001');
+    const res = await app.request(`/email/unsubscribe?id=00000000-0000-0000-0000-000000000001&token=${token}`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('配信停止の確認');
@@ -216,27 +216,27 @@ describe('GET /email/unsubscribe', () => {
 
   it('token 不正で 400', async () => {
     const app = makeApp(state);
-    const res = await app.request(`/email/unsubscribe?id=sub-1&token=${'x'.repeat(64)}`);
+    const res = await app.request(`/email/unsubscribe?id=00000000-0000-0000-0000-000000000001&token=${'x'.repeat(64)}`);
     expect(res.status).toBe(400);
   });
 
   it('subscriber 未登録で 404', async () => {
     const app = makeApp(state);
-    const token = await validToken('sub-missing');
+    const token = await validToken('00000000-0000-0000-0000-00000000ffff');
     const res = await app.request(
-      `/email/unsubscribe?id=sub-missing&token=${token}`,
+      `/email/unsubscribe?id=00000000-0000-0000-0000-00000000ffff&token=${token}`,
     );
     expect(res.status).toBe(404);
   });
 
   it('既に unsubscribed_at セット済 → 200 + "既に配信停止" 文言', async () => {
-    state.byId['sub-1'] = makeSubscriber({
+    state.byId['00000000-0000-0000-0000-000000000001'] = makeSubscriber({
       unsubscribed_at: '2026-04-01T00:00:00+09:00',
       is_active: 0,
     });
     const app = makeApp(state);
-    const token = await validToken('sub-1');
-    const res = await app.request(`/email/unsubscribe?id=sub-1&token=${token}`);
+    const token = await validToken('00000000-0000-0000-0000-000000000001');
+    const res = await app.request(`/email/unsubscribe?id=00000000-0000-0000-0000-000000000001&token=${token}`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('既に配信停止');
@@ -250,14 +250,14 @@ describe('GET /email/unsubscribe', () => {
 describe('POST /email/unsubscribe', () => {
   let state: FakeDbState;
   beforeEach(() => {
-    state = { byId: { 'sub-1': makeSubscriber() }, updates: [] };
+    state = { byId: { '00000000-0000-0000-0000-000000000001': makeSubscriber() }, updates: [] };
   });
 
   it('正常: form body 経由で is_active=0 + unsubscribed_at セット', async () => {
     const app = makeApp(state);
-    const token = await validToken('sub-1');
+    const token = await validToken('00000000-0000-0000-0000-000000000001');
     const body = new URLSearchParams({
-      id: 'sub-1',
+      id: '00000000-0000-0000-0000-000000000001',
       token,
       'List-Unsubscribe': 'One-Click',
     });
@@ -269,15 +269,15 @@ describe('POST /email/unsubscribe', () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('配信停止が完了しました');
-    expect(state.byId['sub-1']!.is_active).toBe(0);
-    expect(state.byId['sub-1']!.unsubscribed_at).not.toBeNull();
+    expect(state.byId['00000000-0000-0000-0000-000000000001']!.is_active).toBe(0);
+    expect(state.byId['00000000-0000-0000-0000-000000000001']!.unsubscribed_at).not.toBeNull();
   });
 
   it('RFC 8058 One-Click: query string 経由でも処理可', async () => {
     const app = makeApp(state);
-    const token = await validToken('sub-1');
+    const token = await validToken('00000000-0000-0000-0000-000000000001');
     const res = await app.request(
-      `/email/unsubscribe?id=sub-1&token=${token}`,
+      `/email/unsubscribe?id=00000000-0000-0000-0000-000000000001&token=${token}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -285,19 +285,19 @@ describe('POST /email/unsubscribe', () => {
       },
     );
     expect(res.status).toBe(200);
-    expect(state.byId['sub-1']!.is_active).toBe(0);
+    expect(state.byId['00000000-0000-0000-0000-000000000001']!.is_active).toBe(0);
   });
 
   it('既に解除済なら idempotent (200, "配信停止済み" 表示、状態変更なし)', async () => {
-    state.byId['sub-1'] = makeSubscriber({
+    state.byId['00000000-0000-0000-0000-000000000001'] = makeSubscriber({
       unsubscribed_at: '2026-04-01T00:00:00+09:00',
       is_active: 0,
     });
-    const before = { ...state.byId['sub-1'] };
+    const before = { ...state.byId['00000000-0000-0000-0000-000000000001'] };
     const app = makeApp(state);
-    const token = await validToken('sub-1');
+    const token = await validToken('00000000-0000-0000-0000-000000000001');
     const res = await app.request(
-      `/email/unsubscribe?id=sub-1&token=${token}`,
+      `/email/unsubscribe?id=00000000-0000-0000-0000-000000000001&token=${token}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -307,18 +307,18 @@ describe('POST /email/unsubscribe', () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('配信停止済み');
-    expect(state.byId['sub-1']!.unsubscribed_at).toBe(before.unsubscribed_at);
+    expect(state.byId['00000000-0000-0000-0000-000000000001']!.unsubscribed_at).toBe(before.unsubscribed_at);
   });
 
   it('bounce 抑制 (is_active=0, unsubscribed_at IS NULL) でも unsubscribed_at がセットされる', async () => {
-    state.byId['sub-1'] = makeSubscriber({
+    state.byId['00000000-0000-0000-0000-000000000001'] = makeSubscriber({
       is_active: 0,
       unsubscribed_at: null, // bounce で is_active=0 にされたが、ユーザー解除はまだ
     });
     const app = makeApp(state);
-    const token = await validToken('sub-1');
+    const token = await validToken('00000000-0000-0000-0000-000000000001');
     const res = await app.request(
-      `/email/unsubscribe?id=sub-1&token=${token}`,
+      `/email/unsubscribe?id=00000000-0000-0000-0000-000000000001&token=${token}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -326,18 +326,18 @@ describe('POST /email/unsubscribe', () => {
       },
     );
     expect(res.status).toBe(200);
-    expect(state.byId['sub-1']!.unsubscribed_at).not.toBeNull();
+    expect(state.byId['00000000-0000-0000-0000-000000000001']!.unsubscribed_at).not.toBeNull();
   });
 
   it('token 不正で 400 + 状態変更なし', async () => {
     const app = makeApp(state);
     const res = await app.request(
-      `/email/unsubscribe?id=sub-1&token=${'b'.repeat(64)}`,
+      `/email/unsubscribe?id=00000000-0000-0000-0000-000000000001&token=${'b'.repeat(64)}`,
       { method: 'POST', body: '' },
     );
     expect(res.status).toBe(400);
-    expect(state.byId['sub-1']!.is_active).toBe(1);
-    expect(state.byId['sub-1']!.unsubscribed_at).toBeNull();
+    expect(state.byId['00000000-0000-0000-0000-000000000001']!.is_active).toBe(1);
+    expect(state.byId['00000000-0000-0000-0000-000000000001']!.unsubscribed_at).toBeNull();
   });
 
   it('id 欠落で 400 (form / query 両方欠落)', async () => {
@@ -348,9 +348,9 @@ describe('POST /email/unsubscribe', () => {
 
   it('subscriber 未登録で 404', async () => {
     const app = makeApp(state);
-    const token = await validToken('sub-missing');
+    const token = await validToken('00000000-0000-0000-0000-00000000ffff');
     const res = await app.request(
-      `/email/unsubscribe?id=sub-missing&token=${token}`,
+      `/email/unsubscribe?id=00000000-0000-0000-0000-00000000ffff&token=${token}`,
       { method: 'POST', body: '' },
     );
     expect(res.status).toBe(404);
@@ -375,7 +375,7 @@ describe('POST /email/resubscribe', () => {
   it('正常: is_active=1 に戻る + unsubscribed_at=null', async () => {
     const state: FakeDbState = {
       byId: {
-        'sub-1': makeSubscriber({
+        '00000000-0000-0000-0000-000000000001': makeSubscriber({
           is_active: 0,
           unsubscribed_at: '2026-04-01T00:00:00+09:00',
         }),
@@ -383,23 +383,23 @@ describe('POST /email/resubscribe', () => {
       updates: [],
     };
     const app = makeApp(state);
-    const token = await validToken('sub-1');
+    const token = await validToken('00000000-0000-0000-0000-000000000001');
     const res = await app.request(
-      `/email/resubscribe?id=sub-1&token=${token}`,
+      `/email/resubscribe?id=00000000-0000-0000-0000-000000000001&token=${token}`,
       { method: 'POST' },
     );
     expect(res.status).toBe(200);
     const json: unknown = await res.json();
     expect(json).toEqual({ success: true });
-    expect(state.byId['sub-1']!.is_active).toBe(1);
-    expect(state.byId['sub-1']!.unsubscribed_at).toBeNull();
+    expect(state.byId['00000000-0000-0000-0000-000000000001']!.is_active).toBe(1);
+    expect(state.byId['00000000-0000-0000-0000-000000000001']!.unsubscribed_at).toBeNull();
   });
 
   it('token 不正で 400', async () => {
     const state: FakeDbState = { byId: {}, updates: [] };
     const app = makeApp(state);
     const res = await app.request(
-      `/email/resubscribe?id=sub-1&token=${'c'.repeat(64)}`,
+      `/email/resubscribe?id=00000000-0000-0000-0000-000000000001&token=${'c'.repeat(64)}`,
       { method: 'POST' },
     );
     expect(res.status).toBe(400);

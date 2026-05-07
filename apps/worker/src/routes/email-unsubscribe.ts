@@ -69,6 +69,18 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 /**
+ * subscriber.id (UUID v4) の形式バリデーション。
+ * `crypto.randomUUID()` が生成する標準形式に限定する。
+ * 形式違反は HMAC を計算する前に reject することで、不正な id を DB に
+ * 渡す総当たり攻撃を初期段階でブロックする。
+ */
+const SUBSCRIBER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isValidSubscriberId(id: string | undefined | null): id is string {
+  return typeof id === 'string' && SUBSCRIBER_ID_PATTERN.test(id);
+}
+
+/**
  * subscriberId と token (URL 経由) を verify する。
  * @returns 検証 OK なら subscriberId、NG なら null
  */
@@ -78,6 +90,7 @@ export async function verifyUnsubscribeToken(
   token: string,
 ): Promise<boolean> {
   if (!subscriberId || !token) return false;
+  if (!isValidSubscriberId(subscriberId)) return false;
   // hex 形式バリデーション (token は 64 文字 hex)
   if (!/^[a-f0-9]{64}$/i.test(token)) return false;
   const expected = await hmacSha256Hex(hmacKey, subscriberId);

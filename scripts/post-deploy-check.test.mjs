@@ -10,7 +10,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { extractBundleId, buildResult, runCheck } from './post-deploy-check.mjs';
+import { extractBundleId, buildResult, runCheck, isAllowedWorkerUrl } from './post-deploy-check.mjs';
 
 // ─────────────────────────────────────
 // extractBundleId
@@ -62,11 +62,56 @@ test('buildResult: exit 2 when prod fetch failed throughout', () => {
   assert.match(r.lastError, /HTTP 503/);
 });
 
-test('buildResult: exit 1 when local missing but prod present', () => {
-  // 通常は起こらないが定義として local null + prod present は不一致扱い
+test('buildResult: exit 2 when local missing (pre-condition failure)', () => {
   const r = buildResult({ localBundle: null, prodBundle: 'x.js', attempts: 1, lastError: null });
   assert.equal(r.ok, false);
-  assert.equal(r.exitCode, 1);
+  assert.equal(r.exitCode, 2);
+  assert.match(r.lastError, /local bundle unavailable/);
+});
+
+test('buildResult: exit 2 when prod returns HTML without script tag', () => {
+  // fetch は成功した (lastError なし) が <script src="/assets/index-*.js"> が見つからなかったケース
+  const r = buildResult({ localBundle: 'x.js', prodBundle: null, attempts: 6, lastError: null });
+  assert.equal(r.ok, false);
+  assert.equal(r.exitCode, 2);
+  assert.match(r.lastError, /<script src/);
+});
+
+// ─────────────────────────────────────
+// isAllowedWorkerUrl (SSRF 防止)
+// ─────────────────────────────────────
+test('isAllowedWorkerUrl: accepts workers.dev subdomain (default pattern)', () => {
+  assert.equal(isAllowedWorkerUrl('https://naturism-line-crm.katsu-7d5.workers.dev'), true);
+});
+
+test('isAllowedWorkerUrl: accepts naturism-diet.com', () => {
+  assert.equal(isAllowedWorkerUrl('https://naturism-diet.com'), true);
+});
+
+test('isAllowedWorkerUrl: rejects link-local IMDS (169.254.169.254)', () => {
+  assert.equal(isAllowedWorkerUrl('http://169.254.169.254/latest/meta-data/'), false);
+});
+
+test('isAllowedWorkerUrl: rejects localhost / loopback', () => {
+  assert.equal(isAllowedWorkerUrl('http://localhost/'), false);
+  assert.equal(isAllowedWorkerUrl('http://127.0.0.1/'), false);
+});
+
+test('isAllowedWorkerUrl: rejects file:// and other protocols', () => {
+  assert.equal(isAllowedWorkerUrl('file:///etc/passwd'), false);
+  assert.equal(isAllowedWorkerUrl('ftp://example.com/'), false);
+});
+
+test('isAllowedWorkerUrl: rejects malformed URLs', () => {
+  assert.equal(isAllowedWorkerUrl('not a url'), false);
+  assert.equal(isAllowedWorkerUrl(''), false);
+  assert.equal(isAllowedWorkerUrl(null), false);
+});
+
+test('isAllowedWorkerUrl: respects custom pattern', () => {
+  const pattern = /^example\.test$/i;
+  assert.equal(isAllowedWorkerUrl('https://example.test', pattern), true);
+  assert.equal(isAllowedWorkerUrl('https://other.test', pattern), false);
 });
 
 // ─────────────────────────────────────
@@ -82,6 +127,7 @@ test('runCheck: returns ok=true when prod matches on first attempt', async () =>
     const result = await runCheck({
       localHtmlPath: path,
       workerUrl: 'https://example.test',
+      allowedHostPattern: /.*/,
       maxAttempts: 1,
       retryDelayMs: 0,
       fetchProdHtml: async () => html,
@@ -108,6 +154,7 @@ test('runCheck: retries until prod catches up, then succeeds', async () => {
     const result = await runCheck({
       localHtmlPath: path,
       workerUrl: 'https://example.test',
+      allowedHostPattern: /.*/,
       maxAttempts: 4,
       retryDelayMs: 1,
       fetchProdHtml: async () => {
@@ -134,6 +181,7 @@ test('runCheck: returns mismatch result when prod never matches', async () => {
     const result = await runCheck({
       localHtmlPath: path,
       workerUrl: 'https://example.test',
+      allowedHostPattern: /.*/,
       maxAttempts: 3,
       retryDelayMs: 1,
       fetchProdHtml: async () => oldHtml,
@@ -158,6 +206,7 @@ test('runCheck: returns exit 2 when fetch keeps throwing', async () => {
     const result = await runCheck({
       localHtmlPath: path,
       workerUrl: 'https://example.test',
+      allowedHostPattern: /.*/,
       maxAttempts: 2,
       retryDelayMs: 1,
       fetchProdHtml: async () => {
@@ -178,6 +227,7 @@ test('runCheck: returns exit 2 when local dist HTML missing', async () => {
   const result = await runCheck({
     localHtmlPath: '/non/existent/dist/index.html',
     workerUrl: 'https://example.test',
+    allowedHostPattern: /.*/,
     maxAttempts: 1,
     retryDelayMs: 0,
     fetchProdHtml: async () => '<script src="/assets/index-X.js"></script>',
@@ -197,6 +247,7 @@ test('runCheck: returns exit 2 when local HTML has no script tag', async () => {
     const result = await runCheck({
       localHtmlPath: path,
       workerUrl: 'https://example.test',
+      allowedHostPattern: /.*/,
       maxAttempts: 1,
       retryDelayMs: 0,
       fetchProdHtml: async () => '<script src="/assets/index-X.js"></script>',
@@ -204,6 +255,83 @@ test('runCheck: returns exit 2 when local HTML has no script tag', async () => {
     assert.equal(result.ok, false);
     assert.equal(result.exitCode, 2);
     assert.match(result.lastError, /extract bundle ID/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runCheck: returns exit 2 when WORKER_URL not in allowlist (SSRF guard)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pdc-ssrf-'));
+  try {
+    const path = join(dir, 'index.html');
+    writeFileSync(path, '<script src="/assets/index-X.js"></script>');
+
+    let fetched = false;
+    const result = await runCheck({
+      localHtmlPath: path,
+      workerUrl: 'http://169.254.169.254/',
+      maxAttempts: 1,
+      retryDelayMs: 0,
+      fetchProdHtml: async () => {
+        fetched = true;
+        return '';
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.exitCode, 2);
+    assert.match(result.lastError, /not allowed/);
+    assert.equal(fetched, false, 'fetch must NOT be called when URL is rejected');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runCheck: returns exit 2 when prod HTML has no script tag (M-1)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pdc-prodempty-'));
+  try {
+    const path = join(dir, 'index.html');
+    writeFileSync(path, '<script src="/assets/index-LOCAL.js"></script>');
+
+    const result = await runCheck({
+      localHtmlPath: path,
+      workerUrl: 'https://example.test',
+      allowedHostPattern: /.*/,
+      maxAttempts: 2,
+      retryDelayMs: 0,
+      fetchProdHtml: async () => '<html><body>maintenance page, no bundle</body></html>',
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.exitCode, 2);
+    assert.equal(result.localBundle, 'index-LOCAL.js');
+    assert.equal(result.prodBundle, null);
+    assert.match(result.lastError, /<script src/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runCheck: passes AbortSignal to fetchProdHtml (timeout enforcement)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pdc-signal-'));
+  try {
+    const path = join(dir, 'index.html');
+    writeFileSync(path, '<script src="/assets/index-X.js"></script>');
+
+    let receivedSignal = null;
+    const result = await runCheck({
+      localHtmlPath: path,
+      workerUrl: 'https://example.test',
+      allowedHostPattern: /.*/,
+      maxAttempts: 1,
+      retryDelayMs: 0,
+      fetchTimeoutMs: 1_000,
+      fetchProdHtml: async (_url, signal) => {
+        receivedSignal = signal;
+        return '<script src="/assets/index-X.js"></script>';
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.ok(receivedSignal, 'fetchProdHtml must receive a signal');
+    assert.equal(typeof receivedSignal.aborted, 'boolean');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

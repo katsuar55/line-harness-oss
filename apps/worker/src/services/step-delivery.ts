@@ -182,10 +182,24 @@ async function processSingleDelivery(
   } else if (channel === 'email') {
     await sendEmailStep(db, friend, currentStep, emailConfig);
   } else {
-    // 'both' — LINE is the primary channel for backward compat. Email is
-    // best-effort; failures inside dispatcher are already swallowed.
-    await sendLineStep(db, lineClient, friend, currentStep, workerUrl);
-    await sendEmailStep(db, friend, currentStep, emailConfig);
+    // 'both' — LINE と email は独立に試行する。LINE が throw しても email を
+    // 送らないと「片方しか届かない」事故になるので、両者の失敗を吸収して進める。
+    try {
+      await sendLineStep(db, lineClient, friend, currentStep, workerUrl);
+    } catch (err) {
+      console.error(
+        `[step-delivery] LINE step ${currentStep.id} failed for friend ${friend.id}; continuing with email:`,
+        err instanceof Error ? err.message.slice(0, 200) : err,
+      );
+    }
+    try {
+      await sendEmailStep(db, friend, currentStep, emailConfig);
+    } catch (err) {
+      console.error(
+        `[step-delivery] email step ${currentStep.id} failed for friend ${friend.id}:`,
+        err instanceof Error ? err.message.slice(0, 200) : err,
+      );
+    }
   }
 
   // Determine next step (find the step after currentStep in the sorted list)
@@ -358,25 +372,66 @@ async function evaluateCondition(
       return !tag;
     }
     case 'metadata_equals': {
-      const { key, value } = JSON.parse(step.condition_value) as { key: string; value: unknown };
+      const cond = parseConditionValue(step.condition_value);
+      if (!cond) return false; // 不正 JSON / key 不在は条件不成立扱い
       const friend = await db
         .prepare('SELECT metadata FROM friends WHERE id = ?')
         .bind(friendId)
         .first<{ metadata: string }>();
-      const metadata = JSON.parse(friend?.metadata || '{}') as Record<string, unknown>;
-      return metadata[key] === value;
+      const metadata = parseMetadata(friend?.metadata);
+      return metadata[cond.key] === cond.value;
     }
     case 'metadata_not_equals': {
-      const { key, value } = JSON.parse(step.condition_value) as { key: string; value: unknown };
+      const cond = parseConditionValue(step.condition_value);
+      if (!cond) return false;
       const friend = await db
         .prepare('SELECT metadata FROM friends WHERE id = ?')
         .bind(friendId)
         .first<{ metadata: string }>();
-      const metadata = JSON.parse(friend?.metadata || '{}') as Record<string, unknown>;
-      return metadata[key] !== value;
+      const metadata = parseMetadata(friend?.metadata);
+      return metadata[cond.key] !== cond.value;
     }
     default:
       return true;
+  }
+}
+
+/**
+ * step.condition_value (JSON 文字列) を `{ key, value }` にパース。
+ * 不正 JSON / key 不在 / 型不正の場合は null を返し、
+ * 呼び出し側は条件不成立 (false) として扱う。
+ */
+function parseConditionValue(raw: string | null): { key: string; value: unknown } | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      'key' in parsed &&
+      typeof (parsed as { key: unknown }).key === 'string'
+    ) {
+      const key = (parsed as { key: string }).key;
+      const value = (parsed as { value?: unknown }).value;
+      return { key, value };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** friend.metadata (JSON 文字列) を安全に parse。 */
+function parseMetadata(raw: string | null | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return {};
+  } catch {
+    return {};
   }
 }
 

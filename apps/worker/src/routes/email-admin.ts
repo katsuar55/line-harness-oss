@@ -57,6 +57,23 @@ const SUBSCRIBER_STATUSES: readonly SubscriberStatus[] = [
   'all',
 ] as const;
 
+/** email_messages_log.status の許容値 (DB schema の status enum と一致させる) */
+const MESSAGE_LOG_STATUSES = [
+  'queued',
+  'sent',
+  'delivered',
+  'opened',
+  'clicked',
+  'bounced',
+  'complained',
+  'failed',
+] as const;
+type MessageLogStatus = (typeof MESSAGE_LOG_STATUSES)[number];
+
+function isValidMessageLogStatus(s: string | undefined): s is MessageLogStatus {
+  return typeof s === 'string' && (MESSAGE_LOG_STATUSES as readonly string[]).includes(s);
+}
+
 // ============================================================
 // helpers
 // ============================================================
@@ -444,6 +461,15 @@ emailAdmin.get('/api/admin/email/messages', async (c) => {
     const from = c.req.query('from');
     const to = c.req.query('to');
 
+    if (status !== undefined && !isValidMessageLogStatus(status)) {
+      return c.json(
+        {
+          success: false,
+          error: `invalid status (allowed: ${MESSAGE_LOG_STATUSES.join(', ')})`,
+        },
+        400,
+      );
+    }
     if (from && !isValidDate(from)) {
       return c.json({ success: false, error: 'invalid from format' }, 400);
     }

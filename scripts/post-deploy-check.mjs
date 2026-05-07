@@ -19,8 +19,8 @@
  *
  * Exit codes:
  *   0  一致
- *   1  不一致 (要確認 / redeploy)
- *   2  内部エラー (dist 不在 / fetch 失敗が継続)
+ *   1  両方の bundle ID 取得に成功したが値が違う (要 redeploy)
+ *   2  事前条件失敗 / fetch 失敗 / 本番 HTML に script タグなし (要環境確認)
  */
 
 import { readFileSync, existsSync } from 'node:fs';
@@ -34,6 +34,19 @@ const DEFAULT_WORKER_URL = 'https://naturism-line-crm.katsu-7d5.workers.dev';
 const DEFAULT_LOCAL_HTML = join(REPO_ROOT, 'apps/worker/dist/client/index.html');
 const DEFAULT_MAX_ATTEMPTS = 6;
 const DEFAULT_RETRY_DELAY_MS = 5_000;
+const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * SSRF 防止: 許可ホストの正規表現。WORKER_URL は CI/CD 環境変数で設定されるが、
+ * 攻撃者が制御した場合や誤設定の場合に Node.js プロセスから内部エンドポイント
+ * (169.254.169.254 メタデータサーバ等) や file:// に向かないようガードする。
+ *
+ * 環境変数 `POST_DEPLOY_HOST_ALLOWLIST` で正規表現 (host を test するパターン) を上書き可能。
+ * デフォルトは Cloudflare Workers のサブドメインと naturism-diet.com 系のみ許可。
+ */
+const DEFAULT_ALLOWED_HOST_PATTERN = process.env.POST_DEPLOY_HOST_ALLOWLIST
+  ? new RegExp(process.env.POST_DEPLOY_HOST_ALLOWLIST, 'i')
+  : /^([a-z0-9-]+\.)*(workers\.dev|naturism-diet\.com)$/i;
 
 // ============================================================
 // Pure 関数
@@ -50,19 +63,62 @@ export function extractBundleId(html) {
 }
 
 /**
+ * URL を allowlist で検証 (SSRF 防止)。
+ * - URL parse 不能、http(s) 以外のプロトコル、host が pattern にマッチしない場合は false
+ */
+export function isAllowedWorkerUrl(workerUrl, pattern = DEFAULT_ALLOWED_HOST_PATTERN) {
+  if (typeof workerUrl !== 'string' || workerUrl.length === 0) return false;
+  try {
+    const url = new URL(workerUrl);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    return pattern.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 結果オブジェクトを生成 (テスト容易性のため pure に)。
+ *
+ * Exit code semantics:
+ *   0  両方の bundle ID 取得に成功し、一致
+ *   1  両方取得できたが値が違う = redeploy 必要 (CDN cache propagation 待ち含む)
+ *   2  事前条件失敗 (local dist 不在 / 本番 fetch 不可 / 本番 HTML に script タグなし)
  */
 export function buildResult({ localBundle, prodBundle, attempts, lastError }) {
   if (localBundle && prodBundle && localBundle === prodBundle) {
     return { ok: true, exitCode: 0, localBundle, prodBundle, attempts, lastError: null };
   }
+  if (!localBundle) {
+    return {
+      ok: false,
+      exitCode: 2,
+      localBundle: null,
+      prodBundle,
+      attempts,
+      lastError: lastError ? String(lastError).slice(0, 300) : 'local bundle unavailable',
+    };
+  }
+  if (!prodBundle) {
+    return {
+      ok: false,
+      exitCode: 2,
+      localBundle,
+      prodBundle: null,
+      attempts,
+      lastError: lastError
+        ? String(lastError).slice(0, 300)
+        : 'prod HTML did not contain expected <script src="/assets/index-*.js"> tag',
+    };
+  }
+  // 両方 present だが値が違う = redeploy 推奨
   return {
     ok: false,
-    exitCode: prodBundle === null && lastError ? 2 : 1,
+    exitCode: 1,
     localBundle,
     prodBundle,
     attempts,
-    lastError: lastError ? String(lastError).slice(0, 300) : null,
+    lastError: null,
   };
 }
 
@@ -70,10 +126,15 @@ export function buildResult({ localBundle, prodBundle, attempts, lastError }) {
 // IO 関数 (テスト時はモック注入可能)
 // ============================================================
 
-async function defaultFetchProdHtml(workerUrl) {
+/**
+ * 本番 HTML を fetch (AbortController でタイムアウト制御)。
+ * `signal` を受け取り、外部から timeout を制御できる設計。
+ */
+async function defaultFetchProdHtml(workerUrl, signal) {
   const res = await fetch(workerUrl + '/', {
     cache: 'no-store',
     headers: { 'cache-control': 'no-cache' },
+    signal,
   });
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}`);
@@ -92,9 +153,20 @@ export async function runCheck({
   localHtmlPath = DEFAULT_LOCAL_HTML,
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
   retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+  fetchTimeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
+  allowedHostPattern = DEFAULT_ALLOWED_HOST_PATTERN,
   fetchProdHtml = defaultFetchProdHtml,
   onProgress = null,
 } = {}) {
+  // SSRF 防止: WORKER_URL の host を allowlist で検証
+  if (!isAllowedWorkerUrl(workerUrl, allowedHostPattern)) {
+    return buildResult({
+      localBundle: null,
+      prodBundle: null,
+      attempts: 0,
+      lastError: `WORKER_URL not allowed by host pattern: ${workerUrl}`,
+    });
+  }
   if (!existsSync(localHtmlPath)) {
     return buildResult({
       localBundle: null,
@@ -119,16 +191,20 @@ export async function runCheck({
   let attempts = 0;
   for (let i = 1; i <= maxAttempts; i++) {
     attempts = i;
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), fetchTimeoutMs);
     try {
-      const prodHtml = await fetchProdHtml(workerUrl);
+      const prodHtml = await fetchProdHtml(workerUrl, ac.signal);
       prodBundle = extractBundleId(prodHtml);
       if (onProgress) onProgress({ attempt: i, prodBundle, localBundle });
       if (prodBundle === localBundle) break;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
       if (onProgress) onProgress({ attempt: i, error: lastError });
+    } finally {
+      clearTimeout(timer);
     }
-    if (i < maxAttempts && prodBundle !== localBundle) {
+    if (i < maxAttempts) {
       await sleep(retryDelayMs);
     }
   }
@@ -154,7 +230,7 @@ function printResult(result, workerUrl) {
   if (result.ok) {
     console.log('✓ Bundle ID match — deploy verified.');
   } else if (result.exitCode === 1) {
-    console.error('✗ Bundle ID MISMATCH (or fetch keeps failing).');
+    console.error('✗ Bundle ID MISMATCH between local build and prod.');
     console.error('');
     console.error('  Possible causes:');
     console.error('  1. CDN cache not yet propagated (rare; usually <30s) — wait then re-run');
@@ -162,7 +238,7 @@ function printResult(result, workerUrl) {
     console.error('  3. wrangler deploy partially failed → check Cloudflare dashboard');
     console.error('  4. apex DNS pointing elsewhere → verify route bindings');
   } else {
-    console.error('✗ Pre-condition failed (no local build or fetch unreachable).');
+    console.error('✗ Pre-condition failed (local dist missing / fetch unreachable / WORKER_URL not allowed / prod HTML lacks script tag).');
   }
   console.log('');
 }
