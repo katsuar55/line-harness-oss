@@ -362,7 +362,7 @@ describe('Stripe Routes', () => {
       customEnv: Env['Bindings'],
     ): Promise<Response> {
       const rawBody = JSON.stringify(body);
-      const sigHeader = await generateStripeSignature(STRIPE_SECRET, rawBody, '1700000000');
+      const sigHeader = await generateStripeSignature(STRIPE_SECRET, rawBody, String(Math.floor(Date.now() / 1000)));
       return app.request(
         '/api/integrations/stripe/webhook',
         {
@@ -605,7 +605,7 @@ describe('Stripe Routes', () => {
 
       const webhookBody = makeWebhookBody();
       const rawBody = JSON.stringify(webhookBody);
-      const timestamp = '1700000000';
+      const timestamp = String(Math.floor(Date.now() / 1000));
       const sigHeader = await generateStripeSignature(STRIPE_SECRET, rawBody, timestamp);
 
       const res = await app.request(
@@ -630,7 +630,7 @@ describe('Stripe Routes', () => {
       const envWithSecret = createMockEnv({ STRIPE_WEBHOOK_SECRET: STRIPE_SECRET });
       const webhookBody = makeWebhookBody();
       const rawBody = JSON.stringify(webhookBody);
-      const timestamp = '1700000000';
+      const timestamp = String(Math.floor(Date.now() / 1000));
       const sigHeader = await generateStripeSignature('wrong_secret_key', rawBody, timestamp);
 
       const res = await app.request(
@@ -642,6 +642,66 @@ describe('Stripe Routes', () => {
             'Stripe-Signature': sigHeader,
           },
           body: rawBody,
+        },
+        envWithSecret,
+      );
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects request when timestamp is older than tolerance (replay protection)', async () => {
+      const envWithSecret = createMockEnv({ STRIPE_WEBHOOK_SECRET: STRIPE_SECRET });
+      const webhookBody = makeWebhookBody();
+      const rawBody = JSON.stringify(webhookBody);
+      // Sign with an old timestamp (>5 min ago)
+      const oldTimestamp = String(Math.floor(Date.now() / 1000) - 600);
+      const sigHeader = await generateStripeSignature(STRIPE_SECRET, rawBody, oldTimestamp);
+
+      const res = await app.request(
+        '/api/integrations/stripe/webhook',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Stripe-Signature': sigHeader,
+          },
+          body: rawBody,
+        },
+        envWithSecret,
+      );
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects request when timestamp is non-numeric', async () => {
+      const envWithSecret = createMockEnv({ STRIPE_WEBHOOK_SECRET: STRIPE_SECRET });
+      const webhookBody = makeWebhookBody();
+      const res = await app.request(
+        '/api/integrations/stripe/webhook',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Stripe-Signature': 't=notanumber,v1=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
+          },
+          body: JSON.stringify(webhookBody),
+        },
+        envWithSecret,
+      );
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects request when v1 signature is malformed (non-hex / wrong length)', async () => {
+      const envWithSecret = createMockEnv({ STRIPE_WEBHOOK_SECRET: STRIPE_SECRET });
+      const webhookBody = makeWebhookBody();
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const res = await app.request(
+        '/api/integrations/stripe/webhook',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Stripe-Signature': `t=${timestamp},v1=ZZZZ_not_hex_value`,
+          },
+          body: JSON.stringify(webhookBody),
         },
         envWithSecret,
       );

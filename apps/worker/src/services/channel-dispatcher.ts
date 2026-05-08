@@ -246,19 +246,45 @@ async function sendEmail(
     return { channel: 'email', status: 'skipped', reason: gate.reason as EmailSkipReason };
   }
 
-  // テンプレ → HTML/text
-  const rendered = await deps.emailRenderer.render({
-    subjectTemplate: input.emailPayload.subjectTemplate,
-    htmlTemplate: input.emailPayload.htmlTemplate,
-    textTemplate: input.emailPayload.textTemplate,
-    preheader: input.emailPayload.preheader,
-    variables: input.emailPayload.variables,
-    subscriberId: subscriber.id,
-    category: input.category,
-  });
+  // テンプレ → HTML/text (失敗時も failed log を残して KPI 整合性を保つ)
+  const fromAddress = deps.emailFrom ?? 'noreply@example.invalid';
+  let rendered;
+  try {
+    rendered = await deps.emailRenderer.render({
+      subjectTemplate: input.emailPayload.subjectTemplate,
+      htmlTemplate: input.emailPayload.htmlTemplate,
+      textTemplate: input.emailPayload.textTemplate,
+      preheader: input.emailPayload.preheader,
+      variables: input.emailPayload.variables,
+      subscriberId: subscriber.id,
+      category: input.category,
+    });
+  } catch (err) {
+    // render 失敗 (URL 不正 / テンプレ構文エラー等) も failed log に記録
+    await safeInsertEmailLog(deps.db, {
+      subscriberId: subscriber.id,
+      templateId: input.emailPayload.templateId ?? null,
+      broadcastId: input.source?.broadcastId ?? null,
+      scenarioStepId: input.source?.scenarioStepId ?? null,
+      sourceOrderId: input.source?.orderId ?? null,
+      sourceKind: input.sourceKind,
+      category: input.category,
+      subject: input.emailPayload.subjectTemplate.slice(0, 200),
+      fromAddress,
+      replyTo: deps.emailReplyTo ?? null,
+      provider: 'unknown',
+      providerMessageId: null,
+      status: 'failed',
+      errorSummary: `render: ${err instanceof Error ? err.message.slice(0, 480) : 'unknown'}`,
+    });
+    return {
+      channel: 'email',
+      status: 'failed',
+      error: err instanceof Error ? err.message : 'render failed',
+    };
+  }
 
   // provider 送信
-  const fromAddress = deps.emailFrom ?? 'noreply@example.invalid';
   let providerResult;
   try {
     providerResult = await deps.emailProvider.send({

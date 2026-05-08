@@ -126,8 +126,12 @@ export async function estimateRepurchaseInterval(
           productTitle: productTitle ?? null,
         };
       }
-    } catch {
-      // best-effort: フォールスルーする
+    } catch (err) {
+      // best-effort: フォールスルーするが意図しない DB 障害を見逃さないよう警告ログを残す
+      console.warn(
+        `[repurchase-estimator] computeUserHistory failed for friend=${friendId} product=${shopifyProductId}:`,
+        err instanceof Error ? err.message.slice(0, 200) : err,
+      );
     }
   }
 
@@ -146,8 +150,12 @@ export async function estimateRepurchaseInterval(
           productTitle: product.product_title ?? productTitle ?? null,
         };
       }
-    } catch {
-      // best-effort
+    } catch (err) {
+      // best-effort: 同上
+      console.warn(
+        `[repurchase-estimator] getProductDefault failed for product=${shopifyProductId}:`,
+        err instanceof Error ? err.message.slice(0, 200) : err,
+      );
     }
   }
 

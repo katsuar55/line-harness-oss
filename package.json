@@ -15,7 +15,10 @@
     "deploy:update": "node packages/create-line-harness/dist/index.js update",
     "preflight": "node scripts/preflight.mjs",
     "preflight:full": "node scripts/preflight.mjs --full",
-    "preflight:test": "node --test scripts/preflight.test.mjs"
+    "preflight:test": "node --test scripts/preflight.test.mjs",
+    "post-deploy-check": "node scripts/post-deploy-check.mjs",
+    "post-deploy-check:test": "node --test scripts/post-deploy-check.test.mjs",
+    "test:scripts": "node --test scripts/preflight.test.mjs scripts/post-deploy-check.test.mjs"
   },
   "packageManager": "pnpm@9.15.4",
   "engines": {

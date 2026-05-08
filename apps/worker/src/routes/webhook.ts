@@ -727,15 +727,16 @@ async function handleEvent(
     }
 
     if (!matched && !replyTokenConsumed && env?.AI) {
-      // Guard 2: バーストクールダウン — 直近 30 秒の incoming 件数をカウント
+      // Guard 2: バーストクールダウン — 直近 BURST_WINDOW_SEC 秒の incoming 件数
+      // (SQL injection 防御層: 数値は placeholder 経由で bind し、テンプレ埋め込みを避ける)
       try {
         const burst = await db
           .prepare(
             `SELECT COUNT(*) as cnt FROM messages_log
              WHERE friend_id = ? AND direction = 'incoming'
-             AND datetime(created_at) > datetime('now', '-${BURST_WINDOW_SEC} seconds')`,
+             AND datetime(created_at) > datetime('now', ?)`,
           )
-          .bind(guardFriendId)
+          .bind(guardFriendId, `-${BURST_WINDOW_SEC} seconds`)
           .first<{ cnt: number }>();
         if ((burst?.cnt ?? 0) >= BURST_THRESHOLD) {
           await trySendGuard(

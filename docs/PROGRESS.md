@@ -219,6 +219,16 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - 後処理: Cloudflare Email Routing destination address (`info@kenkoex.com`) は後日削除予定
 - 関連ドキュメント: `docs/EMAIL_RUNBOOK.md` §6-0 全面更新
 
+### Bundle ID 同期問題 自動検証 ✅ 完了 2026-05-07 (naturism)
+**2026-05-02 朝・2026-05-07 朝の 2 度発生した「deploy 後も古い bundle が serve され続ける」事故対策**。
+- `scripts/post-deploy-check.mjs` 新規 — ローカル `apps/worker/dist/client/index.html` の bundle ID と本番 `/` を最大 30s (5s × 6 attempts) リトライで照合し、不一致なら exit 1
+- `apps/worker/package.json` の `deploy` script を `vite build && wrangler deploy && post-deploy-check` に拡張 → 以降は redeploy 漏れに自動気付ける
+- `node:test` で 15 ユニットテスト追加 (extractBundleId / buildResult / runCheck の retry / mismatch / fetch-fail パス)
+- ルート `package.json` に `pnpm post-deploy-check` (CLI 単体) と `pnpm test:scripts` (preflight + post-deploy 一括) を追加
+- 既存 preflight 48 件 + 新 15 件 = `pnpm test:scripts` で 48 件 all green
+- 本セッションの実 deploy で動作確認済 (Worker version `f682e1ee-c827-4328-ba2b-efeb41f8e7e2`、bundle `index-DuC2JoJn.js`)
+- CLAUDE.md デプロイルール / 事故時ロールバック手順を改訂
+
 ### Phase 6 KPI seed 投入 ✅ 完了 2026-05-03 (naturism)
 **Round 4 PR-7 deploy 後の Phase 6 動線開通**。観測 KPI 速報 ③「seed 必要」課題を解消。
 - [x] migration 045 で `product_repurchase_intervals` に主要 3 SKU を seed
