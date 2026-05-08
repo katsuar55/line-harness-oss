@@ -15,20 +15,20 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.91.1",
+    "@anthropic-ai/sdk": "^0.95.1",
     "@line-crm/db": "workspace:*",
     "@line-crm/email-sdk": "workspace:*",
     "@line-crm/line-sdk": "workspace:*",
     "@line-crm/shared": "workspace:*",
-    "hono": "^4.12.14",
+    "hono": "^4.12.18",
     "zod": "^3.24.4"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.33.1",
-    "@cloudflare/workers-types": "^4.20260424.1",
+    "@cloudflare/vite-plugin": "^1.36.3",
+    "@cloudflare/workers-types": "^4.20260508.1",
     "typescript": "^5.7.0",
-    "vite": "^6.0.0",
+    "vite": "^6.4.2",
     "vitest": "^2.0.0",
-    "wrangler": "^4.84.1"
+    "wrangler": "^4.90.0"
   }
 }
