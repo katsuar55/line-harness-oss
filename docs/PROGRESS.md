@@ -266,11 +266,20 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - cron 14 jobs 直近 7 日全 success / failed 0 件
 - **判定不能の理由**: DMARC レポートは「ドメイン名義の送信統計」を集計するため、送信ゼロ = レポート対象なし → 統計判定材料なし
 
-**Part 3: DMARC test 送信を仕掛けた (案 A、オーナー承認済)**:
+**Part 3: DMARC test 送信 1 回目 → CRITICAL bug 発覚 → fix → 2 回目送信成功**:
 - email_templates `cd574436-f668-4896-9b4a-eb7cd4230319` (DMARC Observation Test、薬機・運用通知でない明記)
 - email_subscribers `bc852746-bf6c-4e82-a200-2631c9256a2c` (katsu@kenkoex.com、friend `38215b51-...` 紐付き)
-- broadcasts `a68abee5-f8ad-428b-97c2-70bedf0205d5` (channel='email', target_type='all', scheduled_at=2026-05-09T08:23:12+09:00)
-- 5 分毎の `scheduled-broadcasts` cron が拾って ChannelDispatcher 経由で送信 → Resend → mail.naturism-diet.com (DKIM/SPF) → katsu@kenkoex.com (Gmail)
+- broadcasts 1 回目 `a68abee5-...` (scheduled 08:23 JST) → 8:25 cron 発火 → ❌ status='failed' / `Illegal invocation: function called with incorrect this reference`
+  - 原因: ResendClient で `this.fetchImpl = options.fetchImpl ?? fetch` (unbound) を class field 化していた
+  - Workers ランタイムで `this.fetchImpl(...)` 呼出時、`this` が ResendClient になり globalThis でないため fail
+  - **本番初の email 送信で発覚** (Round 4 完成済だが Round 4 PR-1〜7 で実送信は一度も走っていなかった)
+  - 修正: `fetch.bind(globalThis)` を default に + regression test (`name=^bound /` チェック)
+  - email-sdk 15 / worker 1535 / typecheck / preflight all green → redeploy worker version `4ebd6763-81fe-49bd-a65c-133cbc827df1` (08:42 JST)
+  - commit `9b2fe06` を main へ push
+- broadcasts 2 回目 `e91afd6c-...` (scheduled 08:45 JST) → 8:50 cron 発火 → ✅ status='delivered'
+  - sent 2026-05-09T08:50:02.231+09:00 / delivered 08:50:07.147+09:00 (5 秒で配達完了)
+  - provider: resend / provider_message_id: `9740f7b3-603e-4211-b595-87f28934a6ee`
+  - **Resend webhook (Round 4 PR-4) も同時に本番初稼働確認** — `delivered` ステータス受信は webhook → svix 検証 → email_messages_log 更新が動いた証拠
 - 24-72h 後 (= 2026-05-10〜2026-05-12)、Google が DMARC aggregate report XML を `dmarc@naturism-diet.com` (info@ alias 経由) に送付想定
 - レポート受信後の流れ: Gmail MCP で XML 取得 → パース → pass 率算出 → 99%+ なら p=quarantine pct=10 昇格判定 → Cloudflare DNS API (1 日限定 token) で TXT 更新
 
