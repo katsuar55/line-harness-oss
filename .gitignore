@@ -29,3 +29,6 @@ apps/web/.playwright/
 
 # Local-only scratch (mockups / screenshots / one-off scripts)
 tmp/
+
+# Local handoff files (not for git)
+NEXT_SESSION_PROMPT.md
