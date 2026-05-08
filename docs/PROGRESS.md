@@ -247,6 +247,33 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - 検証: `pnpm test:scripts` 59 件 / `pnpm --filter worker test` 1535 件 / `email-sdk` 14 件 すべて green
 - 本番反映: Worker `fd80e760-0e35-4e5a-b3ab-b9fe6ce19273` (2026-05-07 12:00 JST)、smoke `200/400/401/401/401` (Stripe webhook 含む)
 
+### Bundle ID 同期問題 3 度目発生 + DMARC observation test 起動 🔄 進行中 2026-05-09 (naturism)
+**朝の smoke test で 3 度目の Bundle ID 不一致を検出 → redeploy で復旧 + DMARC 観測判定の前提整備**
+
+**Part 1: Bundle ID 不一致 (3 度目) → redeploy で解消**:
+- 朝の smoke 確認時、本番 bundle が `index-C9dAgO2t.js` (= 2026-05-07 セッションで「古い」と判定された bundle ID) に戻っていた
+- `wrangler deployments list` で確認: 前セッション handoff の `fd80e760` (2026-05-09 00:31) 以降に出所不明 deploy 3 件 (`50601c44` 00:43、`a0fa0c0a` 07:19) が積まれていた
+  - main commit (`a9f08fe`) 不変、git reflog にも私の deploy 履歴なし
+  - 仮説: 別経路 (別セッション or rolling) で同 commit から build された hash 異なる bundle が deploy
+- 対応: `pnpm preflight` (green) → `pnpm --filter worker run deploy` 実行 → 新 version `afeab7f7-20b7-4a14-8c53-66e47a7756d8` / bundle `index-DuC2JoJn.js` で post-deploy-check attempt 1 即 match
+- smoke 5/5 OK (200/400/401/401/401)
+- post-deploy-check が 3 度目の検証で初稼働を超えて実用フェーズに到達
+
+**Part 2: DMARC observation maturity 判定の前提調査**:
+- Gmail MCP で DMARC aggregate report 全件検索 → **0 件** (subject:Report-Domain naturism-diet.com / has:attachment filename:xml / from:dmarc-noreply etc. すべて 0 件)
+- DNS / SPF / DKIM / DMARC TXT すべて期待通り (`v=DMARC1; p=none; rua=mailto:dmarc@naturism-diet.com; fo=1`)
+- 本番 D1 確認: email_subscribers 0 件 / email_templates 0 件 / email_messages_log 0 件 / email_link_clicks 0 件
+- cron 14 jobs 直近 7 日全 success / failed 0 件
+- **判定不能の理由**: DMARC レポートは「ドメイン名義の送信統計」を集計するため、送信ゼロ = レポート対象なし → 統計判定材料なし
+
+**Part 3: DMARC test 送信を仕掛けた (案 A、オーナー承認済)**:
+- email_templates `cd574436-f668-4896-9b4a-eb7cd4230319` (DMARC Observation Test、薬機・運用通知でない明記)
+- email_subscribers `bc852746-bf6c-4e82-a200-2631c9256a2c` (katsu@kenkoex.com、friend `38215b51-...` 紐付き)
+- broadcasts `a68abee5-f8ad-428b-97c2-70bedf0205d5` (channel='email', target_type='all', scheduled_at=2026-05-09T08:23:12+09:00)
+- 5 分毎の `scheduled-broadcasts` cron が拾って ChannelDispatcher 経由で送信 → Resend → mail.naturism-diet.com (DKIM/SPF) → katsu@kenkoex.com (Gmail)
+- 24-72h 後 (= 2026-05-10〜2026-05-12)、Google が DMARC aggregate report XML を `dmarc@naturism-diet.com` (info@ alias 経由) に送付想定
+- レポート受信後の流れ: Gmail MCP で XML 取得 → パース → pass 率算出 → 99%+ なら p=quarantine pct=10 昇格判定 → Cloudflare DNS API (1 日限定 token) で TXT 更新
+
 ### Phase 6 KPI seed 投入 ✅ 完了 2026-05-03 (naturism)
 **Round 4 PR-7 deploy 後の Phase 6 動線開通**。観測 KPI 速報 ③「seed 必要」課題を解消。
 - [x] migration 045 で `product_repurchase_intervals` に主要 3 SKU を seed

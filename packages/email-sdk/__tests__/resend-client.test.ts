@@ -80,4 +80,17 @@ describe('ResendClient', () => {
     const client = new ResendClient({ apiKey: 'k', fetchImpl });
     await expect(client.send(SAMPLE_MESSAGE)).rejects.toThrow('response missing id');
   });
+
+  // Regression: 2026-05-09 本番で `Illegal invocation` 発生。
+  // Workers では global fetch を class field 経由で呼ぶと `this` が
+  // ResendClient になり Illegal invocation エラーになる。
+  // default fetchImpl は globalThis に bind 済みでなければならない。
+  it('fetchImpl 未指定時は globalThis に bind された fetch が default になる', () => {
+    const client = new ResendClient({ apiKey: 'k' });
+    const internalFetch = (client as unknown as { fetchImpl: typeof fetch }).fetchImpl;
+    expect(typeof internalFetch).toBe('function');
+    // Function.prototype.bind は name を "bound <originalName>" に設定する。
+    // Workers/Node どちらでも globalThis.fetch.bind(globalThis) は "bound fetch"。
+    expect(internalFetch.name).toMatch(/^bound /);
+  });
 });

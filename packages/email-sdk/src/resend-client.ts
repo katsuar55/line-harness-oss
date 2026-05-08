@@ -28,7 +28,10 @@ export class ResendClient implements EmailProvider {
       throw new Error('ResendClient: apiKey is required');
     }
     this.apiKey = options.apiKey;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    // Cloudflare Workers では global fetch を class field 経由で呼ぶと
+    // `this` が ResendClient インスタンスになり Illegal invocation エラーになる。
+    // globalThis に bind する (Node test 環境でも同じ挙動)。
+    this.fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
     this.baseUrl = options.baseUrl ?? RESEND_API_URL;
   }
 
