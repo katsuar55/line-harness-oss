@@ -225,9 +225,27 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - `apps/worker/package.json` の `deploy` script を `vite build && wrangler deploy && post-deploy-check` に拡張 → 以降は redeploy 漏れに自動気付ける
 - `node:test` で 15 ユニットテスト追加 (extractBundleId / buildResult / runCheck の retry / mismatch / fetch-fail パス)
 - ルート `package.json` に `pnpm post-deploy-check` (CLI 単体) と `pnpm test:scripts` (preflight + post-deploy 一括) を追加
-- 既存 preflight 48 件 + 新 15 件 = `pnpm test:scripts` で 48 件 all green
 - 本セッションの実 deploy で動作確認済 (Worker version `f682e1ee-c827-4328-ba2b-efeb41f8e7e2`、bundle `index-DuC2JoJn.js`)
+- 2026-05-07 12:00 JST の merge 後 redeploy で post-deploy-check 本番初稼働 → attempt 1 即 match (Worker version `fd80e760-0e35-4e5a-b3ab-b9fe6ce19273`)
 - CLAUDE.md デプロイルール / 事故時ロールバック手順を改訂
+
+### ultrathink 全体セキュリティ・品質レビュー対応 ✅ 完了 2026-05-07 (naturism)
+**Round 4 完成段階で並列 `security-reviewer` + `typescript-reviewer` で全体レビュー**。検出した脆弱性・品質劣化を一括修正 (PR #14 内 commit `83e1f5b`)。
+
+- **CRITICAL (1)** Stripe webhook 署名検証 (`apps/worker/src/routes/stripe.ts`) を `crypto.subtle.verify` で timing-safe 比較化。同時に timestamp ±300s 検証 (replay 攻撃防止) と複数 `v1` (シークレットローテーション) 対応を追加
+- **HIGH (9)**:
+  - `post-deploy-check.mjs` に `WORKER_URL` allowlist (SSRF 防止) + `AbortController` 10s timeout、exit code 0/1/2 で意味分離 (1=mismatch、2=pre-cond / fetch fail / script tag missing)
+  - `EmailMessage.from` を `z.string().email()` から mailbox schema に置換 (`naturism <noreply@mail.naturism-diet.com>` 形式を受け入れ)
+  - `channel-dispatcher.sendEmail` で `render()` 失敗を `email_messages_log.failed` に記録 (KPI 整合性)
+  - `step-delivery.ts` の `channel='both'` で LINE/email を独立試行 (片方の throw が他方を止めない)
+  - `evaluateCondition.JSON.parse` を `parseConditionValue` / `parseMetadata` で安全パース化 (シナリオ永続 skip 防止)
+  - `email-unsubscribe` の subscriber id を UUID v4 形式正規表現で事前バリデーション
+  - `webhook.ts BURST_WINDOW_SEC` を SQL placeholder に移行 (将来の SQLi 予防)
+- **MEDIUM (2)**: `email-admin /messages` の status クエリ allowlist、post-deploy-check exit code 整理
+- **LOW (1)**: `repurchase-estimator` の best-effort catch に `console.warn` 追加 (silent fail 防止)
+- **Pre-existing flake (1)**: `liff-portal-food.test.ts` の絶対日付 fixture (2026-04-27) が `ATE_AT_PAST_LIMIT_MS=7d` を超え 3 件 fail → `recentIso(hoursAgo)` helper で実行時刻基準の相対日付に置換
+- 検証: `pnpm test:scripts` 59 件 / `pnpm --filter worker test` 1535 件 / `email-sdk` 14 件 すべて green
+- 本番反映: Worker `fd80e760-0e35-4e5a-b3ab-b9fe6ce19273` (2026-05-07 12:00 JST)、smoke `200/400/401/401/401` (Stripe webhook 含む)
 
 ### Phase 6 KPI seed 投入 ✅ 完了 2026-05-03 (naturism)
 **Round 4 PR-7 deploy 後の Phase 6 動線開通**。観測 KPI 速報 ③「seed 必要」課題を解消。
