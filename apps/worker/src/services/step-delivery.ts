@@ -124,7 +124,9 @@ async function processSingleDelivery(
     await completeFriendScenario(db, fs.id);
     return;
   }
-  const metadata = JSON.parse((friend as { metadata?: string }).metadata || '{}') as Record<string, unknown>;
+  // 既存ヘルパー parseMetadata で安全 parse (malformed/null/array 等で fallback to {})。
+  // 直接 JSON.parse すると "null" / 配列 / 切り詰め JSON で TypeError → scenario が永久 stuck になる。
+  const metadata = parseMetadata((friend as { metadata?: string | null }).metadata);
   const preferredHour = typeof metadata.preferred_hour === 'number' ? metadata.preferred_hour : undefined;
 
   // Get all steps for this scenario

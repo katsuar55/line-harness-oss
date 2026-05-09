@@ -37,6 +37,11 @@ export class EmailRenderer {
     if (!options.legalFooterHtml || !options.legalFooterText) {
       throw new Error('EmailRenderer: legalFooterHtml and legalFooterText are required');
     }
+    // CRITICAL: must be https — javascript:/data: URI would inject arbitrary HTML
+    // into recipient inboxes via the <a href="..."> attribute (XSS in HTML email).
+    if (!/^https:\/\//i.test(options.unsubscribeBaseUrl)) {
+      throw new Error('EmailRenderer: unsubscribeBaseUrl must start with https://');
+    }
     this.opts = options;
   }
 
@@ -70,12 +75,15 @@ export class EmailRenderer {
   ): string {
     if (format === 'html') {
       const preheaderHtml = preheader
-        ? `<div style="display:none;max-height:0;overflow:hidden;">${preheader}</div>`
+        ? `<div style="display:none;max-height:0;overflow:hidden;">${escapeHtml(preheader)}</div>`
         : '';
+      // unsubscribeUrl は constructor で https:// を強制済みだが、
+      // クエリ文字列内のメタ文字 (& " < > ') が attribute を破壊する可能性があるので escape する。
+      const safeUrl = escapeHtml(unsubscribeUrl);
       const unsubscribeHtml =
         category === 'marketing'
           ? `<p style="font-size:11px;color:#888;margin-top:24px;text-align:center;">
-配信停止は <a href="${unsubscribeUrl}">こちら</a> から</p>`
+配信停止は <a href="${safeUrl}">こちら</a> から</p>`
           : '';
       return [
         preheaderHtml,
@@ -111,6 +119,19 @@ function applyVars(template: string, variables: Record<string, string>): string 
   return template.replace(/\{\{(\w+)\}\}/g, (_, name) => {
     return variables[name] ?? '';
   });
+}
+
+/**
+ * HTML attribute / body safe 化 (preheader / unsubscribeUrl 用)。
+ * テンプレ本文には適用しない (テンプレ作成側で safe な値を入れる前提)。
+ */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**

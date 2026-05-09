@@ -714,6 +714,65 @@ PR-8 完了から 30 日後の目標: `active = 200+` (Shopify 顧客 290 から
 
 ---
 
+## 12. トラブルシューティング
+
+### 症状: `email_messages_log.error_summary = "Illegal invocation: function called with incorrect this reference"`
+
+**原因**: ResendClient (or 同類の class) で global function (fetch / crypto.subtle 等) を class field に unbound で保持して method 経由で呼ぶと、`this` が class instance になり Workers の global が要求する `this=globalThis` と不一致になる。
+
+**確認方法**:
+```bash
+# email-sdk の resend-client.ts で fetch を bind しているか
+grep -n "fetch.bind(globalThis)" packages/email-sdk/src/resend-client.ts
+```
+
+**修正パターン**:
+```typescript
+// NG (本番で Illegal invocation)
+this.fetchImpl = options.fetchImpl ?? fetch;
+
+// OK
+this.fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
+```
+
+**再発防止**: `CLAUDE.md` の「Workers コーディングルール」を遵守。新規 class 追加時は `regression test (name=^bound / チェック)` を必ず 1 件入れる。
+**事例**: 2026-05-09、Round 4 完成後の本番初送信で発覚。fix commit `9b2fe06`。
+
+### 症状: broadcast.status='sent' なのに success_count=0、email_messages_log.status='failed'
+
+**原因 (1)**: ChannelDispatcher が provider.send で throw → email_messages_log に failed log を残す。`error_summary` に詳細あり。
+**原因 (2)**: render() が throw (テンプレ構文エラー / preheader 不正等) → render-fail path が failed log を残す。
+
+**確認方法**:
+```sql
+SELECT id, status, sent_at, error_summary 
+FROM email_messages_log 
+WHERE broadcast_id = ? 
+ORDER BY created_at DESC LIMIT 10;
+```
+
+**対処**: `error_summary` の先頭 (480 文字) で原因切り分け。Resend API 失敗なら provider 側 Dashboard で詳細確認、render 失敗ならテンプレ修正。
+
+### 症状: broadcast retry 時に同じ subscriber に重複送信される
+
+**現状 (M-3 fix 後)**: `sendBroadcastEmail` (channel='email') では `loadSentSubscriberIdsForBroadcast` で既送信 subscriber を Set にロードして dispatch 時に skip するため、重複送信は発生しない。
+**未対応**: `sendBroadcastBoth` (channel='both') では LINE 部分も含めて重複防止していないため、retry で重複可能性あり。改善は future issue。
+
+### 症状: DMARC aggregate report が届かない
+
+**前提**: `_dmarc.naturism-diet.com` の TXT で `rua=mailto:dmarc@naturism-diet.com` が設定済 + Google Workspace alias で `dmarc@` → `info@` inbox に集約。
+
+**チェック手順**:
+1. `_dmarc.naturism-diet.com` TXT を `Resolve-DnsName` で確認
+2. naturism-diet.com 名義での送信実績があるか D1 `email_messages_log` で確認 (送信ゼロならレポート対象なし)
+3. Gmail で `to:dmarc@naturism-diet.com newer_than:7d` を Gmail MCP で検索
+4. 送信実績はあるが届かない場合、Cloudflare Email Routing or Google Workspace alias 設定を再確認
+
+**事例**: 2026-05-09、送信実績ゼロ (Round 4 完成後 1 通も送っていない) のためレポート 0 件。test 送信 1 通 (broadcast `e91afd6c`、delivered 08:50 JST) で観測サイクル起動。
+
+---
+
 ## 改訂履歴
 
 - 2026-04-30 初版 (Round 4 PR-8 着手前のドラフト)
+- 2026-05-09 §12 トラブルシューティング追加 (Illegal invocation / broadcast 失敗 / retry 重複 / DMARC report 不着)

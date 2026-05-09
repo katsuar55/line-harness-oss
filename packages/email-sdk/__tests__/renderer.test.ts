@@ -169,4 +169,57 @@ describe('EmailRenderer', () => {
     });
     expect(a.unsubscribeUrl).not.toBe(b.unsubscribeUrl);
   });
+
+  // Regression (H-1): 2026-05-09 typescript-reviewer 検出。
+  // unsubscribeBaseUrl env が javascript:/data: URI なら HTML email body に
+  // 任意 HTML が注入される。constructor で https:// 強制 + injectFooter で escape。
+  it('unsubscribeBaseUrl が http:// (HTTPS でない) なら throw', () => {
+    expect(
+      () =>
+        new EmailRenderer({
+          ...baseOptions,
+          unsubscribeBaseUrl: 'http://example.com/unsubscribe',
+        }),
+    ).toThrow('https://');
+  });
+
+  it('unsubscribeBaseUrl が javascript: スキームなら throw', () => {
+    expect(
+      () =>
+        new EmailRenderer({
+          ...baseOptions,
+          unsubscribeBaseUrl: 'javascript:alert(1)',
+        }),
+    ).toThrow('https://');
+  });
+
+  it('preheader に HTML メタ文字が含まれても escape される (XSS 防止)', async () => {
+    const r = new EmailRenderer(baseOptions);
+    const out = await r.render({
+      subjectTemplate: 'X',
+      htmlTemplate: '<p>本文</p>',
+      textTemplate: '本文',
+      preheader: '<script>alert(1)</script>',
+      variables: {},
+      subscriberId: 'sub-x',
+      category: 'marketing',
+    });
+    expect(out.html).not.toContain('<script>alert(1)</script>');
+    expect(out.html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+  });
+
+  it('unsubscribeUrl に含まれる & は &amp; に escape される (HTML attribute 安全)', async () => {
+    const r = new EmailRenderer(baseOptions);
+    const out = await r.render({
+      subjectTemplate: 'X',
+      htmlTemplate: '<p>本文</p>',
+      textTemplate: '本文',
+      variables: {},
+      subscriberId: 'sub-amp',
+      category: 'marketing',
+    });
+    // URL.searchParams は ?id=...&token=... の形で生成。HTML body 内では &amp; に escape。
+    expect(out.html).toMatch(/href="[^"]*&amp;token=/);
+    expect(out.html).not.toMatch(/href="[^"]*[^p]&token=/);
+  });
 });

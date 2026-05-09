@@ -184,6 +184,20 @@ function makeFakeDb(opts: FakeDbOpts = {}): D1Database {
         if (sql.includes('FROM friends') && sql.includes('is_following = 1')) {
           return { results: (opts.allFollowingFriends ?? []) as T[], success: true };
         }
+        // M-1 fix: batchLookupSubscribers が IN 句で email_subscribers を一括 SELECT
+        if (sql.includes('FROM email_subscribers') && sql.includes('IN (')) {
+          const friendIds = params as string[];
+          const rows: Array<{ id: string; email: string; friend_id: string }> = [];
+          for (const fid of friendIds) {
+            const sub = opts.subscribers?.get(fid);
+            if (sub) rows.push({ id: sub.id, email: sub.email, friend_id: fid });
+          }
+          return { results: rows as T[], success: true };
+        }
+        // M-3 fix: loadSentSubscriberIdsForBroadcast (既送信 set、default 空)
+        if (sql.includes('FROM email_messages_log')) {
+          return { results: [] as T[], success: true };
+        }
         return { results: [] as T[], success: true };
       },
       async run() {

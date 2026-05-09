@@ -142,6 +142,38 @@ WORKER_URL: string
 
 **Phase 1: 基盤構築** — Worker + D1 + Webhook + AI自動応答 + 管理画面
 
+## Workers コーディングルール (絶対遵守 — 再発防止)
+
+2026-05-09 に Round 4 email channel 本番初実行で `Illegal invocation: function called with incorrect this reference` バグが発覚。テストでは検出できず、本番送信で初発覚した。同じ穴を踏まないために以下を守る。
+
+### 禁止パターン
+
+| パターン | 理由 |
+|---|---|
+| `class X { f = globalThis.fetch }` 等で global function を class field / object property に unbound 保持 | Workers ランタイムで `instance.f(...)` 呼出時に `this=instance` になり、global が要求する `this=globalThis` と不一致で Illegal invocation |
+| `const { method } = globalThis.crypto.subtle` の destructure 後に `method(...)` を呼ぶ | 同上 (prototype method の context 喪失) |
+| Workers ランタイムのテスト省略 + Node mock のみで完結させる | mock が default 値の bind 部分を bypass するため、unbound バグが本番初実行まで隠れる |
+
+### 推奨パターン
+
+| やりたいこと | 正しい方法 |
+|---|---|
+| class field に fetch を持って後で呼ぶ | `this.fetchImpl = options.fetchImpl ?? fetch.bind(globalThis)` (例: `packages/email-sdk/src/resend-client.ts`) |
+| 関数 scope で global を参照 | `const fetchImpl = options.fetchImpl ?? fetch; await fetchImpl(...)` (これは `this` 不要、 OK) |
+| crypto.subtle method を使う | `await crypto.subtle.sign(...)` のようにオブジェクト経由で直接呼ぶ。destructure しない |
+| default 値の bind を test で固める | `expect(internalFetch.name).toMatch(/^bound /)` のような unit test で「bound 済み」 を検証 (例: `packages/email-sdk/__tests__/resend-client.test.ts`) |
+
+### 自己点検チェックリスト (Workers 用 class を書く前)
+
+- [ ] 外部から渡された optional dep の default に **global function** を入れていないか?
+- [ ] その default は `bind(globalThis)` してあるか?
+- [ ] テストは default 値の bind 経路を実際に呼ぶか? (mock 経由でないか?)
+- [ ] regression test (bind name/identity チェック) を 1 件追加したか?
+
+### 違反時の必須アクション
+
+新パターンで Illegal invocation バグが発生したら、本ファイルの「禁止パターン」表に該当パターンを追記してから次の作業に移る。
+
 ## シェル運用ルール (絶対遵守 — 再発防止)
 
 過去 2 セッションで「実行中シェルが残り続け、6 時間以上ハング」事故が発生。Celeron 8GB の低スペック環境では致命的。以下を厳守する。

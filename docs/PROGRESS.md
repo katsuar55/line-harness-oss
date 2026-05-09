@@ -283,6 +283,32 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - 24-72h 後 (= 2026-05-10〜2026-05-12)、Google が DMARC aggregate report XML を `dmarc@naturism-diet.com` (info@ alias 経由) に送付想定
 - レポート受信後の流れ: Gmail MCP で XML 取得 → パース → pass 率算出 → 99%+ なら p=quarantine pct=10 昇格判定 → Cloudflare DNS API (1 日限定 token) で TXT 更新
 
+**Part 4: 予防的レビュー (並列 agent 2 つ) → 7 件追加修正**:
+本日の bug fix 経験を踏まえて、テストでは検出できないリスクパターンを能動的に洗い出し:
+- **security-reviewer agent**: Workers global object 利用全件スキャン (fetch / crypto.subtle / TextEncoder / D1 method 等) → **0 件** (ResendClient 修正以外に同類リスクなし)
+- **typescript-reviewer agent**: Round 4 全体型/error 安全性レビュー → **HIGH 1 件 + MED 5 件 + LOW 3 件** 検出
+
+修正 (HIGH + 軽量 MED + LOW-1 を即時対応):
+
+| # | level | file | fix |
+|---|---|---|---|
+| H-1 | HIGH | `packages/email-sdk/src/renderer.ts` | constructor で `unsubscribeBaseUrl` の `https://` 強制 + `injectFooter` で `unsubscribeUrl` / `preheader` を escapeHtml して XSS 防止 (regression test 4 件追加) |
+| M-1 | MED | `apps/worker/src/services/broadcast.ts` | `lookupEmailRecipients` / `sendBroadcastBoth` の N+1 → `batchLookupSubscribers(chunk=100)` で `WHERE friend_id IN (?, ?, ...)` 集約 |
+| M-2 | MED | `apps/worker/src/services/step-delivery.ts` | line 127 の生 `JSON.parse` → 既存 `parseMetadata` ヘルパー利用 (malformed JSON で scenario 永久 stuck 防止) |
+| M-3 | MED | `apps/worker/src/services/broadcast.ts` | `sendBroadcastEmail` で `loadSentSubscriberIdsForBroadcast` を pre-load → retry 時に既送信 subscriber を skip (重複送信防止) |
+| M-4 | MED | `apps/worker/src/services/channel-dispatcher.ts` | `ConsentGateResult` を discriminated union 化 → `as EmailSkipReason` cast 削除、コンパイル時に reason 漏れ検出 |
+| M-5 | MED | `apps/worker/src/services/channel-dispatcher.ts` | `safeInsertEmailLog` で `err.message` も log (D1 constraint 違反等が現場で診断可能に) |
+| LOW-1 | LOW | `apps/worker/src/services/channel-dispatcher.ts` | `errorSummary` slice を 500 → 480 で統一 (render-fail path と揃える) |
+
+**保留 (記録のみ、別 PR 推奨)**:
+- LOW-2: text format unsubscribeUrl 長さ check (over-engineering)
+- LOW-3: display_name fallback 不一致 (`''` vs `'お客様'`、send-email-action は意図的に異なる挙動)
+- M-3 拡張: `sendBroadcastBoth` の重複防止 (LINE + email 両方の channel 制御が必要、scope 大)
+
+**ドキュメント追加**:
+- `CLAUDE.md`: 「Workers コーディングルール (絶対遵守 — 再発防止)」 セクション新設 (禁止/推奨パターン + 自己点検チェックリスト)
+- `docs/EMAIL_RUNBOOK.md`: §12 トラブルシューティング章新設 (Illegal invocation / broadcast 失敗 / retry 重複 / DMARC report 不着)
+
 ### Phase 6 KPI seed 投入 ✅ 完了 2026-05-03 (naturism)
 **Round 4 PR-7 deploy 後の Phase 6 動線開通**。観測 KPI 速報 ③「seed 必要」課題を解消。
 - [x] migration 045 で `product_repurchase_intervals` に主要 3 SKU を seed

@@ -239,11 +239,10 @@ async function sendEmail(
     return { channel: 'email', status: 'skipped', reason: 'no_subscriber' };
   }
 
-  // 法令ゲート判定
+  // 法令ゲート判定 (discriminated union により reason は narrowing 済)
   const gate = consentGate(subscriber, input.category);
   if (!gate.allowed) {
-    // gate.allowed=false の場合 reason は必ず付く (consentGate の post-condition)
-    return { channel: 'email', status: 'skipped', reason: gate.reason as EmailSkipReason };
+    return { channel: 'email', status: 'skipped', reason: gate.reason };
   }
 
   // テンプレ → HTML/text (失敗時も failed log を残して KPI 整合性を保つ)
@@ -318,7 +317,8 @@ async function sendEmail(
       provider: 'unknown',
       providerMessageId: null,
       status: 'failed',
-      errorSummary: err instanceof Error ? err.message.slice(0, 500) : 'unknown',
+      // LOW-1 fix: render-fail path と統一 (480 文字、log の見やすさ揃え)
+      errorSummary: err instanceof Error ? err.message.slice(0, 480) : 'unknown',
     });
     return {
       channel: 'email',
@@ -356,10 +356,14 @@ async function sendEmail(
 // helpers
 // ============================================================
 
-interface ConsentGateResult {
-  allowed: boolean;
-  reason?: EmailSkipReason;
-}
+/**
+ * M-4 fix (2026-05-09): discriminated union 化。
+ * `gate.reason as EmailSkipReason` の cast を不要にし、将来「allowed=false で reason 未設定」
+ * というロジック漏れをコンパイル時に防ぐ。
+ */
+type ConsentGateResult =
+  | { allowed: true }
+  | { allowed: false; reason: EmailSkipReason };
 
 /**
  * 法令ゲート判定。
@@ -402,9 +406,10 @@ async function safeInsertEmailLog(
   try {
     await insertEmailLog(db, input);
   } catch (err) {
+    // err.message も含めないと D1 constraint 違反等が現場で診断不能になる。
     console.error(
       '[channel-dispatcher] insertEmailLog failed',
-      err instanceof Error ? err.name : 'unknown',
+      err instanceof Error ? `${err.name}: ${err.message}` : 'unknown',
     );
   }
 }

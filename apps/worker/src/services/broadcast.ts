@@ -214,18 +214,64 @@ async function resolveFollowingFriends(
   return result.results ?? [];
 }
 
+/**
+ * M-3 fix (2026-05-09): broadcast retry 時の重複送信防止。
+ * 中間で throw → status='draft' に戻り再 dispatch されるが、
+ * 既に sent/delivered になった subscriber は spam しない。
+ */
+async function loadSentSubscriberIdsForBroadcast(
+  db: D1Database,
+  broadcastId: string,
+): Promise<Set<string>> {
+  const rows = await db
+    .prepare(
+      `SELECT DISTINCT subscriber_id FROM email_messages_log
+       WHERE broadcast_id = ? AND status IN ('sent','delivered','opened','clicked')`,
+    )
+    .bind(broadcastId)
+    .all<{ subscriber_id: string }>();
+  return new Set(rows.results?.map((r) => r.subscriber_id) ?? []);
+}
+
+/**
+ * M-1 fix (2026-05-09): N+1 → batch lookup (chunk=100)。
+ * 500 友だちで 500 連続 D1 query → CPU/timeout の懸念があった。
+ * `WHERE friend_id IN (?, ?, ...)` を 100 件ずつ chunk して 1 クエリ集約する。
+ */
+async function batchLookupSubscribers(
+  db: D1Database,
+  friends: Friend[],
+): Promise<Map<string, { id: string; email: string }>> {
+  const result = new Map<string, { id: string; email: string }>();
+  if (friends.length === 0) return result;
+  const CHUNK = 100;
+  for (let i = 0; i < friends.length; i += CHUNK) {
+    const slice = friends.slice(i, i + CHUNK);
+    const placeholders = slice.map(() => '?').join(',');
+    const rows = await db
+      .prepare(
+        `SELECT id, email, friend_id FROM email_subscribers WHERE friend_id IN (${placeholders})`,
+      )
+      .bind(...slice.map((f) => f.id))
+      .all<{ id: string; email: string; friend_id: string }>();
+    for (const row of rows.results ?? []) {
+      // friend_id ごと最初の 1 件のみ採用 (LIMIT 1 相当)
+      if (!result.has(row.friend_id)) {
+        result.set(row.friend_id, { id: row.id, email: row.email });
+      }
+    }
+  }
+  return result;
+}
+
 async function lookupEmailRecipients(
   db: D1Database,
   friends: Friend[],
 ): Promise<EmailRecipient[]> {
+  const subMap = await batchLookupSubscribers(db, friends);
   const recipients: EmailRecipient[] = [];
   for (const friend of friends) {
-    const sub = await db
-      .prepare(
-        `SELECT id, email FROM email_subscribers WHERE friend_id = ? LIMIT 1`,
-      )
-      .bind(friend.id)
-      .first<{ id: string; email: string }>();
+    const sub = subMap.get(friend.id);
     if (sub && sub.email) {
       recipients.push({ friend, email: sub.email, subscriberId: sub.id });
     }
@@ -265,6 +311,9 @@ async function sendBroadcastEmail(
     return { totalCount: 0, successCount: 0 };
   }
 
+  // M-3 fix: 既送信 subscriber は再 dispatch 時に skip して spam 回避
+  const alreadySent = await loadSentSubscriberIdsForBroadcast(db, broadcast.id);
+
   const deps: ChannelDispatcherDeps = {
     db,
     ...buildEmailDispatcherDeps(emailConfig),
@@ -272,6 +321,10 @@ async function sendBroadcastEmail(
 
   let successCount = 0;
   for (const r of recipients) {
+    if (r.subscriberId && alreadySent.has(r.subscriberId)) {
+      // 既に sent/delivered 等になっているため再送信しない (totalCount にも含めず success にも含めない)
+      continue;
+    }
     try {
       const result = await dispatch(deps, {
         recipient: {
@@ -348,6 +401,10 @@ async function sendBroadcastBoth(
     return { totalCount: 0, successCount: 0 };
   }
 
+  // M-1 fix (2026-05-09): N+1 → batch lookup。
+  // 各 friend に対して 1 クエリしていたのを IN 句で 100 件ずつ集約。
+  const subMap = await batchLookupSubscribers(db, friends);
+
   // dispatcher deps
   const deps: ChannelDispatcherDeps = emailConfig
     ? { db, lineClient, ...buildEmailDispatcherDeps(emailConfig) }
@@ -358,10 +415,7 @@ async function sendBroadcastBoth(
     // email lookup (best-effort; missing → email channel skipped)
     let email: string | undefined;
     let subscriberId: string | undefined;
-    const sub = await db
-      .prepare(`SELECT id, email FROM email_subscribers WHERE friend_id = ? LIMIT 1`)
-      .bind(friend.id)
-      .first<{ id: string; email: string }>();
+    const sub = subMap.get(friend.id);
     if (sub && sub.email) {
       email = sub.email;
       subscriberId = sub.id;
