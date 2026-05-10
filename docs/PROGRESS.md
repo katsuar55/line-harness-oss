@@ -309,6 +309,64 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - `CLAUDE.md`: 「Workers コーディングルール (絶対遵守 — 再発防止)」 セクション新設 (禁止/推奨パターン + 自己点検チェックリスト)
 - `docs/EMAIL_RUNBOOK.md`: §12 トラブルシューティング章新設 (Illegal invocation / broadcast 失敗 / retry 重複 / DMARC report 不着)
 
+### Phase 8 PR-1: Shopify customer sync enrichment (opt-in 同意取得) ✅ 完了 2026-05-10 (naturism)
+**目的**: email_subscribers seed の準備として、 Shopify customers の opt-in 同意状況 (email_marketing_consent / sms_marketing_consent / accepts_marketing 等) を CRM 側 metadata に保存し、 SQL `json_extract` で抽出可能にする。
+
+**背景**:
+- shopify_customers 316 件 / metadata は全件 `{"source":"cron_sync"}` のみ (47 文字)
+- accepts_marketing カラム不在 → email_subscribers seed のための opt-in 抽出が不可能
+- 解決策 3 案 (A: metadata enrichment / B: schema 拡張 / C: 1 回 import script) を比較、 Option A 採用 (schema 不変、 リスク低、 継続的価値、 拡張性)
+
+**実装内容**:
+
+1. `apps/worker/src/services/shopify-customer-sync.ts` 改修:
+   - **paging 実装**: Shopify REST API の Link header `rel="next"` を辿る、 max 50 page (12,500 件) で safety
+   - **metadata enrichment**: `email_marketing_consent`, `sms_marketing_consent`, `accepts_marketing`, `accepts_marketing_updated_at`, `marketing_opt_in_level`, `sync_at` を metadata JSON に保存
+   - **return 型拡張**: `synced` + `subscribed` / `notSubscribed` / `pending` / `unsubscribed` / `pages` の集計を追加
+   - **parseNextUrl 公開ヘルパー**: Link header から `rel="next"` URL を抽出 (regex)
+2. `apps/worker/src/__tests__/shopify-customer-sync.test.ts` 新規 (9 件):
+   - parseNextUrl 単体テスト (3 ケース)
+   - syncShopifyCustomers の 1 page 同期 + state 集計 / 2 page paging / 途中 page エラー保持 / metadata 内容確認 / env 不正
+
+**重要 bug fix (CRITICAL)**:
+- `packages/db/src/shopify.ts` の `upsertShopifyCustomer` / `upsertShopifyOrder` の **UPDATE 文に `metadata` 列が無く、 既存レコードの metadata が永久に上書きされない** bug を発見
+- これがあると上記 enrichment が新規 customer のみに反映され、 既存 250 件には永久に届かない
+- 修正: `metadata = COALESCE(?, metadata)` で「指定があれば上書き、 無ければ既存維持」 (INSERT 挙動は不変)
+- 初回 deploy `649ca093` で症状判明 (cron 23:18 sync 後も metadata 古いまま) → DB fix → 再 deploy `b1fbb651`
+
+**type narrowing fix (回帰)**:
+- `apps/worker/src/__tests__/channel-dispatcher.test.ts` の `expect(r.allowed).toBe(false); expect(r.reason)...` パターンが、 前回 M-4 修正 (ConsentGateResult discriminated union 化、 commit `6f47f96`) 後に typecheck error を返していた (前回見落とし)
+- `if (r.allowed) throw new Error(...)` で narrowing を確立
+
+**seed 準備物 (Katsu レビュー後に投入)**:
+- `docs/SEED_EMAIL_TEMPLATES.md`: welcome / order_confirmation / reorder_reminder / cart_recovery / shipping_notification の 5 種メールテンプレ案 (HTML + text + 想定変数 + 法令確認チェックリスト)
+- `scripts/seed-email-subscribers-from-shopify.sql`: `email_marketing_consent.state = 'subscribed'` の Shopify customers を email_subscribers に INSERT する SQL (Dry-run コメント + INSERT OR IGNORE で冪等性確保)
+
+**検証**:
+- worker tests: 1544 件 (+9) all green
+- typecheck (db + worker): green
+- preflight: All green
+- 初回 deploy `649ca093` (DB UPDATE bug あり) → 再 deploy `b1fbb651` (DB fix 込み) で次回 cron 発火 (5 分毎) で 250 件分の metadata enrichment が反映予定
+- 集計クエリ: `SELECT json_extract(metadata, '$.email_marketing_consent.state') AS state, COUNT(*) FROM shopify_customers GROUP BY state;`
+
+**集計結果 (2026-05-10 23:30 JST 時点)**:
+| state | 件数 | 比率 | 配信可否 |
+|---|---|---|---|
+| **subscribed** | **2** | 0.1% | ✅ marketing 配信可能 |
+| not_subscribed | 1,690 | 89.4% | ⚠️ opt-in 未取得 |
+| `null/old format` | 192 | 10.2% | ⚠️ cron 順次 enrich 中 |
+| unsubscribed | 7 | 0.4% | ❌ 明示解除 |
+| **合計** | **1,891** | 100% | (前回認識 316 件 → paging 実装で 1,891 件と判明、 5.9 倍) |
+
+**戦略的含意**:
+- subscribed が 2 名のみ = naturism Shopify チェックアウトで「メルマガ受け取る」 がデフォルト OFF or 表示なしの可能性
+- マーケティング配信の即時開始は実質効果ゼロ
+- 推奨段階移行:
+  - **Phase 1 (即可能)**: Transactional メール先行 (注文確認 / 発送通知、 opt-in 不要、 1,891 件全員に届く)
+  - **Phase 2 (Shopify 側施策)**: チェックアウトに opt-in checkbox を必須化
+  - **Phase 3 (subscribers 100+ 後)**: Marketing メール (welcome / reorder reminder / cart recovery) 開始
+- 既存 1,690 名 not_subscribed への opt-in 再取得施策 (1 回限りの transactional 確認メール + LINE 友だち追加クーポン等) も検討候補
+
 ### Phase 6 KPI seed 投入 ✅ 完了 2026-05-03 (naturism)
 **Round 4 PR-7 deploy 後の Phase 6 動線開通**。観測 KPI 速報 ③「seed 必要」課題を解消。
 - [x] migration 045 で `product_repurchase_intervals` に主要 3 SKU を seed

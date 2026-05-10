@@ -28,15 +28,18 @@ export async function upsertShopifyOrder(
   const now = jstNow();
 
   if (existing) {
+    // 2026-05-10 fix: UPDATE に metadata 列が抜けていた (customers と同パターン bug)。
+    // COALESCE で「指定があれば上書き、 無ければ既存維持」 にする。
     await db
       .prepare(
-        `UPDATE shopify_orders SET financial_status = ?, fulfillment_status = ?, friend_id = COALESCE(?, friend_id), tags = COALESCE(?, tags), updated_at = ? WHERE shopify_order_id = ?`,
+        `UPDATE shopify_orders SET financial_status = ?, fulfillment_status = ?, friend_id = COALESCE(?, friend_id), tags = COALESCE(?, tags), metadata = COALESCE(?, metadata), updated_at = ? WHERE shopify_order_id = ?`,
       )
       .bind(
         order.financialStatus ?? existing.financial_status ?? null,
         order.fulfillmentStatus ?? existing.fulfillment_status ?? null,
         order.friendId ?? null,
         order.tags ?? null,
+        order.metadata ?? null,
         now,
         order.shopifyOrderId,
       )
@@ -153,9 +156,11 @@ export async function upsertShopifyCustomer(
   const now = jstNow();
 
   if (existing) {
+    // 2026-05-10 fix: UPDATE に metadata 列が抜けていたため、 既存 customer の metadata が永久に
+    // 上書きされない bug があった。COALESCE で「指定があれば上書き、 無ければ既存維持」 にする。
     await db
       .prepare(
-        `UPDATE shopify_customers SET friend_id = COALESCE(?, friend_id), email = COALESCE(?, email), phone = COALESCE(?, phone), first_name = COALESCE(?, first_name), last_name = COALESCE(?, last_name), orders_count = COALESCE(?, orders_count), total_spent = COALESCE(?, total_spent), tags = COALESCE(?, tags), updated_at = ? WHERE shopify_customer_id = ?`,
+        `UPDATE shopify_customers SET friend_id = COALESCE(?, friend_id), email = COALESCE(?, email), phone = COALESCE(?, phone), first_name = COALESCE(?, first_name), last_name = COALESCE(?, last_name), orders_count = COALESCE(?, orders_count), total_spent = COALESCE(?, total_spent), tags = COALESCE(?, tags), metadata = COALESCE(?, metadata), updated_at = ? WHERE shopify_customer_id = ?`,
       )
       .bind(
         customer.friendId ?? null,
@@ -166,6 +171,7 @@ export async function upsertShopifyCustomer(
         customer.ordersCount ?? null,
         customer.totalSpent ?? null,
         customer.tags ?? null,
+        customer.metadata ?? null,
         now,
         customer.shopifyCustomerId,
       )

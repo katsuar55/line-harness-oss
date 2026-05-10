@@ -125,13 +125,13 @@ describe('consentGate', () => {
       makeSubscriber({ unsubscribed_at: '2026-04-01T00:00:00+09:00' }),
       'marketing',
     );
-    expect(r.allowed).toBe(false);
+    if (r.allowed) throw new Error('expected disallowed');
     expect(r.reason).toBe('unsubscribed');
   });
 
   it('marketing: is_active=0 は inactive_marketing', () => {
     const r = consentGate(makeSubscriber({ is_active: 0 }), 'marketing');
-    expect(r.allowed).toBe(false);
+    if (r.allowed) throw new Error('expected disallowed');
     expect(r.reason).toBe('inactive_marketing');
   });
 
@@ -155,7 +155,7 @@ describe('consentGate', () => {
       makeSubscriber({ is_active: 0, transactional_only: 0 }),
       'transactional',
     );
-    expect(r.allowed).toBe(false);
+    if (r.allowed) throw new Error('expected disallowed');
     expect(r.reason).toBe('inactive_transactional');
   });
 });
