@@ -6,6 +6,7 @@ import {
   updateTemplate,
   deleteTemplate,
 } from '@line-crm/db';
+import { auditAdmin } from '../services/audit-logger.js';
 import type { Env } from '../index.js';
 
 const templates = new Hono<Env>();
@@ -78,11 +79,27 @@ templates.put('/api/templates/:id', async (c) => {
 });
 
 templates.delete('/api/templates/:id', async (c) => {
+  const id = c.req.param('id');
   try {
-    await deleteTemplate(c.env.DB, c.req.param('id'));
+    // Phase 5α-3b: destructive 操作なので削除前 snapshot を audit
+    const before = await getTemplateById(c.env.DB, id);
+    await deleteTemplate(c.env.DB, id);
+    await auditAdmin(c, {
+      action: 'template.delete',
+      targetType: 'template',
+      targetId: id,
+      before: before ? { name: before.name, message_type: before.message_type, category: before.category } : null,
+    });
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/templates/:id error:', err);
+    await auditAdmin(c, {
+      action: 'template.delete',
+      targetType: 'template',
+      targetId: id,
+      result: 'failure',
+      errorMessage: err instanceof Error ? err.message.slice(0, 480) : 'unknown',
+    });
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

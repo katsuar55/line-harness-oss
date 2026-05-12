@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { auditAdmin } from '../services/audit-logger.js';
 import {
   getScenarios,
   getScenarioById,
@@ -212,12 +213,30 @@ scenarios.put('/api/scenarios/:id', async (c) => {
 
 // DELETE /api/scenarios/:id - delete
 scenarios.delete('/api/scenarios/:id', async (c) => {
+  const id = c.req.param('id');
   try {
-    const id = c.req.param('id');
+    // Phase 5α-3b: destructive 操作なので削除前 snapshot を audit
+    const before = await getScenarioById(c.env.DB, id);
     await deleteScenario(c.env.DB, id);
+    await auditAdmin(c, {
+      action: 'scenario.delete',
+      targetType: 'scenario',
+      targetId: id,
+      lineAccountId: before?.line_account_id ?? null,
+      before: before
+        ? { name: before.name, trigger_type: before.trigger_type, is_active: before.is_active }
+        : null,
+    });
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/scenarios/:id error:', err);
+    await auditAdmin(c, {
+      action: 'scenario.delete',
+      targetType: 'scenario',
+      targetId: id,
+      result: 'failure',
+      errorMessage: err instanceof Error ? err.message.slice(0, 480) : 'unknown',
+    });
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

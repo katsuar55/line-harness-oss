@@ -403,6 +403,17 @@ async function executeAction(
       // Round 4 PR-6: ChannelDispatcher 経由でメール送信
       // emailConfig 未設定 (= RESEND_API_KEY 等の env 不足) なら無音 skip。
       if (!friendId || !emailConfig) break;
+      // Phase 5α-8: payload.eventData を template の {{var}} 用に passthrough。
+      // caller (Shopify webhook 等) が事前に template-friendly な key 名 ({{order_number}} 等)
+      // で eventData を作る責任を持つ (key 名 normalize は scope 外)。
+      const eventVariables: Record<string, string> = {};
+      if (payload.eventData) {
+        for (const [k, v] of Object.entries(payload.eventData)) {
+          if (v !== null && v !== undefined) {
+            eventVariables[k] = typeof v === 'string' ? v : String(v);
+          }
+        }
+      }
       const params: SendEmailActionParams = {
         templateId: action.params.templateId || undefined,
         subject: action.params.subject || undefined,
@@ -411,6 +422,7 @@ async function executeAction(
         preheader: action.params.preheader || undefined,
         category:
           action.params.category === 'transactional' ? 'transactional' : 'marketing',
+        eventVariables,
       };
       const r = await executeSendEmailAction(
         { db, friendId, emailConfig },

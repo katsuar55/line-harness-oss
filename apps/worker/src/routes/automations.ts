@@ -7,6 +7,7 @@ import {
   deleteAutomation,
   getAutomationLogs,
 } from '@line-crm/db';
+import { auditAdmin } from '../services/audit-logger.js';
 import type { Env } from '../index.js';
 
 const automations = new Hono<Env>();
@@ -148,11 +149,30 @@ automations.put('/api/automations/:id', async (c) => {
 });
 
 automations.delete('/api/automations/:id', async (c) => {
+  const id = c.req.param('id');
   try {
-    await deleteAutomation(c.env.DB, c.req.param('id'));
+    // Phase 5α-3b: destructive 操作なので削除前 snapshot を audit
+    const before = await getAutomationById(c.env.DB, id);
+    await deleteAutomation(c.env.DB, id);
+    await auditAdmin(c, {
+      action: 'automation.delete',
+      targetType: 'automation',
+      targetId: id,
+      lineAccountId: before?.line_account_id ?? null,
+      before: before
+        ? { name: before.name, event_type: before.event_type, is_active: before.is_active }
+        : null,
+    });
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/automations/:id error:', err);
+    await auditAdmin(c, {
+      action: 'automation.delete',
+      targetType: 'automation',
+      targetId: id,
+      result: 'failure',
+      errorMessage: err instanceof Error ? err.message.slice(0, 480) : 'unknown',
+    });
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

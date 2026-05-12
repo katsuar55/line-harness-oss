@@ -40,6 +40,21 @@ export interface SendEmailActionParams {
   preheader?: string;
   /** デフォルト 'marketing'。'transactional' で配信停止後も届く */
   category?: EmailCategory;
+  /**
+   * Phase 5α-8: caller (event-bus / cron / webhook handler) が template の {{var}}
+   * 用に渡す追加変数。 brand 変数 (Phase 5α-9) と friend.name の上に merge され、
+   * **同 key があれば caller 側を優先**。
+   *
+   * 例: {{order_number}} を埋めたい場合、 caller が
+   *   { eventVariables: { order_number: String(orderNumber), total_amount: String(totalPrice) } }
+   * を渡す。 値は文字列に変換して渡すこと (renderer は string 型しか受けない)。
+   *
+   * 用途:
+   * - automation send_email action: event-bus が payload.eventData を mapping して渡す
+   * - Shopify webhook handler: order_paid 等の data を直接渡す
+   * - cron handler: scheduled reminder で動的値を埋める
+   */
+  eventVariables?: Record<string, string>;
 }
 
 export interface SendEmailActionContext {
@@ -121,9 +136,15 @@ export async function executeSendEmailAction(
     .bind(ctx.friendId)
     .first<{ display_name: string | null; line_account_id: string | null }>();
   const brand = await getBrandConfigForAccount(ctx.db, friend?.line_account_id ?? null);
+  // Phase 5α-8: variables の merge 順序 (後勝ち)
+  //   1. brand_config (brand_name / shop_url 等) - 全送信共通
+  //   2. friend.display_name → name
+  //   3. caller eventVariables (order_number 等) - イベント由来、 上書き可能
+  // この順序で「brand を caller から override 可能」 「event vars が name を override 可能」 にする。
   const variables: Record<string, string> = {
-    name: friend?.display_name ?? 'お客様',
     ...(brand ? brandToVariables(brand) : {}),
+    name: friend?.display_name ?? 'お客様',
+    ...(params.eventVariables ?? {}),
   };
 
   // 4. dispatcher 経由で送信
