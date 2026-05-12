@@ -367,7 +367,66 @@ L社/U社代替。AI（CC）ネイティブ設計。
   - **Phase 3 (subscribers 100+ 後)**: Marketing メール (welcome / reorder reminder / cart recovery) 開始
 - 既存 1,690 名 not_subscribed への opt-in 再取得施策 (1 回限りの transactional 確認メール + LINE 友だち追加クーポン等) も検討候補
 
-### Round 5 = Ultraplan v3: Lステップ全網羅編 🆕 確定 2026-05-11 (汎用化方針)
+### Round 5 = Ultraplan v4: ULTRATHINK 全体レビュー反映版 🆕 確定 2026-05-12
+
+**v3 → v4 の主要変更点 (2026-05-12 ULTRATHINK 全体コードレビュー結果)**:
+
+1. **Phase 5α 拡張 (7 → 9 PR / 14 → 17 日)**:
+   - **5α-8 新規**: send_email action variables passthrough (現状 `{name}` のみ → 全 event payload 自動マッピング)
+   - **5α-9 新規**: brand_config + line_accounts.industry + email_templates.brand_id (migration 047) — 多 brand 基盤の最小実装
+
+2. **Phase 5β-prep 新規 (3 日 / 1 PR)**: AI provider 抽象化レイヤー (`packages/ai-provider/`)
+   - 現状 ANTHROPIC 直叩き 4 service + Workers AI 直叩き 2 service が分散、 PROHIBITED_PHRASES が 3 ファイルで重複定義
+   - 抽象化対象: `WorkersAIProvider` / `ClaudeProvider` / `GeminiProvider` / `ChatGPTProvider` / `DeepSeekProvider` / `KimiProvider`
+   - `AIRouter` でタスク特性別 provider 自動選択 (短文応答=Workers AI / 高度生成=Claude / Vision=Claude のみ)
+   - Phase 5γ AI Conductor の前提
+
+3. **Phase 順序最適化**:
+   - 5γ AI Conductor を 5β の前 (5β-prep 直後) に移動 — Visual エディタ代替ニーズが運用初期から発生
+   - 5κ 汎用性 plugin 化を 5ζ クロスチャネルの前に移動 — 基盤を早く整える
+   - 5λ 多言語 admin を **skip / 5ν OSS の sub-task に降格** (Katsu 日本語のみ OK)
+
+4. **Phase 5κ scope 縮小 (20 → 15 日)**: 5α-9 で brand_config 基盤を先に作るので、 5κ は plugin 切出し作業に集中
+
+**Ultraplan v4 (13 Phase / 60 PR / 183 日 / 並列化で 3 ヶ月)**:
+
+| Phase | 内容 | 工数 | PR 数 |
+|---|---|---|---|
+| **5α** | Pre-launch 拡張版 (5α-1 templates seed / 5α-2 tags+autos seed / 5α-3 audit_log / 5α-4 配信失敗通知 / 5α-5 1:1 chat UI / 5α-6 既読+振分 / 5α-7 ブロック復活 / **5α-8 vars passthrough** / **5α-9 brand_config+industry**) | 17 日 | 9 |
+| **5β-prep** | AI provider 抽象化レイヤー (`packages/ai-provider/`) | 3 日 | 1 |
+| **5γ** | AI Conductor (Visual エディタ代替、 有料 AI plugin、 チャット+ボタン UI) | 15 日 | 5 |
+| **5β** | マーケ最適化 (broadcast A/B / 時間 A/B / シナリオ A/B / Insight UI / 流入経路 / ファネル可視化 / LTV+AI / opt-in 再取得) | 15 日 | 8 |
+| **5δ** | 高度マーケ (ポイント / 抽選 / ファネルビルダー AI / AI 顧客分類 / 紹介トラッキング) | 20 日 | 5 |
+| **5ε** | 予約管理 (Google Cal / 予約フォーム / リマインダー) | 10 日 | 3 |
+| **5θ** | メッセージ拡張 (位置 / スタンプ / ファイル / クイック / カレンダー UI) | 10 日 | 5 |
+| **5κ** | 汎用性 plugin 化 (`packages/plugin-naturism/` 切出し + 飲食店/美容/物販テンプレ) | 15 日 | 5 |
+| **5ζ** | クロスチャネル拡張 (channel-dispatcher refactor + SMS / IG / WhatsApp / Messenger / Web プッシュ) | 30 日 | 6 |
+| **5ι** | EC 拡張 (BASE / PayPal / Stripe Subscriptions) | 15 日 | 3 |
+| **5η** | 法令運用基盤 (multi-tenant 強化 / RBAC / GDPR / 2FA / audit_log 強化) | 15 日 | 5 |
+| **5μ** | 動画 (Coming soon、 公開後追加) | 5 日 | 1 |
+| **5ν** | OSS 公開 + λ 多言語 sub-task (README/SETUP/LICENSE/E2E + i18n optional) | 13 日 | 4 |
+| **合計** | | **183 日** | **60 PR** |
+
+並列化 + Claude Code agent 多重化で **3 ヶ月** 圧縮可能。
+
+**ULTRATHINK 全体レビュー判定一覧 (services 42 + routes 53)**:
+
+| 判定 | 件数 | 主要対象 |
+|---|---|---|
+| **KEEP** (作り直し不要) | 18 services | ad-conversion, badge-evaluator, ban-monitor, broadcast (送信中核), cron-cleanup/heartbeat/monitor, event-bus, line-content, logger, segment-query/send, shopify-customer-sync/token, stealth, token-refresh, weekly-report 等 |
+| **ENHANCE** (拡張) | 8 services | channel-dispatcher (cross-channel), send-email-action (vars passthrough), step-delivery, broadcast (channel 拡張), reminder-delivery, tag-elapsed-delivery, abandoned-cart-notify, product-display |
+| **REFACTOR** (大方針反映で部分書直) | 4 services | ai-response (AI provider 経由), translate (同), birthday-collection (汎用化), intake-reminder (cross-channel) |
+| **MOVE** (naturism plugin 切出し) | 12 services + 7 routes | services: food-analyzer, nutrition-analyzer, nutrition-recommender, weekly-coach-push, monthly-food-report, repurchase-estimator, subscription-enroller, subscription-reminder, quiz-engine 他 / routes: liff-portal (food/coach), liff-coach-page, liff-food-page, liff-food-graph, liff-reorder-page, coach-admin, reorder-admin |
+
+**新規 packages 計画**:
+- `packages/ai-provider/` (5β-prep): 統一 AI インターフェース
+- `packages/plugin-naturism/` (5κ): naturism 専用機能 12+7 件移管
+- `packages/sms-sdk/` `packages/instagram-sdk/` `packages/whatsapp-sdk/` `packages/messenger-sdk/` `packages/webpush-sdk/` (5ζ)
+- `packages/plugin-restaurant/` `packages/plugin-beauty/` `packages/plugin-retail/` (5κ 後半 or 公開後)
+
+---
+
+### Round 5 = Ultraplan v3: Lステップ全網羅編 (旧版、 v4 で更新済)
 
 **大方針 3 つ (毎セッション再確認、 ブレないこと)**:
 
