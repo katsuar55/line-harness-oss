@@ -4,6 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 <!-- brain_notebook_id: bb76696f-4e1f-47c7-b328-801d3c55aa37 -->
 
+## 🚨 セッション開始 protocol (絶対遵守、 ユーザー指示前に必ず自動実行)
+
+新セッション開始時、 ユーザーが NEXT_SESSION_PROMPT.md をコピペしなかった場合でも、 以下を **必ず順に実行** してから着手宣言する:
+
+1. **memory `project_current_state.md` を Read** (現在 Phase / 次タスク / 本番 version の最短サマリ)
+   - path: `~/.claude/projects/C--dev-line-harness-oss/memory/project_current_state.md`
+2. **`SESSION_HANDOFF.md` を Read** (gitignore、 main repo root、 詳細引継ぎ single source of truth)
+   - path: `C:\dev\line-harness-oss\SESSION_HANDOFF.md`
+3. **memory 8 件 (大方針 + 学び) を概要確認** (MEMORY.md の link を辿る)
+4. **`git log --oneline 0b62292..HEAD`** で前回 commits 確認 (worktree 内、 base は最新 main)
+5. **本番 smoke 最小 1 endpoint** (`GET https://naturism-line-crm.katsu-7d5.workers.dev/` → 200 + bundle ID 抽出) で運用状態確認
+6. **大方針 3 行要約を出力** (① AI ネイティブ ② 汎用性 multi-brand ③ Lステップ網羅)
+7. **着手宣言** (「次タスクは X です、 進めます」)
+
+これにより、 ユーザーがコピペ忘れてもシームレスに継続可能。 NEXT_SESSION_PROMPT.md は **任意の補助** に降格 (コピペすればより詳細、 しなくても上記 7 手順で 95% カバー)。
+
 ## プロジェクト概要
 
 LINE Harness OSS — LINE公式アカウントの完全オープンソース CRM/マーケティング自動化ツール。
