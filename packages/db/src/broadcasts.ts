@@ -24,6 +24,8 @@ export interface Broadcast {
   channel?: BroadcastChannel;
   /** migration 043 で追加。channel が 'email' | 'both' のときに email_templates(id) を指す */
   email_template_id?: string | null;
+  /** migration 008 で追加。 multi-tenant 用 (NULL = legacy / system-wide) */
+  line_account_id?: string | null;
   created_at: string;
 }
 

@@ -16,6 +16,7 @@ import { LineClient } from '@line-crm/line-sdk';
 import { processBroadcastSend } from '../services/broadcast.js';
 import { processSegmentSend } from '../services/segment-send.js';
 import { buildEmailDispatchConfig } from '../services/email-dispatch-config.js';
+import { auditAdmin } from '../services/audit-logger.js';
 import type { SegmentCondition } from '../services/segment-query.js';
 import type { Env } from '../index.js';
 
@@ -321,8 +322,8 @@ broadcasts.get('/api/broadcasts/:id/insights', async (c) => {
 
 // POST /api/broadcasts/:id/send - send now
 broadcasts.post('/api/broadcasts/:id/send', async (c) => {
+  const id = c.req.param('id');
   try {
-    const id = c.req.param('id');
     const existing = await getBroadcastById(c.env.DB, id);
 
     if (!existing) {
@@ -338,9 +339,24 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
     await processBroadcastSend(c.env.DB, lineClient, id, c.env.WORKER_URL, emailConfig);
 
     const result = await getBroadcastById(c.env.DB, id);
+    // Phase 5α-3 audit hook: broadcast 送信は重要操作 (CLAUDE.md 1万件以上は要承認)
+    await auditAdmin(c, {
+      action: 'broadcast.send',
+      targetType: 'broadcast',
+      targetId: id,
+      lineAccountId: existing.line_account_id ?? null,
+      after: result ? { status: result.status, channel: result.channel, target_type: result.target_type } : null,
+    });
     return c.json({ success: true, data: result ? serializeBroadcast(result) : null });
   } catch (err) {
     console.error('POST /api/broadcasts/:id/send error:', err);
+    await auditAdmin(c, {
+      action: 'broadcast.send',
+      targetType: 'broadcast',
+      targetId: id,
+      result: 'failure',
+      errorMessage: err instanceof Error ? err.message.slice(0, 480) : 'unknown',
+    });
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

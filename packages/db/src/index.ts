@@ -6,6 +6,7 @@ export * from './broadcasts';
 export * from './users';
 export * from './line-accounts';
 export * from './brand-config';
+export * from './audit-logs';
 export * from './conversions';
 export * from './affiliates';
 export * from './webhooks';
