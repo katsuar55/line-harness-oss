@@ -479,6 +479,37 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - project_ai_native_design_principle.md (AI ネイティブ大方針)
 - project_multi_brand_industry_design.md (汎用性大方針)
 
+### Phase 5α 実装進捗 (Ultraplan v4 ベース、 2026-05-12 着手中)
+
+**完了 8/9 PR**:
+| PR | 内容 | commit | 本番反映状況 |
+|---|---|---|---|
+| 5α-1 | transactional templates seed (5 種、 brand 変数化済) | 0a47c83 + afe3493 | ✅ D1 投入 + UPSERT 上書き済 |
+| 5α-2 | tags 14 + automations 6 seed (core + naturism-plugin 分離) | 0a47c83 | ✅ D1 投入 |
+| 5α-3 | audit_logs migration 048 + audit-logger service + broadcast.send sample hook | 63231b9 | ✅ schema 適用 / hook は要 worker deploy |
+| 5α-3b | 4 audit hooks 追加 (automation/template/scenario delete + friend blacklist) | 0d24e0b | ⏳ worker deploy 必要 |
+| 5α-4 | email 配信失敗通知 (email-failure-monitor + Discord + cron 統合) | 3af1d82 | ⏳ worker deploy 必要 |
+| 5α-8 | send_email vars passthrough (event payload → vars 自動マッピング) | 0d24e0b | ⏳ worker deploy 必要 |
+| 5α-9 | brand_config + migration 047 + send-email-action brand 注入 | afe3493 | ✅ schema + brand_config seed + 5 templates 変数化 |
+
+**残 (次セッション)**:
+- 5α-5 1:1 個別チャット UI (frontend 多め、 chat 受信箱 + Worker route)
+- 5α-6 既読/未読 + スタッフ振り分け (chat_assignments table + admin UI)
+- 5α-7 ブロック復活施策 UI (BAN 監視 + 再 follow 検知 + 復活シナリオ)
+- 5α-3c 残り audit hooks (template/scenario/automation の PUT、 friend.metadata/status 等)
+
+**本番 D1 状態 (2026-05-12 セッション後)**:
+- email_templates: 5 brand 変数化済 + 1 既存 (DMARC test) = 6 件
+- tags: 14 件 (core 9 + naturism-plugin 5)
+- automations: 6 件 (core 4 + naturism-plugin 2)
+- brand_config: 1 件 (brand-naturism-default、 is_default=1)
+- audit_logs: 0 件 (table のみ、 hook deploy 後 蓄積開始)
+- migrations: 047 (brand_config) + 048 (audit_logs) 適用済
+
+**worker tests**: 1554/1554 green (前 1544 + email-failure-monitor +10 件)
+**worker typecheck**: OK
+**deploy 待ち**: 5α-3 / 5α-3b / 5α-4 / 5α-8 が worker code 変更 → 次セッション最初に `pnpm --filter worker deploy`
+
 ### Phase 6 KPI seed 投入 ✅ 完了 2026-05-03 (naturism)
 **Round 4 PR-7 deploy 後の Phase 6 動線開通**。観測 KPI 速報 ③「seed 必要」課題を解消。
 - [x] migration 045 で `product_repurchase_intervals` に主要 3 SKU を seed
