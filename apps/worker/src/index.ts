@@ -76,6 +76,7 @@ import { processSubscriptionReminders } from './services/subscription-reminder.j
 import { processMonthlyFoodReports } from './services/monthly-food-report.js';
 import { processWeeklyCoachPush } from './services/weekly-coach-push.js';
 import { processCronMonitor } from './services/cron-monitor.js';
+import { processEmailFailureMonitor } from './services/email-failure-monitor.js';
 import { processCronCleanup } from './services/cron-cleanup.js';
 import { withHeartbeat } from './services/cron-heartbeat.js';
 import { createLogger } from './services/logger.js';
@@ -384,6 +385,14 @@ async function scheduled(
   jobs.push(
     processCronMonitor(env).catch((err) =>
       console.error('cron-monitor failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // Phase 5α-4: email 配信失敗監視 (JST 09:00 ウィンドウのみ trigger、 EMAIL_FAILURE_MONITOR_FORCE='true' で常時)
+  // email_messages_log の status='failed/bounced/complained' を集計、 閾値超で Discord 通知
+  jobs.push(
+    processEmailFailureMonitor(env).catch((err) =>
+      console.error('email-failure-monitor failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 
