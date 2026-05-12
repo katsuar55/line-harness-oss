@@ -25,6 +25,7 @@ import {
   type EmailDispatchConfig,
 } from './email-dispatch-config.js';
 import type { EmailCategory } from '@line-crm/email-sdk';
+import { brandToVariables, getBrandConfigForAccount } from '@line-crm/db';
 
 export interface SendEmailActionParams {
   /** email_templates.id を指定すると DB からテンプレ取得 (subject/htmlContent/textContent 不要) */
@@ -110,13 +111,19 @@ export async function executeSendEmailAction(
     preheader = params.preheader;
   }
 
-  // 3. friend display_name 等の variables を展開用に取得 (best-effort)
+  // 3. friend display_name + brand 値を variables に展開
+  // - friend.display_name → {{name}}
+  // - brand_config (account-specific or default) → {{brand_name}} {{shop_url}} 等
+  // brand 注入は Phase 5α-9 / Ultraplan v4 大方針 2 (汎用性 multi-brand) 対応。
+  // friend.line_account_id が NULL なら default brand (= naturism) が返る。
   const friend = await ctx.db
-    .prepare(`SELECT display_name FROM friends WHERE id = ? LIMIT 1`)
+    .prepare(`SELECT display_name, line_account_id FROM friends WHERE id = ? LIMIT 1`)
     .bind(ctx.friendId)
-    .first<{ display_name: string | null }>();
+    .first<{ display_name: string | null; line_account_id: string | null }>();
+  const brand = await getBrandConfigForAccount(ctx.db, friend?.line_account_id ?? null);
   const variables: Record<string, string> = {
     name: friend?.display_name ?? 'お客様',
+    ...(brand ? brandToVariables(brand) : {}),
   };
 
   // 4. dispatcher 経由で送信
