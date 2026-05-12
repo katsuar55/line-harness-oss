@@ -367,6 +367,59 @@ L社/U社代替。AI（CC）ネイティブ設計。
   - **Phase 3 (subscribers 100+ 後)**: Marketing メール (welcome / reorder reminder / cart recovery) 開始
 - 既存 1,690 名 not_subscribed への opt-in 再取得施策 (1 回限りの transactional 確認メール + LINE 友だち追加クーポン等) も検討候補
 
+### Round 5 = Ultraplan v3: Lステップ全網羅編 🆕 確定 2026-05-11 (汎用化方針)
+
+**大方針 3 つ (毎セッション再確認、 ブレないこと)**:
+
+1. **AI ネイティブ設計**:
+   - Tier 2 主役 = Workers AI (Qwen3-30B-A3B + Llama-3.3-70b、 無料)
+   - Tier 1 オプション = 有料 AI plugin (優先順 Claude → Gemini → ChatGPT → DeepSeek → Kimi)
+   - OSS 無料完動が前提 (有料 AI 未設定でも 100% 動作、 Tier B: 基本 70% Workers AI / 高度 30% 有料 AI 推奨)
+   - Visual エディタ群は AI Conductor (Phase 5γ) で代替
+   - **δ グループ実装時は「作業前に Katsu へ可視化案 3 候補提示」 必須**
+2. **汎用性 multi-brand / multi-industry**:
+   - naturism がメイン、 後々他のブランド/飲食店/美容/物販に汎用化
+   - 業種非依存コア + 業種プラグイン設計
+   - マルチテナント基盤強化
+   - naturism 専用機能は Phase 5κ で plugin 切出し
+3. **Lステップ全網羅**:
+   - 215 機能中 EXCLUDE 12 + Coming Soon 1、 実装対象 203 項目
+   - 網羅率目標 75% → 99.5% (4-6 ヶ月、 並列化で 3 ヶ月)
+
+**Ultraplan v3 (13 Phase / 58 PR / 185 日)**:
+
+| Phase | 内容 | 工数 | PR 数 |
+|---|---|---|---|
+| 5α | Pre-launch ブロッカー (transactional templates / tags-automations / audit_log / 配信失敗通知 / 1:1チャット UI / 既読未読+振分 / ブロック復活) | 14 日 | 7 |
+| 5β | マーケ最適化 (broadcast A/B / 時間A/B / シナリオA/B / LINE Insight UI / 流入経路 / ファネル可視化 / LTV+AI / opt-in 再取得) | 15 日 | 8 |
+| 5γ | **AI Conductor** (Visual エディタ代替、 有料 AI plugin system、 チャット+ボタン UI、 集計解釈、 NG検知+翻訳) | 15 日 | 5 |
+| 5δ | 高度マーケ (ポイント / 抽選+視覚演出 / ファネルビルダー AI / AI 顧客分類 LTV+チャーン / 紹介トラッキング) | 20 日 | 5 |
+| 5ε | 予約管理 (Google Cal / 予約フォーム / リマインダー) | 10 日 | 3 |
+| 5ζ | クロスチャネル拡張 (SMS / Instagram DM / WhatsApp / Messenger / Web プッシュ / メール Ultraplan) | 30 日 | 6 |
+| 5η | 法令運用基盤 (multi-tenant 強化 / RBAC / GDPR 削除&エクスポート / 2FA / audit_log 強化) | 15 日 | 5 |
+| 5θ | メッセージ拡張 (位置情報 / スタンプ / ファイル添付 / クイックリプライ / テスト送信 / 配信カレンダー UI) | 10 日 | 5 |
+| 5ι | EC 拡張 (BASE 連携 / PayPal / Stripe Subscriptions 定期課金) | 15 日 | 3 |
+| 5κ | **汎用性 plugin 化** (業種プラグインシステム / naturism plugin 切出し / 飲食店テンプレ / 美容+物販テンプレ / 業種別 KPI ダッシュ) | 20 日 | 5 |
+| 5λ | 多言語 admin (i18n、 日/英、 AI 翻訳補助) | 8 日 | 2 |
+| 5μ | 動画メッセージ (Coming soon、 公開後) | 5 日 | 1 |
+| 5ν | OSS 公開 (README/SETUP/CONTRIBUTING / secret scan / LICENSE / E2E テスト) | 8 日 | 3 |
+| **合計** | | **185 日** | **58 PR** |
+
+**EXCLUDE 12 項目** (実装しない):
+- β2 ECforce 連携 / β3 WooCommerce 連携 (Shopify + BASE で十分)
+- γ2 音声メッセージ (使用頻度ゼロ)
+- ゴミ 9 項目: 占い / おみくじ / LINE タイムライン / 絵文字統計 / 天気予報 / キャラチャット / 誕生日自動 / クイズ / 着せ替え
+
+**Coming Soon 1 項目** (公開後追加):
+- γ1 動画メッセージ → Phase 5μ
+
+**memory 5 件** (毎セッション必読、 `~/.claude/projects/C--dev-line-harness-oss/memory/`):
+- feedback_predictive_review.md (本番初実行 bug 後の予防的並列レビュー)
+- feedback_upsert_update_column_drift.md (upsert UPDATE 列乖離 bug)
+- project_naturism_opt_in_state.md (opt-in 状況)
+- project_ai_native_design_principle.md (AI ネイティブ大方針)
+- project_multi_brand_industry_design.md (汎用性大方針)
+
 ### Phase 6 KPI seed 投入 ✅ 完了 2026-05-03 (naturism)
 **Round 4 PR-7 deploy 後の Phase 6 動線開通**。観測 KPI 速報 ③「seed 必要」課題を解消。
 - [x] migration 045 で `product_repurchase_intervals` に主要 3 SKU を seed
