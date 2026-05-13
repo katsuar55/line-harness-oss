@@ -60,6 +60,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.91.1
         version: 0.91.1(zod@3.25.76)
+      '@line-crm/ai-provider':
+        specifier: workspace:*
+        version: link:../../packages/ai-provider
       '@line-crm/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -97,6 +100,15 @@ importers:
       wrangler:
         specifier: ^4.84.1
         version: 4.84.1(@cloudflare/workers-types@4.20260424.1)
+
+  packages/ai-provider:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20260424.1
+        version: 4.20260424.1
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
 
   packages/create-line-harness:
     dependencies:
