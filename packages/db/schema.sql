@@ -29,10 +29,22 @@ CREATE TABLE IF NOT EXISTS friends (
   email                TEXT,
   address              TEXT,
   memo                 TEXT,
-  assigned_staff_id    TEXT REFERENCES staff_members(id) ON DELETE SET NULL);
+  assigned_staff_id    TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  -- Phase 5α-7: ブロック復活施策トラッキング (migration 049)
+  last_unfollowed_at   TEXT,
+  last_refollowed_at   TEXT,
+  unfollow_count       INTEGER NOT NULL DEFAULT 0);
 
 CREATE INDEX IF NOT EXISTS idx_friends_line_user_id ON friends (line_user_id);
 CREATE INDEX IF NOT EXISTS idx_friends_user_id ON friends (user_id);
+-- Phase 5α-7: 復活した友だちの timeline 検索
+CREATE INDEX IF NOT EXISTS idx_friends_refollowed
+  ON friends(last_refollowed_at DESC)
+  WHERE last_refollowed_at IS NOT NULL;
+-- Phase 5α-7: 「ブロック中」 ステータス検索
+CREATE INDEX IF NOT EXISTS idx_friends_unfollowed
+  ON friends(is_following, last_unfollowed_at DESC)
+  WHERE last_unfollowed_at IS NOT NULL;
 
 -- ============================================================
 -- Tags
