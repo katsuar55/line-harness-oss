@@ -124,12 +124,24 @@ automations.post('/api/automations', async (c) => {
 });
 
 automations.put('/api/automations/:id', async (c) => {
+  const id = c.req.param('id');
   try {
-    const id = c.req.param('id');
+    // Phase 5α-3c: 更新前 snapshot を取得して before/after を audit
+    const before = await getAutomationById(c.env.DB, id);
     const body = await c.req.json();
     await updateAutomation(c.env.DB, id, body);
     const updated = await getAutomationById(c.env.DB, id);
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
+    await auditAdmin(c, {
+      action: 'automation.update',
+      targetType: 'automation',
+      targetId: id,
+      lineAccountId: updated.line_account_id ?? before?.line_account_id ?? null,
+      before: before
+        ? { name: before.name, event_type: before.event_type, is_active: before.is_active }
+        : null,
+      after: { name: updated.name, event_type: updated.event_type, is_active: updated.is_active },
+    });
     return c.json({
       success: true,
       data: {
@@ -144,6 +156,13 @@ automations.put('/api/automations/:id', async (c) => {
     });
   } catch (err) {
     console.error('PUT /api/automations/:id error:', err);
+    await auditAdmin(c, {
+      action: 'automation.update',
+      targetType: 'automation',
+      targetId: id,
+      result: 'failure',
+      errorMessage: err instanceof Error ? err.message.slice(0, 480) : 'unknown',
+    });
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

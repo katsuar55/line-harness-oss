@@ -182,8 +182,10 @@ scenarios.post('/api/scenarios', async (c) => {
 
 // PUT /api/scenarios/:id - update (accepts camelCase fields from clients)
 scenarios.put('/api/scenarios/:id', async (c) => {
+  const id = c.req.param('id');
   try {
-    const id = c.req.param('id');
+    // Phase 5α-3c: 更新前 snapshot を取得して before/after を audit
+    const before = await getScenarioById(c.env.DB, id);
     const body = await c.req.json<{
       name?: string;
       description?: string | null;
@@ -204,9 +206,27 @@ scenarios.put('/api/scenarios/:id', async (c) => {
       return c.json({ success: false, error: 'Scenario not found' }, 404);
     }
 
+    await auditAdmin(c, {
+      action: 'scenario.update',
+      targetType: 'scenario',
+      targetId: id,
+      lineAccountId: updated.line_account_id ?? before?.line_account_id ?? null,
+      before: before
+        ? { name: before.name, trigger_type: before.trigger_type, is_active: before.is_active }
+        : null,
+      after: { name: updated.name, trigger_type: updated.trigger_type, is_active: updated.is_active },
+    });
+
     return c.json({ success: true, data: serializeScenario(updated) });
   } catch (err) {
     console.error('PUT /api/scenarios/:id error:', err);
+    await auditAdmin(c, {
+      action: 'scenario.update',
+      targetType: 'scenario',
+      targetId: id,
+      result: 'failure',
+      errorMessage: err instanceof Error ? err.message.slice(0, 480) : 'unknown',
+    });
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
