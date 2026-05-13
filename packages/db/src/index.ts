@@ -18,6 +18,7 @@ export * from './chats';
 export * from './notifications';
 export * from './stripe';
 export * from './health';
+export * from './ban-recovery';
 export * from './automations';
 export * from './entry-routes';
 export * from './tracked-links';
