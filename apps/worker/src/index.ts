@@ -355,21 +355,28 @@ async function scheduled(
   jobs.push(withHeartbeat(env.DB, 'token-refresh', () => refreshLineAccessTokens(env.DB)));
 
   // Phase 3: 月次食事レポート (毎月 1 日のみ実行、サービス側で gating)
-  jobs.push(
-    processMonthlyFoodReports(env.DB, env.ANTHROPIC_API_KEY).then((r) => {
-      if (r.generated > 0 || r.errors > 0) {
-        console.info(
-          `monthly food reports: generated=${r.generated} skipped=${r.skipped} errors=${r.errors}`,
-        );
-      }
-    }),
-  );
-
   // Phase 4 PR-5: 週次栄養コーチ push (火曜 10:00 JST のみ trigger、サービス側で gating)
+  // Phase 5β-prep adoption batch 2: 両 job で AIRouter を共有 (createAIRouterFromEnv は冪等で軽量)
   jobs.push(
-    processWeeklyCoachPush(env).catch((err) => {
-      console.error('weekly-coach-push failed', err instanceof Error ? err.name : 'unknown');
-    }),
+    (async () => {
+      const { createAIRouterFromEnv } = await import('./services/ai-router-factory.js');
+      const router = createAIRouterFromEnv(env);
+      try {
+        const r = await processMonthlyFoodReports(env.DB, { router });
+        if (r.generated > 0 || r.errors > 0) {
+          console.info(
+            `monthly food reports: generated=${r.generated} skipped=${r.skipped} errors=${r.errors}`,
+          );
+        }
+      } catch (err) {
+        console.error('monthly-food-report failed', err instanceof Error ? err.name : 'unknown');
+      }
+      try {
+        await processWeeklyCoachPush(env, { router });
+      } catch (err) {
+        console.error('weekly-coach-push failed', err instanceof Error ? err.name : 'unknown');
+      }
+    })(),
   );
 
   // Shopify顧客同期（5分ごと実行、冪等なので安全）

@@ -2367,10 +2367,11 @@ liffPortal.post('/api/liff/coach/regenerate', async (c) => {
       });
     }
 
+    const { createAIRouterFromEnv } = await import('../services/ai-router-factory.js');
     const result = await generateAndStoreRecommendation({
       db: c.env.DB,
       friendId: user.friendId,
-      apiKey: c.env.ANTHROPIC_API_KEY,
+      router: createAIRouterFromEnv(c.env),
       deficits: analysis.deficits,
     });
 

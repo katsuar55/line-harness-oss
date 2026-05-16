@@ -25,6 +25,7 @@
 import { LineClient, flexMessage, flexBubble, flexBox, flexText, flexButton } from '@line-crm/line-sdk';
 import type { FlexBubble, Message } from '@line-crm/line-sdk';
 import { insertCronRunLog } from '@line-crm/db';
+import type { AIRouter } from '@line-crm/ai-provider';
 import { analyzeFriendNutrition } from './nutrition-analyzer.js';
 import { generateAndStoreRecommendation } from './nutrition-recommender.js';
 
@@ -36,9 +37,9 @@ const CRON_JOB_NAME = 'weekly-coach-push';
 
 export interface WeeklyCoachPushEnv {
   DB: D1Database;
-  ANTHROPIC_API_KEY?: string;
   LINE_CHANNEL_ACCESS_TOKEN: string;
   LIFF_URL?: string;
+  // ANTHROPIC_API_KEY は AIRouter (caller 注入) に隠蔽されたため削除。
 }
 
 export interface WeeklyCoachPushResult {
@@ -68,8 +69,11 @@ export interface WeeklyCoachPushOptions {
   force?: boolean;
   /** 1 バッチで処理する最大友だち数 (default 50) */
   batchSize?: number;
-  /** Anthropic clientOverride を recommender に渡す (テスト用) */
-  clientOverride?: { messages: { create: (...args: unknown[]) => Promise<unknown> } };
+  /**
+   * AIRouter を recommender に注入 (Phase 5β-prep adoption batch 2).
+   * 省略時は recommender が template フォールバック.
+   */
+  router?: AIRouter;
   /** LineClient のモック (テスト用) */
   lineClient?: LinePushClient;
 }
@@ -189,10 +193,9 @@ export async function processWeeklyCoachPush(
       const reco = await generateAndStoreRecommendation({
         db: env.DB,
         friendId: friend.id,
-        apiKey: env.ANTHROPIC_API_KEY,
+        router: options.router,
         deficits: analysis.deficits,
         friendName: friend.display_name ?? undefined,
-        clientOverride: options.clientOverride,
       });
 
       if (!reco) {

@@ -16,7 +16,6 @@
  * - 失敗してもメイン処理は止めず Promise.allSettled で進める
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import {
   getDailyFoodStatsRange,
   getMonthlyFoodReport,
@@ -25,8 +24,8 @@ import {
   jstNow,
 } from '@line-crm/db';
 import type { DailyFoodStats } from '@line-crm/db';
-// Phase 5β-prep adoption (2026-05-16): 薬機 NG リストを @line-crm/ai-provider に集約
 import {
+  AIRouter,
   PROHIBITED_PHRASES,
   REDACTION_TOKEN,
   redactProhibitedPhrases,
@@ -38,8 +37,6 @@ const CRON_JOB_NAME = 'monthly-food-report';
 // 定数
 // ----------------------------------------------------------------
 
-const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
-const ANALYSIS_TIMEOUT_MS = 30_000;
 const ANALYSIS_MAX_TOKENS = 600;
 
 // PROHIBITED_PHRASES / REDACTION_TOKEN は @line-crm/ai-provider から import (上記)。
@@ -73,10 +70,13 @@ export interface MonthlyAggregation {
 export interface ProcessMonthlyFoodReportsOptions {
   /** 今日の JST timestamp (テスト用 override) */
   nowOverride?: string;
-  /** ANTHROPIC_API_KEY が空でも常にテンプレ要約のみで動かしたい場合 true */
+  /** 常にテンプレ要約のみで動かしたい場合 true (cost-saving / 緊急時手動 fallback) */
   forceTemplateOnly?: boolean;
-  /** Anthropic SDK モック注入 (テスト用) */
-  clientOverride?: Pick<Anthropic, 'messages'>;
+  /**
+   * AIRouter (Phase 5β-prep adoption batch 2). 省略時はテンプレ要約.
+   * resolveProviders('nutrition-copy').length === 0 でもテンプレに自動 fallback.
+   */
+  router?: AIRouter;
 }
 
 // ----------------------------------------------------------------
@@ -94,7 +94,6 @@ export interface ProcessMonthlyFoodReportsOptions {
  */
 export async function processMonthlyFoodReports(
   db: D1Database,
-  apiKey: string | undefined,
   options: ProcessMonthlyFoodReportsOptions = {},
 ): Promise<{ generated: number; skipped: number; errors: number }> {
   const now = options.nowOverride ?? jstNow();
@@ -142,11 +141,7 @@ export async function processMonthlyFoodReports(
         continue;
       }
 
-      const summaryText = await generateSummary(
-        aggregation,
-        apiKey,
-        options,
-      );
+      const summaryText = await generateSummary(aggregation, options);
 
       await insertMonthlyFoodReport(db, {
         friendId,
@@ -264,40 +259,25 @@ async function buildAggregation(
 
 async function generateSummary(
   agg: MonthlyAggregation,
-  apiKey: string | undefined,
   options: ProcessMonthlyFoodReportsOptions,
 ): Promise<string> {
   const fallback = templateSummary(agg);
 
   if (options.forceTemplateOnly) return fallback;
-  if (!apiKey && !options.clientOverride) return fallback;
-
-  const client =
-    options.clientOverride ??
-    new Anthropic({ apiKey: apiKey as string });
+  if (!options.router) return fallback;
+  if (options.router.resolveProviders('nutrition-copy').length === 0) return fallback;
 
   const userMessage = formatStatsForPrompt(agg);
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ANALYSIS_TIMEOUT_MS);
-
   try {
-    const response = await client.messages.create(
-      {
-        model: DEFAULT_MODEL,
-        max_tokens: ANALYSIS_MAX_TOKENS,
-        system: SUMMARY_SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: userMessage }],
-      },
-      { signal: controller.signal },
-    );
-
-    const textBlock = response.content.find((b) => b.type === 'text') as
-      | { type: 'text'; text: string }
-      | undefined;
-    const raw = textBlock?.text?.trim();
+    const response = await options.router.generateText('nutrition-copy', {
+      systemPrompt: SUMMARY_SYSTEM_PROMPT,
+      userMessage,
+      maxTokens: ANALYSIS_MAX_TOKENS,
+    });
+    const raw = response.text?.trim();
     if (!raw) return fallback;
-
+    // 二重防御で再 redact (provider 内で 1 度 redact 済) + 1000 字 clip
     return redactProhibited(raw).slice(0, 1000);
   } catch (err) {
     console.error(
@@ -305,8 +285,6 @@ async function generateSummary(
       err instanceof Error ? err.name : 'unknown',
     );
     return fallback;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
