@@ -25,8 +25,42 @@ import {
   generateScenarioFromPrompt,
   ScenarioConductorError,
 } from '../services/scenario-conductor.js';
+import {
+  generateRichMenuFromPrompt,
+  RichMenuConductorError,
+} from '../services/rich-menu-conductor.js';
 
 const conductor = new Hono<Env>();
+
+/**
+ * Conductor error code → HTTP status mapping (5γ-1 / 5γ-2 共通)
+ */
+function mapErrorCodeToStatus(
+  code:
+    | 'prompt_too_short'
+    | 'prompt_too_long'
+    | 'api_key_missing'
+    | 'timeout'
+    | 'invalid_response'
+    | 'schema_validation_failed'
+    | 'api_error',
+): 400 | 502 | 503 | 504 | 500 {
+  switch (code) {
+    case 'prompt_too_short':
+    case 'prompt_too_long':
+      return 400;
+    case 'api_key_missing':
+      return 503;
+    case 'timeout':
+      return 504;
+    case 'invalid_response':
+    case 'schema_validation_failed':
+      return 502;
+    case 'api_error':
+    default:
+      return 500;
+  }
+}
 
 conductor.post('/api/conductor/scenario', async (c) => {
   let body: { prompt?: unknown };
@@ -55,22 +89,55 @@ conductor.post('/api/conductor/scenario', async (c) => {
     return c.json({ success: true, data: result });
   } catch (err) {
     if (err instanceof ScenarioConductorError) {
-      const status =
-        err.code === 'prompt_too_short' || err.code === 'prompt_too_long'
-          ? 400
-          : err.code === 'api_key_missing'
-            ? 503
-            : err.code === 'timeout'
-              ? 504
-              : err.code === 'invalid_response' || err.code === 'schema_validation_failed'
-                ? 502
-                : 500;
       return c.json(
         { success: false, error: err.message, code: err.code },
-        status,
+        mapErrorCodeToStatus(err.code),
       );
     }
     console.error('POST /api/conductor/scenario error:', err);
+    return c.json(
+      { success: false, error: 'Internal server error' },
+      500,
+    );
+  }
+});
+
+/**
+ * POST /api/conductor/rich-menu (Phase 5γ-2)
+ * body: { prompt: string }
+ * 200: { success: true, data: { richMenu, warnings, provider, model } }
+ * 400/502/503/504/500: error code mapping
+ */
+conductor.post('/api/conductor/rich-menu', async (c) => {
+  let body: { prompt?: unknown };
+  try {
+    body = await c.req.json<{ prompt?: unknown }>();
+  } catch {
+    return c.json({ success: false, error: 'invalid JSON body' }, 400);
+  }
+
+  if (typeof body.prompt !== 'string' || body.prompt.length === 0) {
+    return c.json(
+      { success: false, error: 'prompt is required (non-empty string)' },
+      400,
+    );
+  }
+
+  try {
+    const router = createAIRouterFromEnv(c.env);
+    const result = await generateRichMenuFromPrompt({
+      prompt: body.prompt,
+      router,
+    });
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    if (err instanceof RichMenuConductorError) {
+      return c.json(
+        { success: false, error: err.message, code: err.code },
+        mapErrorCodeToStatus(err.code),
+      );
+    }
+    console.error('POST /api/conductor/rich-menu error:', err);
     return c.json(
       { success: false, error: 'Internal server error' },
       500,
