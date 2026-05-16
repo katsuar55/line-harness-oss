@@ -782,16 +782,17 @@ async function handleEvent(
           console.error('Loading animation error:', loadErr instanceof Error ? loadErr.message : String(loadErr));
         }
 
+        // Phase 5β-prep adoption: AIRouter 経由
+        const { createAIRouterFromEnv } = await import('../services/ai-router-factory.js');
+        const aiRouter = createAIRouterFromEnv(env);
         const aiResult = await generateAiResponse(
-          env.AI,
+          aiRouter,
           db,
           friend.id,
           (friend as { score?: number }).score ?? 0,
           (friend as { created_at?: string }).created_at ?? '',
           incomingText,
           env.AI_SYSTEM_PROMPT || undefined,
-          env.AI_MODEL_PRIMARY || undefined,
-          env.AI_MODEL_FALLBACK || undefined,
         );
 
         // Flex Message カード形式で送信

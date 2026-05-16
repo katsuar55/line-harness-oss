@@ -1,4 +1,16 @@
+/**
+ * AI Response Service — Phase 5β-prep adoption (2026-05-16)
+ *
+ * Workers AI 直叩き → @line-crm/ai-provider AIRouter 経由に refactor。
+ *   - task='chat' → workers-ai 優先 + claude fallback (router 内部で自動)
+ *   - <think> tag stripping / モデル fallback / PROHIBITED_PHRASES redaction
+ *     はすべて WorkersAIProvider 内部で実施
+ *   - 旧 runAiWithFallback / stripThinkingTags / isValidModelName は削除
+ *     (router が同等以上の振る舞いを提供)
+ */
+
 import { getFriendTags } from '@line-crm/db';
+import type { AIRouter } from '@line-crm/ai-provider';
 
 interface AiResponseResult {
   text: string;
@@ -7,71 +19,6 @@ interface AiResponseResult {
 }
 
 const FALLBACK_MESSAGE = 'ただいま混み合っております。しばらくしてからもう一度お試しください🙏';
-
-/**
- * Qwen3 の <think>...</think> タグを除去する
- */
-function stripThinkingTags(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-}
-
-/**
- * Workers AI でテキスト生成を試行（モデルフォールバック付き）
- */
-const DEFAULT_MODEL_PRIMARY = '@cf/qwen/qwen3-30b-a3b-fp8';
-const DEFAULT_MODEL_FALLBACK = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
-
-/** Cloudflare Workers AI モデル名の形式を検証（@cf/ で始まること） */
-function isValidModelName(name: string): boolean {
-  return name.startsWith('@cf/') && name.length > 4;
-}
-
-async function runAiWithFallback(
-  ai: Ai,
-  systemPrompt: string,
-  userMessage: string,
-  modelPrimary?: string,
-  modelFallback?: string,
-): Promise<{ text: string; model: string } | null> {
-  // モデル優先順位: Qwen3 (日本語強い) → Llama 3.3 (安定)
-  const primary = modelPrimary && isValidModelName(modelPrimary) ? modelPrimary : DEFAULT_MODEL_PRIMARY;
-  const fallback = modelFallback && isValidModelName(modelFallback) ? modelFallback : DEFAULT_MODEL_FALLBACK;
-  const models = [primary, fallback];
-
-  for (const model of models) {
-    try {
-      const messages: Array<{ role: string; content: string }> = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
-      ];
-
-      // Qwen3 は /no_think で推論モードを無効化
-      if (model.includes('qwen3')) {
-        messages[1] = { role: 'user', content: userMessage + ' /no_think' };
-      }
-
-      // Qwen3はReasoning用トークンも消費するため1024に増やす（Llama用は512で十分）
-      const maxTokens = model.includes('qwen3') ? 1024 : 512;
-      const response = await ai.run(model as Parameters<typeof ai.run>[0], {
-        messages,
-        max_tokens: maxTokens,
-      }) as { response?: string };
-
-      if (response?.response) {
-        const cleaned = stripThinkingTags(response.response);
-        if (cleaned) {
-          return { text: cleaned, model };
-        }
-      }
-      console.warn(`Model ${model} returned empty response`);
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`Model ${model} failed:`, errMsg);
-    }
-  }
-
-  return null;
-}
 
 /**
  * naturism ナレッジベース付きシステムプロンプト
@@ -227,37 +174,38 @@ Q.芸能人は？→ Kep1er（公式ミューズ）、ウィニー・ハーロ�
 }
 
 /**
- * Layer 2: Workers AI による自然言語応答
+ * Layer 2: AIRouter による自然言語応答
  */
 export async function generateAiResponse(
-  ai: Ai,
+  router: AIRouter,
   db: D1Database,
   friendId: string,
   friendScore: number,
   friendCreatedAt: string,
   userMessage: string,
   systemPromptOverride?: string,
-  modelPrimary?: string,
-  modelFallback?: string,
 ): Promise<AiResponseResult> {
   try {
-    // ユーザータグを取得してコンテキストに注入
     const tags = await getFriendTags(db, friendId);
-    const tagNames = tags.map(t => t.name);
+    const tagNames = tags.map((t) => t.name);
 
     const basePrompt = buildSystemPrompt(systemPromptOverride);
-    const contextPrompt = basePrompt
-      + '\n\n## このユーザーの情報\n'
-      + `タグ: ${tagNames.length > 0 ? tagNames.join(', ') : 'なし'}\n`
-      + `スコア: ${friendScore}pt\n`
-      + `友だち追加日: ${friendCreatedAt}\n`;
+    const contextPrompt =
+      basePrompt +
+      '\n\n## このユーザーの情報\n' +
+      `タグ: ${tagNames.length > 0 ? tagNames.join(', ') : 'なし'}\n` +
+      `スコア: ${friendScore}pt\n` +
+      `友だち追加日: ${friendCreatedAt}\n`;
 
-    // プロンプトインジェクション対策: 入力を500文字に制限
+    // プロンプトインジェクション対策: 入力を 500 文字に制限
     const sanitizedMessage = userMessage.slice(0, 500);
 
-    const result = await runAiWithFallback(ai, contextPrompt, sanitizedMessage, modelPrimary, modelFallback);
+    const result = await router.generateText('chat', {
+      systemPrompt: contextPrompt,
+      userMessage: sanitizedMessage,
+    });
 
-    if (result) {
+    if (result.text) {
       return { text: result.text, layer: 'ai', model: result.model };
     }
 
@@ -273,17 +221,18 @@ export async function generateAiResponse(
  * AI 診断テスト（デバッグ用）
  */
 export async function testAiResponse(
-  ai: Ai,
+  router: AIRouter,
   testMessage: string,
   systemPromptOverride?: string,
-  modelPrimary?: string,
-  modelFallback?: string,
 ): Promise<{ success: boolean; text?: string; model?: string; error?: string }> {
   try {
     const prompt = buildSystemPrompt(systemPromptOverride);
-    const result = await runAiWithFallback(ai, prompt, testMessage, modelPrimary, modelFallback);
+    const result = await router.generateText('chat', {
+      systemPrompt: prompt,
+      userMessage: testMessage,
+    });
 
-    if (result) {
+    if (result.text) {
       return { success: true, text: result.text, model: result.model };
     }
     return { success: false, error: 'All models returned empty response' };

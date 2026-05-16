@@ -28,6 +28,12 @@ import type {
   NutritionRecommendation,
   SkuSuggestion,
 } from '@line-crm/db';
+// Phase 5β-prep adoption (2026-05-16): 薬機 NG リストを @line-crm/ai-provider に集約
+import {
+  PROHIBITED_PHRASES,
+  REDACTION_TOKEN,
+  redactProhibitedPhrases,
+} from '@line-crm/ai-provider';
 
 // ============================================================
 // 定数
@@ -41,34 +47,8 @@ const AI_MESSAGE_MAX_LEN = 120;
 /** SKU コピー (`copy_template` から派生) の最大長 (60 字以内に揃える) */
 const SKU_COPY_MAX_LEN = 60;
 
-/**
- * 薬機法・医療系の効能効果断定ワード。
- * food-analyzer.ts / monthly-food-report.ts と同じセットで揃える。
- */
-const PROHIBITED_PHRASES = [
-  '治る',
-  '治す',
-  '治療',
-  '完治',
-  '治癒',
-  'ナオル',
-  '効く',
-  '効果絶大',
-  '即効',
-  '病気が改善',
-  '症状が消える',
-  'がんが消える',
-  '癌が消える',
-  '予防できる',
-  '予防効果',
-  '医薬品',
-  '副作用なし',
-  '保証',
-  'cure',
-  'heal',
-] as const;
-
-const REDACTION_TOKEN = '[省略]';
+// PROHIBITED_PHRASES / REDACTION_TOKEN は @line-crm/ai-provider から import (上記)。
+// 旧: ローカル const 定義 (food-analyzer / monthly-food-report と 3 重定義) → 集約完了。
 
 /** severity の優先順位 (代表 deficit 抽出用、降順) */
 const SEVERITY_ORDER: Record<NutritionDeficit['severity'], number> = {
@@ -351,22 +331,8 @@ function formatDeficitsForPrompt(
 
 function redactProhibited(text: string): string {
   if (!text) return text;
-  let result = text;
-  for (const phrase of PROHIBITED_PHRASES) {
-    if (!phrase) continue;
-    const isAscii = /^[\x00-\x7f]+$/.test(phrase);
-    if (isAscii) {
-      const re = new RegExp(escapeRegExp(phrase), 'gi');
-      result = result.replace(re, REDACTION_TOKEN);
-    } else {
-      result = result.split(phrase).join(REDACTION_TOKEN);
-    }
-  }
-  return result;
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Phase 5β-prep adoption: @line-crm/ai-provider の集約済 redact 関数を使用
+  return redactProhibitedPhrases(text).text;
 }
 
 function clip(s: string, max: number): string {

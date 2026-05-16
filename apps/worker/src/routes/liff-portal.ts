@@ -1463,11 +1463,15 @@ liffPortal.post('/api/liff/translate', async (c) => {
       return c.json({ success: false, error: 'Invalid targetLang' }, 400);
     }
 
-    // Use AI translation service
-    const { translateText } = await import('../services/translate.js');
+    // Use AI translation service (Phase 5β-prep: AIRouter 経由)
+    const [{ translateText }, { createAIRouterFromEnv }] = await Promise.all([
+      import('../services/translate.js'),
+      import('../services/ai-router-factory.js'),
+    ]);
+    const router = createAIRouterFromEnv(c.env);
     const translated = await translateText(
       c.env.DB,
-      c.env.AI,
+      router,
       body.text,
       'ja',
       body.targetLang,
