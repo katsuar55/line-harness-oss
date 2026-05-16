@@ -230,7 +230,8 @@ CREATE TABLE IF NOT EXISTS line_accounts (
   login_channel_secret TEXT,
   liff_id              TEXT,
   token_expires_at     TEXT,
-  bot_user_id          TEXT);
+  bot_user_id          TEXT,
+  industry             TEXT);
 
 -- ============================================================
 -- Round 2: Conversion Points (CV Tracking)
@@ -1578,6 +1579,64 @@ CREATE TABLE IF NOT EXISTS email_link_clicks (
   ip_hash       TEXT
 );
 
+-- from 047_brand_config.sql
+CREATE TABLE IF NOT EXISTS brand_config (
+  id                  TEXT PRIMARY KEY,
+  -- NULL = default brand (system-wide fallback)、 値あり = account-specific brand
+  line_account_id     TEXT REFERENCES line_accounts(id) ON DELETE CASCADE,
+  -- 1 行のみ is_default=1 (UNIQUE WHERE で保証)
+  is_default          INTEGER NOT NULL DEFAULT 0,
+  -- 表示名 / 法人名 / 連絡先
+  brand_name          TEXT NOT NULL,
+  company_name        TEXT,
+  support_email       TEXT,
+  -- ストア URL 系
+  shop_url            TEXT,
+  subscription_url    TEXT,
+  -- 視覚 (LINE 緑系がデフォルト)
+  primary_color       TEXT NOT NULL DEFAULT '#06C755',
+  -- welcome 等で紹介する代表商品ラベル
+  intro_product_label TEXT,
+  logo_url            TEXT,
+  -- 拡張用 JSON (industry / plan / 業種固有設定 等)
+  metadata            TEXT NOT NULL DEFAULT '{}',
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 048_audit_logs.sql
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id              TEXT PRIMARY KEY,
+  -- multi-tenant (NULL = system-wide)
+  line_account_id TEXT REFERENCES line_accounts(id) ON DELETE SET NULL,
+  -- 'admin' | 'system' | 'cron' | 'webhook' | 'api'
+  actor_type      TEXT NOT NULL,
+  -- admin user id / cron job id 等。 NULL = anonymous system
+  actor_id        TEXT,
+  -- 操作時点の actor 表示名 snapshot (削除されても判別可)
+  actor_name      TEXT,
+  -- 'broadcast.send' / 'friend.delete' / 'template.update' 等の dot-notation
+  action          TEXT NOT NULL,
+  -- 'broadcast' / 'friend' / 'template' / 'automation' 等
+  target_type     TEXT,
+  target_id       TEXT,
+  -- 1 リクエストにまたがる複数 audit を結合する trace ID
+  request_id      TEXT,
+  -- IP は SHA-256 hash で保存 (PII 最小化)
+  ip_hash         TEXT,
+  user_agent      TEXT,
+  -- 操作前/後の値 snapshot (JSON 文字列、 destructive 操作で重要)
+  before_value    TEXT,
+  after_value     TEXT,
+  -- 'success' | 'failure'
+  result          TEXT NOT NULL DEFAULT 'success',
+  -- failure 時の概要 (詳細は metadata に)
+  error_message   TEXT,
+  -- 拡張 (request body summary / 影響レコード数 等)
+  metadata        TEXT NOT NULL DEFAULT '{}',
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -1724,3 +1783,17 @@ CREATE INDEX IF NOT EXISTS idx_email_log_broadcast ON email_messages_log(broadca
 CREATE INDEX IF NOT EXISTS idx_email_log_source_order ON email_messages_log(source_order_id);
 CREATE INDEX IF NOT EXISTS idx_email_log_source_kind ON email_messages_log(source_kind, status);
 CREATE INDEX IF NOT EXISTS idx_email_clicks_log ON email_link_clicks(email_log_id);
+CREATE INDEX IF NOT EXISTS idx_brand_config_account ON brand_config(line_account_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_brand_config_default
+  ON brand_config(is_default) WHERE is_default = 1;
+CREATE INDEX IF NOT EXISTS idx_email_templates_brand ON email_templates(brand_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_account_time
+  ON audit_logs(line_account_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor
+  ON audit_logs(actor_type, actor_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_target
+  ON audit_logs(target_type, target_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action
+  ON audit_logs(action, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_time
+  ON audit_logs(created_at DESC);
