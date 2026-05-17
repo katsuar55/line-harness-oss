@@ -843,12 +843,13 @@ emailAdmin.get('/api/admin/email/opt-in/kpi', async (c) => {
   }
   const days = Math.floor(daysNum);
 
+  // single source of truth: fromDateOnly から fromMs と fromQueryBoundary を derive
+  // (SQL の SUBSTR(created_at,1,10) と buildZeroPaddedTrend の date iteration を確実に一致させる)
   const nowMs = Date.now();
-  const fromMs = nowMs - (days - 1) * 86400000; // include today; trend covers exactly `days` dates
-  const fromIso = new Date(fromMs).toISOString();
-  const fromDateOnly = fromIso.slice(0, 10);
-  const toDateOnly = new Date(nowMs).toISOString().slice(0, 10);
+  const fromDateOnly = new Date(nowMs - (days - 1) * 86400000).toISOString().slice(0, 10);
   const fromQueryBoundary = `${fromDateOnly}T00:00:00.000Z`;
+  const fromMs = Date.parse(fromQueryBoundary);
+  const toDateOnly = new Date(nowMs).toISOString().slice(0, 10);
 
   try {
     const totalsRow = await c.env.DB.prepare(

@@ -61,20 +61,19 @@ function MiniBarChart({
   if (data.length === 0) {
     return <div className="text-xs text-gray-400 text-center py-8">データなし</div>
   }
-  const values = data.map((d) => d.count)
-  const max = Math.max(...values, 1)
+  const max = Math.max(...data.map((d) => d.count), 1)
   return (
     <div className="flex items-end gap-[2px]" style={{ height }}>
-      {values.map((v, i) => {
-        const h = Math.max(2, (v / max) * (height - 24))
+      {data.map((point) => {
+        const h = Math.max(2, (point.count / max) * (height - 24))
         return (
-          <div key={i} className="flex-1 flex flex-col items-center justify-end group relative">
+          <div key={point.date} className="flex-1 flex flex-col items-center justify-end group relative">
             <div
               className="w-full rounded-t-sm transition-all hover:opacity-80"
               style={{ height: h, backgroundColor: color, minWidth: 3 }}
             />
             <div className="absolute -top-6 bg-gray-800 text-white text-[10px] px-1 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none">
-              {data[i].date.slice(5)}: {v}
+              {point.date.slice(5)}: {point.count}
             </div>
           </div>
         )
@@ -175,7 +174,10 @@ export default function OptInCampaignPage() {
       }
       setData(res.data)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'ネットワークエラー')
+      // raw err.message を UI に直接 echo すると、 上流 (CF / proxy / 中間器) からの message が DOM に流れる
+      // 可能性があるため generic message のみ表示し、 詳細は console に残す (security-reviewer feedback)
+      console.warn('[opt-in-kpi] fetch failed:', err)
+      setError('データの取得に失敗しました。 画面を再読み込みしてください。')
       setData(null)
     } finally {
       setLoading(false)
@@ -213,7 +215,7 @@ export default function OptInCampaignPage() {
               </button>
             ))}
             <button
-              onClick={() => void load()}
+              onClick={load}
               className="px-3 py-1.5 text-xs font-medium bg-white text-gray-600 border border-gray-200 rounded hover:bg-gray-50"
               aria-label="更新"
             >
