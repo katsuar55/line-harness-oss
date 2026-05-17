@@ -30,6 +30,7 @@ import {
   REDACTION_TOKEN,
   redactProhibitedPhrases,
 } from '@line-crm/ai-provider';
+import { extractJsonObject } from '../utils/json-extract.js';
 
 // ----------------------------------------------------------------
 // 定数
@@ -275,42 +276,8 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-/**
- * テキスト中から最初の JSON オブジェクト ({...}) を抽出する。
- *
- * Claude が稀に "```json\n{...}\n```" や前置き文を返すケースに耐える。
- * ネスト対応のための簡易ブレース・カウンタ (文字列中の `{` `}` は無視)。
- */
-export function extractJsonObject(text: string): string | null {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escape = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) return text.slice(start, i + 1);
-    }
-  }
-  return null;
-}
+// extractJsonObject は utils/json-extract.ts に移動 (Phase 5γ-5)。
+// 本 file 冒頭の import で利用。 個別 export を停止 (caller は webhook.ts 内のみ、 同一 file の関数経由)。
 
 /**
  * notes / items.name / items.qty に含まれる薬機法 NG ワードを redaction する。

@@ -27,6 +27,12 @@ import {
   REDACTION_TOKEN,
   redactProhibitedPhrases,
 } from '@line-crm/ai-provider';
+import { extractJsonObject } from '../utils/json-extract.js';
+
+// extractJsonObject の re-export: 既存の form-conductor / rich-menu-conductor /
+// message-conductor は本 module から import している。 backward compat 維持のため
+// re-export を継続する (Phase 5γ-5 utils 切出し時点)。
+export { extractJsonObject };
 
 // ----------------------------------------------------------------
 // 定数
@@ -279,42 +285,8 @@ export async function generateScenarioFromPrompt(
 // ヘルパー
 // ----------------------------------------------------------------
 
-/**
- * テキスト中から最初の JSON オブジェクト ({...}) を抽出する。
- * Claude が稀に "```json\n{...}\n```" や前置き文を返すケースに耐える。
- *
- * food-analyzer.ts の同名関数と同等実装。 共通 utils 化は次の PR で検討。
- */
-export function extractJsonObject(text: string): string | null {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escape = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) return text.slice(start, i + 1);
-    }
-  }
-  return null;
-}
+// extractJsonObject は utils/json-extract.ts に移動 (Phase 5γ-5)。
+// 本 file の冒頭で import + re-export 済 (backward compat)。
 
 /**
  * 全文字列フィールドに redactProhibitedPhrases を適用 (薬機 NG ワード除去)。

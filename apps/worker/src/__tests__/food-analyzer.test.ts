@@ -14,7 +14,6 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   analyzeFoodImage,
   FoodAnalyzerError,
-  extractJsonObject,
   sanitizeAnalysis,
   __test__,
 } from '../services/food-analyzer.js';
@@ -246,32 +245,7 @@ describe('analyzeFoodImage — response failures', () => {
   });
 });
 
-describe('extractJsonObject', () => {
-  it('extracts JSON when surrounded by prose', () => {
-    expect(extractJsonObject('result: {"a":1}\ndone')).toBe('{"a":1}');
-  });
-
-  it('handles nested objects', () => {
-    const nested = '{"a": {"b": {"c": 1}}}';
-    expect(extractJsonObject('prefix' + nested + 'suffix')).toBe(nested);
-  });
-
-  it('returns null when no opening brace', () => {
-    expect(extractJsonObject('plain text only')).toBeNull();
-  });
-
-  it('ignores braces inside strings', () => {
-    expect(extractJsonObject('{"text":"contains } char"}')).toBe(
-      '{"text":"contains } char"}',
-    );
-  });
-
-  it('handles escaped quotes inside strings', () => {
-    expect(extractJsonObject('{"text":"escaped \\"quote\\""}')).toBe(
-      '{"text":"escaped \\"quote\\""}',
-    );
-  });
-});
+// extractJsonObject の test は Phase 5γ-5 で utils/json-extract.test.ts に集約済。
 
 describe('sanitizeAnalysis (薬機法 redaction)', () => {
   it('redacts only the prohibited phrase, keeps clean parts intact', () => {
