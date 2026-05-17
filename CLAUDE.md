@@ -244,3 +244,34 @@ WORKER_URL: string
 
 新パターンでハングした場合、本ファイルの「禁止パターン」表に該当パターンを追記してから次の作業に移る。
 追記なき再発は同じ穴を踏み続けるため、必ずルール側にフィードバックする。
+
+## テストコーディングルール (絶対遵守 — 再発防止)
+
+2026-05-17 に Phase 5β-prep adoption batch 2 で `vi.mock` と `await import()` の干渉により
+4 件の test が silently fail するバグを発見。 同じ穴を踏まないために以下を守る。
+
+### 禁止パターン
+
+| パターン | 理由 |
+|---|---|
+| `vi.mock('A')` した module の caller (= A を import するファイル) 内で **別 module B** を `await import('B')` する | vi の hoisting と dynamic import の解決順序が干渉し、 caller 内の promise が silently swallow される。 catch ブロックにも到達せず、 assertion が「called 0 times」 で fail (=> 原因特定に時間がかかる) |
+| test 環境で重要な branch (try/catch / early-return) を持つ caller 内に dynamic import を追加 | dynamic import の resolve タイミングで promise chain が早期 settle し、 後続コードが走らない可能性 |
+
+### 推奨パターン
+
+| やりたいこと | 正しい方法 |
+|---|---|
+| Cloudflare Workers の bundle size を抑えたい lazy import | **vi.mock 対象 module の caller では避ける**。 bundle に影響しない軽量 module は static import に切替 |
+| 既存 dynamic import (例: `webhook.ts:786` の text message AI 応答経路) | **既存 test が pass しているなら維持 OK**。 ただし新たに別 event handler 内で同じ pattern を使う場合は事前に dedicated test で検証 |
+| AIRouter のような軽量 factory | top-level `import { createAIRouterFromEnv } from '...'` で問題なし (例: `webhook.ts` の image handler) |
+
+### 自己点検チェックリスト (新規 dynamic import を追加する前)
+
+- [ ] その caller を import している test ファイルで `vi.mock` が hoist されていないか?
+- [ ] 同じ caller 内で既存の dynamic import は **test で exercise されているか**? されていなければ新規追加で初めて顕在化する可能性
+- [ ] static import で bundle size 影響は本当に懸念か? (軽量 factory なら影響軽微)
+- [ ] 不安なら **まず static import で実装 → 後から dynamic 化** の段階リリース
+
+### 違反時の必須アクション
+
+新パターンで test が silently fail したら、 本ファイルの「禁止パターン」表に該当パターンを追記してから次の作業に移る。

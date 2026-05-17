@@ -21,6 +21,7 @@ import {
   __test__,
 } from '../services/nutrition-recommender.js';
 import type { NutritionDeficit, SkuMapRow } from '@line-crm/db';
+import type { AIRouter, TextGenerationResponse } from '@line-crm/ai-provider';
 
 const {
   redactProhibited,
@@ -96,21 +97,35 @@ function makeSkuRow(overrides: Partial<SkuMapRow> & { deficit_key: string }): Sk
   };
 }
 
-function fakeAiClient(text: string) {
+/**
+ * 最小限の AIRouter mock。
+ *  - resolveProviders は 1 件返す (provider 利用可能を表す)。 利用不可状態を作りたいときは
+ *    `noProvider: true` を渡す。
+ *  - generateText は `respond` (success) または `reject` (failure) で挙動指定。
+ */
+function makeMockRouter(opts: {
+  noProvider?: boolean;
+  respond?: string;
+  reject?: Error;
+} = {}): AIRouter {
+  const generateText = vi.fn(async () => {
+    if (opts.reject) throw opts.reject;
+    const text = opts.respond ?? '';
+    const resp: TextGenerationResponse = {
+      text,
+      provider: 'workers-ai',
+      model: 'test',
+    };
+    return resp;
+  });
   return {
-    messages: {
-      create: vi.fn().mockResolvedValue({
-        id: 'msg_test',
-        type: 'message',
-        role: 'assistant',
-        model: 'claude-haiku-4-5-20251001',
-        content: [{ type: 'text', text }],
-        stop_reason: 'end_turn',
-        stop_sequence: null,
-        usage: { input_tokens: 50, output_tokens: 50 },
-      }),
-    },
-  };
+    resolveProviders: vi
+      .fn()
+      .mockReturnValue(opts.noProvider ? [] : [{ id: 'workers-ai' }]),
+    generateText,
+    generateVision: vi.fn(),
+    getProvider: vi.fn(),
+  } as unknown as AIRouter;
 }
 
 const PROTEIN_LOW: NutritionDeficit = {
@@ -255,7 +270,7 @@ describe('generateAndStoreRecommendation', () => {
     expect(insertSpy).not.toHaveBeenCalled();
   });
 
-  it('falls back to template when apiKey is absent (source=template, insert succeeds)', async () => {
+  it('falls back to template when no router is provided (source=template, insert succeeds)', async () => {
     const { db, insertSpy } = makeMockDb({
       protein_low: makeSkuRow({ deficit_key: 'protein_low' }),
     });
@@ -263,7 +278,7 @@ describe('generateAndStoreRecommendation', () => {
       db,
       friendId: 'f1',
       deficits: [PROTEIN_LOW],
-      // apiKey omitted, no clientOverride
+      // router omitted → AI 経路に入らず即テンプレ
     });
     expect(r).not.toBeNull();
     expect(r!.source).toBe('template');
@@ -273,17 +288,36 @@ describe('generateAndStoreRecommendation', () => {
     expect(insertSpy).toHaveBeenCalledOnce();
   });
 
-  it('uses AI message when apiKey provided and AI succeeds (source=ai)', async () => {
+  it('falls back to template when router has no available provider', async () => {
+    const { db, insertSpy } = makeMockDb({
+      protein_low: makeSkuRow({ deficit_key: 'protein_low' }),
+    });
+    const router = makeMockRouter({ noProvider: true });
+    const r = await generateAndStoreRecommendation({
+      db,
+      friendId: 'f1',
+      router,
+      deficits: [PROTEIN_LOW],
+    });
+    expect(r).not.toBeNull();
+    expect(r!.source).toBe('template');
+    expect(insertSpy).toHaveBeenCalledOnce();
+    // generateText は呼ばれない (resolveProviders 空で短絡)
+    expect((router as unknown as { generateText: ReturnType<typeof vi.fn> }).generateText)
+      .not.toHaveBeenCalled();
+  });
+
+  it('uses AI message when router available and generateText succeeds (source=ai)', async () => {
     const { db, insertSpy } = makeMockDb({
       protein_low: makeSkuRow({ deficit_key: 'protein_low' }),
     });
     const aiText = '今週はたんぱく質が少し控えめでした。明日は卵や豆類を一品足してみませんか。';
+    const router = makeMockRouter({ respond: aiText });
     const r = await generateAndStoreRecommendation({
       db,
       friendId: 'f1',
-      apiKey: 'sk-test',
+      router,
       deficits: [PROTEIN_LOW],
-      clientOverride: fakeAiClient(aiText),
     });
     expect(r).not.toBeNull();
     expect(r!.source).toBe('ai');
@@ -292,19 +326,19 @@ describe('generateAndStoreRecommendation', () => {
     expect(insertSpy).toHaveBeenCalledOnce();
   });
 
-  it('redacts prohibited phrases from AI output', async () => {
+  it('redacts prohibited phrases from AI output (二重防御)', async () => {
     const { db } = makeMockDb({
       protein_low: makeSkuRow({ deficit_key: 'protein_low' }),
     });
-    // PROHIBITED_PHRASES に含まれるワード ("病気が改善" / "治る" / "効く" / "cure") を
-    // AI がうっかり混ぜて返したケースを想定。
+    // provider 内 redact を経ずに raw を渡し、 service レイヤーの redact が
+    // 二重防御で機能することを確認する (mock router は redact 適用しない)
     const naughty = 'たんぱく質を取れば病気が改善し、不調が治る。It will Cure you.';
+    const router = makeMockRouter({ respond: naughty });
     const r = await generateAndStoreRecommendation({
       db,
       friendId: 'f1',
-      apiKey: 'sk-test',
+      router,
       deficits: [PROTEIN_LOW],
-      clientOverride: fakeAiClient(naughty),
     });
     expect(r).not.toBeNull();
     expect(r!.source).toBe('ai');
@@ -314,21 +348,16 @@ describe('generateAndStoreRecommendation', () => {
     expect(r!.aiMessage).toContain(REDACTION_TOKEN);
   });
 
-  it('falls back to template when the AI call throws (still inserts)', async () => {
+  it('falls back to template when router.generateText throws (still inserts)', async () => {
     const { db, insertSpy } = makeMockDb({
       protein_low: makeSkuRow({ deficit_key: 'protein_low' }),
     });
-    const failingClient = {
-      messages: {
-        create: vi.fn().mockRejectedValue(new Error('500 Internal Server Error')),
-      },
-    };
+    const router = makeMockRouter({ reject: new Error('500 Internal Server Error') });
     const r = await generateAndStoreRecommendation({
       db,
       friendId: 'f1',
-      apiKey: 'sk-test',
+      router,
       deficits: [PROTEIN_LOW],
-      clientOverride: failingClient,
     });
     expect(r).not.toBeNull();
     expect(r!.source).toBe('template');
@@ -336,26 +365,18 @@ describe('generateAndStoreRecommendation', () => {
     expect(insertSpy).toHaveBeenCalledOnce();
   });
 
-  it('falls back to template on AbortError (timeout)', async () => {
+  it('falls back to template on AbortError', async () => {
     const { db, insertSpy } = makeMockDb({
       protein_low: makeSkuRow({ deficit_key: 'protein_low' }),
     });
-    const abortingClient = {
-      messages: {
-        create: vi.fn().mockImplementation(() => {
-          const err = new Error('Request was aborted');
-          err.name = 'AbortError';
-          return Promise.reject(err);
-        }),
-      },
-    };
+    const abortErr = new Error('Request was aborted');
+    abortErr.name = 'AbortError';
+    const router = makeMockRouter({ reject: abortErr });
     const r = await generateAndStoreRecommendation({
       db,
       friendId: 'f1',
-      apiKey: 'sk-test',
+      router,
       deficits: [PROTEIN_LOW],
-      clientOverride: abortingClient,
-      timeoutMs: 50,
     });
     expect(r).not.toBeNull();
     expect(r!.source).toBe('template');

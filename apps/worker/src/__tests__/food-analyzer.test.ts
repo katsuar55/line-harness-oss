@@ -18,20 +18,7 @@ import {
   sanitizeAnalysis,
   __test__,
 } from '../services/food-analyzer.js';
-
-// ---- helper: minimal Anthropic Messages.Message stub ----
-function stubMessage(text: string) {
-  return {
-    id: 'msg_test',
-    type: 'message',
-    role: 'assistant',
-    model: 'claude-haiku-4-5-20251001',
-    content: [{ type: 'text', text }],
-    stop_reason: 'end_turn',
-    stop_sequence: null,
-    usage: { input_tokens: 100, output_tokens: 100 },
-  };
-}
+import type { AIRouter, TextGenerationResponse, VisionRequest } from '@line-crm/ai-provider';
 
 const VALID_JSON = JSON.stringify({
   calories: 650,
@@ -48,24 +35,44 @@ const VALID_JSON = JSON.stringify({
 
 const FAKE_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
 
-function fakeClient(text: string) {
+/**
+ * 最小限の AIRouter mock for vision.
+ * - noProvider: true で resolveProviders を空に (api_key_missing path)
+ * - respond で generateVision が返す text を指定
+ * - reject で generateVision が throw する Error を指定
+ */
+function makeMockRouter(opts: {
+  noProvider?: boolean;
+  respond?: string;
+  reject?: Error;
+} = {}): AIRouter {
+  const generateVision = vi.fn(async (_req: VisionRequest) => {
+    if (opts.reject) throw opts.reject;
+    const text = opts.respond ?? '';
+    const resp: TextGenerationResponse = {
+      text,
+      provider: 'claude',
+      model: 'claude-haiku-4-5-20251001',
+    };
+    return resp;
+  });
   return {
-    messages: {
-      create: vi.fn().mockResolvedValue(stubMessage(text)),
-    },
-  } as unknown as Parameters<typeof analyzeFoodImage>[0]['clientOverride'] & {
-    messages: { create: ReturnType<typeof vi.fn> };
-  };
+    resolveProviders: vi
+      .fn()
+      .mockReturnValue(opts.noProvider ? [] : [{ id: 'claude' }]),
+    generateText: vi.fn(),
+    generateVision,
+    getProvider: vi.fn(),
+  } as unknown as AIRouter;
 }
 
 describe('analyzeFoodImage — happy path', () => {
   it('parses well-formed JSON into FoodAnalysis', async () => {
-    const client = fakeClient(VALID_JSON);
+    const router = makeMockRouter({ respond: VALID_JSON });
     const result = await analyzeFoodImage({
       imageBytes: FAKE_PNG,
       mimeType: 'image/png',
-      apiKey: 'test-key',
-      clientOverride: client,
+      router,
     });
     expect(result.calories).toBe(650);
     expect(result.protein_g).toBe(20);
@@ -75,41 +82,42 @@ describe('analyzeFoodImage — happy path', () => {
     expect(result.model_version).toMatch(/claude-haiku/);
   });
 
-  it('passes user caption to the API call', async () => {
-    const client = fakeClient(VALID_JSON);
+  it('passes user caption to generateVision userMessage', async () => {
+    const router = makeMockRouter({ respond: VALID_JSON });
     await analyzeFoodImage({
       imageBytes: FAKE_PNG,
       mimeType: 'image/png',
-      apiKey: 'test-key',
       userCaption: '今日のお昼ご飯',
-      clientOverride: client,
+      router,
     });
-    const call = (client.messages.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    const userText = call.messages[0].content.find((c: { type: string }) => c.type === 'text');
-    expect(userText.text).toContain('今日のお昼ご飯');
+    const generateVision = (router as unknown as {
+      generateVision: ReturnType<typeof vi.fn>;
+    }).generateVision;
+    const call = generateVision.mock.calls[0][0] as VisionRequest;
+    expect(call.userMessage).toContain('今日のお昼ご飯');
+    expect(call.mediaType).toBe('image/png');
+    expect(call.imageBase64).toBeTruthy();
   });
 
   it('strips JSON from a response wrapped in markdown code fence', async () => {
     const wrapped = '以下が結果です:\n```json\n' + VALID_JSON + '\n```\n他のメモは無視してください';
-    const client = fakeClient(wrapped);
+    const router = makeMockRouter({ respond: wrapped });
     const result = await analyzeFoodImage({
       imageBytes: FAKE_PNG,
       mimeType: 'image/png',
-      apiKey: 'test-key',
-      clientOverride: client,
+      router,
     });
     expect(result.calories).toBe(650);
   });
 });
 
 describe('analyzeFoodImage — input validation', () => {
-  it('throws api_key_missing when apiKey is empty', async () => {
+  it('throws api_key_missing when no vision provider available', async () => {
     await expect(
       analyzeFoodImage({
         imageBytes: FAKE_PNG,
         mimeType: 'image/png',
-        apiKey: '',
-        clientOverride: fakeClient(VALID_JSON),
+        router: makeMockRouter({ noProvider: true }),
       }),
     ).rejects.toMatchObject({ code: 'api_key_missing' });
   });
@@ -119,8 +127,7 @@ describe('analyzeFoodImage — input validation', () => {
       analyzeFoodImage({
         imageBytes: FAKE_PNG,
         mimeType: 'application/pdf',
-        apiKey: 'test',
-        clientOverride: fakeClient(VALID_JSON),
+        router: makeMockRouter({ respond: VALID_JSON }),
       }),
     ).rejects.toMatchObject({ code: 'invalid_mime_type' });
   });
@@ -130,8 +137,7 @@ describe('analyzeFoodImage — input validation', () => {
       analyzeFoodImage({
         imageBytes: new Uint8Array(0),
         mimeType: 'image/png',
-        apiKey: 'test',
-        clientOverride: fakeClient(VALID_JSON),
+        router: makeMockRouter({ respond: VALID_JSON }),
       }),
     ).rejects.toMatchObject({ code: 'invalid_response' });
   });
@@ -141,133 +147,100 @@ describe('analyzeFoodImage — input validation', () => {
       analyzeFoodImage({
         imageBytes: new Uint8Array(1000),
         mimeType: 'image/png',
-        apiKey: 'test',
         maxImageBytes: 500,
-        clientOverride: fakeClient(VALID_JSON),
+        router: makeMockRouter({ respond: VALID_JSON }),
       }),
     ).rejects.toMatchObject({ code: 'image_too_large' });
   });
 });
 
 describe('analyzeFoodImage — response failures', () => {
-  it('throws invalid_response when no text block in response', async () => {
-    const client = {
-      messages: {
-        create: vi.fn().mockResolvedValue({
-          ...stubMessage(''),
-          content: [],
-        }),
-      },
-    } as unknown as Parameters<typeof analyzeFoodImage>[0]['clientOverride'];
+  it('throws invalid_response when generateVision returns empty text', async () => {
     await expect(
       analyzeFoodImage({
         imageBytes: FAKE_PNG,
         mimeType: 'image/png',
-        apiKey: 'test',
-        clientOverride: client,
+        router: makeMockRouter({ respond: '' }),
       }),
     ).rejects.toMatchObject({ code: 'invalid_response' });
   });
 
   it('throws invalid_response when text contains no JSON object', async () => {
-    const client = fakeClient('JSON を生成できませんでした。');
     await expect(
       analyzeFoodImage({
         imageBytes: FAKE_PNG,
         mimeType: 'image/png',
-        apiKey: 'test',
-        clientOverride: client,
+        router: makeMockRouter({ respond: 'JSON を生成できませんでした。' }),
       }),
     ).rejects.toMatchObject({ code: 'invalid_response' });
   });
 
   it('throws schema_validation_failed when calories is negative', async () => {
-    const client = fakeClient(
-      JSON.stringify({
-        calories: -100,
-        protein_g: 10,
-        fat_g: 10,
-        carbs_g: 10,
-        items: [],
-      }),
-    );
     await expect(
       analyzeFoodImage({
         imageBytes: FAKE_PNG,
         mimeType: 'image/png',
-        apiKey: 'test',
-        clientOverride: client,
+        router: makeMockRouter({
+          respond: JSON.stringify({
+            calories: -100,
+            protein_g: 10,
+            fat_g: 10,
+            carbs_g: 10,
+            items: [],
+          }),
+        }),
       }),
     ).rejects.toMatchObject({ code: 'schema_validation_failed' });
   });
 
   it('throws schema_validation_failed when calories exceeds 10000', async () => {
-    const client = fakeClient(
-      JSON.stringify({
-        calories: 999_999,
-        protein_g: 10,
-        fat_g: 10,
-        carbs_g: 10,
-        items: [],
-      }),
-    );
     await expect(
       analyzeFoodImage({
         imageBytes: FAKE_PNG,
         mimeType: 'image/png',
-        apiKey: 'test',
-        clientOverride: client,
+        router: makeMockRouter({
+          respond: JSON.stringify({
+            calories: 999_999,
+            protein_g: 10,
+            fat_g: 10,
+            carbs_g: 10,
+            items: [],
+          }),
+        }),
       }),
     ).rejects.toMatchObject({ code: 'schema_validation_failed' });
   });
 
   it('throws schema_validation_failed when items is missing', async () => {
-    const client = fakeClient(
-      JSON.stringify({ calories: 100, protein_g: 1, fat_g: 1, carbs_g: 1 }),
-    );
     await expect(
       analyzeFoodImage({
         imageBytes: FAKE_PNG,
         mimeType: 'image/png',
-        apiKey: 'test',
-        clientOverride: client,
+        router: makeMockRouter({
+          respond: JSON.stringify({ calories: 100, protein_g: 1, fat_g: 1, carbs_g: 1 }),
+        }),
       }),
     ).rejects.toMatchObject({ code: 'schema_validation_failed' });
   });
 
-  it('throws timeout when SDK call aborts', async () => {
-    const client = {
-      messages: {
-        create: vi.fn().mockImplementation(() => {
-          const err = new Error('Request was aborted');
-          err.name = 'AbortError';
-          return Promise.reject(err);
-        }),
-      },
-    } as unknown as Parameters<typeof analyzeFoodImage>[0]['clientOverride'];
+  it('throws timeout when generateVision aborts', async () => {
+    const abortErr = new Error('Request was aborted');
+    abortErr.name = 'AbortError';
     await expect(
       analyzeFoodImage({
         imageBytes: FAKE_PNG,
         mimeType: 'image/png',
-        apiKey: 'test',
-        clientOverride: client,
-        timeoutMs: 100,
+        router: makeMockRouter({ reject: abortErr }),
       }),
     ).rejects.toMatchObject({ code: 'timeout' });
   });
 
-  it('throws api_error for unexpected SDK errors', async () => {
-    const client = {
-      messages: {
-        create: vi.fn().mockRejectedValue(new Error('500 Internal Server Error')),
-      },
-    } as unknown as Parameters<typeof analyzeFoodImage>[0]['clientOverride'];
+  it('throws api_error for unexpected upstream errors', async () => {
     await expect(
       analyzeFoodImage({
         imageBytes: FAKE_PNG,
         mimeType: 'image/png',
-        apiKey: 'test',
-        clientOverride: client,
+        router: makeMockRouter({ reject: new Error('500 Internal Server Error') }),
       }),
     ).rejects.toMatchObject({ code: 'api_error' });
   });
@@ -350,7 +323,7 @@ describe('sanitizeAnalysis (薬機法 redaction)', () => {
     expect(sanitized.items[0].qty).toBe('1杯');
   });
 
-  it('e2e: analyzeFoodImage redacts response with prohibited phrase', async () => {
+  it('e2e: analyzeFoodImage redacts response with prohibited phrase (sanitize layer)', async () => {
     const tainted = JSON.stringify({
       calories: 200,
       protein_g: 5,
@@ -359,12 +332,12 @@ describe('sanitizeAnalysis (薬機法 redaction)', () => {
       items: [{ name: 'スープ' }],
       notes: '飲むと病気が改善されます',
     });
-    const client = fakeClient(tainted);
+    // mock router の generateVision は provider 内 redact をスキップ (raw text を返す)
+    // → service 側 sanitizeAnalysis レイヤーで redact されることを確認
     const result = await analyzeFoodImage({
       imageBytes: FAKE_PNG,
       mimeType: 'image/png',
-      apiKey: 'test',
-      clientOverride: client,
+      router: makeMockRouter({ respond: tainted }),
     });
     expect(result.notes).toBe(`飲むと${__test__.REDACTION_TOKEN}されます`);
     expect(result.calories).toBe(200);

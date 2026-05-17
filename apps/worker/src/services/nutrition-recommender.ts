@@ -3,7 +3,7 @@
  *
  * PR-2 (`nutrition-analyzer`) が決定論で算出した `NutritionDeficit[]` を受け取り、
  *   1. SKU マップから商品を紐付け
- *   2. Anthropic Claude Haiku で 60 字以内・薬機 OK な日本語コピーを生成
+ *   2. AIRouter ('nutrition-copy' task) で 60 字以内・薬機 OK な日本語コピーを生成
  *      (失敗時は固定テンプレにフォールバック)
  *   3. `nutrition_recommendations` テーブルに永続化
  * までを 1 関数で行う。
@@ -14,11 +14,13 @@
  *   テンプレに切り替えて `source: 'template'` で記録する。DB insert 失敗のみ throw。
  * - **薬機ガード二重化**: 一次は system prompt で AI に "効能効果断定禁止" を指示。
  *   二次は出力テキストに対する `redactProhibited` フィルタ (food-analyzer と同等)。
+ *   provider 内 (router) でも 1 回 redact されるため実質的には三重防御。
  * - **deficits 空 / SKU 全件不在 → null**: caller (LIFF API) は null を「今は提案なし」
  *   として扱い、`nutrition_recommendations` には書かない (空カードを作らない)。
+ * - **Phase 5β-prep adoption batch 2 (2026-05-16)**: Anthropic 直叩を AIRouter 経由に統合。
+ *   旧 apiKey / clientOverride / model 引数は router に集約。
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import {
   getSkuMapByDeficit,
   insertNutritionRecommendation,
@@ -28,8 +30,8 @@ import type {
   NutritionRecommendation,
   SkuSuggestion,
 } from '@line-crm/db';
-// Phase 5β-prep adoption (2026-05-16): 薬機 NG リストを @line-crm/ai-provider に集約
 import {
+  AIRouter,
   PROHIBITED_PHRASES,
   REDACTION_TOKEN,
   redactProhibitedPhrases,
@@ -39,8 +41,6 @@ import {
 // 定数
 // ============================================================
 
-const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
-const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_TOKENS = 200;
 /** AI コピーの最大長 (60 字)。超過分は切り詰め */
 const AI_MESSAGE_MAX_LEN = 120;
@@ -82,17 +82,17 @@ LINE で表示する短い励ましメッセージを生成してください。
 export interface GenerateRecommendationInput {
   db: D1Database;
   friendId: string;
-  /** Env.ANTHROPIC_API_KEY (空なら template path) */
-  apiKey?: string;
+  /**
+   * AI Router (Phase 5β-prep adoption batch 2 で追加).
+   *   - resolveProviders('nutrition-copy').length === 0 → 完全テンプレ動作
+   *   - generateText 全 provider 失敗 → テンプレフォールバック
+   *   - 省略可能 (router 無しなら常にテンプレ動作 — Phase 4 互換 / OSS 無料完動の最終フォールバック)
+   */
+  router?: AIRouter;
   /** PR-2 で得た deficit 配列 (空配列なら何もせず null) */
   deficits: ReadonlyArray<NutritionDeficit>;
   /** 友だちの first_name (パーソナライズ用、未取得なら省略) */
   friendName?: string;
-  /** テスト用 Anthropic クライアント注入 */
-  clientOverride?: { messages: { create: (...args: any[]) => Promise<any> } };
-  /** モデル / タイムアウト override (テスト用) */
-  model?: string;
-  timeoutMs?: number;
 }
 
 export interface GenerateRecommendationResult {
@@ -189,26 +189,28 @@ async function collectSkuSuggestions(
 async function generateMessage(
   input: GenerateRecommendationInput,
 ): Promise<{ message: string; source: 'ai' | 'template' }> {
-  const useAi = Boolean(input.apiKey) || Boolean(input.clientOverride);
-  if (!useAi) {
-    return { message: templateMessage(input.deficits, input.friendName), source: 'template' };
+  const fallback = (): { message: string; source: 'template' } => ({
+    message: templateMessage(input.deficits, input.friendName),
+    source: 'template',
+  });
+
+  if (!input.router || input.router.resolveProviders('nutrition-copy').length === 0) {
+    return fallback();
   }
 
   try {
-    const aiText = await callAi(input);
-    if (!aiText) {
-      return {
-        message: templateMessage(input.deficits, input.friendName),
-        source: 'template',
-      };
-    }
-    const sanitized = clip(redactProhibited(aiText), AI_MESSAGE_MAX_LEN);
-    if (!sanitized) {
-      return {
-        message: templateMessage(input.deficits, input.friendName),
-        source: 'template',
-      };
-    }
+    const userMessage = formatDeficitsForPrompt(input.deficits, input.friendName);
+    const response = await input.router.generateText('nutrition-copy', {
+      systemPrompt: SYSTEM_PROMPT,
+      userMessage,
+      maxTokens: DEFAULT_MAX_TOKENS,
+    });
+    const raw = response.text?.trim();
+    if (!raw) return fallback();
+
+    // response.text は provider 内で redact 済だが二重防御で再 redact + 字数 clip
+    const sanitized = clip(redactProhibited(raw), AI_MESSAGE_MAX_LEN);
+    if (!sanitized) return fallback();
     return { message: sanitized, source: 'ai' };
   } catch (err) {
     // AI 失敗は握り潰し、テンプレに落とす (caller 側で何度でも再実行できるように)
@@ -216,43 +218,7 @@ async function generateMessage(
       'nutrition recommendation AI failed (fallback to template):',
       err instanceof Error ? err.name : 'unknown',
     );
-    return {
-      message: templateMessage(input.deficits, input.friendName),
-      source: 'template',
-    };
-  }
-}
-
-async function callAi(input: GenerateRecommendationInput): Promise<string | null> {
-  const client =
-    input.clientOverride ??
-    new Anthropic({ apiKey: input.apiKey as string });
-  const model = input.model ?? DEFAULT_MODEL;
-  const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-
-  const userMessage = formatDeficitsForPrompt(input.deficits, input.friendName);
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await client.messages.create(
-      {
-        model,
-        max_tokens: DEFAULT_MAX_TOKENS,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: userMessage }],
-      },
-      { signal: controller.signal },
-    );
-
-    const textBlock = (response?.content ?? []).find(
-      (b: { type: string }) => b.type === 'text',
-    ) as { type: 'text'; text: string } | undefined;
-    const raw = textBlock?.text?.trim();
-    return raw || null;
-  } finally {
-    clearTimeout(timer);
+    return fallback();
   }
 }
 

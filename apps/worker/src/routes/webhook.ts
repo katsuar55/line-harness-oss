@@ -32,6 +32,7 @@ import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { generateAiResponse } from '../services/ai-response.js';
 import { analyzeFoodImage, FoodAnalyzerError } from '../services/food-analyzer.js';
 import { downloadLineContent, LineContentError } from '../services/line-content.js';
+import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
 import type { Env } from '../index.js';
 
 /**
@@ -964,6 +965,9 @@ async function handleEvent(
 
     // バックグラウンド処理本体: 後続イベントをブロックしないよう waitUntil で独立スケジュール
     const runImagePipeline = async (): Promise<void> => {
+      // Phase 5β-prep adoption batch 2: vision provider 利用可否は ANTHROPIC_API_KEY で早期判定
+      // (AIRouter 経由でも同じ判定だが、 router 構築コストを省く + 既存テスト互換性のため
+      //  apiKey 直接 check を残す)
       if (!apiKey) {
         await markFoodLogFailed(db, foodLogId, 'AI解析が無効です');
         await sendErrorPush('AI解析機能は現在ご利用いただけません。');
@@ -1016,13 +1020,14 @@ async function handleEvent(
         }
       }
 
-      // 3) Anthropic Vision で解析
+      // 3) Vision で解析 (Phase 5β-prep adoption batch 2: AIRouter 経由)
+      const router = createAIRouterFromEnv(env as Parameters<typeof createAIRouterFromEnv>[0]);
       let analysis;
       try {
         analysis = await analyzeFoodImage({
           imageBytes: blob.bytes,
           mimeType: blob.contentType,
-          apiKey,
+          router,
         });
       } catch (err) {
         if (err instanceof FoodAnalyzerError) {

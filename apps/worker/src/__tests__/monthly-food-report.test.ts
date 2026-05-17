@@ -132,7 +132,7 @@ function makeStubDb(distinctFriends: string[], statsRows: Array<Record<string, u
 describe('processMonthlyFoodReports — gating', () => {
   it('returns no-op when day is not 1', async () => {
     const db = { prepare: vi.fn() } as unknown as D1Database;
-    const r = await processMonthlyFoodReports(db, undefined, {
+    const r = await processMonthlyFoodReports(db, {
       nowOverride: '2026-04-15T10:00:00',
     });
     expect(r).toEqual({ generated: 0, skipped: 0, errors: 0 });
@@ -169,7 +169,7 @@ describe('processMonthlyFoodReports — generation flow', () => {
       })),
     } as unknown as D1Database;
 
-    const r = await mod.processMonthlyFoodReports(db, 'fake', {
+    const r = await mod.processMonthlyFoodReports(db, {
       nowOverride: '2026-04-01T03:00:00',
       forceTemplateOnly: true,
     });
@@ -217,7 +217,7 @@ describe('processMonthlyFoodReports — generation flow', () => {
       })),
     } as unknown as D1Database;
 
-    const r = await mod.processMonthlyFoodReports(db, undefined, {
+    const r = await mod.processMonthlyFoodReports(db, {
       nowOverride: '2026-04-01T03:00:00',
       forceTemplateOnly: true,
     });
@@ -252,7 +252,7 @@ describe('processMonthlyFoodReports — generation flow', () => {
       })),
     } as unknown as D1Database;
 
-    const r = await mod.processMonthlyFoodReports(db, undefined, {
+    const r = await mod.processMonthlyFoodReports(db, {
       nowOverride: '2026-04-01T03:00:00',
       forceTemplateOnly: true,
     });
@@ -302,7 +302,7 @@ describe('processMonthlyFoodReports — generation flow', () => {
       })),
     } as unknown as D1Database;
 
-    const r = await mod.processMonthlyFoodReports(db, undefined, {
+    const r = await mod.processMonthlyFoodReports(db, {
       nowOverride: '2026-04-01T03:00:00',
       forceTemplateOnly: true,
     });

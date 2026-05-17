@@ -1,33 +1,31 @@
 /**
- * AI 食事画像解析サービス (Anthropic Claude Vision)
+ * AI 食事画像解析サービス (Phase 5β-prep adoption batch 2: AIRouter 経由)
  *
- * Phase 3 (AI 食事診断) の中核。LINE で受信した食事写真を Claude Vision に投げ、
- * カロリー・PFC・食材を JSON で取得して `food_logs` に保存する。
+ * Phase 3 (AI 食事診断) の中核。LINE で受信した食事写真を vision 対応 provider
+ * (現状 Claude のみ) に投げ、 カロリー・PFC・食材を JSON で取得して
+ * `food_logs` に保存する。
  *
  * 設計方針:
- * - **モデル**: claude-haiku-4.5 (vision 対応・低コスト・高速)
+ * - **vision 対応 provider**: AIRouter が 'vision' task で resolveProviders、 現状 Claude のみ
  * - **JSON 強制**: system prompt で "ONLY valid JSON" を厳命 + Zod で実行時検証
- * - **薬機法ガード**: 効能効果断定ワード ("治る" "効く" "病気が改善" 等) を notes から redaction
- * - **タイムアウト**: 30 秒 (vision は 10s では足りない)
+ * - **薬機法ガード**: AIRouter 内 (provider redact) + service 内 sanitizeAnalysis の二重防御
  * - **失敗時は throw**: caller (`webhook.ts`) が markFoodLogFailed() で記録する
  *
- * Anthropic SDK は Workers fetch を内部で使うため Cloudflare Workers でそのまま動く。
- *
  * 使い方:
+ *   const router = createAIRouterFromEnv(env);
  *   const analysis = await analyzeFoodImage({
  *     imageBytes: blob.bytes,
  *     mimeType: blob.contentType,
  *     userCaption: 'カレーライス',
- *     apiKey: env.ANTHROPIC_API_KEY,
+ *     router,
  *   });
  *   await updateFoodLogAnalysis(env.DB, foodLogId, analysis);
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import type { FoodAnalysis } from '@line-crm/db';
-// Phase 5β-prep adoption (2026-05-16): 薬機 NG リストを @line-crm/ai-provider に集約
 import {
+  AIRouter,
   PROHIBITED_PHRASES,
   REDACTION_TOKEN,
   redactProhibitedPhrases,
@@ -37,8 +35,6 @@ import {
 // 定数
 // ----------------------------------------------------------------
 
-const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
-const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_TOKENS = 1024;
 
 const SUPPORTED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
@@ -104,16 +100,13 @@ export interface AnalyzeFoodImageInput {
   mimeType: string;
   /** ユーザの自由記述 (キャプション)。"カレーライスとサラダ" 等 */
   userCaption?: string;
-  /** Anthropic API キー (env.ANTHROPIC_API_KEY) */
-  apiKey: string;
-  /** モデル名 override (デフォルト claude-haiku-4-5) */
-  model?: string;
-  /** タイムアウト ms (デフォルト 30000) */
-  timeoutMs?: number;
+  /**
+   * AIRouter. vision 対応 provider が `resolveProviders('vision')` に必要 (現状 Claude のみ).
+   * 未利用なら api_key_missing エラー (互換性のため既存 error code を維持).
+   */
+  router: AIRouter;
   /** 最大バイト数 (デフォルト 5MB — LINE Content と整合) */
   maxImageBytes?: number;
-  /** テスト用 Anthropic クライアント注入 */
-  clientOverride?: Pick<Anthropic, 'messages'>;
 }
 
 // ----------------------------------------------------------------
@@ -153,9 +146,6 @@ const SYSTEM_PROMPT = `あなたは管理栄養士のアシスタントです。
  */
 export async function analyzeFoodImage(input: AnalyzeFoodImageInput): Promise<FoodAnalysis> {
   // ---- 入力検証 ----
-  if (!input.apiKey) {
-    throw new FoodAnalyzerError('ANTHROPIC_API_KEY is not configured', 'api_key_missing');
-  }
   if (!isSupportedMimeType(input.mimeType)) {
     throw new FoodAnalyzerError(
       `Unsupported mime type: ${input.mimeType}. Allowed: ${SUPPORTED_MIME_TYPES.join(', ')}`,
@@ -173,81 +163,55 @@ export async function analyzeFoodImage(input: AnalyzeFoodImageInput): Promise<Fo
     );
   }
 
-  const client =
-    input.clientOverride ??
-    new Anthropic({
-      apiKey: input.apiKey,
-      // Workers では undici の AbortSignal.timeout は使えるので SDK のデフォルトでよい
-    });
+  // vision 対応 provider が無い (Claude 等の API_KEY 未設定) なら早期 throw
+  if (input.router.resolveProviders('vision').length === 0) {
+    throw new FoodAnalyzerError(
+      'No vision-capable provider available (ANTHROPIC_API_KEY not configured)',
+      'api_key_missing',
+    );
+  }
 
-  const model = input.model ?? DEFAULT_MODEL;
-  const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const base64Image = uint8ArrayToBase64(input.imageBytes);
 
-  // ---- Anthropic 呼び出し (タイムアウト付き) ----
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // userCaption は LINE ユーザ入力なので prompt injection 対策で quote/改行/制御文字を除去
+  const sanitizedCaption = input.userCaption
+    ? sanitizeUserCaption(input.userCaption)
+    : '';
+  const userText = sanitizedCaption
+    ? `この食事を解析してください。ユーザのコメント: "${sanitizedCaption}"`
+    : 'この食事を解析してください。';
 
-  let response: Anthropic.Messages.Message;
+  // ---- Vision 呼び出し ----
+  let response;
   try {
-    // userCaption は LINE ユーザ入力なので prompt injection 対策で quote/改行/制御文字を除去
-    const sanitizedCaption = input.userCaption
-      ? sanitizeUserCaption(input.userCaption)
-      : '';
-    const userText = sanitizedCaption
-      ? `この食事を解析してください。ユーザのコメント: "${sanitizedCaption}"`
-      : 'この食事を解析してください。';
-
-    response = await client.messages.create(
-      {
-        model,
-        max_tokens: DEFAULT_MAX_TOKENS,
-        system: SYSTEM_PROMPT,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: input.mimeType as SupportedMimeType,
-                  data: base64Image,
-                },
-              },
-              { type: 'text', text: userText },
-            ],
-          },
-        ],
-      },
-      { signal: controller.signal },
-    );
+    response = await input.router.generateVision({
+      systemPrompt: SYSTEM_PROMPT,
+      userMessage: userText,
+      imageBase64: base64Image,
+      mediaType: input.mimeType,
+      maxTokens: DEFAULT_MAX_TOKENS,
+    });
   } catch (err: unknown) {
     if (err instanceof Error && (err.name === 'AbortError' || /aborted/i.test(err.message))) {
       throw new FoodAnalyzerError(
-        `Anthropic API timed out after ${timeoutMs}ms`,
+        `Vision API timed out`,
         'timeout',
         err,
       );
     }
     throw new FoodAnalyzerError(
-      `Anthropic API call failed: ${err instanceof Error ? err.name : 'unknown'}`,
+      `Vision API call failed: ${err instanceof Error ? err.name : 'unknown'}`,
       'api_error',
       err,
     );
-  } finally {
-    clearTimeout(timer);
   }
 
   // ---- レスポンスから JSON 抽出 ----
-  const textBlock = response.content.find((b) => b.type === 'text') as
-    | Extract<Anthropic.Messages.ContentBlock, { type: 'text' }>
-    | undefined;
-  if (!textBlock?.text) {
-    throw new FoodAnalyzerError('Anthropic response had no text block', 'invalid_response');
+  if (!response.text) {
+    throw new FoodAnalyzerError('Vision response had no text', 'invalid_response');
   }
 
-  const jsonString = extractJsonObject(textBlock.text);
+  const jsonString = extractJsonObject(response.text);
   if (!jsonString) {
     throw new FoodAnalyzerError(
       'Failed to extract JSON object from response',
@@ -275,10 +239,10 @@ export async function analyzeFoodImage(input: AnalyzeFoodImageInput): Promise<Fo
     );
   }
 
-  // ---- 薬機法ガード ----
+  // ---- 薬機法ガード (provider 内 redact + sanitize の二重防御) ----
   return sanitizeAnalysis({
     ...validated.data,
-    model_version: validated.data.model_version ?? model,
+    model_version: validated.data.model_version ?? response.model,
   });
 }
 
