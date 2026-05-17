@@ -305,6 +305,110 @@ describe('executeSendEmailAction', () => {
       subscriberId: 'sub-x',
     });
   });
+
+  // ============================================================
+  // Phase 5β-1d-1: {{opt_in_url}} auto-inject
+  // ============================================================
+
+  it('opt_in_url auto-inject: template に placeholder + optInUrlConfig 設定 → variables に注入', async () => {
+    dispatchMock.mockResolvedValueOnce({
+      results: [{ channel: 'email', status: 'sent', providerMessageId: 'pm', subscriberId: 'sub' }],
+    });
+    const ctx: SendEmailActionContext = {
+      ...makeCtx({ subscriber: { id: 'sub', email: 'opt@x.com' } }),
+      optInUrlConfig: {
+        hmacKey: 'opt-in-test-key-32-bytes-XXXXXXXXXX',
+        workerUrl: 'https://worker.example.com',
+      },
+    };
+    await executeSendEmailAction(ctx, {
+      subject: 's',
+      htmlContent: 'click <a href="{{opt_in_url}}">here</a>',
+      textContent: 'go to {{opt_in_url}}',
+    });
+    const call = dispatchMock.mock.calls[0]![1];
+    expect(call.emailPayload?.variables.opt_in_url).toBeDefined();
+    expect(call.emailPayload?.variables.opt_in_url).toMatch(
+      /^https:\/\/worker\.example\.com\/email\/opt-in\?email=opt%40x\.com&e=\d+&token=[a-f0-9]{64}$/,
+    );
+  });
+
+  it('opt_in_url auto-inject: caller が eventVariables で opt_in_url 指定済 → 上書きしない', async () => {
+    dispatchMock.mockResolvedValueOnce({
+      results: [{ channel: 'email', status: 'sent', providerMessageId: 'pm', subscriberId: 'sub' }],
+    });
+    const ctx: SendEmailActionContext = {
+      ...makeCtx({ subscriber: { id: 'sub', email: 'opt@x.com' } }),
+      optInUrlConfig: {
+        hmacKey: 'opt-in-test-key',
+        workerUrl: 'https://worker.example.com',
+      },
+    };
+    await executeSendEmailAction(ctx, {
+      subject: 's',
+      htmlContent: '{{opt_in_url}}',
+      textContent: '{{opt_in_url}}',
+      eventVariables: { opt_in_url: 'https://custom.example.com/x' },
+    });
+    expect(dispatchMock.mock.calls[0]![1].emailPayload?.variables.opt_in_url).toBe(
+      'https://custom.example.com/x',
+    );
+  });
+
+  it('opt_in_url auto-inject: template が placeholder を含まない → inject しない', async () => {
+    dispatchMock.mockResolvedValueOnce({
+      results: [{ channel: 'email', status: 'sent', providerMessageId: 'pm', subscriberId: 'sub' }],
+    });
+    const ctx: SendEmailActionContext = {
+      ...makeCtx({ subscriber: { id: 'sub', email: 'noopt@x.com' } }),
+      optInUrlConfig: {
+        hmacKey: 'opt-in-test-key',
+        workerUrl: 'https://worker.example.com',
+      },
+    };
+    await executeSendEmailAction(ctx, {
+      subject: 's',
+      htmlContent: '<p>hello</p>',
+      textContent: 'hello',
+    });
+    expect(dispatchMock.mock.calls[0]![1].emailPayload?.variables.opt_in_url).toBeUndefined();
+  });
+
+  it('opt_in_url auto-inject: optInUrlConfig 省略 → inject しない (literal が残る)', async () => {
+    dispatchMock.mockResolvedValueOnce({
+      results: [{ channel: 'email', status: 'sent', providerMessageId: 'pm', subscriberId: 'sub' }],
+    });
+    const ctx = makeCtx({ subscriber: { id: 'sub', email: 'opt@x.com' } });
+    // optInUrlConfig 省略
+    await executeSendEmailAction(ctx, {
+      subject: 's',
+      htmlContent: '<p>click {{opt_in_url}}</p>',
+      textContent: 'click {{opt_in_url}}',
+    });
+    expect(dispatchMock.mock.calls[0]![1].emailPayload?.variables.opt_in_url).toBeUndefined();
+  });
+
+  it('opt_in_url auto-inject: workerUrl 末尾 slash 正規化', async () => {
+    dispatchMock.mockResolvedValueOnce({
+      results: [{ channel: 'email', status: 'sent', providerMessageId: 'pm', subscriberId: 'sub' }],
+    });
+    const ctx: SendEmailActionContext = {
+      ...makeCtx({ subscriber: { id: 'sub', email: 'opt@x.com' } }),
+      optInUrlConfig: {
+        hmacKey: 'k',
+        workerUrl: 'https://w.example.com/', // trailing slash
+      },
+    };
+    await executeSendEmailAction(ctx, {
+      subject: 's',
+      htmlContent: '{{opt_in_url}}',
+      textContent: '{{opt_in_url}}',
+    });
+    const url = dispatchMock.mock.calls[0]![1].emailPayload?.variables.opt_in_url;
+    expect(url).toBeDefined();
+    expect(url).not.toMatch(/\/\/email/);
+    expect(url).toMatch(/^https:\/\/w\.example\.com\/email\/opt-in/);
+  });
 });
 
 // buildEmailDispatchConfig のテストは別ファイル (mock 干渉回避):

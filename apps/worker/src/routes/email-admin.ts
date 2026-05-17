@@ -25,6 +25,11 @@ import {
   type UpsertEmailTemplateInput,
 } from '@line-crm/db';
 import { signEmailOptInToken } from '../services/email-opt-in.js';
+import {
+  sendBulkOptInInvitations,
+  type BulkInvitationRecipient,
+} from '../services/bulk-opt-in-invitation.js';
+import { buildEmailDispatchConfig } from '../services/email-dispatch-config.js';
 import type { Env } from '../index.js';
 
 const emailAdmin = new Hono<Env>();
@@ -608,6 +613,161 @@ emailAdmin.post('/api/admin/email/opt-in/generate-url', async (c) => {
     });
   } catch (err) {
     console.error('POST /api/admin/email/opt-in/generate-url error', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ============================================================
+// Phase 5β-1d-1: opt-in 招待 campaign 用 endpoints
+//
+// 1. GET  /api/admin/email/opt-in/candidates       — 送信候補 (Shopify customer に email あり、
+//                                                     marketing opt-in 未取得) を一覧
+// 2. POST /api/admin/email/opt-in/send-invitations — 指定 email list に opt-in 招待 transactional email 送信
+//
+// 想定運用 (Katsu):
+//   1. GET candidates で送信候補リスト取得 (limit/offset でページング)
+//   2. POST send-invitations に email 配列を渡す (dryRun=true で preview 推奨)
+//   3. 結果を見て problem なければ dryRun=false で実送信
+//   4. Resend 無料 plan の 100/day 制限を考慮、 limit 50-100 ずつ複数日に分けて送信
+// ============================================================
+
+emailAdmin.get('/api/admin/email/opt-in/candidates', async (c) => {
+  const limit = clampLimit(c.req.query('limit'), 50, 500);
+  const offsetRaw = Number(c.req.query('offset') ?? 0);
+  const offset =
+    Number.isFinite(offsetRaw) && offsetRaw >= 0 ? Math.min(Math.round(offsetRaw), 100000) : 0;
+
+  // shopify_customers の email + first_name + last_name を返す
+  // 除外条件: email NULL / email_subscribers で既に is_active=1 AND transactional_only=0 (= 既に marketing 同意済)
+  // 残: not_subscribed (Shopify 側) / unsubscribed / transactional_only=1 / 未登録
+  try {
+    const result = await c.env.DB.prepare(
+      `SELECT sc.email, sc.first_name, sc.last_name, sc.shopify_customer_id
+         FROM shopify_customers sc
+         LEFT JOIN email_subscribers es ON LOWER(es.email) = LOWER(sc.email)
+        WHERE sc.email IS NOT NULL AND sc.email != ''
+          AND (es.id IS NULL OR es.is_active = 0 OR es.transactional_only = 1)
+        ORDER BY sc.created_at DESC
+        LIMIT ? OFFSET ?`,
+    )
+      .bind(limit, offset)
+      .all<{
+        email: string;
+        first_name: string | null;
+        last_name: string | null;
+        shopify_customer_id: string;
+      }>();
+    const rows = (result.results ?? []).map((r) => ({
+      email: r.email,
+      firstName: r.first_name,
+      lastName: r.last_name,
+      shopifyCustomerId: r.shopify_customer_id,
+    }));
+    return c.json({
+      success: true,
+      data: {
+        candidates: rows,
+        count: rows.length,
+        limit,
+        offset,
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/admin/email/opt-in/candidates error', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ============================================================
+// POST /api/admin/email/opt-in/send-invitations
+//
+// body:
+//   {
+//     recipients: [{ email, firstName? }, ...],  // 必須 (max 200 件)
+//     templateId?: string,                        // default 'tpl-opt-in-invitation-v1'
+//     dryRun?: boolean                            // default false
+//   }
+//
+// resp:
+//   {
+//     success: true,
+//     data: { total, sent, skipped, failed, dryRun, details: [{ email, status, reason?, providerMessageId? }] }
+//   }
+// ============================================================
+
+const MAX_BATCH_SIZE = 200;
+
+emailAdmin.post('/api/admin/email/opt-in/send-invitations', async (c) => {
+  const hmacKey = c.env.EMAIL_OPTIN_HMAC_KEY;
+  if (!hmacKey) {
+    return c.json({ success: false, error: 'EMAIL_OPTIN_HMAC_KEY not configured' }, 503);
+  }
+  const workerUrl = c.env.WORKER_URL;
+  if (!workerUrl) {
+    return c.json({ success: false, error: 'WORKER_URL not configured' }, 503);
+  }
+
+  let body: { recipients?: unknown; templateId?: unknown; dryRun?: unknown };
+  try {
+    body = await c.req.json<{ recipients?: unknown; templateId?: unknown; dryRun?: unknown }>();
+  } catch {
+    return c.json({ success: false, error: 'Invalid JSON' }, 400);
+  }
+
+  if (!Array.isArray(body.recipients) || body.recipients.length === 0) {
+    return c.json({ success: false, error: 'recipients must be non-empty array' }, 400);
+  }
+  if (body.recipients.length > MAX_BATCH_SIZE) {
+    return c.json(
+      { success: false, error: `recipients exceeds max batch size ${MAX_BATCH_SIZE}` },
+      400,
+    );
+  }
+
+  // recipients validate + normalize
+  const recipients: BulkInvitationRecipient[] = [];
+  for (const r of body.recipients) {
+    if (typeof r !== 'object' || r === null) {
+      return c.json({ success: false, error: 'each recipient must be { email, firstName? }' }, 400);
+    }
+    const rec = r as { email?: unknown; firstName?: unknown };
+    if (typeof rec.email !== 'string') {
+      return c.json({ success: false, error: 'each recipient.email must be string' }, 400);
+    }
+    recipients.push({
+      email: rec.email,
+      firstName: typeof rec.firstName === 'string' ? rec.firstName : null,
+    });
+  }
+
+  const templateId = typeof body.templateId === 'string' ? body.templateId : undefined;
+  const dryRun = body.dryRun === true;
+
+  // email config を構築 (dryRun でも build しておく — 送信時に変更しないため)
+  const emailConfig = buildEmailDispatchConfig(c.env);
+  if (!emailConfig) {
+    return c.json(
+      { success: false, error: 'email config not available (missing RESEND_API_KEY / EMAIL_FROM etc.)' },
+      503,
+    );
+  }
+
+  try {
+    const result = await sendBulkOptInInvitations(
+      c.env.DB,
+      {
+        emailConfig,
+        optInUrlConfig: { hmacKey, workerUrl },
+      },
+      {
+        recipients,
+        templateId,
+        dryRun,
+      },
+    );
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    console.error('POST /api/admin/email/opt-in/send-invitations error', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
