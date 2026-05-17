@@ -50,6 +50,14 @@ vi.mock('../services/form-conductor.js', async (importOriginal) => {
   };
 });
 
+vi.mock('../services/message-conductor.js', async (importOriginal) => {
+  const orig = (await importOriginal()) as typeof import('../services/message-conductor.js');
+  return {
+    ...orig,
+    generateMessageFromPrompt: vi.fn(),
+  };
+});
+
 // ----- ai-router-factory mock (env 由来の AIRouter 構築は不要) -----
 vi.mock('../services/ai-router-factory.js', () => ({
   createAIRouterFromEnv: vi.fn(() => ({})),
@@ -69,6 +77,10 @@ import {
   generateFormFromPrompt,
   FormConductorError,
 } from '../services/form-conductor.js';
+import {
+  generateMessageFromPrompt,
+  MessageConductorError,
+} from '../services/message-conductor.js';
 import type { Env } from '../index.js';
 
 const TEST_API_KEY = 'test-api-key-conductor-12345';
@@ -683,6 +695,261 @@ describe('POST /api/conductor/form — service error → HTTP mapping', () => {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ prompt: 'フォーム' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(500);
+  });
+});
+
+// ============================================================
+// Phase 5γ-4: message template route
+// ============================================================
+
+const VALID_MESSAGE_RESULT = {
+  template: {
+    messageType: 'text',
+    name: 'welcome message',
+    text: 'こんにちは、 {{name}} さん。 {{brand_name}} です。',
+  },
+  messageContent: 'こんにちは、 {{name}} さん。 {{brand_name}} です。',
+  messageType: 'text',
+  altText: undefined,
+  warnings: [],
+  provider: 'claude',
+  model: 'claude-haiku-4-5',
+};
+
+describe('POST /api/conductor/message — authentication', () => {
+  let app: ReturnType<typeof createTestApp>;
+  let env: Env['Bindings'];
+
+  beforeEach(() => {
+    app = createTestApp();
+    env = createMockEnv();
+    vi.clearAllMocks();
+  });
+
+  it('returns 401 without auth header', async () => {
+    const res = await app.request(
+      '/api/conductor/message',
+      { method: 'POST', body: JSON.stringify({ prompt: 'hello' }) },
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 401 with invalid token', async () => {
+    const res = await app.request(
+      '/api/conductor/message',
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer wrong', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hello' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('POST /api/conductor/message — body validation', () => {
+  let app: ReturnType<typeof createTestApp>;
+  let env: Env['Bindings'];
+
+  beforeEach(() => {
+    app = createTestApp();
+    env = createMockEnv();
+    vi.clearAllMocks();
+  });
+
+  it('returns 400 for malformed JSON body', async () => {
+    const res = await app.request(
+      '/api/conductor/message',
+      { method: 'POST', headers: authHeaders(), body: 'not json{' },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 when prompt missing', async () => {
+    const res = await app.request(
+      '/api/conductor/message',
+      { method: 'POST', headers: authHeaders(), body: JSON.stringify({}) },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 when prompt is empty string', async () => {
+    const res = await app.request(
+      '/api/conductor/message',
+      { method: 'POST', headers: authHeaders(), body: JSON.stringify({ prompt: '' }) },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 when prompt is non-string type', async () => {
+    const res = await app.request(
+      '/api/conductor/message',
+      { method: 'POST', headers: authHeaders(), body: JSON.stringify({ prompt: 42 }) },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /api/conductor/message — service error → HTTP mapping', () => {
+  let app: ReturnType<typeof createTestApp>;
+  let env: Env['Bindings'];
+  const mockedGenerateMsg = generateMessageFromPrompt as ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    app = createTestApp();
+    env = createMockEnv();
+    vi.clearAllMocks();
+  });
+
+  it('returns 200 on success', async () => {
+    mockedGenerateMsg.mockResolvedValueOnce(VALID_MESSAGE_RESULT);
+    const res = await app.request(
+      '/api/conductor/message',
+      {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ prompt: 'welcome メッセージを作って' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: unknown };
+    expect(body.success).toBe(true);
+    expect(body.data).toEqual(VALID_MESSAGE_RESULT);
+  });
+
+  it('maps prompt_too_short to 400', async () => {
+    mockedGenerateMsg.mockRejectedValueOnce(
+      new MessageConductorError('too short', 'prompt_too_short'),
+    );
+    const res = await app.request(
+      '/api/conductor/message',
+      {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ prompt: 'hi' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe('prompt_too_short');
+  });
+
+  it('maps prompt_too_long to 400', async () => {
+    mockedGenerateMsg.mockRejectedValueOnce(
+      new MessageConductorError('too long', 'prompt_too_long'),
+    );
+    const res = await app.request(
+      '/api/conductor/message',
+      {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ prompt: 'x' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('maps api_key_missing to 503', async () => {
+    mockedGenerateMsg.mockRejectedValueOnce(
+      new MessageConductorError('no provider', 'api_key_missing'),
+    );
+    const res = await app.request(
+      '/api/conductor/message',
+      {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ prompt: 'メッセージ' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it('maps timeout to 504', async () => {
+    mockedGenerateMsg.mockRejectedValueOnce(
+      new MessageConductorError('timed out', 'timeout'),
+    );
+    const res = await app.request(
+      '/api/conductor/message',
+      {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ prompt: 'メッセージ' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(504);
+  });
+
+  it('maps invalid_response to 502', async () => {
+    mockedGenerateMsg.mockRejectedValueOnce(
+      new MessageConductorError('bad json', 'invalid_response'),
+    );
+    const res = await app.request(
+      '/api/conductor/message',
+      {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ prompt: 'メッセージ' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(502);
+  });
+
+  it('maps schema_validation_failed to 502', async () => {
+    mockedGenerateMsg.mockRejectedValueOnce(
+      new MessageConductorError('bad', 'schema_validation_failed'),
+    );
+    const res = await app.request(
+      '/api/conductor/message',
+      {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ prompt: 'メッセージ' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(502);
+  });
+
+  it('maps api_error to 500', async () => {
+    mockedGenerateMsg.mockRejectedValueOnce(
+      new MessageConductorError('api fail', 'api_error'),
+    );
+    const res = await app.request(
+      '/api/conductor/message',
+      {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ prompt: 'メッセージ' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(500);
+  });
+
+  it('maps unknown error to 500', async () => {
+    mockedGenerateMsg.mockRejectedValueOnce(new Error('unexpected'));
+    const res = await app.request(
+      '/api/conductor/message',
+      {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ prompt: 'メッセージ' }),
       },
       env,
     );
