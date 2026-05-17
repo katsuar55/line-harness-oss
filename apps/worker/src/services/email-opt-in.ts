@@ -25,7 +25,7 @@ import { recordMarketingOptIn, type ConsentSource } from '@line-crm/db';
 // HMAC token (email + expiresAt 署名)
 // ============================================================
 
-const DEFAULT_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
+const DEFAULT_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 14; // 14 days (industry standard for consent URLs)
 
 /**
  * HMAC-SHA256 hex (Web Crypto API、 Cloudflare Workers 互換)。
@@ -171,6 +171,14 @@ export interface PerformOptInResult {
  * marketing opt-in を実行する。
  *   - 新規 / 既存 transactional / 既存 unsubscribed / 既存 bounce-suppressed すべて active 化
  *   - outcome を返すので caller (admin UI / audit) で表示分岐可能
+ *
+ * 注意 (race condition):
+ *   - 内部で SELECT (before 状態取得) → recordMarketingOptIn (SELECT + INSERT/UPDATE) と
+ *     2 ラウンドトリップする。 同一 email への並列 opt-in submission では outcome の分類
+ *     ('new' / 're_consent' / 'reactivated') が race で誤る可能性がある。
+ *   - 最終状態 (is_active=1, transactional_only=0) は idempotent なので問題なし。
+ *   - **outcome は display / audit metadata のみに使う想定。 business logic (例: クーポン発行)
+ *     を outcome 別に分岐させてはいけない。** 分岐させる場合は atomic SQL に再設計が必要。
  */
 export async function performEmailOptIn(
   db: D1Database,

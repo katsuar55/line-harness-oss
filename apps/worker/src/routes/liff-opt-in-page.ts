@@ -19,21 +19,41 @@ import type { Env } from '../index.js';
 const liffOptInPage = new Hono<Env>();
 
 function escapeHtml(str: string): string {
+  // 注: 単一引用符を含めて HTML attribute / JS string-context 両方で安全な escape
   return str
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
-const optInPageHandler = (c: { env: Env['Bindings']; html: (html: string) => Response }) => {
+/**
+ * inline <script> 内に literal を埋め込む際の安全な JSON 化。
+ * JSON.stringify 単体だと `</script>` substring が <script> tag を閉じてしまう XSS が成立する。
+ * `<` `>` `&` を Unicode escape に置換 + U+2028 / U+2029 (JS line terminator) も escape。
+ */
+function jsonForScript(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+liffOptInPage.get('/liff/opt-in', (c) => {
   const liffUrl = c.env.LIFF_URL || '';
   const workerUrl = c.env.WORKER_URL || '';
   const liffId = liffUrl.replace('https://liff.line.me/', '');
   return c.html(optInPage(liffId, workerUrl));
-};
-liffOptInPage.get('/liff/opt-in', optInPageHandler as never);
-liffOptInPage.get('/liff/opt-in/', optInPageHandler as never);
+});
+liffOptInPage.get('/liff/opt-in/', (c) => {
+  const liffUrl = c.env.LIFF_URL || '';
+  const workerUrl = c.env.WORKER_URL || '';
+  const liffId = liffUrl.replace('https://liff.line.me/', '');
+  return c.html(optInPage(liffId, workerUrl));
+});
 
 function optInPage(liffId: string, apiBase: string): string {
   return `<!DOCTYPE html>
@@ -148,8 +168,9 @@ function optInPage(liffId: string, apiBase: string): string {
   <div id="toast" class="fixed bottom-24 left-1/2 -translate-x-1/2 text-white px-5 py-2.5 rounded-2xl text-sm shadow-xl opacity-0 transition-opacity pointer-events-none z-50"></div>
 
 <script>
-const LIFF_ID = '${escapeHtml(liffId)}';
-const API_BASE = '${escapeHtml(apiBase)}';
+// 注: jsonForScript で JS-string context + </script> 攻撃を防ぐ
+const LIFF_ID = ${jsonForScript(liffId)};
+const API_BASE = ${jsonForScript(apiBase)};
 let idToken = null;
 
 function showToast(msg) {

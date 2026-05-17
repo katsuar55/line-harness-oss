@@ -24,7 +24,7 @@ import {
   type ConsentSource,
   type UpsertEmailTemplateInput,
 } from '@line-crm/db';
-import { signEmailOptInToken, isValidEmail } from '../services/email-opt-in.js';
+import { signEmailOptInToken } from '../services/email-opt-in.js';
 import type { Env } from '../index.js';
 
 const emailAdmin = new Hono<Env>();
@@ -563,11 +563,11 @@ emailAdmin.get('/api/admin/email/messages', async (c) => {
 //   - EMAIL_OPTIN_HMAC_KEY 必須、 未設定なら 503
 // ============================================================
 emailAdmin.post('/api/admin/email/opt-in/generate-url', async (c) => {
-  const hmacKey = (c.env as { EMAIL_OPTIN_HMAC_KEY?: string }).EMAIL_OPTIN_HMAC_KEY;
+  const hmacKey = c.env.EMAIL_OPTIN_HMAC_KEY;
   if (!hmacKey) {
     return c.json({ success: false, error: 'EMAIL_OPTIN_HMAC_KEY not configured' }, 503);
   }
-  const workerUrl = (c.env as { WORKER_URL?: string }).WORKER_URL;
+  const workerUrl = c.env.WORKER_URL;
   if (!workerUrl) {
     return c.json({ success: false, error: 'WORKER_URL not configured' }, 503);
   }
@@ -587,9 +587,9 @@ emailAdmin.post('/api/admin/email/opt-in/generate-url', async (c) => {
   let ttlSeconds: number | undefined;
   if (body.ttlSeconds !== undefined) {
     const n = Number(body.ttlSeconds);
-    if (!Number.isFinite(n) || n <= 0 || n > 60 * 60 * 24 * 90) {
-      // 上限 90 日 (適切な expiry 強制、 token 寿命が長すぎると security risk)
-      return c.json({ success: false, error: 'ttlSeconds must be 1..7776000 (90 days)' }, 400);
+    if (!Number.isFinite(n) || n <= 0 || n > 60 * 60 * 24 * 30) {
+      // 上限 30 日 (token は stateless / 取り消し不可、 寿命が長いほど security risk)
+      return c.json({ success: false, error: 'ttlSeconds must be 1..2592000 (30 days)' }, 400);
     }
     ttlSeconds = Math.floor(n);
   }

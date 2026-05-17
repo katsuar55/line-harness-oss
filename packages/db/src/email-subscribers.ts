@@ -255,6 +255,12 @@ export interface RecordMarketingOptInInput {
  *
  * 法令: 特定電子メール法上、 受信者本人が明示的に opt-in フォームを介して再申請したケースは
  * 新規同意として扱える。 ただし complaint 履歴がある場合は caller 側で warning を出すこと推奨。
+ *
+ * 注 (bounce_count 保持の含意):
+ *   bounce_count は意図的に reset しない (履歴保持)。 BOUNCE_THRESHOLD=3 のため、
+ *   bounce_count=3 で再 opt-in したユーザーは **次回 bounce で即再抑制** される。
+ *   これは過去に bounce が多かったアドレスへの送信を抑制する意図的な動作。
+ *   完全に bounce 履歴をリセットしたい場合は管理画面から手動で 0 に戻す運用。
  */
 export async function recordMarketingOptIn(
   db: D1Database,

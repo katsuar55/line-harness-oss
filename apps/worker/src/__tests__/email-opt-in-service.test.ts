@@ -166,12 +166,13 @@ describe('signEmailOptInToken', () => {
     expect(a.token).toBe(b.token);
   });
 
-  it('expiresAt 省略時は ttlSeconds (default 30 日) を加算', async () => {
+  it('expiresAt 省略時は ttlSeconds (default 14 日) を加算', async () => {
     const now = 1700000000;
     const result = await signEmailOptInToken(TEST_KEY, 'a@x.com', {
       now: () => now,
     });
     expect(result.expiresAt).toBe(now + __test__.DEFAULT_TOKEN_TTL_SECONDS);
+    expect(__test__.DEFAULT_TOKEN_TTL_SECONDS).toBe(60 * 60 * 24 * 14);
   });
 
   it('ttlSeconds で expiry を指定できる', async () => {

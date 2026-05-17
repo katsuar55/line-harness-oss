@@ -32,10 +32,11 @@ describe('GET /liff/opt-in', () => {
     expect(r.body).toMatch(/cdn\.tailwindcss\.com/);
   });
 
-  it('LIFF_ID と API_BASE が JS 変数にインジェクトされる', async () => {
+  it('LIFF_ID と API_BASE が JS 変数にインジェクトされる (script-safe escape)', async () => {
     const r = await fetchPage('/liff/opt-in');
-    expect(r.body).toMatch(/const LIFF_ID = '2000000000-abcd1234'/);
-    expect(r.body).toMatch(/const API_BASE = 'https:\/\/example\.workers\.dev'/);
+    // jsonForScript で < / > / & が \uXXXX escape されるが、 通常 URL では出現しないので literal そのまま
+    expect(r.body).toMatch(/const LIFF_ID = "2000000000-abcd1234"/);
+    expect(r.body).toMatch(/const API_BASE = "https:\/\/example\.workers\.dev"/);
   });
 
   it('末尾スラッシュも 200', async () => {
@@ -78,12 +79,29 @@ describe('GET /liff/opt-in', () => {
     expect(r.body).toMatch(/re_consent/);
   });
 
-  it('XSS: LIFF_ID に HTML が混入しても escape される', async () => {
+  it('XSS: LIFF_ID 内の < > / は inline <script> 内で escape され XSS 不能', async () => {
     const r = await fetchPage('/liff/opt-in', {
       LIFF_URL: 'https://liff.line.me/<script>alert(1)</script>',
       WORKER_URL: 'https://example.com',
     });
-    expect(r.body).not.toMatch(/<script>alert\(1\)<\/script>/);
-    expect(r.body).toMatch(/&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+    // const LIFF_ID = ... 行を抽出 (literal `<script>` / `</script>` が出ると XSS)
+    const constMatch = r.body.match(/const LIFF_ID = (.+?);/);
+    expect(constMatch).not.toBeNull();
+    const constLine = constMatch?.[1] ?? '';
+    // 該当行に literal `<script>` や `</script>` が無い (escape されている)
+    expect(constLine).not.toMatch(/<script>/);
+    expect(constLine).not.toMatch(/<\/script>/);
+    // jsonForScript は < > を < > に escape するので const 行は escape 済 hex 含む
+    expect(constLine).toContain('\\u003c');
+    expect(constLine).toContain('\\u003e');
+  });
+
+  it('XSS: HTML body 部分には escape 済の値が出る (& < > " \' すべて)', async () => {
+    const r = await fetchPage('/liff/opt-in', {
+      LIFF_URL: "https://liff.line.me/<a>&\"'",
+      WORKER_URL: 'https://example.com',
+    });
+    // HTML body には raw 文字なし
+    expect(r.body).not.toMatch(/<a>&"'/);
   });
 });

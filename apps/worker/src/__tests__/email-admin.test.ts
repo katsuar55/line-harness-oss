@@ -948,7 +948,7 @@ describe('POST /api/admin/email/opt-in/generate-url', () => {
     expect(res.status).toBe(400);
   });
 
-  it('ttlSeconds が大きすぎる → 400', async () => {
+  it('ttlSeconds が大きすぎる (>30 日) → 400', async () => {
     const app = createTestApp();
     const env = makeEnvWithKey(createMockDb(), { hmacKey: 'k' });
     const res = await app.request(
@@ -959,7 +959,7 @@ describe('POST /api/admin/email/opt-in/generate-url', () => {
           Authorization: `Bearer ${TEST_API_KEY}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ email: 'a@x.com', ttlSeconds: 99999999 }), // > 90 days
+        body: JSON.stringify({ email: 'a@x.com', ttlSeconds: 60 * 60 * 24 * 31 }), // > 30 days
       },
       env,
     );

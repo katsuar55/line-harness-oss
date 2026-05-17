@@ -168,9 +168,10 @@ function parseExpiresAt(raw: string | undefined): number | null {
 /**
  * クーポンコード発行 (5β-1d で Shopify API 連動に置換、 現在は static MVP)。
  * 環境変数 EMAIL_OPTIN_DEFAULT_COUPON で固定値を出す。 未設定なら null。
+ * 注: 同名 helper を liff-opt-in.ts でも使用するため、 そちらは本 module から import する。
  */
-function getDefaultCoupon(env: Env['Bindings']): string | null {
-  const fromEnv = (env as { EMAIL_OPTIN_DEFAULT_COUPON?: string }).EMAIL_OPTIN_DEFAULT_COUPON;
+export function getDefaultCoupon(env: Env['Bindings']): string | null {
+  const fromEnv = env.EMAIL_OPTIN_DEFAULT_COUPON;
   if (fromEnv && fromEnv.trim().length > 0) return fromEnv.trim();
   return null;
 }
@@ -180,7 +181,7 @@ function getDefaultCoupon(env: Env['Bindings']): string | null {
 // ============================================================
 
 emailOptIn.get('/email/opt-in', async (c) => {
-  const hmacKey = (c.env as { EMAIL_OPTIN_HMAC_KEY?: string }).EMAIL_OPTIN_HMAC_KEY;
+  const hmacKey = c.env.EMAIL_OPTIN_HMAC_KEY;
   if (!hmacKey) {
     return c.text('Email opt-in not configured', 503);
   }
@@ -200,13 +201,18 @@ emailOptIn.get('/email/opt-in', async (c) => {
 
   const verify = await verifyEmailOptInToken(hmacKey, { email, expiresAt, token });
   if (!verify.valid) {
+    // expired vs signature_mismatch を UI で区別しない (oracle attack 防止)。
+    // 詳細理由は console.warn のみに残す (運用調査用)。
+    if (verify.error === 'expired') {
+      console.warn('[email-opt-in] GET token verify failed: expired');
+    } else if (verify.error === 'signature_mismatch') {
+      console.warn('[email-opt-in] GET token verify failed: signature_mismatch');
+    }
     return c.html(
       renderResultPage({
         success: false,
         message:
-          verify.error === 'expired'
-            ? 'リンクの有効期限が切れています。 サポートまでご連絡いただければ再発行いたします。'
-            : 'リンクが無効です。 URL をコピー&ペーストでご確認いただくか、 サポートまでご連絡ください。',
+          'リンクが無効または有効期限切れです。 お手数ですが support@naturism-diet.com までご連絡ください。',
       }),
       400,
     );
@@ -238,7 +244,7 @@ emailOptIn.get('/email/opt-in', async (c) => {
 // ============================================================
 
 emailOptIn.post('/email/opt-in', async (c) => {
-  const hmacKey = (c.env as { EMAIL_OPTIN_HMAC_KEY?: string }).EMAIL_OPTIN_HMAC_KEY;
+  const hmacKey = c.env.EMAIL_OPTIN_HMAC_KEY;
   if (!hmacKey) {
     return c.text('Email opt-in not configured', 503);
   }
@@ -276,13 +282,18 @@ emailOptIn.post('/email/opt-in', async (c) => {
 
   const verify = await verifyEmailOptInToken(hmacKey, { email, expiresAt, token });
   if (!verify.valid) {
+    // expired vs signature_mismatch を UI で区別しない (oracle attack 防止)。
+    // 詳細理由は console.warn のみに残す (運用調査用)。
+    if (verify.error === 'expired') {
+      console.warn('[email-opt-in] token verify failed: expired');
+    } else if (verify.error === 'signature_mismatch') {
+      console.warn('[email-opt-in] token verify failed: signature_mismatch');
+    }
     return c.html(
       renderResultPage({
         success: false,
         message:
-          verify.error === 'expired'
-            ? 'リンクの有効期限が切れています。 サポートまでご連絡いただければ再発行いたします。'
-            : 'リンクが無効です。 サポートまでご連絡ください。',
+          'リンクが無効または有効期限切れです。 お手数ですが support@naturism-diet.com までご連絡ください。',
       }),
       400,
     );

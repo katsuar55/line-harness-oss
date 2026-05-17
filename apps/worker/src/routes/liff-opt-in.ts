@@ -18,7 +18,8 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { performEmailOptIn, isValidEmail } from '../services/email-opt-in.js';
+import { performEmailOptIn } from '../services/email-opt-in.js';
+import { getDefaultCoupon } from './email-opt-in.js';
 import { auditSystem } from '../services/audit-logger.js';
 import type { Env } from '../index.js';
 
@@ -32,14 +33,8 @@ function getLiffUser(c: { get: (key: string) => unknown }) {
   return c.get('liffUser') as { lineUserId: string; friendId: string } | undefined;
 }
 
-function getDefaultCoupon(env: Env['Bindings']): string | null {
-  const fromEnv = (env as { EMAIL_OPTIN_DEFAULT_COUPON?: string }).EMAIL_OPTIN_DEFAULT_COUPON;
-  if (fromEnv && fromEnv.trim().length > 0) return fromEnv.trim();
-  return null;
-}
-
 const RequestSchema = z.object({
-  email: z.string().min(3).max(254),
+  email: z.string().email().max(254),
   marketingConsent: z.boolean(),
 });
 
@@ -66,9 +61,6 @@ liffOptIn.post('/api/liff/opt-in', async (c) => {
   }
 
   const email = parsed.data.email.trim();
-  if (!isValidEmail(email)) {
-    return c.json({ success: false, error: 'Invalid email format' }, 400);
-  }
 
   if (!parsed.data.marketingConsent) {
     return c.json(

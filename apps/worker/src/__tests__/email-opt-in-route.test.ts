@@ -205,23 +205,23 @@ describe('GET /email/opt-in', () => {
     expect(res.status).toBe(400);
   });
 
-  it('token 不正 → 400 + 「リンクが無効」 文言', async () => {
+  it('token 不正 → 400 + 「無効または有効期限切れ」 文言 (generic、 oracle 防止)', async () => {
     const { app } = makeApp({ hmacKey: HMAC_KEY });
     const future = Math.floor(Date.now() / 1000) + 86400;
     const res = await app.request(`/email/opt-in?email=a@x.com&e=${future}&token=${'b'.repeat(64)}`);
     expect(res.status).toBe(400);
     const body = await res.text();
-    expect(body).toContain('リンクが無効');
+    expect(body).toContain('リンクが無効または有効期限切れ');
   });
 
-  it('expired token → 400 + 「有効期限が切れて」 文言', async () => {
+  it('expired token → 400 + 同じ generic 文言 (oracle 防止)', async () => {
     const { app } = makeApp({ hmacKey: HMAC_KEY });
     const past = Math.floor(Date.now() / 1000) - 86400;
     const signed = await signEmailOptInToken(HMAC_KEY, 'a@x.com', { expiresAt: past });
     const res = await app.request(`/email/opt-in?email=a@x.com&e=${past}&token=${signed.token}`);
     expect(res.status).toBe(400);
     const body = await res.text();
-    expect(body).toContain('有効期限');
+    expect(body).toContain('リンクが無効または有効期限切れ');
   });
 
   it('valid token → 200 + 確認ページ HTML', async () => {
