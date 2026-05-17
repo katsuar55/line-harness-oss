@@ -20,11 +20,23 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { TEMPLATES, sqlEscape, buildUpsertSql, buildAllSql } from './seed-email-templates.mjs';
 
-test('TEMPLATES — 5 件 / core 4 + naturism-plugin 1', () => {
-  assert.equal(TEMPLATES.length, 5);
-  assert.equal(TEMPLATES.filter((t) => t.kind === 'core').length, 4);
+test('TEMPLATES — 6 件 / core 5 + naturism-plugin 1', () => {
+  assert.equal(TEMPLATES.length, 6);
+  assert.equal(TEMPLATES.filter((t) => t.kind === 'core').length, 5);
   assert.equal(TEMPLATES.filter((t) => t.kind === 'naturism-plugin').length, 1);
   assert.equal(TEMPLATES.find((t) => t.kind === 'naturism-plugin').id, 'tpl-reorder-reminder-v1');
+});
+
+test('TEMPLATES — opt_in_invitation (Phase 5β-1) 含む', () => {
+  const t = TEMPLATES.find((tpl) => tpl.id === 'tpl-opt-in-invitation-v1');
+  assert.ok(t, 'tpl-opt-in-invitation-v1 must exist');
+  assert.equal(t.category, 'transactional');
+  assert.equal(t.kind, 'core');
+  // opt_in_url placeholder が html/text 両方に存在
+  assert.ok(t.html.includes('{{opt_in_url}}'), 'html missing {{opt_in_url}}');
+  assert.ok(t.text.includes('{{opt_in_url}}'), 'text missing {{opt_in_url}}');
+  // name placeholder
+  assert.ok(t.html.includes('{{name}}'));
 });
 
 test('TEMPLATES — required fields すべて存在', () => {

@@ -25,6 +25,8 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     // HMAC token 検証で代替認証する (routes/email-unsubscribe.ts)。
     path === '/email/unsubscribe' ||
     path === '/email/resubscribe' ||
+    // Phase 5β-1: opt-in 確認ページ (email 受信者 = 認証不可能な外部ユーザー、 HMAC token で代替認証)
+    path === '/email/opt-in' ||
     // Round 4 PR-4: Resend webhook (Svix 署名検証で代替認証)
     path === '/api/integrations/resend/webhook' ||
     path === '/api/integrations/stripe/webhook' ||

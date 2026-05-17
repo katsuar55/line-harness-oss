@@ -66,6 +66,8 @@ const UNAUTHENTICATED_PATTERNS: Array<string | RegExp> = [
   '/webhook',
   /^\/api\/forms\/[^/]+\/submit$/,
   /^\/api\/integrations\/shopify\/webhook/,
+  // Phase 5β-1: opt-in 確認ページは公開 + HMAC 認証なので IP keyed limit を強制
+  '/email/opt-in',
 ];
 
 function isUnauthenticatedPath(path: string): boolean {

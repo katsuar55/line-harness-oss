@@ -862,3 +862,166 @@ describe('GET /api/admin/email/messages', () => {
     expect(body.data.messages[0].status).toBe('bounced');
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/email/opt-in/generate-url (Phase 5β-1)
+// ---------------------------------------------------------------------------
+
+describe('POST /api/admin/email/opt-in/generate-url', () => {
+  function makeEnvWithKey(db: D1Database, opts: { hmacKey?: string; workerUrl?: string } = {}): Env['Bindings'] {
+    return {
+      ...makeEnv(db),
+      EMAIL_OPTIN_HMAC_KEY: opts.hmacKey,
+      WORKER_URL: opts.workerUrl ?? 'https://worker.example.com',
+    } as unknown as Env['Bindings'];
+  }
+
+  it('EMAIL_OPTIN_HMAC_KEY 未設定 → 503', async () => {
+    const app = createTestApp();
+    const env = makeEnvWithKey(createMockDb(), {}); // no hmacKey
+    const res = await app.request(
+      '/api/admin/email/opt-in/generate-url',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${TEST_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email: 'a@x.com' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it('WORKER_URL 未設定 → 503', async () => {
+    const app = createTestApp();
+    const env = makeEnvWithKey(createMockDb(), { hmacKey: 'k', workerUrl: '' });
+    const res = await app.request(
+      '/api/admin/email/opt-in/generate-url',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${TEST_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email: 'a@x.com' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it('email 無し → 400', async () => {
+    const app = createTestApp();
+    const env = makeEnvWithKey(createMockDb(), { hmacKey: 'k' });
+    const res = await app.request(
+      '/api/admin/email/opt-in/generate-url',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${TEST_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('email 不正 → 400', async () => {
+    const app = createTestApp();
+    const env = makeEnvWithKey(createMockDb(), { hmacKey: 'k' });
+    const res = await app.request(
+      '/api/admin/email/opt-in/generate-url',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${TEST_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email: 'not-an-email' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('ttlSeconds が大きすぎる (>30 日) → 400', async () => {
+    const app = createTestApp();
+    const env = makeEnvWithKey(createMockDb(), { hmacKey: 'k' });
+    const res = await app.request(
+      '/api/admin/email/opt-in/generate-url',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${TEST_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email: 'a@x.com', ttlSeconds: 60 * 60 * 24 * 31 }), // > 30 days
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('valid email → 200 + 署名 URL 返却', async () => {
+    const app = createTestApp();
+    const env = makeEnvWithKey(createMockDb(), { hmacKey: 'k', workerUrl: 'https://worker.example.com' });
+    const res = await app.request(
+      '/api/admin/email/opt-in/generate-url',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${TEST_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email: 'user@example.com' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: { url: string; email: string; expiresAt: number } };
+    expect(body.success).toBe(true);
+    expect(body.data.email).toBe('user@example.com');
+    expect(body.data.url).toMatch(/^https:\/\/worker\.example\.com\/email\/opt-in\?email=user%40example\.com&e=\d+&token=[a-f0-9]{64}$/);
+    expect(body.data.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+
+  it('WORKER_URL 末尾 slash 正規化', async () => {
+    const app = createTestApp();
+    const env = makeEnvWithKey(createMockDb(), { hmacKey: 'k', workerUrl: 'https://w.example.com/' });
+    const res = await app.request(
+      '/api/admin/email/opt-in/generate-url',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${TEST_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email: 'a@x.com' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: { url: string } };
+    expect(body.data.url).toMatch(/^https:\/\/w\.example\.com\/email\/opt-in/);
+    expect(body.data.url).not.toMatch(/\/\/email/);
+  });
+
+  it('認証なし → 401', async () => {
+    const app = createTestApp();
+    const env = makeEnvWithKey(createMockDb(), { hmacKey: 'k' });
+    const res = await app.request(
+      '/api/admin/email/opt-in/generate-url',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'a@x.com' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
+});
