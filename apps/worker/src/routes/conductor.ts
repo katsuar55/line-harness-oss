@@ -29,6 +29,10 @@ import {
   generateRichMenuFromPrompt,
   RichMenuConductorError,
 } from '../services/rich-menu-conductor.js';
+import {
+  generateFormFromPrompt,
+  FormConductorError,
+} from '../services/form-conductor.js';
 
 const conductor = new Hono<Env>();
 
@@ -95,6 +99,48 @@ conductor.post('/api/conductor/scenario', async (c) => {
       );
     }
     console.error('POST /api/conductor/scenario error:', err);
+    return c.json(
+      { success: false, error: 'Internal server error' },
+      500,
+    );
+  }
+});
+
+/**
+ * POST /api/conductor/form (Phase 5γ-3)
+ * body: { prompt: string }
+ * 200: { success: true, data: { form, warnings, provider, model } }
+ */
+conductor.post('/api/conductor/form', async (c) => {
+  let body: { prompt?: unknown };
+  try {
+    body = await c.req.json<{ prompt?: unknown }>();
+  } catch {
+    return c.json({ success: false, error: 'invalid JSON body' }, 400);
+  }
+
+  if (typeof body.prompt !== 'string' || body.prompt.length === 0) {
+    return c.json(
+      { success: false, error: 'prompt is required (non-empty string)' },
+      400,
+    );
+  }
+
+  try {
+    const router = createAIRouterFromEnv(c.env);
+    const result = await generateFormFromPrompt({
+      prompt: body.prompt,
+      router,
+    });
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    if (err instanceof FormConductorError) {
+      return c.json(
+        { success: false, error: err.message, code: err.code },
+        mapErrorCodeToStatus(err.code),
+      );
+    }
+    console.error('POST /api/conductor/form error:', err);
     return c.json(
       { success: false, error: 'Internal server error' },
       500,
