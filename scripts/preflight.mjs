@@ -79,6 +79,7 @@ export const KNOWN_DUPLICATE_EXCEPTIONS = [
  */
 export const KNOWN_GAP_EXCEPTIONS = new Map([
   [38, 'Phase 5 PR-2 (nutrition_sku_map) は migration 044 で実装済み — 番号 38 は欠番のまま予約継続 (リネーム禁止)'],
+  [46, 'Phase 5α-9 (brand_config) と 5α-3 (audit_logs) を 047/048 で確保、 46 は予約欠番'],
 ]);
 
 /**

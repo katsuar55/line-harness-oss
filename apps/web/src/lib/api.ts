@@ -754,6 +754,51 @@ export const api = {
     unlinkFromFriend: (friendId: string) =>
       fetchApi<ApiResponse<null>>(`/api/friends/${friendId}/rich-menu`, { method: 'DELETE' }),
   },
+  banRecovery: {
+    get: (params?: { accountId?: string; days?: number; limit?: number }) => {
+      const q = new URLSearchParams()
+      if (params?.accountId) q.set('lineAccountId', params.accountId)
+      if (params?.days !== undefined) q.set('days', String(params.days))
+      if (params?.limit !== undefined) q.set('limit', String(params.limit))
+      const query = q.toString() ? '?' + q.toString() : ''
+      return fetchApi<ApiResponse<BanRecoveryResponse>>('/api/ban-recovery' + query)
+    },
+  },
+}
+
+// ─── Ban Recovery Types (Phase 5α-7) ───
+
+export interface BanRecoveryStats {
+  totalFollowers: number
+  totalBlocked: number
+  recoveredLastNDays: number
+  repeatBlockers: number
+}
+
+export interface RecoveredFriend {
+  friendId: string
+  lineUserId: string
+  displayName: string | null
+  pictureUrl: string | null
+  lastUnfollowedAt: string | null
+  lastRefollowedAt: string | null
+  unfollowCount: number
+}
+
+export interface BlockedFriend {
+  friendId: string
+  lineUserId: string
+  displayName: string | null
+  pictureUrl: string | null
+  lastUnfollowedAt: string | null
+  unfollowCount: number
+}
+
+export interface BanRecoveryResponse {
+  stats: BanRecoveryStats
+  params: { lineAccountId: string | null; days: number; limit: number }
+  recentlyRecovered: RecoveredFriend[]
+  currentlyBlocked: BlockedFriend[]
 }
 
 // ─── Rich Menu Types ───

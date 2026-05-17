@@ -172,12 +172,10 @@ describe('Health Routes', () => {
       expect(res.status).toBe(200);
       expect(body.success).toBe(true);
       expect(body.data.text).toBe('こんにちは！');
+      // Phase 5β-prep adoption: 第 1 引数は AIRouter インスタンスに変更、 model 引数は router 内蔵に
       expect(mockedTestAiResponse).toHaveBeenCalledWith(
-        env.AI,
+        expect.any(Object),
         'こんにちは',
-        undefined,
-        env.AI_MODEL_PRIMARY,
-        env.AI_MODEL_FALLBACK,
       );
     });
 
@@ -193,11 +191,8 @@ describe('Health Routes', () => {
       expect(res.status).toBe(200);
       expect(body.success).toBe(true);
       expect(mockedTestAiResponse).toHaveBeenCalledWith(
-        env.AI,
+        expect.any(Object),
         'テスト',
-        undefined,
-        env.AI_MODEL_PRIMARY,
-        env.AI_MODEL_FALLBACK,
       );
     });
 

@@ -478,6 +478,16 @@ describe('Templates API', () => {
   describe('PUT /api/templates/:id', () => {
     it('updates a template and returns updated data', async () => {
       vi.mocked(updateTemplate).mockResolvedValueOnce(undefined);
+      // Phase 5α-3c: PUT は audit hook で更新前 snapshot + 更新後 結果の 2 回 getTemplateById を呼ぶ
+      vi.mocked(getTemplateById).mockResolvedValueOnce({
+        id: 'tpl-1',
+        name: 'Original Name',
+        category: 'general',
+        message_type: 'text',
+        message_content: 'Old content',
+        created_at: '2026-01-01T00:00:00+09:00',
+        updated_at: '2026-01-01T00:00:00+09:00',
+      });
       vi.mocked(getTemplateById).mockResolvedValueOnce({
         id: 'tpl-1',
         name: 'Updated Name',

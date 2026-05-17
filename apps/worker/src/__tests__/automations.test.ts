@@ -508,6 +508,8 @@ describe('Automations Routes', () => {
     it('should update automation and return updated data', async () => {
       const updated = { ...sampleAutomation, name: 'Updated Name', is_active: 0 };
       vi.mocked(updateAutomation).mockResolvedValueOnce(undefined);
+      // Phase 5α-3c: PUT は audit hook で更新前 snapshot + 更新後 結果の 2 回 getAutomationById を呼ぶ
+      vi.mocked(getAutomationById).mockResolvedValueOnce(sampleAutomation);
       vi.mocked(getAutomationById).mockResolvedValueOnce(updated);
 
       const res = await app.request(

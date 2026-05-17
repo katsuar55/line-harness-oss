@@ -6,6 +6,7 @@ import {
   updateTemplate,
   deleteTemplate,
 } from '@line-crm/db';
+import { auditAdmin } from '../services/audit-logger.js';
 import type { Env } from '../index.js';
 
 const templates = new Hono<Env>();
@@ -61,28 +62,62 @@ templates.post('/api/templates', async (c) => {
 });
 
 templates.put('/api/templates/:id', async (c) => {
+  const id = c.req.param('id');
   try {
-    const id = c.req.param('id');
+    // Phase 5α-3c: 更新前 snapshot を取得して before/after を audit
+    const before = await getTemplateById(c.env.DB, id);
     const body = await c.req.json();
     await updateTemplate(c.env.DB, id, body);
     const updated = await getTemplateById(c.env.DB, id);
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
+    await auditAdmin(c, {
+      action: 'template.update',
+      targetType: 'template',
+      targetId: id,
+      before: before
+        ? { name: before.name, message_type: before.message_type, category: before.category }
+        : null,
+      after: { name: updated.name, message_type: updated.message_type, category: updated.category },
+    });
     return c.json({
       success: true,
       data: { id: updated.id, name: updated.name, category: updated.category, messageType: updated.message_type, messageContent: updated.message_content },
     });
   } catch (err) {
     console.error('PUT /api/templates/:id error:', err);
+    await auditAdmin(c, {
+      action: 'template.update',
+      targetType: 'template',
+      targetId: id,
+      result: 'failure',
+      errorMessage: err instanceof Error ? err.message.slice(0, 480) : 'unknown',
+    });
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 
 templates.delete('/api/templates/:id', async (c) => {
+  const id = c.req.param('id');
   try {
-    await deleteTemplate(c.env.DB, c.req.param('id'));
+    // Phase 5α-3b: destructive 操作なので削除前 snapshot を audit
+    const before = await getTemplateById(c.env.DB, id);
+    await deleteTemplate(c.env.DB, id);
+    await auditAdmin(c, {
+      action: 'template.delete',
+      targetType: 'template',
+      targetId: id,
+      before: before ? { name: before.name, message_type: before.message_type, category: before.category } : null,
+    });
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/templates/:id error:', err);
+    await auditAdmin(c, {
+      action: 'template.delete',
+      targetType: 'template',
+      targetId: id,
+      result: 'failure',
+      errorMessage: err instanceof Error ? err.message.slice(0, 480) : 'unknown',
+    });
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

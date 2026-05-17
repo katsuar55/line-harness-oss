@@ -86,6 +86,8 @@ export async function upsertFriend(
   const existing = await getFriendByLineUserId(db, input.lineUserId);
 
   if (existing) {
+    // Phase 5α-7: 既存友だちが is_following=0 (ブロック済) かつ last_unfollowed_at が
+    //   セット済の場合は last_refollowed_at を now でマーク (= ブロック復活)
     await db
       .prepare(
         `UPDATE friends
@@ -93,6 +95,10 @@ export async function upsertFriend(
              picture_url = ?,
              status_message = ?,
              is_following = 1,
+             last_refollowed_at = CASE
+               WHEN is_following = 0 AND last_unfollowed_at IS NOT NULL THEN ?
+               ELSE last_refollowed_at
+             END,
              updated_at = ?
          WHERE line_user_id = ?`,
       )
@@ -100,6 +106,7 @@ export async function upsertFriend(
         'displayName' in input ? (input.displayName ?? null) : existing.display_name,
         'pictureUrl' in input ? (input.pictureUrl ?? null) : existing.picture_url,
         'statusMessage' in input ? (input.statusMessage ?? null) : existing.status_message,
+        now,
         now,
         input.lineUserId,
       )
@@ -133,14 +140,36 @@ export async function updateFriendFollowStatus(
   lineUserId: string,
   isFollowing: boolean,
 ): Promise<void> {
-  await db
-    .prepare(
-      `UPDATE friends
-       SET is_following = ?, updated_at = ?
-       WHERE line_user_id = ?`,
-    )
-    .bind(isFollowing ? 1 : 0, jstNow(), lineUserId)
-    .run();
+  const now = jstNow();
+  if (isFollowing) {
+    // Phase 5α-7: 直前に unfollow されていたら last_refollowed_at をマーク (ブロック復活)
+    await db
+      .prepare(
+        `UPDATE friends
+         SET is_following = 1,
+             last_refollowed_at = CASE
+               WHEN is_following = 0 AND last_unfollowed_at IS NOT NULL THEN ?
+               ELSE last_refollowed_at
+             END,
+             updated_at = ?
+         WHERE line_user_id = ?`,
+      )
+      .bind(now, now, lineUserId)
+      .run();
+  } else {
+    // Phase 5α-7: unfollow を timestamp + count で記録
+    await db
+      .prepare(
+        `UPDATE friends
+         SET is_following = 0,
+             last_unfollowed_at = ?,
+             unfollow_count = unfollow_count + 1,
+             updated_at = ?
+         WHERE line_user_id = ?`,
+      )
+      .bind(now, now, lineUserId)
+      .run();
+  }
 }
 
 export async function getFriendCount(db: D1Database): Promise<number> {

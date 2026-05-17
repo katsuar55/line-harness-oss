@@ -25,6 +25,7 @@ import {
   type EmailDispatchConfig,
 } from './email-dispatch-config.js';
 import type { EmailCategory } from '@line-crm/email-sdk';
+import { brandToVariables, getBrandConfigForAccount } from '@line-crm/db';
 
 export interface SendEmailActionParams {
   /** email_templates.id を指定すると DB からテンプレ取得 (subject/htmlContent/textContent 不要) */
@@ -39,6 +40,21 @@ export interface SendEmailActionParams {
   preheader?: string;
   /** デフォルト 'marketing'。'transactional' で配信停止後も届く */
   category?: EmailCategory;
+  /**
+   * Phase 5α-8: caller (event-bus / cron / webhook handler) が template の {{var}}
+   * 用に渡す追加変数。 brand 変数 (Phase 5α-9) と friend.name の上に merge され、
+   * **同 key があれば caller 側を優先**。
+   *
+   * 例: {{order_number}} を埋めたい場合、 caller が
+   *   { eventVariables: { order_number: String(orderNumber), total_amount: String(totalPrice) } }
+   * を渡す。 値は文字列に変換して渡すこと (renderer は string 型しか受けない)。
+   *
+   * 用途:
+   * - automation send_email action: event-bus が payload.eventData を mapping して渡す
+   * - Shopify webhook handler: order_paid 等の data を直接渡す
+   * - cron handler: scheduled reminder で動的値を埋める
+   */
+  eventVariables?: Record<string, string>;
 }
 
 export interface SendEmailActionContext {
@@ -110,13 +126,25 @@ export async function executeSendEmailAction(
     preheader = params.preheader;
   }
 
-  // 3. friend display_name 等の variables を展開用に取得 (best-effort)
+  // 3. friend display_name + brand 値を variables に展開
+  // - friend.display_name → {{name}}
+  // - brand_config (account-specific or default) → {{brand_name}} {{shop_url}} 等
+  // brand 注入は Phase 5α-9 / Ultraplan v4 大方針 2 (汎用性 multi-brand) 対応。
+  // friend.line_account_id が NULL なら default brand (= naturism) が返る。
   const friend = await ctx.db
-    .prepare(`SELECT display_name FROM friends WHERE id = ? LIMIT 1`)
+    .prepare(`SELECT display_name, line_account_id FROM friends WHERE id = ? LIMIT 1`)
     .bind(ctx.friendId)
-    .first<{ display_name: string | null }>();
+    .first<{ display_name: string | null; line_account_id: string | null }>();
+  const brand = await getBrandConfigForAccount(ctx.db, friend?.line_account_id ?? null);
+  // Phase 5α-8: variables の merge 順序 (後勝ち)
+  //   1. brand_config (brand_name / shop_url 等) - 全送信共通
+  //   2. friend.display_name → name
+  //   3. caller eventVariables (order_number 等) - イベント由来、 上書き可能
+  // この順序で「brand を caller から override 可能」 「event vars が name を override 可能」 にする。
   const variables: Record<string, string> = {
+    ...(brand ? brandToVariables(brand) : {}),
     name: friend?.display_name ?? 'お客様',
+    ...(params.eventVariables ?? {}),
   };
 
   // 4. dispatcher 経由で送信

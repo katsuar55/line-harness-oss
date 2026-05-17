@@ -26,6 +26,12 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import type { FoodAnalysis } from '@line-crm/db';
+// Phase 5β-prep adoption (2026-05-16): 薬機 NG リストを @line-crm/ai-provider に集約
+import {
+  PROHIBITED_PHRASES,
+  REDACTION_TOKEN,
+  redactProhibitedPhrases,
+} from '@line-crm/ai-provider';
 
 // ----------------------------------------------------------------
 // 定数
@@ -38,49 +44,9 @@ const DEFAULT_MAX_TOKENS = 1024;
 const SUPPORTED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
 type SupportedMimeType = (typeof SUPPORTED_MIME_TYPES)[number];
 
-/**
- * 薬機法・医療系の効能効果断定ワード。
- *
- * **位置づけ**: defense-in-depth の二次防御。一次防御は SYSTEM_PROMPT で AI に
- * 「効能効果を書かない」よう指示する側。ここはそれをすり抜けたケース向け。
- *
- * 制限事項: 完全網羅ではない。AI が予期せぬ表記揺れ (例: カタカナ "ナオル"、
- * 英語 "cure") を返した場合は通過する可能性がある。本格的な薬機チェックには
- * 専用の辞書 + 形態素解析が必要。
- *
- * リスト方針: 平易なひらがな・漢字 + 一般的なカタカナ揺れを最低限カバー。
- */
-const PROHIBITED_PHRASES = [
-  // 完治/治療系
-  '治る',
-  '治す',
-  '治療',
-  '完治',
-  '治癒',
-  'ナオル',
-  // 効能系
-  '効く',
-  '効果絶大',
-  '即効',
-  // 病気が消える系
-  '病気が改善',
-  '症状が消える',
-  'がんが消える',
-  '癌が消える',
-  // 予防系 (断定)
-  '予防できる',
-  '予防効果',
-  // 医薬品扱い系
-  '医薬品',
-  '副作用なし',
-  // 過剰保証
-  '保証',
-  // 英語 (AI が稀に混ぜる)
-  'cure',
-  'heal',
-] as const;
-
-const REDACTION_TOKEN = '[省略]';
+// PROHIBITED_PHRASES / REDACTION_TOKEN は @line-crm/ai-provider から import (上記)。
+// 旧: ローカル定義 (defense-in-depth の二次防御リスト) → 集約完了
+// (food-analyzer / monthly-food-report / nutrition-recommender の 3 重定義を解消)
 
 // ----------------------------------------------------------------
 // Zod スキーマ — Claude が返す JSON を実行時検証する
@@ -415,23 +381,8 @@ export function sanitizeAnalysis(analysis: FoodAnalysis): FoodAnalysis {
  */
 function redactProhibited(text: string): string {
   if (!text) return text;
-  let result = text;
-  for (const phrase of PROHIBITED_PHRASES) {
-    if (!phrase) continue;
-    // 英語ワードは case-insensitive、日本語ワードは exact match
-    const isAscii = /^[\x00-\x7f]+$/.test(phrase);
-    if (isAscii) {
-      const re = new RegExp(escapeRegExp(phrase), 'gi');
-      result = result.replace(re, REDACTION_TOKEN);
-    } else {
-      result = result.split(phrase).join(REDACTION_TOKEN);
-    }
-  }
-  return result;
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Phase 5β-prep adoption: @line-crm/ai-provider の集約済 redact 関数を使用
+  return redactProhibitedPhrases(text).text;
 }
 
 /**

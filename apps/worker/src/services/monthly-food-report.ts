@@ -25,6 +25,12 @@ import {
   jstNow,
 } from '@line-crm/db';
 import type { DailyFoodStats } from '@line-crm/db';
+// Phase 5β-prep adoption (2026-05-16): 薬機 NG リストを @line-crm/ai-provider に集約
+import {
+  PROHIBITED_PHRASES,
+  REDACTION_TOKEN,
+  redactProhibitedPhrases,
+} from '@line-crm/ai-provider';
 
 const CRON_JOB_NAME = 'monthly-food-report';
 
@@ -36,31 +42,8 @@ const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 const ANALYSIS_TIMEOUT_MS = 30_000;
 const ANALYSIS_MAX_TOKENS = 600;
 
-// food-analyzer.ts の PROHIBITED_PHRASES と同期 (二重ガード)
-const PROHIBITED_PHRASES = [
-  '治る',
-  '治す',
-  '治療',
-  '完治',
-  '治癒',
-  'ナオル',
-  '効く',
-  '効果絶大',
-  '即効',
-  '病気が改善',
-  '症状が消える',
-  'がんが消える',
-  '癌が消える',
-  '予防できる',
-  '予防効果',
-  '医薬品',
-  '副作用なし',
-  '保証',
-  'cure',
-  'heal',
-] as const;
-
-const REDACTION_TOKEN = '[省略]';
+// PROHIBITED_PHRASES / REDACTION_TOKEN は @line-crm/ai-provider から import (上記)。
+// 旧: ローカル定義 → 集約完了 (food-analyzer / nutrition-recommender と 3 重定義を解消)。
 
 const SUMMARY_SYSTEM_PROMPT = `あなたは管理栄養士のアシスタントです。ユーザの 1 ヶ月分の食事データから、
 励ましのトーンで短い要約を生成してください。
@@ -396,22 +379,8 @@ export function previousMonthRange(now: string): {
 
 function redactProhibited(text: string): string {
   if (!text) return text;
-  let result = text;
-  for (const phrase of PROHIBITED_PHRASES) {
-    if (!phrase) continue;
-    const isAscii = /^[\x00-\x7f]+$/.test(phrase);
-    if (isAscii) {
-      const re = new RegExp(escapeRegExp(phrase), 'gi');
-      result = result.replace(re, REDACTION_TOKEN);
-    } else {
-      result = result.split(phrase).join(REDACTION_TOKEN);
-    }
-  }
-  return result;
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Phase 5β-prep adoption: @line-crm/ai-provider の集約済 redact 関数を使用
+  return redactProhibitedPhrases(text).text;
 }
 
 function roundTo1(n: number): number {

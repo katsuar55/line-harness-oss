@@ -14,6 +14,7 @@ import type { Friend as DbFriend, Tag as DbTag } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildEmailDispatchConfig } from '../services/email-dispatch-config.js';
 import { buildMessage } from '../services/step-delivery.js';
+import { auditAdmin } from '../services/audit-logger.js';
 import type { Env } from '../index.js';
 
 const friends = new Hono<Env>();
@@ -421,17 +422,37 @@ friends.put('/api/friends/:id/assign-staff', async (c) => {
 
 // PUT /api/friends/:id/blacklist - ブラックリスト設定/解除
 friends.put('/api/friends/:id/blacklist', async (c) => {
+  const friendId = c.req.param('id');
   try {
-    const friendId = c.req.param('id');
     const body = await c.req.json<{ blacklisted: boolean }>();
     const value = body.blacklisted ? 1 : 0;
+    // Phase 5α-3b: blacklist は配信影響大の destructive 操作なので before/after audit
+    const before = await c.env.DB
+      .prepare('SELECT is_blacklisted, line_account_id FROM friends WHERE id = ?')
+      .bind(friendId)
+      .first<{ is_blacklisted: number | null; line_account_id: string | null }>();
     await c.env.DB
       .prepare('UPDATE friends SET is_blacklisted = ?, updated_at = ? WHERE id = ?')
       .bind(value, new Date(Date.now() + 9 * 3600_000).toISOString().replace('Z', ''), friendId)
       .run();
+    await auditAdmin(c, {
+      action: value === 1 ? 'friend.blacklist.set' : 'friend.blacklist.unset',
+      targetType: 'friend',
+      targetId: friendId,
+      lineAccountId: before?.line_account_id ?? null,
+      before: { is_blacklisted: before?.is_blacklisted ?? 0 },
+      after: { is_blacklisted: value },
+    });
     return c.json({ success: true, data: { friendId, is_blacklisted: value } });
   } catch (err) {
     console.error('PUT /api/friends/:id/blacklist error:', err);
+    await auditAdmin(c, {
+      action: 'friend.blacklist',
+      targetType: 'friend',
+      targetId: friendId,
+      result: 'failure',
+      errorMessage: err instanceof Error ? err.message.slice(0, 480) : 'unknown',
+    });
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

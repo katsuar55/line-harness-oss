@@ -8,6 +8,7 @@ import {
   updateAccountMigration,
 } from '@line-crm/db';
 import { testAiResponse } from '../services/ai-response.js';
+import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
 import type { Env } from '../index.js';
 
 const health = new Hono<Env>();
@@ -17,7 +18,9 @@ const health = new Hono<Env>();
 health.get('/api/ai-test', async (c) => {
   const message = c.req.query('q') || 'こんにちは';
   try {
-    const result = await testAiResponse(c.env.AI, message, undefined, c.env.AI_MODEL_PRIMARY, c.env.AI_MODEL_FALLBACK);
+    // Phase 5β-prep adoption: AIRouter 経由
+    const router = createAIRouterFromEnv(c.env);
+    const result = await testAiResponse(router, message);
     return c.json({ success: true, data: result });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
