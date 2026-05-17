@@ -26,6 +26,7 @@ import {
 } from './email-dispatch-config.js';
 import type { EmailCategory } from '@line-crm/email-sdk';
 import { brandToVariables, getBrandConfigForAccount } from '@line-crm/db';
+import { signEmailOptInToken } from './email-opt-in.js';
 
 export interface SendEmailActionParams {
   /** email_templates.id を指定すると DB からテンプレ取得 (subject/htmlContent/textContent 不要) */
@@ -61,6 +62,17 @@ export interface SendEmailActionContext {
   db: D1Database;
   friendId: string;
   emailConfig: EmailDispatchConfig;
+  /**
+   * Phase 5β-1d-1: {{opt_in_url}} placeholder の自動 inject 用 config。
+   * - 省略時: template の {{opt_in_url}} は literal で残る (旧挙動互換)
+   * - 設定時 + template に {{opt_in_url}} 含む + eventVariables.opt_in_url 未設定 → 自動生成
+   */
+  optInUrlConfig?: {
+    hmacKey: string;
+    workerUrl: string;
+    /** 省略時は service の default (14 日) */
+    ttlSeconds?: number;
+  };
 }
 
 export interface SendEmailActionResult {
@@ -146,6 +158,32 @@ export async function executeSendEmailAction(
     name: friend?.display_name ?? 'お客様',
     ...(params.eventVariables ?? {}),
   };
+
+  // Phase 5β-1d-1: {{opt_in_url}} 自動 inject
+  // 条件: template が placeholder を含む + caller が opt_in_url を未指定 + config あり
+  // → recipient email から HMAC token 署名済 URL を生成
+  const templateMentionsOptInUrl =
+    htmlContent.includes('{{opt_in_url}}') || textContent.includes('{{opt_in_url}}');
+  if (templateMentionsOptInUrl && variables.opt_in_url === undefined && ctx.optInUrlConfig) {
+    try {
+      const signed = await signEmailOptInToken(ctx.optInUrlConfig.hmacKey, subscriber.email, {
+        ttlSeconds: ctx.optInUrlConfig.ttlSeconds,
+      });
+      const base = ctx.optInUrlConfig.workerUrl.replace(/\/$/, '');
+      variables.opt_in_url = `${base}/email/opt-in?email=${encodeURIComponent(signed.email)}&e=${signed.expiresAt}&token=${signed.token}`;
+    } catch (err) {
+      // signing 失敗時は inject せず、 template literal が残る (送信は継続)
+      // 致命的バグでない限り起きないが、 fail-soft 設計
+      console.warn(
+        '[send-email-action] opt_in_url 自動 inject 失敗:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  } else if (templateMentionsOptInUrl && variables.opt_in_url === undefined && !ctx.optInUrlConfig) {
+    console.warn(
+      '[send-email-action] template に {{opt_in_url}} があるが optInUrlConfig 未指定 — caller が eventVariables.opt_in_url を渡すか optInUrlConfig を設定すること',
+    );
+  }
 
   // 4. dispatcher 経由で送信
   const deps: ChannelDispatcherDeps = {

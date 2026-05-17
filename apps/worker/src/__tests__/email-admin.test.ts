@@ -1025,3 +1025,192 @@ describe('POST /api/admin/email/opt-in/generate-url', () => {
     expect(res.status).toBe(401);
   });
 });
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/email/opt-in/candidates (Phase 5β-1d-1)
+// ---------------------------------------------------------------------------
+
+describe('GET /api/admin/email/opt-in/candidates', () => {
+  function createMockDbWithCandidates(rows: Array<{
+    email: string;
+    first_name: string | null;
+    last_name: string | null;
+    shopify_customer_id: string;
+  }>): D1Database {
+    return {
+      prepare: vi.fn((sql: string) => ({
+        bind: vi.fn(() => ({
+          first: vi.fn(async () => null),
+          all: vi.fn(async () => {
+            if (sql.includes('FROM shopify_customers sc') && sql.includes('LEFT JOIN email_subscribers')) {
+              return { results: rows, success: true };
+            }
+            return { results: [], success: true };
+          }),
+          run: vi.fn(async () => ({ success: true })),
+        })),
+        first: vi.fn(async () => null),
+        all: vi.fn(async () => ({ results: [], success: true })),
+        run: vi.fn(async () => ({ success: true })),
+      })),
+      dump: vi.fn(),
+      batch: vi.fn(async () => []),
+      exec: vi.fn(async () => ({ count: 0, duration: 0 })),
+    } as unknown as D1Database;
+  }
+
+  it('200 + candidates array (Shopify 顧客で email_subscribers 非 active を JOIN 除外)', async () => {
+    const app = createTestApp();
+    const env = makeEnv(
+      createMockDbWithCandidates([
+        {
+          email: 'cand1@x.com',
+          first_name: 'Taro',
+          last_name: 'Yamada',
+          shopify_customer_id: '111',
+        },
+        {
+          email: 'cand2@x.com',
+          first_name: null,
+          last_name: null,
+          shopify_customer_id: '222',
+        },
+      ]),
+    );
+    const res = await app.request(
+      '/api/admin/email/opt-in/candidates?limit=10',
+      { headers: { Authorization: `Bearer ${TEST_API_KEY}` } },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { candidates: Array<{ email: string; firstName: string | null; shopifyCustomerId: string }>; count: number };
+    };
+    expect(body.data.count).toBe(2);
+    expect(body.data.candidates[0]).toEqual({
+      email: 'cand1@x.com',
+      firstName: 'Taro',
+      lastName: 'Yamada',
+      shopifyCustomerId: '111',
+    });
+  });
+
+  it('limit/offset query が反映される (上限 500 で clamp)', async () => {
+    const app = createTestApp();
+    const env = makeEnv(createMockDbWithCandidates([]));
+    const res = await app.request(
+      '/api/admin/email/opt-in/candidates?limit=99999&offset=10',
+      { headers: { Authorization: `Bearer ${TEST_API_KEY}` } },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { limit: number; offset: number } };
+    expect(body.data.limit).toBe(500); // clamped
+    expect(body.data.offset).toBe(10);
+  });
+
+  it('認証なし → 401', async () => {
+    const app = createTestApp();
+    const env = makeEnv(createMockDbWithCandidates([]));
+    const res = await app.request('/api/admin/email/opt-in/candidates', {}, env);
+    expect(res.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/email/opt-in/send-invitations (Phase 5β-1d-1)
+// ---------------------------------------------------------------------------
+
+describe('POST /api/admin/email/opt-in/send-invitations', () => {
+  function makeFullEnv(opts: { hmacKey?: string; workerUrl?: string; resendKey?: string; emailFrom?: string } = {}): Env['Bindings'] {
+    return {
+      ...makeEnv(createMockDb()),
+      EMAIL_OPTIN_HMAC_KEY: opts.hmacKey,
+      WORKER_URL: opts.workerUrl ?? 'https://w.example.com',
+      RESEND_API_KEY: opts.resendKey ?? 're_test',
+      EMAIL_FROM: opts.emailFrom ?? 'noreply@example.com',
+      EMAIL_REPLY_TO: 'support@example.com',
+      EMAIL_UNSUBSCRIBE_BASE_URL: 'https://example.com/email/unsubscribe',
+      EMAIL_UNSUBSCRIBE_HMAC_KEY: 'a'.repeat(64),
+      EMAIL_LEGAL_FOOTER_HTML: '<p>footer</p>',
+      EMAIL_LEGAL_FOOTER_TEXT: 'footer',
+    } as unknown as Env['Bindings'];
+  }
+
+  it('EMAIL_OPTIN_HMAC_KEY 未設定 → 503', async () => {
+    const app = createTestApp();
+    const env = makeFullEnv({}); // hmacKey なし
+    const res = await app.request(
+      '/api/admin/email/opt-in/send-invitations',
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TEST_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipients: [{ email: 'a@x.com' }] }),
+      },
+      env,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it('recipients 無し → 400', async () => {
+    const app = createTestApp();
+    const env = makeFullEnv({ hmacKey: 'k' });
+    const res = await app.request(
+      '/api/admin/email/opt-in/send-invitations',
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TEST_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipients: [] }),
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('recipients > 200 → 400', async () => {
+    const app = createTestApp();
+    const env = makeFullEnv({ hmacKey: 'k' });
+    const tooMany = Array.from({ length: 201 }, (_, i) => ({ email: `r${i}@x.com` }));
+    const res = await app.request(
+      '/api/admin/email/opt-in/send-invitations',
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TEST_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipients: tooMany }),
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('recipient.email が string でない → 400', async () => {
+    const app = createTestApp();
+    const env = makeFullEnv({ hmacKey: 'k' });
+    const res = await app.request(
+      '/api/admin/email/opt-in/send-invitations',
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TEST_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipients: [{ email: 123 }] }),
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('認証なし → 401', async () => {
+    const app = createTestApp();
+    const env = makeFullEnv({ hmacKey: 'k' });
+    const res = await app.request(
+      '/api/admin/email/opt-in/send-invitations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipients: [{ email: 'a@x.com' }] }),
+      },
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
+});
