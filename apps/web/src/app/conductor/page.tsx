@@ -2,9 +2,10 @@
 
 /**
  * Phase 5γ-5b: AI Conductor 統合 UI
+ * Phase 5γ-5c: DB 保存 one-click 機能追加
  *
  * 4 種 conductor (scenario / rich-menu / form / message) を 1 ページにまとめた
- * Visual エディタ代替。 自然言語プロンプト → AI 生成 → JSON プレビュー。
+ * Visual エディタ代替。 自然言語プロンプト → AI 生成 → JSON プレビュー → DB 保存。
  *
  * 大方針 1 (AI ネイティブ設計) の本丸 UI。 シナリオ / リッチメニュー / フォーム /
  * メッセージ作成 GUI を AI Conductor で代替する。
@@ -14,6 +15,11 @@
  * - prompt textarea + Generate ボタン
  * - 結果は preview area に JSON で表示 + warnings + provider/model
  * - エラー時は HTTP status + code を表示 (400/502/503/504/500)
+ * - **DB に保存** ボタン: 既存 endpoint へ POST (workflow closure)
+ *   - scenario: /api/scenarios + N x /api/scenarios/:id/steps
+ *   - rich-menu: /api/rich-menus (LINE API 直送、 画像は後で uploadImage)
+ *   - form: /api/forms
+ *   - message: /api/templates
  */
 
 import { useState, useCallback } from 'react'
@@ -23,6 +29,7 @@ import {
   type ConductorRichMenuResult,
   type ConductorFormResult,
   type ConductorMessageResult,
+  type RichMenuArea,
 } from '@/lib/api'
 import Header from '@/components/layout/header'
 
@@ -200,7 +207,8 @@ export default function ConductorPage() {
           <p className="text-sm text-gray-600 mt-1">
             AI (Claude / Workers AI) がプロンプトから シナリオ / リッチメニュー / フォーム /
             メッセージテンプレートの構造化 JSON を生成します。 プレビュー確認後、
-            既存の管理画面 (シナリオ / リッチメニュー / フォーム / テンプレート) で保存してください。
+            <strong>「DB に保存」</strong> ボタンで既存のデータベースに直接保存できます
+            (リッチメニューは画像なしで作成 → 後で /rich-menus 管理画面でアップロード)。
           </p>
         </div>
 
@@ -324,13 +332,132 @@ export default function ConductorPage() {
 // Result display
 // ============================================================
 
+// ============================================================
+// Save logic (5γ-5c: DB 保存 one-click)
+// ============================================================
+
+type SaveStatus =
+  | { kind: 'idle' }
+  | { kind: 'saving' }
+  | { kind: 'success'; id: string; viewPath: string }
+  | { kind: 'error'; message: string }
+
+async function saveResult(result: ConductorResult): Promise<{ id: string; viewPath: string }> {
+  switch (result.kind) {
+    case 'message': {
+      const { template, messageContent, messageType } = result.data
+      const resp = await api.templates.create({
+        name: template.name,
+        category: template.category ?? 'general',
+        messageType,
+        messageContent,
+      })
+      if (!resp.success) {
+        throw new Error(resp.error ?? 'テンプレート保存に失敗しました')
+      }
+      return { id: resp.data.id, viewPath: '/templates' }
+    }
+
+    case 'form': {
+      const { form } = result.data
+      const resp = await api.forms.create({
+        name: form.name,
+        description: form.description,
+        fields: form.fields,
+        onSubmitTagId: form.onSubmitTagId,
+        onSubmitScenarioId: form.onSubmitScenarioId,
+        saveToMetadata: form.saveToMetadata,
+      })
+      if (!resp.success) {
+        throw new Error(resp.error ?? 'フォーム保存に失敗しました')
+      }
+      return { id: resp.data.id, viewPath: '/forms' }
+    }
+
+    case 'scenario': {
+      const { scenario, steps } = result.data
+      // 1. シナリオ作成
+      const scenarioResp = await api.scenarios.create({
+        name: scenario.name,
+        description: scenario.description,
+        triggerType: scenario.triggerType,
+        triggerTagId: scenario.triggerTagId,
+        isActive: scenario.isActive,
+      })
+      if (!scenarioResp.success) {
+        throw new Error(scenarioResp.error ?? 'シナリオ保存に失敗しました')
+      }
+      const scenarioId = scenarioResp.data.id
+      // 2. ステップを順次追加
+      for (const step of steps) {
+        const stepResp = await api.scenarios.addStep(scenarioId, {
+          stepOrder: step.stepOrder,
+          delayMinutes: step.delayMinutes,
+          messageType: step.messageType,
+          messageContent: step.messageContent,
+          channel: step.channel,
+          conditionType: step.conditionType,
+          conditionValue: step.conditionValue,
+        })
+        if (!stepResp.success) {
+          throw new Error(
+            `シナリオは作成されましたがステップ ${step.stepOrder} の保存に失敗: ${stepResp.error ?? 'unknown'}`,
+          )
+        }
+      }
+      return { id: scenarioId, viewPath: '/scenarios' }
+    }
+
+    case 'rich-menu': {
+      const { richMenu } = result.data
+      // ConductorRichMenuResult.areas[].action は Record<string, unknown> として宣言済 (AI 出力の柔軟性のため)。
+      // api.richMenus.create は RichMenuArea[] (action は判別 union) を要求するが、
+      // conductor service が Zod discriminatedUnion で action を検証済なので構造は互換。
+      const resp = await api.richMenus.create({
+        size: richMenu.size,
+        selected: richMenu.selected,
+        name: richMenu.name,
+        chatBarText: richMenu.chatBarText,
+        areas: richMenu.areas as unknown as RichMenuArea[],
+      })
+      if (!resp.success) {
+        throw new Error(resp.error ?? 'リッチメニュー作成に失敗しました')
+      }
+      return { id: resp.data.richMenuId, viewPath: '/rich-menus' }
+    }
+  }
+}
+
+// ============================================================
+// Result display
+// ============================================================
+
 function ResultDisplay({ result }: { result: ConductorResult }) {
   const [showRaw, setShowRaw] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: 'idle' })
 
   // common metadata
   const warnings = result.data.warnings
   const provider = result.data.provider
   const model = result.data.model
+
+  const handleSave = useCallback(async () => {
+    setSaveStatus({ kind: 'saving' })
+    try {
+      const { id, viewPath } = await saveResult(result)
+      setSaveStatus({ kind: 'success', id, viewPath })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setSaveStatus({ kind: 'error', message })
+    }
+  }, [result])
+
+  const kindLabel: Record<ConductorKind, string> = {
+    scenario: 'シナリオ',
+    'rich-menu': 'リッチメニュー',
+    form: 'フォーム',
+    message: 'テンプレート',
+  }
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
@@ -378,6 +505,64 @@ function ResultDisplay({ result }: { result: ConductorResult }) {
         ) : (
           <FormattedResult result={result} />
         )}
+
+        {/* Save section (5γ-5c) */}
+        <div className="border-t border-gray-200 pt-4 space-y-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="text-xs text-gray-600">
+              プレビュー OK なら DB に直接保存 (確認しないと適用されません)
+            </div>
+            <button
+              onClick={handleSave}
+              disabled={saveStatus.kind === 'saving' || saveStatus.kind === 'success'}
+              className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-md transition-colors whitespace-nowrap"
+            >
+              {saveStatus.kind === 'saving'
+                ? '保存中…'
+                : saveStatus.kind === 'success'
+                  ? '✓ 保存済み'
+                  : `${kindLabel[result.kind]} を DB に保存`}
+            </button>
+          </div>
+
+          {saveStatus.kind === 'success' && (
+            <div className="bg-green-50 border border-green-200 rounded p-3 text-sm">
+              <div className="font-medium text-green-900">✓ 保存しました</div>
+              <div className="text-xs text-green-700 mt-1">
+                ID:{' '}
+                <code className="font-mono px-1.5 py-0.5 bg-green-100 rounded">
+                  {saveStatus.id}
+                </code>
+              </div>
+              <a
+                href={saveStatus.viewPath}
+                className="inline-block mt-2 text-xs text-green-700 hover:text-green-900 underline"
+              >
+                {kindLabel[result.kind]}管理画面を開く →
+              </a>
+              {result.kind === 'rich-menu' && (
+                <div className="text-xs text-yellow-700 mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded">
+                  ⚠️ LINE 側でメニューを表示するには、 リッチメニュー管理画面で画像をアップロード + 「デフォルトに設定」 が必要です。
+                </div>
+              )}
+            </div>
+          )}
+
+          {saveStatus.kind === 'error' && (
+            <div className="bg-red-50 border border-red-200 rounded p-3 text-sm">
+              <div className="font-medium text-red-900">✗ 保存失敗</div>
+              <div className="text-xs text-red-700 mt-1 break-words">
+                {saveStatus.message}
+              </div>
+              <button
+                onClick={() => setSaveStatus({ kind: 'idle' })}
+                className="text-xs text-red-700 hover:text-red-900 underline mt-2"
+              >
+                リトライ
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
