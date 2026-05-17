@@ -764,6 +764,104 @@ export const api = {
       return fetchApi<ApiResponse<BanRecoveryResponse>>('/api/ban-recovery' + query)
     },
   },
+  conductor: {
+    scenario: (prompt: string) =>
+      fetchApi<ApiResponse<ConductorScenarioResult>>('/api/conductor/scenario', {
+        method: 'POST',
+        body: JSON.stringify({ prompt }),
+      }),
+    richMenu: (prompt: string) =>
+      fetchApi<ApiResponse<ConductorRichMenuResult>>('/api/conductor/rich-menu', {
+        method: 'POST',
+        body: JSON.stringify({ prompt }),
+      }),
+    form: (prompt: string) =>
+      fetchApi<ApiResponse<ConductorFormResult>>('/api/conductor/form', {
+        method: 'POST',
+        body: JSON.stringify({ prompt }),
+      }),
+    message: (prompt: string) =>
+      fetchApi<ApiResponse<ConductorMessageResult>>('/api/conductor/message', {
+        method: 'POST',
+        body: JSON.stringify({ prompt }),
+      }),
+  },
+}
+
+// ─── AI Conductor Types (Phase 5γ-5b) ───
+
+export interface ConductorScenarioResult {
+  scenario: {
+    name: string
+    description: string | null
+    triggerType: 'friend_add' | 'tag_added' | 'manual'
+    triggerTagId: string | null
+    isActive: boolean
+  }
+  steps: Array<{
+    stepOrder: number
+    delayMinutes: number
+    messageType: 'text' | 'image' | 'flex'
+    messageContent: string
+    channel: 'line' | 'email' | 'both'
+    conditionType: string | null
+    conditionValue: string | null
+  }>
+  warnings: string[]
+  provider: string
+  model: string
+}
+
+export interface ConductorRichMenuResult {
+  richMenu: {
+    size: { width: number; height: number }
+    selected: boolean
+    name: string
+    chatBarText: string
+    areas: Array<{
+      bounds: { x: number; y: number; width: number; height: number }
+      action: Record<string, unknown>
+    }>
+  }
+  warnings: string[]
+  provider: string
+  model: string
+}
+
+export interface ConductorFormResult {
+  form: {
+    name: string
+    description: string | null
+    fields: Array<{
+      name: string
+      label: string
+      type: string
+      required?: boolean
+      placeholder?: string
+      options?: Array<{ value: string; label: string }>
+    }>
+    onSubmitTagId: string | null
+    onSubmitScenarioId: string | null
+    saveToMetadata: boolean
+    isActive: boolean
+  }
+  warnings: string[]
+  provider: string
+  model: string
+}
+
+export interface ConductorMessageResult {
+  template:
+    | { messageType: 'text'; name: string; category?: string; text: string }
+    | { messageType: 'image'; name: string; category?: string; originalContentUrl: string; previewImageUrl: string }
+    | { messageType: 'flex'; name: string; category?: string; altText: string; contents: Record<string, unknown> }
+    | { messageType: 'carousel'; name: string; category?: string; altText: string; bubbles: Array<Record<string, unknown>> }
+  messageContent: string
+  messageType: 'text' | 'image' | 'flex' | 'carousel'
+  altText: string | undefined
+  warnings: string[]
+  provider: string
+  model: string
 }
 
 // ─── Ban Recovery Types (Phase 5α-7) ───
