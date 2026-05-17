@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import Link from 'next/link'
 import type { Scenario, ScenarioTriggerType } from '@line-crm/shared'
 import { api } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
@@ -133,13 +134,22 @@ export default function ScenariosPage() {
       <Header
         title="シナリオ配信"
         action={
-          <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 min-h-[44px] text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
-            style={{ backgroundColor: '#06C755' }}
-          >
-            + 新規シナリオ
-          </button>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/conductor?tab=scenario"
+              className="px-4 py-2 min-h-[44px] text-sm font-medium text-blue-700 bg-white border border-blue-500 rounded-lg hover:bg-blue-50 transition-colors inline-flex items-center gap-1"
+              title="自然言語からシナリオを AI 生成 (Phase 5γ)"
+            >
+              ✨ AI に作らせる
+            </Link>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="px-4 py-2 min-h-[44px] text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
+              style={{ backgroundColor: '#06C755' }}
+            >
+              + 新規シナリオ
+            </button>
+          </div>
         }
       />
 

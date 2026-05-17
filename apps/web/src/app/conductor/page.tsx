@@ -1,28 +1,24 @@
 'use client'
 
 /**
- * Phase 5γ-5b: AI Conductor 統合 UI
- * Phase 5γ-5c: DB 保存 one-click 機能追加
+ * Phase 5γ-5: AI Conductor 統合 UI (chat-style)
+ * Phase 5γ-6: chat 履歴形式 + URL query param + localStorage 永続化
  *
  * 4 種 conductor (scenario / rich-menu / form / message) を 1 ページにまとめた
- * Visual エディタ代替。 自然言語プロンプト → AI 生成 → JSON プレビュー → DB 保存。
- *
- * 大方針 1 (AI ネイティブ設計) の本丸 UI。 シナリオ / リッチメニュー / フォーム /
- * メッセージ作成 GUI を AI Conductor で代替する。
+ * Visual エディタ代替。 大方針 1 (AI ネイティブ設計) の「チャット + ボタン 両方併用」
+ * を実現。
  *
  * 設計:
- * - tab 切替で 4 種を選択 (Claude Code 的シンプル UI)
- * - prompt textarea + Generate ボタン
- * - 結果は preview area に JSON で表示 + warnings + provider/model
- * - エラー時は HTTP status + code を表示 (400/502/503/504/500)
- * - **DB に保存** ボタン: 既存 endpoint へ POST (workflow closure)
- *   - scenario: /api/scenarios + N x /api/scenarios/:id/steps
- *   - rich-menu: /api/rich-menus (LINE API 直送、 画像は後で uploadImage)
- *   - form: /api/forms
- *   - message: /api/templates
+ * - tab 切替で 4 種を選択 (機能別「AI に作らせる」 ボタンは URL `?tab=...` で deep link)
+ * - 入力欄は下部 (Claude Code 的)、 履歴は時系列で上に積まれる
+ * - 各 turn 単位で「DB に保存」 可能 (workflow closure)
+ * - 履歴は localStorage 永続化 (kind 別、 各 max 20 turns)
+ *
+ * 「履歴をクリア」 で現在 tab の履歴のみリセット (他 tab に影響なし)。
  */
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import {
   api,
   type ConductorScenarioResult,
@@ -32,6 +28,10 @@ import {
   type RichMenuArea,
 } from '@/lib/api'
 import Header from '@/components/layout/header'
+
+// ============================================================
+// 型
+// ============================================================
 
 type ConductorKind = 'scenario' | 'rich-menu' | 'form' | 'message'
 
@@ -44,8 +44,27 @@ type ConductorResult =
 interface ConductorError {
   message: string
   code?: string
-  status?: number
 }
+
+interface ChatTurn {
+  id: string
+  kind: ConductorKind
+  prompt: string
+  timestamp: number
+  status: 'loading' | 'success' | 'error'
+  result?: ConductorResult
+  error?: ConductorError
+}
+
+type SaveStatus =
+  | { kind: 'idle' }
+  | { kind: 'saving' }
+  | { kind: 'success'; id: string; viewPath: string }
+  | { kind: 'error'; message: string }
+
+const HISTORY_STORAGE_KEY = 'lh_conductor_history_v1'
+const HISTORY_MAX_PER_KIND = 20
+const VALID_KINDS: ConductorKind[] = ['scenario', 'rich-menu', 'form', 'message']
 
 // ============================================================
 // Tab メタ情報
@@ -108,239 +127,61 @@ const TABS: Array<{
   },
 ]
 
-// ============================================================
-// メイン
-// ============================================================
-
-export default function ConductorPage() {
-  const [activeKind, setActiveKind] = useState<ConductorKind>('scenario')
-  const [prompt, setPrompt] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState<ConductorResult | null>(null)
-  const [error, setError] = useState<ConductorError | null>(null)
-
-  const activeTab = TABS.find((t) => t.kind === activeKind)!
-
-  const handleGenerate = useCallback(async () => {
-    const trimmed = prompt.trim()
-    if (trimmed.length < 5) {
-      setError({ message: 'プロンプトは 5 文字以上で入力してください', code: 'prompt_too_short' })
-      return
-    }
-    if (trimmed.length > 4000) {
-      setError({ message: 'プロンプトは 4000 文字以内で入力してください', code: 'prompt_too_long' })
-      return
-    }
-
-    setLoading(true)
-    setError(null)
-    setResult(null)
-
-    try {
-      let resp
-      switch (activeKind) {
-        case 'scenario':
-          resp = await api.conductor.scenario(trimmed)
-          if (resp.success && resp.data) {
-            setResult({ kind: 'scenario', data: resp.data })
-          }
-          break
-        case 'rich-menu':
-          resp = await api.conductor.richMenu(trimmed)
-          if (resp.success && resp.data) {
-            setResult({ kind: 'rich-menu', data: resp.data })
-          }
-          break
-        case 'form':
-          resp = await api.conductor.form(trimmed)
-          if (resp.success && resp.data) {
-            setResult({ kind: 'form', data: resp.data })
-          }
-          break
-        case 'message':
-          resp = await api.conductor.message(trimmed)
-          if (resp.success && resp.data) {
-            setResult({ kind: 'message', data: resp.data })
-          }
-          break
-      }
-      if (resp && !resp.success) {
-        setError({
-          message: resp.error ?? 'Unknown error',
-        })
-      }
-    } catch (err) {
-      // fetchApi throws on non-2xx response
-      const message = err instanceof Error ? err.message : String(err)
-      // try to extract code from message (fetchApi format: "API X: ...")
-      const codeMatch = message.match(/code:\s*"?([a-z_]+)"?/i)
-      setError({
-        message,
-        code: codeMatch?.[1],
-      })
-    } finally {
-      setLoading(false)
-    }
-  }, [activeKind, prompt])
-
-  const handleTabChange = (kind: ConductorKind) => {
-    setActiveKind(kind)
-    setResult(null)
-    setError(null)
-  }
-
-  const handleExampleClick = (example: string) => {
-    setPrompt(example)
-    setError(null)
-  }
-
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <Header title="AI Conductor" />
-
-      <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
-        {/* Intro */}
-        <div className="bg-white rounded-lg shadow-sm p-4 border border-gray-200">
-          <h2 className="text-lg font-semibold text-gray-900">
-            自然言語から JSON を生成
-          </h2>
-          <p className="text-sm text-gray-600 mt-1">
-            AI (Claude / Workers AI) がプロンプトから シナリオ / リッチメニュー / フォーム /
-            メッセージテンプレートの構造化 JSON を生成します。 プレビュー確認後、
-            <strong>「DB に保存」</strong> ボタンで既存のデータベースに直接保存できます
-            (リッチメニューは画像なしで作成 → 後で /rich-menus 管理画面でアップロード)。
-          </p>
-        </div>
-
-        {/* Tabs */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-          <div className="flex border-b border-gray-200">
-            {TABS.map((tab) => (
-              <button
-                key={tab.kind}
-                onClick={() => handleTabChange(tab.kind)}
-                className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
-                  activeKind === tab.kind
-                    ? 'bg-blue-50 text-blue-700 border-b-2 border-blue-500'
-                    : 'text-gray-600 hover:bg-gray-50'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="p-6 space-y-4">
-            {/* Active tab description */}
-            <p className="text-sm text-gray-600">{activeTab.description}</p>
-
-            {/* Example prompts */}
-            <div className="space-y-2">
-              <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                プロンプト例 (クリックで挿入)
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {activeTab.examplePrompts.map((example, i) => (
-                  <button
-                    key={i}
-                    onClick={() => handleExampleClick(example)}
-                    className="text-xs text-left px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-md text-gray-700"
-                  >
-                    {example.length > 50 ? example.slice(0, 50) + '…' : example}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Prompt textarea */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                プロンプト (5〜4000 文字)
-              </label>
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder={activeTab.placeholder}
-                rows={6}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm font-mono"
-                disabled={loading}
-              />
-              <div className="text-xs text-gray-500 mt-1 text-right">
-                {prompt.length} / 4000 文字
-              </div>
-            </div>
-
-            {/* Generate button */}
-            <div className="flex justify-end">
-              <button
-                onClick={handleGenerate}
-                disabled={loading || prompt.trim().length < 5}
-                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-md transition-colors"
-              >
-                {loading ? 'AI 生成中…' : `${activeTab.label}を生成`}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Error display */}
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-            <div className="flex items-start space-x-3">
-              <svg
-                className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z"
-                />
-              </svg>
-              <div className="flex-1">
-                <div className="text-sm font-medium text-red-900">エラー</div>
-                <div className="text-sm text-red-700 mt-1 break-words">
-                  {error.message}
-                </div>
-                {error.code && (
-                  <div className="text-xs text-red-600 mt-1 font-mono">
-                    code: {error.code}
-                  </div>
-                )}
-                {error.code === 'api_key_missing' && (
-                  <div className="text-xs text-red-700 mt-2 p-2 bg-red-100 rounded">
-                    ANTHROPIC_API_KEY が設定されていない可能性があります。
-                    Workers AI へのフォールバックを有効化するには Cloudflare AI binding を確認してください。
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Result display */}
-        {result && <ResultDisplay result={result} />}
-      </div>
-    </div>
-  )
+const KIND_LABEL: Record<ConductorKind, string> = {
+  scenario: 'シナリオ',
+  'rich-menu': 'リッチメニュー',
+  form: 'フォーム',
+  message: 'テンプレート',
 }
 
 // ============================================================
-// Result display
+// 履歴 (localStorage) 操作
 // ============================================================
 
-// ============================================================
-// Save logic (5γ-5c: DB 保存 one-click)
-// ============================================================
+function loadHistory(): ChatTurn[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = localStorage.getItem(HISTORY_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return (parsed as ChatTurn[]).filter(
+      (t) => t && typeof t === 'object' && VALID_KINDS.includes(t.kind),
+    )
+  } catch {
+    return []
+  }
+}
 
-type SaveStatus =
-  | { kind: 'idle' }
-  | { kind: 'saving' }
-  | { kind: 'success'; id: string; viewPath: string }
-  | { kind: 'error'; message: string }
+function saveHistory(history: ChatTurn[]): void {
+  if (typeof window === 'undefined') return
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history))
+  } catch {
+    // QuotaExceededError 等は黙って無視 (履歴は best-effort)
+  }
+}
+
+function trimHistory(history: ChatTurn[]): ChatTurn[] {
+  // kind 別に max N 件まで保持。 新しい (timestamp 降順) を残す。
+  const byKind = new Map<ConductorKind, ChatTurn[]>()
+  for (const turn of history) {
+    const arr = byKind.get(turn.kind) ?? []
+    arr.push(turn)
+    byKind.set(turn.kind, arr)
+  }
+  const result: ChatTurn[] = []
+  for (const [, turns] of byKind) {
+    const sorted = [...turns].sort((a, b) => b.timestamp - a.timestamp)
+    result.push(...sorted.slice(0, HISTORY_MAX_PER_KIND))
+  }
+  // 全体を timestamp 昇順 (古い → 新しい) で返す
+  return result.sort((a, b) => a.timestamp - b.timestamp)
+}
+
+// ============================================================
+// 保存ロジック (5γ-5c)
+// ============================================================
 
 async function saveResult(result: ConductorResult): Promise<{ id: string; viewPath: string }> {
   switch (result.kind) {
@@ -371,12 +212,11 @@ async function saveResult(result: ConductorResult): Promise<{ id: string; viewPa
       if (!resp.success) {
         throw new Error(resp.error ?? 'フォーム保存に失敗しました')
       }
-      return { id: resp.data.id, viewPath: '/forms' }
+      return { id: resp.data.id, viewPath: '/form-submissions' }
     }
 
     case 'scenario': {
       const { scenario, steps } = result.data
-      // 1. シナリオ作成
       const scenarioResp = await api.scenarios.create({
         name: scenario.name,
         description: scenario.description,
@@ -388,7 +228,6 @@ async function saveResult(result: ConductorResult): Promise<{ id: string; viewPa
         throw new Error(scenarioResp.error ?? 'シナリオ保存に失敗しました')
       }
       const scenarioId = scenarioResp.data.id
-      // 2. ステップを順次追加
       for (const step of steps) {
         const stepResp = await api.scenarios.addStep(scenarioId, {
           stepOrder: step.stepOrder,
@@ -410,9 +249,6 @@ async function saveResult(result: ConductorResult): Promise<{ id: string; viewPa
 
     case 'rich-menu': {
       const { richMenu } = result.data
-      // ConductorRichMenuResult.areas[].action は Record<string, unknown> として宣言済 (AI 出力の柔軟性のため)。
-      // api.richMenus.create は RichMenuArea[] (action は判別 union) を要求するが、
-      // conductor service が Zod discriminatedUnion で action を検証済なので構造は互換。
       const resp = await api.richMenus.create({
         size: richMenu.size,
         selected: richMenu.selected,
@@ -429,14 +265,367 @@ async function saveResult(result: ConductorResult): Promise<{ id: string; viewPa
 }
 
 // ============================================================
-// Result display
+// メイン (Suspense でラップ — useSearchParams のため)
 // ============================================================
 
-function ResultDisplay({ result }: { result: ConductorResult }) {
+export default function ConductorPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-gray-500">読み込み中...</div>}>
+      <ConductorPageInner />
+    </Suspense>
+  )
+}
+
+function ConductorPageInner() {
+  const searchParams = useSearchParams()
+
+  // URL `?tab=scenario` 等で初期 tab を deep link 指定可能
+  const tabParam = searchParams.get('tab')
+  const initialKind: ConductorKind =
+    tabParam && VALID_KINDS.includes(tabParam as ConductorKind)
+      ? (tabParam as ConductorKind)
+      : 'scenario'
+
+  const [activeKind, setActiveKind] = useState<ConductorKind>(initialKind)
+  const [prompt, setPrompt] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [history, setHistory] = useState<ChatTurn[]>([])
+  const [inputError, setInputError] = useState<string | null>(null)
+  const historyEndRef = useRef<HTMLDivElement>(null)
+
+  // 初回マウントで履歴をロード
+  useEffect(() => {
+    setHistory(loadHistory())
+  }, [])
+
+  // 履歴変更時に localStorage 同期
+  useEffect(() => {
+    saveHistory(history)
+  }, [history])
+
+  // 新 turn 追加時、 末尾に scroll
+  useEffect(() => {
+    historyEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [history.length])
+
+  const activeTab = TABS.find((t) => t.kind === activeKind)!
+
+  // 現在 tab の履歴 (chronological)
+  const filteredHistory = history.filter((t) => t.kind === activeKind)
+
+  const handleGenerate = useCallback(async () => {
+    const trimmed = prompt.trim()
+    if (trimmed.length < 5) {
+      setInputError('プロンプトは 5 文字以上で入力してください')
+      return
+    }
+    if (trimmed.length > 4000) {
+      setInputError('プロンプトは 4000 文字以内で入力してください')
+      return
+    }
+    setInputError(null)
+
+    const turnId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+    const newTurn: ChatTurn = {
+      id: turnId,
+      kind: activeKind,
+      prompt: trimmed,
+      timestamp: Date.now(),
+      status: 'loading',
+    }
+    setHistory((prev) => trimHistory([...prev, newTurn]))
+    setPrompt('')
+    setLoading(true)
+
+    try {
+      let resp
+      let result: ConductorResult | undefined
+      switch (activeKind) {
+        case 'scenario':
+          resp = await api.conductor.scenario(trimmed)
+          if (resp.success) result = { kind: 'scenario', data: resp.data }
+          break
+        case 'rich-menu':
+          resp = await api.conductor.richMenu(trimmed)
+          if (resp.success) result = { kind: 'rich-menu', data: resp.data }
+          break
+        case 'form':
+          resp = await api.conductor.form(trimmed)
+          if (resp.success) result = { kind: 'form', data: resp.data }
+          break
+        case 'message':
+          resp = await api.conductor.message(trimmed)
+          if (resp.success) result = { kind: 'message', data: resp.data }
+          break
+      }
+
+      // resp は discriminated union — success 分岐は result が埋まる前に消化、
+      // error 分岐は resp.success === false を確定してから error を取得。
+      const errorMessage =
+        resp && !resp.success ? resp.error : 'Unknown error'
+      setHistory((prev) =>
+        prev.map((t) =>
+          t.id === turnId
+            ? result
+              ? { ...t, status: 'success' as const, result }
+              : { ...t, status: 'error' as const, error: { message: errorMessage } }
+            : t,
+        ),
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const codeMatch = message.match(/code:\s*"?([a-z_]+)"?/i)
+      setHistory((prev) =>
+        prev.map((t) =>
+          t.id === turnId
+            ? {
+                ...t,
+                status: 'error' as const,
+                error: { message, code: codeMatch?.[1] },
+              }
+            : t,
+        ),
+      )
+    } finally {
+      setLoading(false)
+    }
+  }, [activeKind, prompt])
+
+  const handleTabChange = (kind: ConductorKind) => {
+    setActiveKind(kind)
+    setInputError(null)
+  }
+
+  const handleExampleClick = (example: string) => {
+    setPrompt(example)
+    setInputError(null)
+  }
+
+  const handleClearHistory = () => {
+    if (!confirm(`${KIND_LABEL[activeKind]} の履歴をクリアしますか?`)) return
+    setHistory((prev) => prev.filter((t) => t.kind !== activeKind))
+  }
+
+  const handleReusePrompt = (text: string) => {
+    setPrompt(text)
+    setInputError(null)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Ctrl/Cmd + Enter で送信
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault()
+      if (!loading) handleGenerate()
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <Header title="AI Conductor" />
+
+      <div className="max-w-6xl mx-auto px-4 py-4 space-y-4">
+        {/* Tabs */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+          <div className="flex border-b border-gray-200">
+            {TABS.map((tab) => (
+              <button
+                key={tab.kind}
+                onClick={() => handleTabChange(tab.kind)}
+                className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
+                  activeKind === tab.kind
+                    ? 'bg-blue-50 text-blue-700 border-b-2 border-blue-500'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {tab.label}
+                {history.filter((t) => t.kind === tab.kind).length > 0 && (
+                  <span className="ml-2 text-xs px-1.5 py-0.5 bg-gray-200 text-gray-700 rounded-full">
+                    {history.filter((t) => t.kind === tab.kind).length}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between text-xs">
+            <div className="text-gray-600">{activeTab.description}</div>
+            {filteredHistory.length > 0 && (
+              <button
+                onClick={handleClearHistory}
+                className="text-gray-500 hover:text-red-600 hover:underline"
+              >
+                履歴をクリア ({filteredHistory.length})
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* History (chat) */}
+        <div className="space-y-3">
+          {filteredHistory.length === 0 ? (
+            <EmptyState
+              activeTab={activeTab}
+              onExampleClick={handleExampleClick}
+            />
+          ) : (
+            filteredHistory.map((turn) => <ChatTurnView key={turn.id} turn={turn} onReuse={handleReusePrompt} />)
+          )}
+          <div ref={historyEndRef} />
+        </div>
+
+        {/* Input box (sticky bottom) */}
+        <div className="sticky bottom-0 bg-gray-50 pt-3 pb-1 -mx-4 px-4 border-t border-gray-200">
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3 space-y-2">
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={activeTab.placeholder}
+              rows={3}
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono resize-y"
+              disabled={loading}
+            />
+            {inputError && (
+              <div className="text-xs text-red-600">{inputError}</div>
+            )}
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-gray-400">
+                {prompt.length} / 4000 文字 ・ Ctrl+Enter で送信
+              </div>
+              <button
+                onClick={handleGenerate}
+                disabled={loading || prompt.trim().length < 5}
+                className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-md transition-colors"
+              >
+                {loading ? 'AI 生成中…' : `${activeTab.label}を生成`}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================
+// 空状態 (履歴なし時の hero)
+// ============================================================
+
+function EmptyState({
+  activeTab,
+  onExampleClick,
+}: {
+  activeTab: (typeof TABS)[number]
+  onExampleClick: (s: string) => void
+}) {
+  return (
+    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 text-center">
+      <div className="text-4xl mb-3">💬</div>
+      <h2 className="text-base font-semibold text-gray-900 mb-2">
+        {activeTab.label} を自然言語で作成
+      </h2>
+      <p className="text-sm text-gray-600 mb-4">
+        プロンプトを入力すると AI が構造化 JSON を生成し、 そのまま DB に保存できます。
+      </p>
+      <div className="space-y-2 max-w-xl mx-auto">
+        <div className="text-xs font-medium text-gray-500 uppercase tracking-wide text-left">
+          プロンプト例 (クリックで挿入)
+        </div>
+        {activeTab.examplePrompts.map((example, i) => (
+          <button
+            key={i}
+            onClick={() => onExampleClick(example)}
+            className="block w-full text-left text-xs px-3 py-2 bg-gray-50 hover:bg-blue-50 border border-gray-200 rounded text-gray-700"
+          >
+            {example}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ============================================================
+// Chat turn (1 ターン = user prompt + AI response)
+// ============================================================
+
+function ChatTurnView({
+  turn,
+  onReuse,
+}: {
+  turn: ChatTurn
+  onReuse: (prompt: string) => void
+}) {
+  return (
+    <div className="space-y-2">
+      {/* User prompt (right-aligned) */}
+      <div className="flex justify-end">
+        <div className="max-w-2xl bg-blue-600 text-white rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words">
+          {turn.prompt}
+        </div>
+      </div>
+
+      {/* AI response (left-aligned) */}
+      <div className="flex justify-start">
+        <div className="w-full max-w-4xl bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+          {turn.status === 'loading' && (
+            <div className="p-4 text-sm text-gray-500 flex items-center space-x-2">
+              <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              <span>AI 生成中…</span>
+            </div>
+          )}
+
+          {turn.status === 'error' && turn.error && (
+            <div className="p-4 space-y-2">
+              <div className="flex items-start space-x-2">
+                <svg className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-red-900">エラー</div>
+                  <div className="text-sm text-red-700 mt-1 break-words">{turn.error.message}</div>
+                  {turn.error.code && (
+                    <div className="text-xs text-red-600 mt-1 font-mono">code: {turn.error.code}</div>
+                  )}
+                  {turn.error.code === 'api_key_missing' && (
+                    <div className="text-xs text-red-700 mt-2 p-2 bg-red-100 rounded">
+                      ANTHROPIC_API_KEY 未設定の可能性。 Workers AI フォールバックには Cloudflare AI binding 確認を。
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => onReuse(turn.prompt)}
+                className="text-xs text-blue-600 hover:underline"
+              >
+                同じプロンプトをリトライ
+              </button>
+            </div>
+          )}
+
+          {turn.status === 'success' && turn.result && (
+            <ResultView result={turn.result} onReuse={() => onReuse(turn.prompt)} />
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================
+// Result view (1 turn の AI 成功 response)
+// ============================================================
+
+function ResultView({
+  result,
+  onReuse,
+}: {
+  result: ConductorResult
+  onReuse: () => void
+}) {
   const [showRaw, setShowRaw] = useState(false)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: 'idle' })
 
-  // common metadata
   const warnings = result.data.warnings
   const provider = result.data.provider
   const model = result.data.model
@@ -452,40 +641,33 @@ function ResultDisplay({ result }: { result: ConductorResult }) {
     }
   }, [result])
 
-  const kindLabel: Record<ConductorKind, string> = {
-    scenario: 'シナリオ',
-    'rich-menu': 'リッチメニュー',
-    form: 'フォーム',
-    message: 'テンプレート',
-  }
-
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <span className="text-sm font-semibold text-gray-900">生成結果</span>
-          <span className="text-xs px-2 py-0.5 bg-green-100 text-green-800 rounded-full">
-            ✓ 成功
-          </span>
+    <div>
+      <div className="px-4 py-2 border-b border-gray-200 bg-gray-50 flex items-center justify-between text-xs">
+        <div className="flex items-center space-x-2">
+          <span className="text-green-700 font-medium">✓ 生成成功</span>
+          <span className="text-gray-500">・</span>
+          <span className="font-mono text-gray-600">{provider}</span>
+          <span className="text-gray-400 font-mono">{model}</span>
         </div>
-        <button
-          onClick={() => setShowRaw(!showRaw)}
-          className="text-xs text-blue-600 hover:text-blue-700 hover:underline"
-        >
-          {showRaw ? '整形表示に戻す' : '生 JSON を表示'}
-        </button>
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={onReuse}
+            className="text-blue-600 hover:underline"
+            title="このプロンプトを入力欄に挿入してリトライ"
+          >
+            ↻ 再生成
+          </button>
+          <button
+            onClick={() => setShowRaw(!showRaw)}
+            className="text-blue-600 hover:underline"
+          >
+            {showRaw ? '整形' : '生 JSON'}
+          </button>
+        </div>
       </div>
 
       <div className="p-4 space-y-4">
-        {/* Provider / model */}
-        <div className="flex items-center space-x-2 text-xs text-gray-500">
-          <span>provider:</span>
-          <span className="font-mono px-2 py-0.5 bg-gray-100 rounded">{provider}</span>
-          <span>model:</span>
-          <span className="font-mono px-2 py-0.5 bg-gray-100 rounded">{model}</span>
-        </div>
-
-        {/* Warnings */}
         {warnings.length > 0 && (
           <div className="bg-yellow-50 border border-yellow-200 rounded p-3">
             <div className="text-xs font-medium text-yellow-900 mb-1">⚠️ 警告</div>
@@ -497,7 +679,6 @@ function ResultDisplay({ result }: { result: ConductorResult }) {
           </div>
         )}
 
-        {/* Content */}
         {showRaw ? (
           <pre className="text-xs bg-gray-900 text-gray-100 p-4 rounded overflow-x-auto font-mono">
             {JSON.stringify(result.data, null, 2)}
@@ -506,67 +687,92 @@ function ResultDisplay({ result }: { result: ConductorResult }) {
           <FormattedResult result={result} />
         )}
 
-        {/* Save section (5γ-5c) */}
-        <div className="border-t border-gray-200 pt-4 space-y-3">
-          <div className="flex items-center justify-between gap-4">
-            <div className="text-xs text-gray-600">
-              プレビュー OK なら DB に直接保存 (確認しないと適用されません)
-            </div>
-            <button
-              onClick={handleSave}
-              disabled={saveStatus.kind === 'saving' || saveStatus.kind === 'success'}
-              className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-md transition-colors whitespace-nowrap"
-            >
-              {saveStatus.kind === 'saving'
-                ? '保存中…'
-                : saveStatus.kind === 'success'
-                  ? '✓ 保存済み'
-                  : `${kindLabel[result.kind]} を DB に保存`}
-            </button>
-          </div>
-
-          {saveStatus.kind === 'success' && (
-            <div className="bg-green-50 border border-green-200 rounded p-3 text-sm">
-              <div className="font-medium text-green-900">✓ 保存しました</div>
-              <div className="text-xs text-green-700 mt-1">
-                ID:{' '}
-                <code className="font-mono px-1.5 py-0.5 bg-green-100 rounded">
-                  {saveStatus.id}
-                </code>
-              </div>
-              <a
-                href={saveStatus.viewPath}
-                className="inline-block mt-2 text-xs text-green-700 hover:text-green-900 underline"
-              >
-                {kindLabel[result.kind]}管理画面を開く →
-              </a>
-              {result.kind === 'rich-menu' && (
-                <div className="text-xs text-yellow-700 mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded">
-                  ⚠️ LINE 側でメニューを表示するには、 リッチメニュー管理画面で画像をアップロード + 「デフォルトに設定」 が必要です。
-                </div>
-              )}
-            </div>
-          )}
-
-          {saveStatus.kind === 'error' && (
-            <div className="bg-red-50 border border-red-200 rounded p-3 text-sm">
-              <div className="font-medium text-red-900">✗ 保存失敗</div>
-              <div className="text-xs text-red-700 mt-1 break-words">
-                {saveStatus.message}
-              </div>
-              <button
-                onClick={() => setSaveStatus({ kind: 'idle' })}
-                className="text-xs text-red-700 hover:text-red-900 underline mt-2"
-              >
-                リトライ
-              </button>
-            </div>
-          )}
-        </div>
+        <SaveSection result={result} saveStatus={saveStatus} onSave={handleSave} onReset={() => setSaveStatus({ kind: 'idle' })} />
       </div>
     </div>
   )
 }
+
+// ============================================================
+// Save section
+// ============================================================
+
+function SaveSection({
+  result,
+  saveStatus,
+  onSave,
+  onReset,
+}: {
+  result: ConductorResult
+  saveStatus: SaveStatus
+  onSave: () => void
+  onReset: () => void
+}) {
+  const label = KIND_LABEL[result.kind]
+
+  return (
+    <div className="border-t border-gray-200 pt-3 space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs text-gray-600">
+          プレビュー OK なら DB に直接保存 (確認しないと適用されません)
+        </div>
+        <button
+          onClick={onSave}
+          disabled={saveStatus.kind === 'saving' || saveStatus.kind === 'success'}
+          className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-md transition-colors whitespace-nowrap"
+        >
+          {saveStatus.kind === 'saving'
+            ? '保存中…'
+            : saveStatus.kind === 'success'
+              ? '✓ 保存済み'
+              : `${label} を DB に保存`}
+        </button>
+      </div>
+
+      {saveStatus.kind === 'success' && (
+        <div className="bg-green-50 border border-green-200 rounded p-3 text-sm">
+          <div className="font-medium text-green-900">✓ 保存しました</div>
+          <div className="text-xs text-green-700 mt-1">
+            ID:{' '}
+            <code className="font-mono px-1.5 py-0.5 bg-green-100 rounded">
+              {saveStatus.id}
+            </code>
+          </div>
+          <a
+            href={saveStatus.viewPath}
+            className="inline-block mt-2 text-xs text-green-700 hover:text-green-900 underline"
+          >
+            {label}管理画面を開く →
+          </a>
+          {result.kind === 'rich-menu' && (
+            <div className="text-xs text-yellow-700 mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded">
+              ⚠️ LINE 側でメニューを表示するには、 リッチメニュー管理画面で画像をアップロード + 「デフォルトに設定」 が必要です。
+            </div>
+          )}
+        </div>
+      )}
+
+      {saveStatus.kind === 'error' && (
+        <div className="bg-red-50 border border-red-200 rounded p-3 text-sm">
+          <div className="font-medium text-red-900">✗ 保存失敗</div>
+          <div className="text-xs text-red-700 mt-1 break-words">
+            {saveStatus.message}
+          </div>
+          <button
+            onClick={onReset}
+            className="text-xs text-red-700 hover:text-red-900 underline mt-2"
+          >
+            リトライ
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ============================================================
+// Formatted preview (kind-specific)
+// ============================================================
 
 function FormattedResult({ result }: { result: ConductorResult }) {
   switch (result.kind) {
@@ -580,10 +786,6 @@ function FormattedResult({ result }: { result: ConductorResult }) {
       return <MessagePreview data={result.data} />
   }
 }
-
-// ============================================================
-// Per-kind preview components
-// ============================================================
 
 function ScenarioPreview({ data }: { data: ConductorScenarioResult }) {
   return (
