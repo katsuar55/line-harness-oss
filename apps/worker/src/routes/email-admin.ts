@@ -772,4 +772,156 @@ emailAdmin.post('/api/admin/email/opt-in/send-invitations', async (c) => {
   }
 });
 
+// ============================================================
+// Phase 5β-1d-3: opt-in campaign KPI dashboard
+//
+// GET /api/admin/email/opt-in/kpi?days=30
+//   - days: 1..365 (default 30)
+//
+// resp:
+//   {
+//     success: true,
+//     data: {
+//       window: { days, fromDate, toDate },
+//       totals: { all, new, reConsent, reactivated, web, liff, other },
+//       trend: [{ date: 'YYYY-MM-DD', count }, ...],   // daily counts, 0-padded for full window
+//       candidatesRemaining: number                     // shopify_customers without active opt-in
+//     }
+//   }
+//
+// 集計ロジック (audit_logs.action='email.opt_in' を ground truth とする):
+//   - metadata.outcome ∈ {'new', 're_consent', 'reactivated'} で分類
+//   - metadata.channel ∈ {'web', 'liff'} で分類
+//   - 不明 outcome / channel は other / 集計に含めない
+//   - candidatesRemaining は send-invitations 用残数 (既存 candidates query と同じ JOIN)
+// ============================================================
+
+const KPI_DAYS_DEFAULT = 30;
+const KPI_DAYS_MIN = 1;
+const KPI_DAYS_MAX = 365;
+
+interface OptInKpiTotalsRow {
+  all_count: number | null;
+  new_count: number | null;
+  re_consent_count: number | null;
+  reactivated_count: number | null;
+  web_count: number | null;
+  liff_count: number | null;
+}
+
+interface OptInKpiTrendRow {
+  date: string;
+  count: number;
+}
+
+function buildZeroPaddedTrend(
+  fromDateMs: number,
+  days: number,
+  rows: ReadonlyArray<OptInKpiTrendRow>,
+): Array<{ date: string; count: number }> {
+  const byDate = new Map<string, number>();
+  for (const r of rows) {
+    if (r.date) byDate.set(r.date, Number(r.count) || 0);
+  }
+  const out: Array<{ date: string; count: number }> = [];
+  for (let i = 0; i < days; i++) {
+    const dt = new Date(fromDateMs + i * 86400000);
+    const date = dt.toISOString().slice(0, 10);
+    out.push({ date, count: byDate.get(date) ?? 0 });
+  }
+  return out;
+}
+
+emailAdmin.get('/api/admin/email/opt-in/kpi', async (c) => {
+  const daysRaw = c.req.query('days');
+  const daysNum = daysRaw !== undefined ? Number(daysRaw) : KPI_DAYS_DEFAULT;
+  if (!Number.isFinite(daysNum) || daysNum < KPI_DAYS_MIN || daysNum > KPI_DAYS_MAX) {
+    return c.json(
+      { success: false, error: `days must be ${KPI_DAYS_MIN}..${KPI_DAYS_MAX}` },
+      400,
+    );
+  }
+  const days = Math.floor(daysNum);
+
+  // single source of truth: fromDateOnly から fromMs と fromQueryBoundary を derive
+  // (SQL の SUBSTR(created_at,1,10) と buildZeroPaddedTrend の date iteration を確実に一致させる)
+  const nowMs = Date.now();
+  const fromDateOnly = new Date(nowMs - (days - 1) * 86400000).toISOString().slice(0, 10);
+  const fromQueryBoundary = `${fromDateOnly}T00:00:00.000Z`;
+  const fromMs = Date.parse(fromQueryBoundary);
+  const toDateOnly = new Date(nowMs).toISOString().slice(0, 10);
+
+  try {
+    const totalsRow = await c.env.DB.prepare(
+      `SELECT
+         COUNT(*) AS all_count,
+         SUM(CASE WHEN JSON_EXTRACT(metadata, '$.outcome') = 'new' THEN 1 ELSE 0 END) AS new_count,
+         SUM(CASE WHEN JSON_EXTRACT(metadata, '$.outcome') = 're_consent' THEN 1 ELSE 0 END) AS re_consent_count,
+         SUM(CASE WHEN JSON_EXTRACT(metadata, '$.outcome') = 'reactivated' THEN 1 ELSE 0 END) AS reactivated_count,
+         SUM(CASE WHEN JSON_EXTRACT(metadata, '$.channel') = 'web' THEN 1 ELSE 0 END) AS web_count,
+         SUM(CASE WHEN JSON_EXTRACT(metadata, '$.channel') = 'liff' THEN 1 ELSE 0 END) AS liff_count
+       FROM audit_logs
+       WHERE action = 'email.opt_in'
+         AND created_at >= ?`,
+    )
+      .bind(fromQueryBoundary)
+      .first<OptInKpiTotalsRow>();
+
+    const trendResult = await c.env.DB.prepare(
+      `SELECT SUBSTR(created_at, 1, 10) AS date, COUNT(*) AS count
+         FROM audit_logs
+        WHERE action = 'email.opt_in'
+          AND created_at >= ?
+        GROUP BY date
+        ORDER BY date ASC`,
+    )
+      .bind(fromQueryBoundary)
+      .all<OptInKpiTrendRow>();
+
+    const candidatesRow = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS count
+         FROM shopify_customers sc
+         LEFT JOIN email_subscribers es ON LOWER(es.email) = LOWER(sc.email)
+        WHERE sc.email IS NOT NULL AND sc.email != ''
+          AND (es.id IS NULL OR es.is_active = 0 OR es.transactional_only = 1)`,
+    ).first<{ count: number | null }>();
+
+    const all = Number(totalsRow?.all_count ?? 0);
+    const newCount = Number(totalsRow?.new_count ?? 0);
+    const reConsent = Number(totalsRow?.re_consent_count ?? 0);
+    const reactivated = Number(totalsRow?.reactivated_count ?? 0);
+    const web = Number(totalsRow?.web_count ?? 0);
+    const liff = Number(totalsRow?.liff_count ?? 0);
+
+    return c.json({
+      success: true,
+      data: {
+        window: { days, fromDate: fromDateOnly, toDate: toDateOnly },
+        totals: {
+          all,
+          new: newCount,
+          reConsent,
+          reactivated,
+          web,
+          liff,
+          other: Math.max(0, all - (newCount + reConsent + reactivated)),
+        },
+        trend: buildZeroPaddedTrend(fromMs, days, trendResult.results ?? []),
+        candidatesRemaining: Number(candidatesRow?.count ?? 0),
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/admin/email/opt-in/kpi error', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// __test__ exports (5β-1d-3 unit-test 用)
+export const __test__ = {
+  buildZeroPaddedTrend,
+  KPI_DAYS_DEFAULT,
+  KPI_DAYS_MIN,
+  KPI_DAYS_MAX,
+};
+
 export { emailAdmin };
