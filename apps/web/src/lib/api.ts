@@ -210,7 +210,16 @@ export const api = {
       }),
     delete: (id: string) =>
       fetchApi<ApiResponse<null>>(`/api/scenarios/${id}`, { method: 'DELETE' }),
-    addStep: (id: string, data: Omit<ScenarioStep, 'id' | 'scenarioId' | 'createdAt'>) =>
+    addStep: (
+      id: string,
+      data: Omit<ScenarioStep, 'id' | 'scenarioId' | 'createdAt'> & {
+        channel?: 'line' | 'email' | 'both'
+        conditionType?: string | null
+        conditionValue?: string | null
+        nextStepOnFalse?: number | null
+        emailTemplateId?: string | null
+      },
+    ) =>
       fetchApi<ApiResponse<ScenarioStep>>(`/api/scenarios/${id}/steps`, {
         method: 'POST',
         body: JSON.stringify(data),
@@ -763,6 +772,44 @@ export const api = {
       const query = q.toString() ? '?' + q.toString() : ''
       return fetchApi<ApiResponse<BanRecoveryResponse>>('/api/ban-recovery' + query)
     },
+  },
+  forms: {
+    list: () =>
+      fetchApi<ApiResponse<Array<{
+        id: string
+        name: string
+        description: string | null
+        fields: string
+        onSubmitTagId: string | null
+        onSubmitScenarioId: string | null
+        saveToMetadata: boolean
+        isActive: boolean
+        createdAt: string
+        updatedAt: string
+      }>>>('/api/forms'),
+    create: (data: {
+      name: string
+      description?: string | null
+      fields?: unknown[]
+      onSubmitTagId?: string | null
+      onSubmitScenarioId?: string | null
+      saveToMetadata?: boolean
+    }) =>
+      fetchApi<ApiResponse<{
+        id: string
+        name: string
+        description: string | null
+        fields: string
+        onSubmitTagId: string | null
+        onSubmitScenarioId: string | null
+        saveToMetadata: boolean
+        isActive: boolean
+        createdAt: string
+        updatedAt: string
+      }>>('/api/forms', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
   },
   conductor: {
     scenario: (prompt: string) =>
