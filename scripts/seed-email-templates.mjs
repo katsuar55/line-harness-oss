@@ -261,6 +261,68 @@ export const TEMPLATES = [
   },
 
   // --------------------------------------------------------
+  // 6. opt_in_invitation (Phase 5β-1: marketing 同意再取得)
+  // --------------------------------------------------------
+  // NOTE:
+  //   - 既存 Shopify 顧客 1,891 名のうち subscribed=2/0.1% という低 opt-in 率を是正する施策。
+  //   - send 時 vars: {{name}} {{opt_in_url}} + brand 注入
+  //   - {{opt_in_url}} は caller (admin endpoint POST /api/admin/email/opt-in/generate-url
+  //     または bulk send script) が事前に signEmailOptInToken で生成した URL を渡す。
+  //   - category='transactional' で送信することで not_subscribed 1,690 名にも届く。
+  //     (法令上、 marketing への opt-in を依頼する 1 回限りの transactional は OK)
+  {
+    id: 'tpl-opt-in-invitation-v1',
+    name: 'メールマガジン登録のお願い',
+    category: 'transactional',
+    kind: 'core',
+    note: 'コア。 send 時 vars: {{name}} {{opt_in_url}} + brand 注入。 既存顧客への opt-in 再取得 (1 回限り) 用',
+    subject: '[{{brand_name}}] メールマガジン配信のご確認 (クーポン同封)',
+    preheader: 'ご登録いただくと 500 円 OFF クーポンをプレゼント',
+    html: `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#333;max-width:600px;margin:0 auto;padding:24px;">
+  <h1 style="color:{{primary_color}};font-size:22px;margin-bottom:16px;">📧 メールマガジン配信のご確認</h1>
+  <p style="font-size:16px;line-height:1.7;">{{name}} 様</p>
+  <p style="font-size:15px;line-height:1.7;">
+    いつも {{brand_name}} をご愛用いただきありがとうございます。<br>
+    {{brand_name}} では、 ご愛用者様向けに <strong>新商品のご案内</strong>・<strong>季節のキャンペーン</strong>・<strong>健康コラム</strong> をメールでお届けしています。
+  </p>
+  <div style="background:#fef3c7;padding:20px;border-radius:8px;margin:24px 0;text-align:center;border:1px solid #fde68a;">
+    <p style="font-size:14px;margin:0 0 8px 0;color:#92400e;"><strong>🎁 ご登録で 500 円 OFF クーポン</strong></p>
+    <p style="font-size:12px;margin:0;line-height:1.6;color:#a16207;">次回 {{shop_url}} でのご購入時にご利用いただけます</p>
+  </div>
+  <div style="text-align:center;margin:32px 0;">
+    <a href="{{opt_in_url}}" style="display:inline-block;background:{{primary_color}};color:#fff;padding:14px 36px;border-radius:24px;text-decoration:none;font-weight:bold;font-size:15px;">
+      配信を希望する
+    </a>
+  </div>
+  <p style="font-size:13px;color:#666;line-height:1.6;">
+    ・配信を希望されない場合は、 このメールをそのまま閉じていただいて大丈夫です。<br>
+    ・ご登録後は、 メール末尾の「配信停止」 リンクからいつでも解除できます。<br>
+    ・ご注文確認・発送通知などの取引メールは引き続きお届けします。
+  </p>
+  <p style="font-size:13px;color:#666;line-height:1.6;margin-top:24px;">
+    ご不明点は <a href="mailto:{{support_email}}" style="color:{{primary_color}};">{{support_email}}</a> までお気軽にお問い合わせください。
+  </p>
+</div>`,
+    text: `📧 メールマガジン配信のご確認
+
+{{name}} 様
+
+いつも {{brand_name}} をご愛用いただきありがとうございます。
+{{brand_name}} では、 ご愛用者様向けに 新商品のご案内・季節のキャンペーン・健康コラム をメールでお届けしています。
+
+🎁 ご登録で 500 円 OFF クーポン
+次回 {{shop_url}} でのご購入時にご利用いただけます
+
+配信を希望する: {{opt_in_url}}
+
+・配信を希望されない場合は、 このメールをそのまま閉じていただいて大丈夫です。
+・ご登録後は、 メール末尾の「配信停止」 リンクからいつでも解除できます。
+・ご注文確認・発送通知などの取引メールは引き続きお届けします。
+
+ご不明点は {{support_email}} までお気軽にお問い合わせください。`,
+  },
+
+  // --------------------------------------------------------
   // 5. shipping_notification (発送通知)
   // --------------------------------------------------------
   {

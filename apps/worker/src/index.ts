@@ -64,6 +64,9 @@ import { shopifyAuth } from './routes/shopify-auth.js';
 import { groups } from './routes/groups.js';
 import { tagElapsedDeliveries } from './routes/tag-elapsed-deliveries.js';
 import { emailUnsubscribe } from './routes/email-unsubscribe.js';
+import { emailOptIn } from './routes/email-opt-in.js';
+import { liffOptIn } from './routes/liff-opt-in.js';
+import { liffOptInPage } from './routes/liff-opt-in-page.js';
 import { integrationsResend } from './routes/integrations-resend.js';
 import { birthdayCollection } from './routes/birthday-collection.js';
 import { coachAdmin } from './routes/coach-admin.js';
@@ -127,6 +130,9 @@ export type Env = {
     EMAIL_UNSUBSCRIBE_HMAC_KEY?: string;
     EMAIL_LEGAL_FOOTER_HTML?: string;
     EMAIL_LEGAL_FOOTER_TEXT?: string;
+    // Phase 5β-1: email opt-in
+    EMAIL_OPTIN_HMAC_KEY?: string;       // HMAC token 署名 secret (web 経路で必須)
+    EMAIL_OPTIN_DEFAULT_COUPON?: string; // 静的クーポンコード (5β-1d で Shopify API 動的発行に置換)
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -214,6 +220,9 @@ app.route('/', shopifyAuth);
 app.route('/', groups);
 app.route('/', tagElapsedDeliveries);
 app.route('/', emailUnsubscribe);
+app.route('/', emailOptIn);
+app.route('/', liffOptIn);
+app.route('/', liffOptInPage);
 app.route('/', integrationsResend);
 // liffCart route 削除 (2026-04-29): /api/liff/cart endpoints は dead code
 // (どのクライアントも未使用)。liff_carts table は本番に残置 (DROP は不可逆のため避ける)。

@@ -11,6 +11,7 @@ import {
   recordComplaint,
   unsubscribeById,
   resubscribeById,
+  recordMarketingOptIn,
   type EmailSubscriber,
 } from '@line-crm/db';
 
@@ -92,8 +93,17 @@ class FakeDb {
 
       // SET 句から差分を吸収する簡易パーサ (テスト目的)
       const cloned: EmailSubscriber = { ...existing };
-      // upsert path: friend_id / consent_source / updated_at
-      if (sql.includes('friend_id = COALESCE')) {
+      // recordMarketingOptIn は upsert より具体的なので先にマッチさせる
+      if (sql.includes('friend_id = COALESCE') && sql.includes('is_active = 1') && sql.includes('transactional_only = 0') && sql.includes('unsubscribed_at = NULL') && sql.includes('consent_at = ?')) {
+        cloned.friend_id = (params[0] as string | null) ?? cloned.friend_id;
+        cloned.consent_source = (params[1] as string | null) ?? cloned.consent_source;
+        cloned.is_active = 1;
+        cloned.transactional_only = 0;
+        cloned.unsubscribed_at = null;
+        cloned.consent_at = String(params[2]);
+        cloned.updated_at = String(params[3]);
+      } else if (sql.includes('friend_id = COALESCE')) {
+        // upsertEmailSubscriber path: friend_id / consent_source / updated_at のみ
         cloned.friend_id = (params[0] as string | null) ?? cloned.friend_id;
         cloned.consent_source = (params[1] as string | null) ?? cloned.consent_source;
         cloned.updated_at = String(params[2]);
@@ -247,5 +257,107 @@ describe('unsubscribeById / resubscribeById', () => {
     const after = await getEmailSubscriberById(db, sub.id);
     expect(after?.is_active).toBe(1);
     expect(after?.unsubscribed_at).toBeNull();
+  });
+});
+
+// ============================================================
+// recordMarketingOptIn (Phase 5β-1: opt-in 再取得施策)
+// ============================================================
+
+describe('recordMarketingOptIn', () => {
+  let db: D1Database;
+  beforeEach(() => {
+    db = makeDb();
+  });
+
+  it('新規 → is_active=1 / transactional_only=0 / consent_source 記録', async () => {
+    const sub = await recordMarketingOptIn(db, {
+      email: 'opt1@x.com',
+      consentSource: 'opt_in_form',
+      friendId: 'friend-1',
+    });
+    expect(sub.is_active).toBe(1);
+    expect(sub.transactional_only).toBe(0);
+    expect(sub.consent_source).toBe('opt_in_form');
+    expect(sub.friend_id).toBe('friend-1');
+    expect(sub.unsubscribed_at).toBeNull();
+  });
+
+  it('既存 transactional_only=1 (Shopify sync 由来) → is_active=1 に昇格', async () => {
+    await upsertEmailSubscriber(db, {
+      email: 'opt2@x.com',
+      marketingOptIn: false,
+      consentSource: 'shopify_checkout',
+    });
+
+    const sub = await recordMarketingOptIn(db, {
+      email: 'opt2@x.com',
+      consentSource: 'opt_in_form',
+    });
+    expect(sub.is_active).toBe(1);
+    expect(sub.transactional_only).toBe(0);
+    expect(sub.consent_source).toBe('opt_in_form'); // 上書き
+  });
+
+  it('既存 unsubscribed (is_active=0 + unsubscribed_at セット済) → 復活 + consent_at 更新', async () => {
+    const sub0 = await upsertEmailSubscriber(db, {
+      email: 'opt3@x.com',
+      marketingOptIn: true,
+    });
+    await unsubscribeById(db, sub0.id);
+
+    // unsubscribed 状態を確認
+    const beforeOptIn = await getEmailSubscriberByEmail(db, 'opt3@x.com');
+    expect(beforeOptIn?.is_active).toBe(0);
+    expect(beforeOptIn?.unsubscribed_at).not.toBeNull();
+
+    const sub = await recordMarketingOptIn(db, {
+      email: 'opt3@x.com',
+      consentSource: 'opt_in_form',
+    });
+    expect(sub.is_active).toBe(1);
+    expect(sub.unsubscribed_at).toBeNull();
+  });
+
+  it('bounce 抑制済 (is_active=0) でも明示的 opt-in で復活 (bounce_count は保持)', async () => {
+    await upsertEmailSubscriber(db, { email: 'opt4@x.com', marketingOptIn: true });
+    await recordBounce(db, 'opt4@x.com');
+    await recordBounce(db, 'opt4@x.com');
+    await recordBounce(db, 'opt4@x.com'); // 3 回で deactivate
+
+    const beforeOptIn = await getEmailSubscriberByEmail(db, 'opt4@x.com');
+    expect(beforeOptIn?.is_active).toBe(0);
+    expect(beforeOptIn?.bounce_count).toBe(3);
+
+    const sub = await recordMarketingOptIn(db, {
+      email: 'opt4@x.com',
+      consentSource: 'opt_in_form',
+    });
+    expect(sub.is_active).toBe(1);
+    expect(sub.bounce_count).toBe(3); // 履歴保持 (再 bounce で再追跡可能)
+  });
+
+  it('friend_id を後付で patch できる', async () => {
+    await recordMarketingOptIn(db, { email: 'opt5@x.com', consentSource: 'opt_in_form' });
+    const updated = await recordMarketingOptIn(db, {
+      email: 'opt5@x.com',
+      friendId: 'friend-new',
+      consentSource: 'opt_in_form',
+    });
+    expect(updated.friend_id).toBe('friend-new');
+  });
+
+  it('friendId 省略時は既存値を保持 (COALESCE)', async () => {
+    await recordMarketingOptIn(db, {
+      email: 'opt6@x.com',
+      friendId: 'friend-existing',
+      consentSource: 'opt_in_form',
+    });
+    const updated = await recordMarketingOptIn(db, {
+      email: 'opt6@x.com',
+      // friendId 省略
+      consentSource: 'opt_in_form',
+    });
+    expect(updated.friend_id).toBe('friend-existing'); // 維持
   });
 });

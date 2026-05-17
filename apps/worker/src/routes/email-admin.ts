@@ -24,6 +24,7 @@ import {
   type ConsentSource,
   type UpsertEmailTemplateInput,
 } from '@line-crm/db';
+import { signEmailOptInToken, isValidEmail } from '../services/email-opt-in.js';
 import type { Env } from '../index.js';
 
 const emailAdmin = new Hono<Env>();
@@ -542,6 +543,71 @@ emailAdmin.get('/api/admin/email/messages', async (c) => {
     return c.json({ success: true, data: { messages } });
   } catch (err) {
     console.error('GET /api/admin/email/messages error', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ============================================================
+// Phase 5β-1: opt-in URL 生成 (Shopify 顧客 1,891 名 への一斉送信下準備)
+//
+// POST /api/admin/email/opt-in/generate-url
+//   body: { email: string, ttlSeconds?: number }
+//   resp: { url, expiresAt }
+//
+// 用途:
+//   - bulk send 用に email を行送りでURL 生成
+//   - 1 件テスト送信用にコピペで URL 取得
+//
+// セキュリティ:
+//   - admin 認証 (親 app の authMiddleware) を経由
+//   - EMAIL_OPTIN_HMAC_KEY 必須、 未設定なら 503
+// ============================================================
+emailAdmin.post('/api/admin/email/opt-in/generate-url', async (c) => {
+  const hmacKey = (c.env as { EMAIL_OPTIN_HMAC_KEY?: string }).EMAIL_OPTIN_HMAC_KEY;
+  if (!hmacKey) {
+    return c.json({ success: false, error: 'EMAIL_OPTIN_HMAC_KEY not configured' }, 503);
+  }
+  const workerUrl = (c.env as { WORKER_URL?: string }).WORKER_URL;
+  if (!workerUrl) {
+    return c.json({ success: false, error: 'WORKER_URL not configured' }, 503);
+  }
+
+  let body: { email?: unknown; ttlSeconds?: unknown };
+  try {
+    body = await c.req.json<{ email?: unknown; ttlSeconds?: unknown }>();
+  } catch {
+    return c.json({ success: false, error: 'Invalid JSON' }, 400);
+  }
+
+  const email = typeof body.email === 'string' ? body.email.trim() : '';
+  if (!isValidEmail(email)) {
+    return c.json({ success: false, error: 'Invalid email format' }, 400);
+  }
+
+  let ttlSeconds: number | undefined;
+  if (body.ttlSeconds !== undefined) {
+    const n = Number(body.ttlSeconds);
+    if (!Number.isFinite(n) || n <= 0 || n > 60 * 60 * 24 * 90) {
+      // 上限 90 日 (適切な expiry 強制、 token 寿命が長すぎると security risk)
+      return c.json({ success: false, error: 'ttlSeconds must be 1..7776000 (90 days)' }, 400);
+    }
+    ttlSeconds = Math.floor(n);
+  }
+
+  try {
+    const signed = await signEmailOptInToken(hmacKey, email, { ttlSeconds });
+    const base = workerUrl.replace(/\/$/, '');
+    const url = `${base}/email/opt-in?email=${encodeURIComponent(signed.email)}&e=${signed.expiresAt}&token=${signed.token}`;
+    return c.json({
+      success: true,
+      data: {
+        url,
+        email: signed.email,
+        expiresAt: signed.expiresAt,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/admin/email/opt-in/generate-url error', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

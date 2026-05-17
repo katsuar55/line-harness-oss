@@ -232,3 +232,82 @@ export async function resubscribeById(
     .run();
   return (result.meta.changes ?? 0) > 0;
 }
+
+// ============================================================
+// recordMarketingOptIn (Phase 5β-1)
+// ============================================================
+
+export interface RecordMarketingOptInInput {
+  email: string;
+  friendId?: string | null;
+  consentSource?: ConsentSource;
+}
+
+/**
+ * marketing 配信に明示的 opt-in する (LIFF / Web フォーム経由)。
+ *
+ * upsertEmailSubscriber との違い:
+ *   - 既存レコードの is_active / transactional_only / unsubscribed_at を **強制更新** する
+ *     (upsertEmailSubscriber は sync 用で is_active 維持、 こちらは explicit な user action)
+ *   - 復活: unsubscribed / bounce-suppressed / complaint-suppressed 全てから再有効化
+ *     (bounce_count / complaint_count は保持、 履歴追跡を継続)
+ *   - consent_at を更新 (再同意のタイムスタンプとして記録)
+ *
+ * 法令: 特定電子メール法上、 受信者本人が明示的に opt-in フォームを介して再申請したケースは
+ * 新規同意として扱える。 ただし complaint 履歴がある場合は caller 側で warning を出すこと推奨。
+ */
+export async function recordMarketingOptIn(
+  db: D1Database,
+  input: RecordMarketingOptInInput,
+): Promise<EmailSubscriber> {
+  const existing = await getEmailSubscriberByEmail(db, input.email);
+  const now = jstNow();
+
+  if (existing) {
+    await db
+      .prepare(
+        `UPDATE email_subscribers
+            SET friend_id = COALESCE(?, friend_id),
+                consent_source = COALESCE(?, consent_source),
+                is_active = 1,
+                transactional_only = 0,
+                unsubscribed_at = NULL,
+                consent_at = ?,
+                updated_at = ?
+          WHERE id = ?`,
+      )
+      .bind(
+        input.friendId ?? null,
+        input.consentSource ?? null,
+        now,
+        now,
+        existing.id,
+      )
+      .run();
+    return (await getEmailSubscriberById(db, existing.id)) as EmailSubscriber;
+  }
+
+  // 新規 (is_active=1 / transactional_only=0 を bind 渡しに揃える: upsert と同じ pattern)
+  const id = crypto.randomUUID();
+  await db
+    .prepare(
+      `INSERT INTO email_subscribers
+          (id, friend_id, email, is_active, transactional_only, consent_source,
+           consent_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id,
+      input.friendId ?? null,
+      input.email,
+      1,
+      0,
+      input.consentSource ?? 'opt_in_form',
+      now,
+      now,
+      now,
+    )
+    .run();
+
+  return (await getEmailSubscriberById(db, id)) as EmailSubscriber;
+}
