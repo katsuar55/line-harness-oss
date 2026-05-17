@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import Link from 'next/link'
 import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
@@ -150,13 +151,22 @@ export default function TemplatesPage() {
       <Header
         title="テンプレート管理"
         action={
-          <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
-            style={{ backgroundColor: '#06C755' }}
-          >
-            + 新規テンプレート
-          </button>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/conductor?tab=message"
+              className="px-4 py-2 text-sm font-medium text-blue-700 bg-white border border-blue-500 rounded-lg hover:bg-blue-50 transition-colors inline-flex items-center gap-1"
+              title="自然言語からテンプレートを AI 生成 (Phase 5γ)"
+            >
+              ✨ AI に作らせる
+            </Link>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
+              style={{ backgroundColor: '#06C755' }}
+            >
+              + 新規テンプレート
+            </button>
+          </div>
         }
       />
 

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import Link from 'next/link'
 import { api, fetchApi } from '@/lib/api'
 import type { RichMenu, RichMenuArea, RichMenuAction } from '@/lib/api'
 import type { ApiResponse } from '@line-crm/shared'
@@ -140,7 +141,19 @@ export default function RichMenusPage() {
 
   return (
     <div>
-      <Header title="リッチメニュー" description="LINE リッチメニューの作成・編集・デフォルト設定" />
+      <Header
+        title="リッチメニュー"
+        description="LINE リッチメニューの作成・編集・デフォルト設定"
+        action={
+          <Link
+            href="/conductor?tab=rich-menu"
+            className="px-4 py-2 min-h-[44px] text-sm font-medium text-blue-700 bg-white border border-blue-500 rounded-lg hover:bg-blue-50 transition-colors inline-flex items-center gap-1"
+            title="自然言語からリッチメニューを AI 生成 (Phase 5γ)"
+          >
+            ✨ AI に作らせる
+          </Link>
+        }
+      />
 
       {flash && (
         <div className={`mb-4 p-3 rounded-lg text-sm whitespace-pre-wrap break-words ${
