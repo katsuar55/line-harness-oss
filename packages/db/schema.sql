@@ -1797,3 +1797,40 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_action
   ON audit_logs(action, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_time
   ON audit_logs(created_at DESC);
+
+-- ============================================================
+-- Phase 5β-1d-2: LINE 友だち追加経路の Shopify 動的クーポン発行履歴
+-- migration 050 と同期 — drift check 用に schema.sql にも同じ定義
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS line_friend_coupons (
+  id                       TEXT PRIMARY KEY,
+  friend_id                TEXT NOT NULL UNIQUE,
+  line_account_id          TEXT,
+  coupon_code              TEXT NOT NULL,
+  shopify_discount_code_id TEXT,
+  shopify_price_rule_id    TEXT,
+  discount_value           INTEGER NOT NULL,
+  discount_currency        TEXT NOT NULL DEFAULT 'JPY',
+  issued_at                TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  redeemed_at              TEXT,
+  expires_at               TEXT,
+  status                   TEXT NOT NULL DEFAULT 'issued'
+                           CHECK (status IN ('issued', 'redeemed', 'expired', 'revoked')),
+  source                   TEXT NOT NULL DEFAULT 'shopify'
+                           CHECK (source IN ('shopify', 'static_fallback')),
+  metadata                 TEXT,
+  FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_line_friend_coupons_friend
+  ON line_friend_coupons(friend_id);
+CREATE INDEX IF NOT EXISTS idx_line_friend_coupons_account
+  ON line_friend_coupons(line_account_id, issued_at DESC);
+CREATE INDEX IF NOT EXISTS idx_line_friend_coupons_issued
+  ON line_friend_coupons(issued_at DESC);
+CREATE INDEX IF NOT EXISTS idx_line_friend_coupons_code
+  ON line_friend_coupons(coupon_code);
+CREATE INDEX IF NOT EXISTS idx_line_friend_coupons_status
+  ON line_friend_coupons(status, issued_at DESC);
