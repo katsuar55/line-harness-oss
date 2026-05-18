@@ -143,10 +143,11 @@ beforeEach(() => {
 // ============================================================
 
 describe('generateCouponCode', () => {
-  it('returns "{prefix}-{8 chars}" with ambiguous chars excluded', () => {
+  it('returns "{prefix}-{8 chars}" with ambiguous chars (0/1/O/I/L) excluded from suffix', () => {
     const code = t.generateCouponCode('LINE');
-    expect(code).toMatch(/^LINE-[A-Z2-9]{8}$/);
-    // 0/1/O/I/L が含まれない (LINE prefix の L は別)
+    // suffix は base31 (大文字 + 2-9、 0/1/O/I/L 除外)
+    expect(code).toMatch(/^LINE-[A-KMNP-Z2-9]{8}$/);
+    // 0/1/O/I/L が含まれない (LINE prefix の L はマッチさせない、 suffix のみ check)
     const suffix = code.split('-')[1];
     expect(suffix).not.toMatch(/[01OIL]/);
   });
@@ -159,7 +160,7 @@ describe('generateCouponCode', () => {
   });
 
   it('respects custom prefix', () => {
-    expect(t.generateCouponCode('WELCOME')).toMatch(/^WELCOME-[A-Z2-9]{8}$/);
+    expect(t.generateCouponCode('WELCOME')).toMatch(/^WELCOME-[A-KMNP-Z2-9]{8}$/);
   });
 });
 

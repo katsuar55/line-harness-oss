@@ -34,8 +34,8 @@ const DEFAULT_CODE_PREFIX = 'LINE';
 const SHOPIFY_API_VERSION = '2024-04';
 const SHOPIFY_TIMEOUT_MS = 3_000;
 
-// ambiguous な 0/1/O/I を除外した base32 alphabet (人間が読み書きしやすい)
-const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+// ambiguous な 0/1/O/I/L を除外した base31 alphabet (人間が読み書きしやすい、 OCR ミス防止)
+const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const CODE_SUFFIX_LENGTH = 8;
 
 // ============================================================
