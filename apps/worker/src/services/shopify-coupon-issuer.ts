@@ -31,7 +31,9 @@ import { getShopifyAccessToken } from './shopify-token.js';
 const DEFAULT_DISCOUNT_VALUE_JPY = 500;
 const DEFAULT_VALID_DAYS = 90;
 const DEFAULT_CODE_PREFIX = 'LINE';
-const SHOPIFY_API_VERSION = '2024-04';
+// 5β-1d-2c (2026-05-19): API version を他 service (shopify-customer-sync.ts 等) と統一 (2024-04 → 2026-04)
+// 古い 2024-04 のままだと Shopify Admin GraphQL endpoint で 404 が返るため修正
+const SHOPIFY_API_VERSION = '2026-04';
 const SHOPIFY_TIMEOUT_MS = 3_000;
 
 // ambiguous な 0/1/O/I/L を除外した base31 alphabet (人間が読み書きしやすい、 OCR ミス防止)
