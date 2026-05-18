@@ -1637,6 +1637,28 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+-- from 050_line_friend_coupons.sql
+CREATE TABLE IF NOT EXISTS line_friend_coupons (
+  id                       TEXT PRIMARY KEY,
+  friend_id                TEXT NOT NULL UNIQUE,           -- 1 friend に 1 coupon (初回のみ)
+  line_account_id          TEXT,
+  coupon_code              TEXT NOT NULL,                  -- Shopify で発行された code (顧客が入力する文字列)
+  shopify_discount_code_id TEXT,                           -- Shopify GraphQL ID (gid://shopify/DiscountCodeBasic/...)
+  shopify_price_rule_id    TEXT,                           -- Shopify Price Rule ID (legacy REST、 将来更新可)
+  discount_value           INTEGER NOT NULL,               -- 値引き額 (整数、 例: 500)
+  discount_currency        TEXT NOT NULL DEFAULT 'JPY',
+  issued_at                TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  redeemed_at              TEXT,                            -- 使用された時刻 (将来 Shopify webhook で更新)
+  expires_at               TEXT,                            -- coupon 有効期限 (NULL = 無期限)
+  status                   TEXT NOT NULL DEFAULT 'issued'
+                           CHECK (status IN ('issued', 'redeemed', 'expired', 'revoked')),
+  source                   TEXT NOT NULL DEFAULT 'shopify'
+                           CHECK (source IN ('shopify', 'static_fallback')),
+  metadata                 TEXT,                            -- JSON (Shopify API response の subset 等)
+  FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id) ON DELETE SET NULL
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -1797,3 +1819,13 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_action
   ON audit_logs(action, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_time
   ON audit_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_line_friend_coupons_friend
+  ON line_friend_coupons(friend_id);
+CREATE INDEX IF NOT EXISTS idx_line_friend_coupons_account
+  ON line_friend_coupons(line_account_id, issued_at DESC);
+CREATE INDEX IF NOT EXISTS idx_line_friend_coupons_issued
+  ON line_friend_coupons(issued_at DESC);
+CREATE INDEX IF NOT EXISTS idx_line_friend_coupons_code
+  ON line_friend_coupons(coupon_code);
+CREATE INDEX IF NOT EXISTS idx_line_friend_coupons_status
+  ON line_friend_coupons(status, issued_at DESC);
