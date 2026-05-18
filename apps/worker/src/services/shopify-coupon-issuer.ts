@@ -352,6 +352,21 @@ export async function issueCouponForFriend(
 }
 
 // ============================================================
+// DB-only lookup (caller chain で env を持たない場面用)
+//
+// step-delivery.ts (cron 配信) は env / Shopify API なしで coupon code を取得する必要がある。
+// friend_add 時に発行済なら DB に row があるので、 そこから取得する純粋 read-only 関数。
+// ============================================================
+
+export async function getCouponCodeForFriend(
+  db: D1Database,
+  friendId: string,
+): Promise<string | null> {
+  const row = await findExistingCoupon(db, friendId);
+  return row?.code ?? null;
+}
+
+// ============================================================
 // test 用 export
 // ============================================================
 

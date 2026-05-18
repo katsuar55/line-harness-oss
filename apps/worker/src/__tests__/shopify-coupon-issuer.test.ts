@@ -17,6 +17,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   issueCouponForFriend,
+  getCouponCodeForFriend,
   __test__ as t,
   type ShopifyEnv,
 } from '../services/shopify-coupon-issuer.js';
@@ -403,6 +404,33 @@ describe('issueCouponForFriend — race condition (並行 INSERT)', () => {
     expect(result).not.toBeNull();
     expect(result?.code).toBe('LINE-RACEWIN1');
     expect(result?.isExisting).toBe(true);
+  });
+});
+
+describe('getCouponCodeForFriend (DB-only lookup、 step-delivery 用、 5β-1d-2b)', () => {
+  it('既存 row → coupon_code を返す', async () => {
+    const db = new FakeDb();
+    db.rows.push({
+      id: 'c-1',
+      friend_id: 'friend-X',
+      line_account_id: null,
+      coupon_code: 'LINE-EXIST777',
+      shopify_discount_code_id: null,
+      discount_value: 500,
+      discount_currency: 'JPY',
+      issued_at: '2026-01-01T00:00:00.000Z',
+      expires_at: null,
+      status: 'issued',
+      source: 'shopify',
+    });
+    const code = await getCouponCodeForFriend(db as unknown as D1Database, 'friend-X');
+    expect(code).toBe('LINE-EXIST777');
+  });
+
+  it('未発行 → null を返す (Shopify API 呼ばない)', async () => {
+    const db = new FakeDb();
+    const code = await getCouponCodeForFriend(db as unknown as D1Database, 'friend-NEW');
+    expect(code).toBeNull();
   });
 });
 
