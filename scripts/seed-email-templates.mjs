@@ -275,9 +275,9 @@ export const TEMPLATES = [
     name: 'メールマガジン登録のお願い',
     category: 'transactional',
     kind: 'core',
-    note: 'コア。 send 時 vars: {{name}} {{opt_in_url}} + brand 注入。 既存顧客への opt-in 再取得 (1 回限り) 用',
-    subject: '[{{brand_name}}] メールマガジン配信のご確認 (クーポン同封)',
-    preheader: 'ご登録いただくと 500 円 OFF クーポンをプレゼント',
+    note: 'コア。 send 時 vars: {{name}} {{opt_in_url}} + brand 注入。 既存顧客への opt-in 再取得 (1 回限り) 用。 5β-1e: クーポン文言削除 (商業判断、 メルマガ登録で割引クーポンは付与しない)',
+    subject: '[{{brand_name}}] メールマガジン配信のご確認',
+    preheader: '新商品・季節のキャンペーン・健康コラムを最速でお届けします',
     html: `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#333;max-width:600px;margin:0 auto;padding:24px;">
   <h1 style="color:{{primary_color}};font-size:22px;margin-bottom:16px;">📧 メールマガジン配信のご確認</h1>
   <p style="font-size:16px;line-height:1.7;">{{name}} 様</p>
@@ -285,9 +285,13 @@ export const TEMPLATES = [
     いつも {{brand_name}} をご愛用いただきありがとうございます。<br>
     {{brand_name}} では、 ご愛用者様向けに <strong>新商品のご案内</strong>・<strong>季節のキャンペーン</strong>・<strong>健康コラム</strong> をメールでお届けしています。
   </p>
-  <div style="background:#fef3c7;padding:20px;border-radius:8px;margin:24px 0;text-align:center;border:1px solid #fde68a;">
-    <p style="font-size:14px;margin:0 0 8px 0;color:#92400e;"><strong>🎁 ご登録で 500 円 OFF クーポン</strong></p>
-    <p style="font-size:12px;margin:0;line-height:1.6;color:#a16207;">次回 {{shop_url}} でのご購入時にご利用いただけます</p>
+  <div style="background:#f0fdf4;padding:20px;border-radius:8px;margin:24px 0;border:1px solid #bbf7d0;">
+    <p style="font-size:14px;margin:0 0 8px 0;color:#15803d;"><strong>📬 配信内容</strong></p>
+    <ul style="font-size:13px;margin:0;padding-left:20px;line-height:1.7;color:#166534;">
+      <li>新商品の先行ご案内</li>
+      <li>季節の健康コラム / 摂取アドバイス</li>
+      <li>定期便ご愛用者様向け限定情報</li>
+    </ul>
   </div>
   <div style="text-align:center;margin:32px 0;">
     <a href="{{opt_in_url}}" style="display:inline-block;background:{{primary_color}};color:#fff;padding:14px 36px;border-radius:24px;text-decoration:none;font-weight:bold;font-size:15px;">
@@ -310,8 +314,10 @@ export const TEMPLATES = [
 いつも {{brand_name}} をご愛用いただきありがとうございます。
 {{brand_name}} では、 ご愛用者様向けに 新商品のご案内・季節のキャンペーン・健康コラム をメールでお届けしています。
 
-🎁 ご登録で 500 円 OFF クーポン
-次回 {{shop_url}} でのご購入時にご利用いただけます
+📬 配信内容
+・新商品の先行ご案内
+・季節の健康コラム / 摂取アドバイス
+・定期便ご愛用者様向け限定情報
 
 配信を希望する: {{opt_in_url}}
 

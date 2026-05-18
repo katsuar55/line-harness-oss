@@ -2,7 +2,8 @@
  * Tests for /liff/opt-in page (Phase 5β-1b).
  *
  * inline HTML page なので、 重要な要素 (LIFF init, API endpoint, 同意 checkbox,
- * クーポン表示エリア) が含まれることを検証。
+ * 配信内容説明 box) が含まれることを検証。
+ * 5β-1e (2026-05-18): クーポン関連 markup は出現しないことを negative assert。
  */
 
 import { describe, it, expect } from 'vitest';
@@ -58,11 +59,17 @@ describe('GET /liff/opt-in', () => {
     expect(r.body).toMatch(/<button[^>]+id="submit-btn"/);
   });
 
-  it('クーポン表示エリア + 500 円 OFF プロモ', async () => {
+  it('配信内容説明 box が表示される + クーポン関連 markup は無い (5β-1e)', async () => {
     const r = await fetchPage('/liff/opt-in');
-    expect(r.body).toMatch(/500 円 OFF/);
-    expect(r.body).toMatch(/coupon-box/);
-    expect(r.body).toMatch(/id="coupon-code"/);
+    // 5β-1e (商業判断): メルマガ登録ではクーポンを付与しない
+    expect(r.body).not.toMatch(/500\s*円/);
+    expect(r.body).not.toMatch(/coupon-box/);
+    expect(r.body).not.toMatch(/id="coupon-code"/);
+    expect(r.body).not.toMatch(/クーポンコード/);
+    // 代替: 配信内容説明 box
+    expect(r.body).toMatch(/benefits-box/);
+    expect(r.body).toMatch(/配信内容/);
+    expect(r.body).toMatch(/新商品の先行ご案内/);
   });
 
   it('POST /api/liff/opt-in を呼ぶコードを含む', async () => {
