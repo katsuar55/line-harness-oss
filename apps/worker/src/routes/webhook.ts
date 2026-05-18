@@ -33,6 +33,7 @@ import { generateAiResponse } from '../services/ai-response.js';
 import { analyzeFoodImage, FoodAnalyzerError } from '../services/food-analyzer.js';
 import { downloadLineContent, LineContentError } from '../services/line-content.js';
 import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
+import { issueCouponForFriend } from '../services/shopify-coupon-issuer.js';
 import type { Env } from '../index.js';
 
 /**
@@ -320,6 +321,25 @@ async function handleEvent(
         .bind(lineAccountId, friend.id).run();
     }
 
+    // 5β-1d-2b: LINE 友だち追加時 Shopify 動的クーポン発行 (1 friend 1 回限り、 失敗時は null fallback)
+    // env が無い (test 等) / Shopify 未設定 / API 失敗時は null → message にクーポン文言が出ない (safe)
+    let lineFriendCouponCode: string | null = null;
+    if (env) {
+      try {
+        const couponResult = await issueCouponForFriend(db, env, {
+          friendId: friend.id,
+          lineAccountId,
+        });
+        lineFriendCouponCode = couponResult?.code ?? null;
+      } catch (err) {
+        // safe fallback: coupon なしで message を送る (caller の処理を阻害しない)
+        console.warn(
+          '[webhook] issueCouponForFriend failed (continuing without coupon):',
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
     // friend_add シナリオに登録（このアカウントのシナリオのみ）
     const scenarios = await getScenarios(db);
     for (const scenario of scenarios) {
@@ -339,7 +359,12 @@ async function handleEvent(
             const firstStep = steps[0];
             if (firstStep && firstStep.delay_minutes === 0 && friendScenario.status === 'active') {
               try {
-                const expandedContent = expandVariables(firstStep.message_content, friend as { id: string; display_name: string | null; user_id: string | null });
+                const expandedContent = expandVariables(firstStep.message_content, {
+                  id: friend.id,
+                  display_name: friend.display_name,
+                  user_id: friend.user_id,
+                  line_friend_coupon_code: lineFriendCouponCode,
+                });
                 const message = buildMessage(firstStep.message_type, expandedContent);
                 await lineClient.replyMessage(event.replyToken, [message]);
                 console.info(`Immediate delivery: sent step ${firstStep.id} to ${userId}`);

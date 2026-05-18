@@ -19,19 +19,32 @@ import {
   buildEmailDispatcherDeps,
   type EmailDispatchConfig,
 } from './email-dispatch-config.js';
+import { getCouponCodeForFriend } from './shopify-coupon-issuer.js';
 
 /**
  * Replace template variables in message content.
  *
  * Supported variables:
- * - {{name}}                → friend's display name
- * - {{uid}}                 → friend's user UUID
- * - {{friend_id}}           → friend's internal ID
- * - {{auth_url:CHANNEL_ID}} → full /auth/line URL with uid for cross-account linking
+ * - {{name}}                    → friend's display name
+ * - {{uid}}                     → friend's user UUID
+ * - {{friend_id}}               → friend's internal ID
+ * - {{ref}}                     → friend's ref_code (空文字 if 未設定)
+ * - {{line_friend_coupon_code}} → LINE 友だち追加時発行 coupon code (5β-1d-2b、 空文字 if 未発行)
+ * - {{auth_url:CHANNEL_ID}}     → full /auth/line URL with uid for cross-account linking
+ *
+ * Conditional blocks:
+ * - {{#if_ref}}...{{/if_ref}}       → ref_code が truthy ならブロックを表示
+ * - {{#if_coupon}}...{{/if_coupon}} → line_friend_coupon_code が truthy なら表示 (5β-1d-2b)
  */
 export function expandVariables(
   content: string,
-  friend: { id: string; display_name: string | null; user_id: string | null; ref_code?: string | null },
+  friend: {
+    id: string;
+    display_name: string | null;
+    user_id: string | null;
+    ref_code?: string | null;
+    line_friend_coupon_code?: string | null;
+  },
   apiOrigin?: string,
 ): string {
   let result = content;
@@ -39,12 +52,22 @@ export function expandVariables(
   result = result.replace(/\{\{uid\}\}/g, friend.user_id || '');
   result = result.replace(/\{\{friend_id\}\}/g, friend.id);
   result = result.replace(/\{\{ref\}\}/g, friend.ref_code || '');
+  result = result.replace(/\{\{line_friend_coupon_code\}\}/g, friend.line_friend_coupon_code || '');
+
   // Conditional block: {{#if_ref}}...{{/if_ref}} — only shown if ref_code exists
   if (friend.ref_code) {
     result = result.replace(/\{\{#if_ref\}\}([\s\S]*?)\{\{\/if_ref\}\}/g, '$1');
   } else {
     result = result.replace(/\{\{#if_ref\}\}[\s\S]*?\{\{\/if_ref\}\}/g, '');
   }
+
+  // Conditional block: {{#if_coupon}}...{{/if_coupon}} — only shown if line_friend_coupon_code exists (5β-1d-2b)
+  if (friend.line_friend_coupon_code) {
+    result = result.replace(/\{\{#if_coupon\}\}([\s\S]*?)\{\{\/if_coupon\}\}/g, '$1');
+  } else {
+    result = result.replace(/\{\{#if_coupon\}\}[\s\S]*?\{\{\/if_coupon\}\}/g, '');
+  }
+
   if (apiOrigin) {
     result = result.replace(/\{\{auth_url:([^}]+)\}\}/g, (_match, channelId) => {
       const params = new URLSearchParams({ account: channelId, ref: 'cross-link' });
@@ -232,8 +255,24 @@ async function sendLineStep(
   currentStep: ScenarioStep,
   workerUrl?: string,
 ): Promise<void> {
-  // Expand template variables ({{name}}, {{uid}}, {{auth_url:CHANNEL_ID}}, etc.)
-  const expandedContent = expandVariables(currentStep.message_content, friend, workerUrl);
+  // 5β-1d-2b: LINE 友だち追加時発行 coupon を DB から取得 (env なしで動く、 read-only)
+  // 未発行なら null → expandVariables 内で空文字 + {{#if_coupon}} block 非表示
+  let lineFriendCouponCode: string | null = null;
+  try {
+    lineFriendCouponCode = await getCouponCodeForFriend(db, friend.id);
+  } catch (err) {
+    // DB error は coupon を欠落させるだけ (caller 業務阻害なし)
+    console.warn(
+      '[step-delivery] getCouponCodeForFriend failed (continuing without coupon):',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  // Expand template variables ({{name}}, {{uid}}, {{auth_url:CHANNEL_ID}}, {{line_friend_coupon_code}}, etc.)
+  const expandedContent = expandVariables(
+    currentStep.message_content,
+    { ...friend, line_friend_coupon_code: lineFriendCouponCode },
+    workerUrl,
+  );
   // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
   let trackedType: string = currentStep.message_type;
   let trackedContent = expandedContent;
