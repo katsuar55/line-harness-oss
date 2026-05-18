@@ -41,12 +41,12 @@ function buildUpdateSql() {
   const signature = '{{#if_coupon}}';
   const escapedBlock = COUPON_BLOCK.replace(/'/g, "''");
   const escapedSignature = signature.replace(/'/g, "''");
+  // 注: scenario_steps テーブルには updated_at column が無い (schema.sql 確認済、 created_at のみ)
   return `UPDATE scenario_steps
 SET message_content = CASE
   WHEN message_content LIKE '%${escapedSignature}%' THEN message_content
   ELSE message_content || '${escapedBlock}'
-END,
-updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+END
 WHERE scenario_id = '${SCENARIO_ID}' AND step_order = ${STEP_ORDER};`;
 }
 
