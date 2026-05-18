@@ -75,7 +75,7 @@ button{font-family:inherit;cursor:pointer;border:none;font-size:14px;padding:12p
 .btn-primary:disabled{background:#cbd5e1;cursor:not-allowed}
 .btn-secondary{background:#e5e7eb;color:#374151;margin-top:8px}
 .footer{font-size:11px;color:#9ca3af;margin-top:24px;text-align:center;line-height:1.6}
-.benefit{background:#fef3c7;border-radius:8px;padding:12px;margin:16px 0;font-size:13px;color:#92400e}
+.benefit{background:#f0fdf4;border-radius:8px;padding:12px;margin:16px 0;font-size:13px;color:#15803d;border:1px solid #bbf7d0}
 </style>
 </head>
 <body>
@@ -84,7 +84,7 @@ button{font-family:inherit;cursor:pointer;border:none;font-size:14px;padding:12p
   ${banner}
   <p>以下のメールアドレスに <strong>マーケティングメール</strong> (新商品 / 健康コラム / 季節のキャンペーン情報) をお届けします:</p>
   <p class="email">${escapeHtml(opts.email)}</p>
-  <div class="benefit">🎁 登録完了で <strong>クーポンコード</strong> をプレゼント (内容は登録完了画面でご案内)</div>
+  <div class="benefit">📬 ご登録後、 新商品の先行ご案内・季節の健康コラム・定期便ご愛用者様向け限定情報をお届けします</div>
   <form method="POST" action="/email/opt-in" id="opt-in-form">
     <input type="hidden" name="email" value="${escapeHtml(opts.email)}">
     <input type="hidden" name="e" value="${escapeHtml(String(opts.expiresAt))}">
@@ -107,7 +107,6 @@ interface ResultPageOpts {
   success: boolean;
   email?: string;
   message?: string;
-  couponCode?: string | null;
 }
 
 function renderResultPage(opts: ResultPageOpts): string {
@@ -118,13 +117,6 @@ function renderResultPage(opts: ResultPageOpts): string {
     (opts.success
       ? 'メールマガジンの配信を開始いたします。 いつでも配信停止できます。'
       : 'リンクが無効か、 有効期限を過ぎている可能性があります。 お手数ですが support@naturism-diet.com までご連絡ください。');
-  const couponBlock = opts.couponCode
-    ? `<div style="background:#fef3c7;border-radius:8px;padding:16px;margin:16px 0;text-align:center;">
-         <p style="margin:0 0 6px;font-size:12px;color:#92400e;">クーポンコード</p>
-         <p style="margin:0;font-size:22px;font-weight:700;color:#92400e;letter-spacing:2px;font-family:monospace;">${escapeHtml(opts.couponCode)}</p>
-         <p style="margin:8px 0 0;font-size:11px;color:#92400e;">naturism-diet.com で次回購入時にご利用いただけます</p>
-       </div>`
-    : '';
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -146,7 +138,6 @@ a.cta{display:inline-block;margin-top:16px;color:#0f766e;font-weight:600;text-de
   <h1>${title}</h1>
   <p>${escapeHtml(message)}</p>
   ${opts.email ? `<p style="font-size:12px;color:#6b7280;">対象: ${escapeHtml(opts.email)}</p>` : ''}
-  ${couponBlock}
   <a class="cta" href="https://naturism-diet.com">naturism-diet.com に戻る →</a>
   <p class="footer">株式会社ケンコーエクスプレス｜naturism</p>
 </div>
@@ -165,16 +156,9 @@ function parseExpiresAt(raw: string | undefined): number | null {
   return n;
 }
 
-/**
- * クーポンコード発行 (5β-1d で Shopify API 連動に置換、 現在は static MVP)。
- * 環境変数 EMAIL_OPTIN_DEFAULT_COUPON で固定値を出す。 未設定なら null。
- * 注: 同名 helper を liff-opt-in.ts でも使用するため、 そちらは本 module から import する。
- */
-export function getDefaultCoupon(env: Env['Bindings']): string | null {
-  const fromEnv = env.EMAIL_OPTIN_DEFAULT_COUPON;
-  if (fromEnv && fromEnv.trim().length > 0) return fromEnv.trim();
-  return null;
-}
+// 5β-1e (2026-05-18): getDefaultCoupon helper を削除。 メルマガ登録ではクーポンを付与しない (商業判断、 Katsu 確認済)。
+// LINE 友だち追加経路のクーポンは別 system (Welcome シナリオ等) で実装する想定。 将来 LIFF 経由 opt-in に
+// クーポンを付与したい場合は、 同じ env var を使い回さず別 flag (例: LIFF_OPT_IN_COUPON) を設けることを推奨。
 
 // ============================================================
 // GET /email/opt-in — 確認ページ
@@ -334,7 +318,6 @@ emailOptIn.post('/email/opt-in', async (c) => {
       renderResultPage({
         success: true,
         email: result.email,
-        couponCode: getDefaultCoupon(c.env),
       }),
     );
   } catch (err) {

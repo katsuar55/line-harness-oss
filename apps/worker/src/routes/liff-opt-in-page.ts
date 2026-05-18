@@ -8,7 +8,8 @@ import type { Env } from '../index.js';
  *   - LIFF SDK で idToken 取得
  *   - email 入力 + 「メールマガジンを受け取る」 checkbox
  *   - POST /api/liff/opt-in
- *   - 登録完了でクーポンコード表示
+ *   - 登録完了画面を表示 (5β-1e: クーポン提供なし、 商業判断 — LINE 友だち追加経路の
+ *     クーポンは別 system = Welcome シナリオ等で実装)
  *
  * 認証: liffAuthMiddleware で /api/liff/opt-in を保護。 このページ自体は public HTML (LIFF 内でしか useful にならない)。
  *
@@ -86,8 +87,8 @@ function optInPage(liffId: string, apiBase: string): string {
     .input-error{border-color:#dc2626 !important}
     .consent-row{display:flex;align-items:flex-start;gap:10px;padding:12px;background:#f0fdf4;border:1.5px solid #d1fae5;border-radius:10px;cursor:pointer;line-height:1.6;font-size:13px;color:#374151}
     .consent-row input{margin-top:3px;cursor:pointer;width:18px;height:18px;accent-color:#059669}
-    .coupon-box{background:linear-gradient(135deg,#fef3c7 0%,#fde68a 100%);border-radius:12px;padding:18px;text-align:center}
-    .coupon-code{font-size:24px;font-weight:700;letter-spacing:2px;font-family:'Courier New',monospace;color:#92400e;margin:6px 0}
+    .benefits-box{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:14px}
+    .benefits-box ul{list-style:disc;padding-left:20px;margin:0;line-height:1.8;color:#166534;font-size:12.5px}
   </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -110,9 +111,13 @@ function optInPage(liffId: string, apiBase: string): string {
       </div>
 
       <div class="card p-5 mt-4">
-        <div class="coupon-box mb-4">
-          <p class="text-xs text-amber-800 font-semibold mb-1">🎁 ご登録で 500 円 OFF クーポン</p>
-          <p class="text-xs text-amber-700">naturism-diet.com で次回ご購入時にご利用いただけます</p>
+        <div class="benefits-box mb-4">
+          <p class="text-xs text-green-800 font-semibold mb-1.5">📬 配信内容</p>
+          <ul>
+            <li>新商品の先行ご案内</li>
+            <li>季節の健康コラム / 摂取アドバイス</li>
+            <li>定期便ご愛用者様向け限定情報</li>
+          </ul>
         </div>
 
         <form id="opt-in-form" class="space-y-4">
@@ -141,14 +146,6 @@ function optInPage(liffId: string, apiBase: string): string {
         <p class="text-lg font-bold text-gray-800 mb-2">ご登録ありがとうございます</p>
         <p class="text-sm text-gray-600 leading-relaxed mb-4" id="success-message">メールマガジンの配信を開始いたします。 いつでも配信停止できます。</p>
         <p class="text-xs text-gray-500" id="success-email"></p>
-      </div>
-
-      <div class="card p-5 mt-4" id="coupon-section" style="display:none;">
-        <p class="text-xs text-gray-500 mb-2 text-center">クーポンコード</p>
-        <div class="coupon-box">
-          <p class="coupon-code" id="coupon-code"></p>
-          <p class="text-xs text-amber-700">naturism-diet.com で次回ご購入時に</p>
-        </div>
       </div>
 
       <div class="card p-4 mt-4">
@@ -227,10 +224,6 @@ async function onSubmit(e) {
         document.getElementById('success-message').textContent = 'メールマガジン配信を再開いたします。 ありがとうございます。';
       } else if (body.data.outcome === 're_consent') {
         document.getElementById('success-message').textContent = '同意情報を更新いたしました。 ありがとうございます。';
-      }
-      if (body.data.couponCode) {
-        document.getElementById('coupon-section').style.display = 'block';
-        document.getElementById('coupon-code').textContent = body.data.couponCode;
       }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } else {

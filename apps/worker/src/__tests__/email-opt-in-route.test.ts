@@ -148,7 +148,7 @@ class FakeDb {
   }
 }
 
-function makeApp(opts: { hmacKey?: string; coupon?: string } = {}): { app: Hono<Env>; db: FakeDb } {
+function makeApp(opts: { hmacKey?: string } = {}): { app: Hono<Env>; db: FakeDb } {
   const app = new Hono<Env>();
   const db = new FakeDb();
   // Provide env via middleware
@@ -156,7 +156,6 @@ function makeApp(opts: { hmacKey?: string; coupon?: string } = {}): { app: Hono<
     c.env = {
       DB: db as unknown as D1Database,
       EMAIL_OPTIN_HMAC_KEY: opts.hmacKey,
-      EMAIL_OPTIN_DEFAULT_COUPON: opts.coupon,
     } as unknown as Env['Bindings'];
     return next();
   });
@@ -164,13 +163,12 @@ function makeApp(opts: { hmacKey?: string; coupon?: string } = {}): { app: Hono<
   return { app, db };
 }
 
-function makeLiffApp(opts: { coupon?: string; liffUser?: { lineUserId: string; friendId: string } | null } = {}): { app: Hono<Env>; db: FakeDb } {
+function makeLiffApp(opts: { liffUser?: { lineUserId: string; friendId: string } | null } = {}): { app: Hono<Env>; db: FakeDb } {
   const app = new Hono<Env>();
   const db = new FakeDb();
   app.use('*', async (c, next) => {
     c.env = {
       DB: db as unknown as D1Database,
-      EMAIL_OPTIN_DEFAULT_COUPON: opts.coupon,
     } as unknown as Env['Bindings'];
     if (opts.liffUser !== null) {
       const user = opts.liffUser ?? { lineUserId: 'U-test', friendId: 'friend-1' };
@@ -314,8 +312,8 @@ describe('POST /email/opt-in', () => {
     expect(html).toContain('checkbox');
   });
 
-  it('valid + consent → 200 + DB 登録 + audit + クーポン表示', async () => {
-    const { app, db } = makeApp({ hmacKey: HMAC_KEY, coupon: 'LINE-WELCOME-500' });
+  it('valid + consent → 200 + DB 登録 + audit (5β-1e: クーポン非表示)', async () => {
+    const { app, db } = makeApp({ hmacKey: HMAC_KEY });
     const future = Math.floor(Date.now() / 1000) + 86400;
     const signed = await signEmailOptInToken(HMAC_KEY, 'new@x.com', { expiresAt: future });
     const body = `email=new@x.com&e=${future}&token=${signed.token}&marketing_consent=1`;
@@ -327,8 +325,10 @@ describe('POST /email/opt-in', () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('ご登録ありがとうございます');
-    expect(html).toContain('LINE-WELCOME-500'); // coupon shown
     expect(html).toContain('new@x.com');
+    // 5β-1e: クーポン関連 markup は出現しない (商業判断、 メルマガ登録でクーポン付与せず)
+    expect(html).not.toContain('クーポンコード');
+    expect(html).not.toMatch(/500\s*円/);
 
     // DB: 1 件追加
     expect(db.rows.size).toBe(1);
@@ -419,35 +419,24 @@ describe('POST /api/liff/opt-in', () => {
     expect(res.status).toBe(400);
   });
 
-  it('valid → 200 + friendId 紐付き + audit', async () => {
-    const { app, db } = makeLiffApp({ coupon: 'LIFF-100' });
+  it('valid → 200 + friendId 紐付き + audit (5β-1e: response に couponCode 含まず)', async () => {
+    const { app, db } = makeLiffApp();
     const res = await app.request('/api/liff/opt-in', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: 'liff@x.com', marketingConsent: true }),
     });
     expect(res.status).toBe(200);
-    const json = await res.json<{ success: boolean; data: { subscriberId: string; email: string; outcome: string; couponCode: string | null } }>();
+    const json = await res.json<{ success: boolean; data: { subscriberId: string; email: string; outcome: string; couponCode?: unknown } }>();
     expect(json.success).toBe(true);
     expect(json.data.email).toBe('liff@x.com');
     expect(json.data.outcome).toBe('new');
-    expect(json.data.couponCode).toBe('LIFF-100');
+    // 5β-1e: response に couponCode field を含まない (型レベルで削除済み)
+    expect('couponCode' in json.data).toBe(false);
     expect(json.data.subscriberId).toBeDefined();
 
     const row = [...db.rows.values()][0];
     expect(row.friend_id).toBe('friend-1');
     expect(db.auditCalls.length).toBe(1);
-  });
-
-  it('coupon 未設定 → couponCode=null', async () => {
-    const { app } = makeLiffApp({}); // coupon 無し
-    const res = await app.request('/api/liff/opt-in', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: 'nc@x.com', marketingConsent: true }),
-    });
-    expect(res.status).toBe(200);
-    const json = await res.json<{ success: boolean; data: { couponCode: string | null } }>();
-    expect(json.data.couponCode).toBeNull();
   });
 });

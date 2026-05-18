@@ -132,7 +132,7 @@ export type Env = {
     EMAIL_LEGAL_FOOTER_TEXT?: string;
     // Phase 5β-1: email opt-in
     EMAIL_OPTIN_HMAC_KEY?: string;       // HMAC token 署名 secret (web 経路で必須)
-    EMAIL_OPTIN_DEFAULT_COUPON?: string; // 静的クーポンコード (5β-1d で Shopify API 動的発行に置換)
+    // 5β-1e (2026-05-18): EMAIL_OPTIN_DEFAULT_COUPON 削除 (商業判断、 メルマガ登録ではクーポンを付与しない)
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };

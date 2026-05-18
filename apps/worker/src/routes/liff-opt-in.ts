@@ -10,8 +10,9 @@
  * 動線:
  *   1. LINE 友だちに opt-in 募集 message を送信 (CTA: LIFF ボタン)
  *   2. 友だちが LIFF を開く → email 入力 + 同意 checkbox
- *   3. POST /api/liff/opt-in → email_subscribers に登録 + クーポン返却
- *   4. LIFF 側で「登録完了 + クーポンコード」 を表示
+ *   3. POST /api/liff/opt-in → email_subscribers に登録
+ *   4. LIFF 側で「登録完了」 を表示 (5β-1e: クーポン提供なし、 商業判断 — LINE 友だち追加経路の
+ *      クーポンは別 system = Welcome シナリオ等で実装)
  *
  * 関連: services/email-opt-in.ts、 routes/email-opt-in.ts
  */
@@ -19,7 +20,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { performEmailOptIn } from '../services/email-opt-in.js';
-import { getDefaultCoupon } from './email-opt-in.js';
 import { auditSystem } from '../services/audit-logger.js';
 import type { Env } from '../index.js';
 
@@ -96,7 +96,6 @@ liffOptIn.post('/api/liff/opt-in', async (c) => {
         subscriberId: result.subscriberId,
         email: result.email,
         outcome: result.outcome,
-        couponCode: getDefaultCoupon(c.env),
       },
     });
   } catch (err) {
