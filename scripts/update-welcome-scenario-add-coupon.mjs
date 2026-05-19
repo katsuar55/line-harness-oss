@@ -32,7 +32,8 @@ const D1_DATABASE_NAME = 'naturism-line-crm';
 const SCENARIO_ID = 'naturism-welcome-v1';
 const STEP_ORDER = 2;
 
-const COUPON_BLOCK = `\n{{#if_coupon}}\n\n🎁 あなた専用 500 円 OFF クーポン\n\`{{line_friend_coupon_code}}\`\n初回ご注文限定 (発行日から 90 日間有効)\nnaturism-diet.com でご利用いただけます\n{{/if_coupon}}`;
+// 5β-1d-2e (2026-05-19): 「90 日間有効」 → 「3 日間有効」 (= マーケ最適化、 短期限で urgency ↑)
+const COUPON_BLOCK = `\n{{#if_coupon}}\n\n🎁 あなた専用 500 円 OFF クーポン\n\`{{line_friend_coupon_code}}\`\n初回ご注文限定 (発行日から 3 日間有効)\nnaturism-diet.com でご利用いただけます\n{{/if_coupon}}`;
 
 // SQLite で末尾の COUPON_BLOCK を idempotent に追記するため、 既に含まれていない場合のみ UPDATE
 // (CASE WHEN ... THEN ... ELSE message_content END で no-op)

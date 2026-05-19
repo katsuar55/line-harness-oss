@@ -220,7 +220,8 @@ describe('issueCouponForFriend — 新規発行 (success path)', () => {
     expect(result?.discountValue).toBe(500);
     expect(result?.discountCurrency).toBe('JPY');
     expect(result?.shopifyDiscountCodeId).toBe('gid://shopify/DiscountCodeNode/new1');
-    expect(result?.expiresAt).toBe(new Date(FIXED_NOW + 90 * 86_400_000).toISOString());
+    // 5β-1d-2e: default valid days = 3 (= 90 → 3 に短縮)
+    expect(result?.expiresAt).toBe(new Date(FIXED_NOW + 3 * 86_400_000).toISOString());
 
     // DB に行が追加された
     expect(db.rows.length).toBe(1);
