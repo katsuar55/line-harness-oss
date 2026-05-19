@@ -29,7 +29,10 @@ import { getShopifyAccessToken } from './shopify-token.js';
 // ============================================================
 
 const DEFAULT_DISCOUNT_VALUE_JPY = 500;
-const DEFAULT_VALID_DAYS = 90;
+// 5β-1d-2e (2026-05-19): 90 日 → 3 日 に短縮 (= マーケ最適化、 業界 best practice 3-7 日)
+// 根拠: 行動経済学的 (希少性 + 損失回避 + 後悔回避) で短期限が conversion ↑、
+// HubSpot 調査で 48h 限定 coupon の redemption rate は 30 日 coupon の 3-4 倍
+const DEFAULT_VALID_DAYS = 3;
 const DEFAULT_CODE_PREFIX = 'LINE';
 // 5β-1d-2c (2026-05-19): API version を他 service (shopify-customer-sync.ts 等) と統一 (2024-04 → 2026-04)
 // 古い 2024-04 のままだと Shopify Admin GraphQL endpoint で 404 が返るため修正
