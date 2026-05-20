@@ -34,6 +34,7 @@ import { analyzeFoodImage, FoodAnalyzerError } from '../services/food-analyzer.j
 import { downloadLineContent, LineContentError } from '../services/line-content.js';
 import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
 import { issueCouponForFriend } from '../services/shopify-coupon-issuer.js';
+import { auditSystem } from '../services/audit-logger.js';
 import type { Env } from '../index.js';
 
 /**
@@ -323,6 +324,7 @@ async function handleEvent(
 
     // 5β-1d-2b: LINE 友だち追加時 Shopify 動的クーポン発行 (1 friend 1 回限り、 失敗時は null fallback)
     // env が無い (test 等) / Shopify 未設定 / API 失敗時は null → message にクーポン文言が出ない (safe)
+    // 5β-1d-2f: caller 側で throw 検知時の audit_logs 永続化追加 (= 内部 audit 到達しない場合用)
     let lineFriendCouponCode: string | null = null;
     if (env) {
       try {
@@ -333,10 +335,23 @@ async function handleEvent(
         lineFriendCouponCode = couponResult?.code ?? null;
       } catch (err) {
         // safe fallback: coupon なしで message を送る (caller の処理を阻害しない)
-        console.warn(
-          '[webhook] issueCouponForFriend failed (continuing without coupon):',
-          err instanceof Error ? err.message : String(err),
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(
+          '[webhook] issueCouponForFriend threw (continuing without coupon):',
+          errMsg,
         );
+        await auditSystem(db, {
+          action: 'line_friend_coupon.issue_threw',
+          actorType: 'webhook',
+          targetType: 'friend',
+          targetId: friend.id,
+          lineAccountId,
+          result: 'failure',
+          errorMessage: errMsg,
+          metadata: {
+            stack: err instanceof Error ? err.stack?.slice(0, 1000) ?? null : null,
+          },
+        });
       }
     }
 

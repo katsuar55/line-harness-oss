@@ -23,6 +23,7 @@
  */
 
 import { getShopifyAccessToken } from './shopify-token.js';
+import { auditSystem } from './audit-logger.js';
 
 // ============================================================
 // 定数
@@ -245,12 +246,17 @@ export async function issueCouponForFriend(
   options: IssueCouponOptions,
 ): Promise<IssuedCoupon | null> {
   const friendId = options.friendId;
+  const lineAccountId = options.lineAccountId ?? null;
   const fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
   const nowFn = options.now ?? Date.now;
+
+  // 5β-1d-2f: 入口 log (production 真因確定用、 wrangler tail で観察可能)
+  console.info('[shopify-coupon-issuer] start friend=', friendId);
 
   // 1. 既発行確認 (冪等性、 重複発行防止)
   const existing = await findExistingCoupon(db, friendId);
   if (existing) {
+    console.info('[shopify-coupon-issuer] already-issued friend=', friendId, 'code=', existing.code);
     return {
       code: existing.code,
       discountValue: existing.discount_value,
@@ -263,7 +269,18 @@ export async function issueCouponForFriend(
 
   // 2. Shopify config 確認
   if (!env.SHOPIFY_STORE_DOMAIN || !env.SHOPIFY_CLIENT_ID || !env.SHOPIFY_CLIENT_SECRET) {
-    console.warn('[shopify-coupon-issuer] Shopify credentials not configured');
+    // 5β-1d-2f: warn → error 昇格 + audit_logs 永続化 (真因絞り込み用)
+    console.error('[shopify-coupon-issuer] Shopify credentials not configured');
+    await auditSystem(db, {
+      action: 'line_friend_coupon.issue_failed',
+      actorType: 'webhook',
+      targetType: 'friend',
+      targetId: friendId,
+      lineAccountId,
+      result: 'failure',
+      errorMessage: 'Shopify credentials not configured',
+      metadata: { stage: 'config_check' },
+    });
     return null;
   }
 
@@ -272,10 +289,18 @@ export async function issueCouponForFriend(
   try {
     accessToken = await getShopifyAccessToken(db, env);
   } catch (err) {
-    console.warn(
-      '[shopify-coupon-issuer] access token unavailable:',
-      err instanceof Error ? err.message : String(err),
-    );
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error('[shopify-coupon-issuer] access token unavailable:', errMsg);
+    await auditSystem(db, {
+      action: 'line_friend_coupon.issue_failed',
+      actorType: 'webhook',
+      targetType: 'friend',
+      targetId: friendId,
+      lineAccountId,
+      result: 'failure',
+      errorMessage: errMsg,
+      metadata: { stage: 'access_token' },
+    });
     return null;
   }
 
@@ -296,7 +321,17 @@ export async function issueCouponForFriend(
     fetchImpl,
   );
   if (!result.ok) {
-    console.warn('[shopify-coupon-issuer] discountCodeBasicCreate failed:', result.error);
+    console.error('[shopify-coupon-issuer] discountCodeBasicCreate failed:', result.error);
+    await auditSystem(db, {
+      action: 'line_friend_coupon.issue_failed',
+      actorType: 'webhook',
+      targetType: 'friend',
+      targetId: friendId,
+      lineAccountId,
+      result: 'failure',
+      errorMessage: result.error,
+      metadata: { stage: 'discount_create', apiVersion: SHOPIFY_API_VERSION },
+    });
     return null;
   }
 
@@ -315,7 +350,7 @@ export async function issueCouponForFriend(
       .bind(
         id,
         friendId,
-        options.lineAccountId ?? null,
+        lineAccountId,
         result.actualCode,
         result.discountCodeId,
         discountValue,
@@ -326,10 +361,21 @@ export async function issueCouponForFriend(
       .run();
   } catch (err) {
     // friend_id UNIQUE 違反 → 並行 follow event 等で既発行された → re-fetch
-    console.warn(
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(
       '[shopify-coupon-issuer] INSERT failed (likely UNIQUE conflict), re-fetching existing:',
-      err instanceof Error ? err.message : String(err),
+      errMsg,
     );
+    await auditSystem(db, {
+      action: 'line_friend_coupon.issue_failed',
+      actorType: 'webhook',
+      targetType: 'friend',
+      targetId: friendId,
+      lineAccountId,
+      result: 'failure',
+      errorMessage: errMsg,
+      metadata: { stage: 'db_insert', shopifyDiscountCodeId: result.discountCodeId },
+    });
     const refetch = await findExistingCoupon(db, friendId);
     if (refetch) {
       return {
@@ -345,6 +391,23 @@ export async function issueCouponForFriend(
     // 別 cron で「Shopify にあるが DB にない」 を見つけて補正する余地 (将来課題)。
     return null;
   }
+
+  // 5β-1d-2f: 成功時も audit_logs 記録 (= 自然流入で issue 成功実績を可視化)
+  console.info('[shopify-coupon-issuer] success friend=', friendId, 'code=', result.actualCode);
+  await auditSystem(db, {
+    action: 'line_friend_coupon.issue_succeeded',
+    actorType: 'webhook',
+    targetType: 'friend',
+    targetId: friendId,
+    lineAccountId,
+    result: 'success',
+    metadata: {
+      code: result.actualCode,
+      shopifyDiscountCodeId: result.discountCodeId,
+      discountValue,
+      validDays,
+    },
+  });
 
   return {
     code: result.actualCode,
