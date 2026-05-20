@@ -177,7 +177,7 @@ export default function LineInsightsPage() {
     <div className="min-h-screen bg-gray-50">
       <Header
         title="LINE Insight"
-        subtitle="AI 返信率 / 配信統計 / シナリオ / クーポン — LINE 特化分析 (主 dashboard は /dashboard)"
+        description="AI 返信率 / 配信統計 / シナリオ / クーポン — LINE 特化分析 (主 dashboard は /dashboard)"
       />
 
       <main className="max-w-6xl mx-auto px-4 lg:px-6 py-6 space-y-6">
