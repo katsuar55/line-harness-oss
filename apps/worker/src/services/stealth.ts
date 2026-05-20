@@ -69,11 +69,17 @@ export function calculateStaggerDelay(
 
 /**
  * Calculate jittered delivery time for step delivery.
- * Adds random minutes (±5 min) to scheduled delivery to avoid
- * all scenario deliveries firing at exactly the same time.
+ * Adds random minutes (0〜+9 min, **未来方向のみ**) to scheduled delivery
+ * to avoid all scenario deliveries firing at exactly the same time.
+ *
+ * 5β-polish (2026-05-20): 旧実装は -5 to +5 分 で過去方向 jitter があり、
+ * step-delivery.ts で `enforceDeliveryWindow(...)` (9-23 JST) の後に呼ばれると
+ * window 外 (例: 09:00 → 08:55) に押し出されるバグあり。 結果 cron で 5 分 pickup 遅延。
+ * 未来方向のみに変更すれば window 内に閉じ込められる + 過去方向 jitter は
+ * 「自然な配信感」 に寄与しないため UX 損失なし。
  */
 export function jitterDeliveryTime(scheduledAt: Date): Date {
-  const jitterMinutes = Math.floor(Math.random() * 10) - 5; // -5 to +5 minutes
+  const jitterMinutes = Math.floor(Math.random() * 10); // 0 to +9 minutes (未来方向のみ)
   const result = new Date(scheduledAt);
   result.setMinutes(result.getMinutes() + jitterMinutes);
   return result;
