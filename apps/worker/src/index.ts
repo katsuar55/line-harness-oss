@@ -11,6 +11,7 @@ import { syncShopifyCustomers } from './services/shopify-customer-sync.js';
 import { processAbandonedCartNotifications } from './services/abandoned-cart-notify.js';
 import { processTagElapsedDeliveries } from './services/tag-elapsed-delivery.js';
 import { fetchPendingBroadcastInsights } from './services/broadcast-insights-fetcher.js';
+import { checkAuditFailureSpike } from './services/audit-failure-monitor.js';
 import { authMiddleware } from './middleware/auth.js';
 import { liffAuthMiddleware } from './middleware/liff-auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
@@ -323,7 +324,7 @@ app.notFound((c) => {
 async function scheduled(
   _event: ScheduledEvent,
   env: Env['Bindings'],
-  _ctx: ExecutionContext,
+  ctx: ExecutionContext,
 ): Promise<void> {
   // Get all active accounts from DB, plus the default env account
   const dbAccounts = await getLineAccounts(env.DB);
@@ -380,6 +381,15 @@ async function scheduled(
   }
   jobs.push(withHeartbeat(env.DB, 'ban-monitor', () => checkAccountHealth(env.DB)));
   jobs.push(withHeartbeat(env.DB, 'token-refresh', () => refreshLineAccessTokens(env.DB)));
+
+  // Phase 5β-1d-2f-followup-2: audit_logs failure spike monitoring (= Discord alert via logger)
+  // 直近 5 min で failure 3 件以上 → alert (cooldown 1h で重複防止)
+  jobs.push(
+    withHeartbeat(env.DB, 'audit-failure-monitor', async () => {
+      const monitorLogger = createLogger(env, ctx);
+      return checkAuditFailureSpike(env.DB, monitorLogger);
+    }),
+  );
 
   // Phase 3: 月次食事レポート (毎月 1 日のみ実行、サービス側で gating)
   // Phase 4 PR-5: 週次栄養コーチ push (火曜 10:00 JST のみ trigger、サービス側で gating)
