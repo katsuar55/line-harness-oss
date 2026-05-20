@@ -11,6 +11,10 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+// 5β-5a-improvement: 既存 14 test は web typecheck check を skip する (= test 高速化 + 環境依存排除)。
+// web typecheck 専用 test は明示的に skipWebTypecheck: false + mock webTypecheckFn を指定する。
+process.env.PREFLIGHT_SKIP_WEB_TYPECHECK = '1';
+
 import {
   listMigrationFiles,
   findMigrationGaps,
@@ -19,6 +23,7 @@ import {
   compareSecrets,
   summarizeReport,
   runChecks,
+  runWebTypecheck,
   REQUIRED_SECRETS,
   OPTIONAL_SECRETS,
   KNOWN_DUPLICATE_EXCEPTIONS,
@@ -498,4 +503,113 @@ test('runChecks full mode tolerates wrangler failure (WARN not CRITICAL)', async
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ─────────────────────────────────────
+// runChecks — web typecheck (5β-5a-improvement / PR #37 Header bug 再発防止)
+// ─────────────────────────────────────
+
+test('runChecks web-typecheck: success → INFO passed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-web-ok-'));
+  try {
+    writeFileSync(join(dir, '001_a.sql'), '');
+    const fakeTypecheck = () => ({ ok: true });
+    const issues = await runChecks({
+      mode: 'offline',
+      migrationsDir: dir,
+      skipWebTypecheck: false,
+      webTypecheckFn: fakeTypecheck,
+    });
+    const web = issues.filter((i) => i.check === 'web-typecheck');
+    const info = web.filter((i) => i.severity === 'INFO');
+    const critical = web.filter((i) => i.severity === 'CRITICAL');
+    assert.equal(critical.length, 0, 'pass → no CRITICAL');
+    assert.equal(info.length, 1, 'expected one INFO passed entry');
+    assert.match(info[0].message, /passed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runChecks web-typecheck: failure → CRITICAL with error excerpt', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-web-fail-'));
+  try {
+    writeFileSync(join(dir, '001_a.sql'), '');
+    const fakeTypecheck = () => ({
+      ok: false,
+      errors: [
+        "apps/web/src/app/line-insights/page.tsx(180,9): error TS2322: Property 'subtitle' does not exist on type 'IntrinsicAttributes & HeaderProps'.",
+      ],
+    });
+    const issues = await runChecks({
+      mode: 'offline',
+      migrationsDir: dir,
+      skipWebTypecheck: false,
+      webTypecheckFn: fakeTypecheck,
+    });
+    const critical = issues.filter(
+      (i) => i.check === 'web-typecheck' && i.severity === 'CRITICAL',
+    );
+    assert.equal(critical.length, 1, 'expected one CRITICAL');
+    assert.match(critical[0].message, /typecheck failed/);
+    assert.match(critical[0].detail, /TS2322/);
+    assert.match(critical[0].detail, /subtitle/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runChecks web-typecheck: skipWebTypecheck=true → INFO skipped (does not invoke fn)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-web-skip-'));
+  try {
+    writeFileSync(join(dir, '001_a.sql'), '');
+    let called = false;
+    const fakeTypecheck = () => {
+      called = true;
+      return { ok: false }; // would CRITICAL if called
+    };
+    const issues = await runChecks({
+      mode: 'offline',
+      migrationsDir: dir,
+      skipWebTypecheck: true,
+      webTypecheckFn: fakeTypecheck,
+    });
+    assert.equal(called, false, 'webTypecheckFn must NOT be called when skipped');
+    const critical = issues.filter(
+      (i) => i.check === 'web-typecheck' && i.severity === 'CRITICAL',
+    );
+    assert.equal(critical.length, 0);
+    const info = issues.filter(
+      (i) => i.check === 'web-typecheck' && i.severity === 'INFO' && /skipped/.test(i.message),
+    );
+    assert.equal(info.length, 1, 'expected INFO skipped entry');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runWebTypecheck returns { ok: false } on child_process failure with tsc TS-code excerpt', () => {
+  // Simulate execSync throwing with stdout containing tsc error lines (= 実環境の tsc error patterns)
+  const fakeExec = () => {
+    const err = new Error('child_process exited with code 2');
+    err.stdout =
+      "noise line 1\n" +
+      "apps/web/src/foo.tsx(10,5): error TS2322: Type 'string' is not assignable to type 'number'.\n" +
+      "more noise\n" +
+      "apps/web/src/bar.tsx(20,3): error TS7006: Parameter 'x' implicitly has an 'any' type.\n";
+    err.stderr = '';
+    throw err;
+  };
+  const res = runWebTypecheck({ execImpl: fakeExec });
+  assert.equal(res.ok, false);
+  assert.equal(res.errors.length, 2);
+  assert.match(res.errors[0], /TS2322/);
+  assert.match(res.errors[1], /TS7006/);
+});
+
+test('runWebTypecheck returns { ok: true } when execImpl does not throw', () => {
+  const fakeExec = () => ''; // no-op success
+  const res = runWebTypecheck({ execImpl: fakeExec });
+  assert.equal(res.ok, true);
+  assert.equal(res.errors, undefined);
 });
