@@ -51,7 +51,15 @@ function mockD1(options: MockD1Options = {}) {
             };
           }
           if (sql.includes('FROM broadcasts')) {
-            return { total_broadcasts: 5, total_delivered: 1000, total_target: 1200 };
+            // 5β-5c-prep: insights_json 集計列を追加
+            return {
+              total_broadcasts: 5,
+              total_delivered: 1000,
+              total_target: 1200,
+              with_insights: 3,
+              total_read: 600,
+              total_clicks: 80,
+            };
           }
           if (sql.includes('FROM line_friend_coupons')) {
             return { total: 50, redeemed: 12, issued_last_n: 30 };
@@ -119,7 +127,16 @@ describe('LINE Insights API', () => {
       data: {
         window: { days: number };
         aiReplyRate: { totalOutgoing: number; aiReplies: number; aiPct: number; other: number };
-        broadcasts: { totalBroadcasts: number; totalDelivered: number; deliverRate: number };
+        broadcasts: {
+          totalBroadcasts: number;
+          totalDelivered: number;
+          deliverRate: number;
+          withInsights: number;
+          totalRead: number;
+          totalClicks: number;
+          readRate: number;
+          clickRate: number;
+        };
         scenarios: { statusCounts: unknown[]; activeByScenario: unknown[] };
         coupons: {
           totalIssued: number;
@@ -141,6 +158,14 @@ describe('LINE Insights API', () => {
     expect(json.data.broadcasts.totalBroadcasts).toBe(5);
     // 1000 / 1200 = 83.333... → rounded to 1 decimal = 83.3
     expect(json.data.broadcasts.deliverRate).toBeCloseTo(83.3, 1);
+    // 5β-5c-prep: insights_json 集計列
+    expect(json.data.broadcasts.withInsights).toBe(3);
+    expect(json.data.broadcasts.totalRead).toBe(600);
+    expect(json.data.broadcasts.totalClicks).toBe(80);
+    // read 600 / delivered 1000 = 60%
+    expect(json.data.broadcasts.readRate).toBeCloseTo(60, 1);
+    // click 80 / delivered 1000 = 8%
+    expect(json.data.broadcasts.clickRate).toBeCloseTo(8, 1);
     expect(json.data.scenarios.statusCounts.length).toBe(3);
     expect(json.data.scenarios.activeByScenario.length).toBe(2);
     expect(json.data.coupons.totalIssued).toBe(50);

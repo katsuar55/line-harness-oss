@@ -27,6 +27,12 @@ interface BroadcastStats {
   totalDelivered: number
   totalTarget: number
   deliverRate: number
+  // 5β-5c-prep: insights_json 取込 (= LINE Insight API)
+  withInsights: number
+  totalRead: number
+  totalClicks: number
+  readRate: number
+  clickRate: number
 }
 
 interface ScenarioStats {
@@ -251,13 +257,13 @@ export default function LineInsightsPage() {
               />
             </section>
 
-            {/* ── 2. Broadcast 統計 ── */}
+            {/* ── 2. Broadcast 統計 (5β-5c-prep: read / click rate 連動) ── */}
             <section className="bg-white border border-gray-200 rounded-lg p-5">
               <SectionHeader
                 title="一斉配信 統計"
-                subtitle={`過去 ${data.window.days} 日に sent になった broadcast (read / click は次 Phase)`}
+                subtitle={`過去 ${data.window.days} 日に sent になった broadcast (LINE Insight API 集計は 1h 後反映)`}
               />
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
                 <StatCard
                   label="配信回数"
                   value={data.broadcasts.totalBroadcasts}
@@ -276,11 +282,50 @@ export default function LineInsightsPage() {
                   accent="#3b82f6"
                 />
                 <StatCard
-                  label="対象友だち (累計)"
-                  value={data.broadcasts.totalTarget}
-                  accent="#9ca3af"
+                  label="Insight 取込"
+                  value={`${data.broadcasts.withInsights} / ${data.broadcasts.totalBroadcasts}`}
+                  hint="cron が LINE Insight API から取得済の件数"
+                  accent={
+                    data.broadcasts.totalBroadcasts > 0 &&
+                    data.broadcasts.withInsights < data.broadcasts.totalBroadcasts
+                      ? '#f59e0b'
+                      : '#06C755'
+                  }
                 />
               </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-3 border-t border-gray-100">
+                <StatCard
+                  label="既読合計 (ユニーク)"
+                  value={data.broadcasts.totalRead}
+                  hint="insights_json.overview.uniqueImpression"
+                  accent="#8b5cf6"
+                />
+                <StatCard
+                  label="既読率"
+                  value={`${data.broadcasts.readRate}%`}
+                  hint="既読 / 配信成功"
+                  accent="#8b5cf6"
+                />
+                <StatCard
+                  label="クリック合計 (ユニーク)"
+                  value={data.broadcasts.totalClicks}
+                  hint="insights_json.overview.uniqueClick"
+                  accent="#ec4899"
+                />
+                <StatCard
+                  label="クリック率"
+                  value={`${data.broadcasts.clickRate}%`}
+                  hint="クリック / 配信成功"
+                  accent="#ec4899"
+                />
+              </div>
+              {data.broadcasts.totalBroadcasts > 0 &&
+                data.broadcasts.withInsights < data.broadcasts.totalBroadcasts && (
+                  <p className="mt-3 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                    ℹ {data.broadcasts.totalBroadcasts - data.broadcasts.withInsights} 件は LINE
+                    Insight API の集計待ち (= 配信から 1h 以上経過後、 cron で自動取得)。
+                  </p>
+                )}
             </section>
 
             {/* ── 3. Scenario 配信状況 ── */}

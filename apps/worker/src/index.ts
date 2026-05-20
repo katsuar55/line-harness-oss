@@ -10,6 +10,7 @@ import { refreshLineAccessTokens } from './services/token-refresh.js';
 import { syncShopifyCustomers } from './services/shopify-customer-sync.js';
 import { processAbandonedCartNotifications } from './services/abandoned-cart-notify.js';
 import { processTagElapsedDeliveries } from './services/tag-elapsed-delivery.js';
+import { fetchPendingBroadcastInsights } from './services/broadcast-insights-fetcher.js';
 import { authMiddleware } from './middleware/auth.js';
 import { liffAuthMiddleware } from './middleware/liff-auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
@@ -364,6 +365,17 @@ async function scheduled(
         processAbandonedCartNotifications(env.DB, lineClient, env.LIFF_URL || '')),
       withHeartbeat(env.DB, 'tag-elapsed-deliveries', () =>
         processTagElapsedDeliveries(env.DB, lineClient, env.WORKER_URL)),
+      // Phase 5β-5c-prep: 配信済 broadcast の LINE Insight API 集計取得 (= read/click rate)
+      // 1 cycle あたり BATCH_SIZE=5、 retryable (overview=null) は次回 cron に持ち越し
+      withHeartbeat(env.DB, 'broadcast-insights-fetch', () =>
+        fetchPendingBroadcastInsights(env.DB, lineClient).then((r) => {
+          if (r.succeeded > 0 || r.failed > 0) {
+            console.info(
+              `broadcast-insights-fetch: processed=${r.processed} succeeded=${r.succeeded} failed=${r.failed} retryable=${r.retryable}`,
+            );
+          }
+          return r;
+        })),
     );
   }
   jobs.push(withHeartbeat(env.DB, 'ban-monitor', () => checkAccountHealth(env.DB)));
