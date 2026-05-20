@@ -33,6 +33,12 @@ interface BroadcastRow {
   total_broadcasts: number | null;
   total_delivered: number | null;
   total_target: number | null;
+  /** 5β-5c-prep: insights_json が取込済の broadcast 数 (= LINE Insight API fetched) */
+  with_insights: number | null;
+  /** SUM(insights_json.overview.uniqueImpression) (= 既読相当のユニーク数) */
+  total_read: number | null;
+  /** SUM(insights_json.overview.uniqueClick) (= クリック相当のユニーク数) */
+  total_clicks: number | null;
 }
 
 interface StatusRow {
@@ -92,12 +98,15 @@ lineInsights.get('/api/line-insights/overview', async (c) => {
           .bind(days)
           .first<AiReplyRow>(),
 
-        // ── 2. Broadcasts 統計 (= status='sent' のみ) ──
+        // ── 2. Broadcasts 統計 (= status='sent' のみ、 insights_json 取込 5β-5c-prep) ──
         c.env.DB.prepare(
           `SELECT
              COUNT(*) AS total_broadcasts,
              COALESCE(SUM(success_count), 0) AS total_delivered,
-             COALESCE(SUM(total_count), 0) AS total_target
+             COALESCE(SUM(total_count), 0) AS total_target,
+             COALESCE(SUM(CASE WHEN insights_json IS NOT NULL THEN 1 ELSE 0 END), 0) AS with_insights,
+             COALESCE(SUM(CAST(COALESCE(json_extract(insights_json, '$.overview.uniqueImpression'), 0) AS INTEGER)), 0) AS total_read,
+             COALESCE(SUM(CAST(COALESCE(json_extract(insights_json, '$.overview.uniqueClick'), 0) AS INTEGER)), 0) AS total_clicks
            FROM broadcasts
            WHERE status='sent' AND sent_at >= date('now', '-' || ? || ' days')`,
         )
@@ -185,7 +194,12 @@ lineInsights.get('/api/line-insights/overview', async (c) => {
           totalDelivered,
           totalTarget,
           deliverRate: roundPct(totalDelivered, totalTarget),
-          // read/click は insights_json + link_clicks 集計 (= 次 Phase 5β-5b)
+          // 5β-5c-prep: insights_json 連動 (= LINE Insight API で fetch した read/click 集計)
+          withInsights: bRow?.with_insights ?? 0,
+          totalRead: bRow?.total_read ?? 0,
+          totalClicks: bRow?.total_clicks ?? 0,
+          readRate: roundPct(bRow?.total_read ?? 0, totalDelivered),
+          clickRate: roundPct(bRow?.total_clicks ?? 0, totalDelivered),
         },
         scenarios: {
           statusCounts: statusRowsResult?.results ?? [],
