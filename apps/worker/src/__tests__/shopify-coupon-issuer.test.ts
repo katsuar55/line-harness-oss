@@ -51,49 +51,94 @@ interface FriendCouponRow {
   source: string;
 }
 
+/** 5β-1d-2f: audit_logs INSERT を mock するための簡易 row 表現 */
+interface AuditRow {
+  id: string;
+  action: string;
+  actor_type: string;
+  target_type: string | null;
+  target_id: string | null;
+  result: string;
+  error_message: string | null;
+  metadata: string;
+  created_at: string;
+}
+
 class FakeDb {
   rows: FriendCouponRow[] = [];
+  /** 5β-1d-2f: audit_logs INSERT を観察するための store */
+  auditRows: AuditRow[] = [];
   /** force INSERT を throw する (UNIQUE conflict simulate 用) */
   failInsertOnce = false;
 
   prepare(sql: string) {
-    const isSelect = sql.includes('SELECT coupon_code') && sql.includes('FROM line_friend_coupons');
-    const isInsert = sql.includes('INSERT INTO line_friend_coupons');
+    const isSelectCoupon =
+      sql.includes('SELECT coupon_code') && sql.includes('FROM line_friend_coupons');
+    const isInsertCoupon = sql.includes('INSERT INTO line_friend_coupons');
+    const isInsertAudit = sql.includes('INSERT INTO audit_logs');
+    const isSelectAudit =
+      sql.includes('SELECT * FROM audit_logs') && sql.includes('WHERE id');
     return {
       bind: (...params: unknown[]) => ({
         first: async () => {
-          if (!isSelect) return null;
-          const friendId = params[0] as string;
-          const row = this.rows.find((r) => r.friend_id === friendId);
-          if (!row) return null;
-          return {
-            code: row.coupon_code,
-            discount_value: row.discount_value,
-            discount_currency: row.discount_currency,
-            expires_at: row.expires_at,
-            shopify_discount_code_id: row.shopify_discount_code_id,
-          };
+          if (isSelectCoupon) {
+            const friendId = params[0] as string;
+            const row = this.rows.find((r) => r.friend_id === friendId);
+            if (!row) return null;
+            return {
+              code: row.coupon_code,
+              discount_value: row.discount_value,
+              discount_currency: row.discount_currency,
+              expires_at: row.expires_at,
+              shopify_discount_code_id: row.shopify_discount_code_id,
+            };
+          }
+          if (isSelectAudit) {
+            const id = params[0] as string;
+            const row = this.auditRows.find((r) => r.id === id);
+            return row ?? null;
+          }
+          return null;
         },
         run: async () => {
-          if (!isInsert) return { success: true };
-          if (this.failInsertOnce) {
-            this.failInsertOnce = false;
-            throw new Error('UNIQUE constraint failed: line_friend_coupons.friend_id');
+          if (isInsertCoupon) {
+            if (this.failInsertOnce) {
+              this.failInsertOnce = false;
+              throw new Error('UNIQUE constraint failed: line_friend_coupons.friend_id');
+            }
+            this.rows.push({
+              id: params[0] as string,
+              friend_id: params[1] as string,
+              line_account_id: (params[2] as string | null) ?? null,
+              coupon_code: params[3] as string,
+              shopify_discount_code_id: (params[4] as string | null) ?? null,
+              discount_value: params[5] as number,
+              discount_currency: params[6] as string,
+              issued_at: params[7] as string,
+              expires_at: (params[8] as string | null) ?? null,
+              status: 'issued',
+              source: 'shopify',
+            });
+            return { success: true, meta: { changes: 1 } };
           }
-          this.rows.push({
-            id: params[0] as string,
-            friend_id: params[1] as string,
-            line_account_id: (params[2] as string | null) ?? null,
-            coupon_code: params[3] as string,
-            shopify_discount_code_id: (params[4] as string | null) ?? null,
-            discount_value: params[5] as number,
-            discount_currency: params[6] as string,
-            issued_at: params[7] as string,
-            expires_at: (params[8] as string | null) ?? null,
-            status: 'issued',
-            source: 'shopify',
-          });
-          return { success: true, meta: { changes: 1 } };
+          if (isInsertAudit) {
+            // audit-logs.ts:88-107 の bind 順序に依存 (id, line_account_id, actor_type, actor_id,
+            // actor_name, action, target_type, target_id, request_id, ip_hash, user_agent,
+            // before_value, after_value, result, error_message, metadata, created_at)
+            this.auditRows.push({
+              id: params[0] as string,
+              actor_type: params[2] as string,
+              action: params[5] as string,
+              target_type: (params[6] as string | null) ?? null,
+              target_id: (params[7] as string | null) ?? null,
+              result: params[13] as string,
+              error_message: (params[14] as string | null) ?? null,
+              metadata: (params[15] as string) ?? '{}',
+              created_at: params[16] as string,
+            });
+            return { success: true, meta: { changes: 1 } };
+          }
+          return { success: true };
         },
       }),
     };
@@ -240,6 +285,17 @@ describe('issueCouponForFriend — 新規発行 (success path)', () => {
     expect((callInit.headers as Record<string, string>)['X-Shopify-Access-Token']).toBe(
       'shpat_test_token_xxx',
     );
+
+    // 5β-1d-2f: 成功時の audit_logs 永続化 (= 自然流入で issue 成功実績を可視化)
+    expect(db.auditRows.length).toBe(1);
+    expect(db.auditRows[0].action).toBe('line_friend_coupon.issue_succeeded');
+    expect(db.auditRows[0].actor_type).toBe('webhook');
+    expect(db.auditRows[0].result).toBe('success');
+    expect(db.auditRows[0].target_id).toBe('friend-B');
+    const successMeta = JSON.parse(db.auditRows[0].metadata) as Record<string, unknown>;
+    expect(successMeta.code).toBe('LINE-NEW12345');
+    expect(successMeta.discountValue).toBe(500);
+    expect(successMeta.validDays).toBe(3);
   });
 
   it('custom discountValueJpy + validDays + codePrefix が反映される', async () => {
@@ -278,6 +334,16 @@ describe('issueCouponForFriend — failure paths', () => {
     expect(result).toBeNull();
     expect(mockGetToken).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+
+    // 5β-1d-2f: 失敗時の audit_logs 永続化 (= 真因確定用、 stage=config_check)
+    expect(db.auditRows.length).toBe(1);
+    expect(db.auditRows[0].action).toBe('line_friend_coupon.issue_failed');
+    expect(db.auditRows[0].actor_type).toBe('webhook');
+    expect(db.auditRows[0].result).toBe('failure');
+    expect(db.auditRows[0].target_id).toBe('friend-D');
+    expect(db.auditRows[0].error_message).toContain('credentials not configured');
+    const failMeta = JSON.parse(db.auditRows[0].metadata) as Record<string, unknown>;
+    expect(failMeta.stage).toBe('config_check');
   });
 
   it('access token 取得失敗 → null', async () => {
