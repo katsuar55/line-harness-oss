@@ -183,6 +183,45 @@ export function summarizeReport(issues) {
 // IO 関数 (テスト時はモック注入)
 // ============================================================
 
+/**
+ * apps/web (Next.js + React) の typecheck (= tsc --noEmit) を実行。
+ *
+ * 役割:
+ *   - Next.js page-level type error (例: HeaderProps の subtitle/description 不一致) を
+ *     deploy 前に catch する。
+ *   - `pnpm --filter worker test/typecheck` は worker のみで、 admin web の type error は
+ *     catch されないため、 PR #37 で Header subtitle bug が build まで隠れた事案あり。
+ *
+ * skip:
+ *   - `--no-web-typecheck` CLI flag、 または runChecks({ skipWebTypecheck: true }) で skip 可
+ *     (= 速度優先 CI / 部分実行用)
+ *
+ * @returns { ok: boolean, errors?: string[] }
+ */
+export function runWebTypecheck({ execImpl = execSync, cwd = REPO_ROOT } = {}) {
+  try {
+    execImpl('pnpm --filter web typecheck', {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { ok: true };
+  } catch (err) {
+    const stdout = err && err.stdout ? String(err.stdout) : '';
+    const stderr = err && err.stderr ? String(err.stderr) : '';
+    const output = `${stdout}${stderr}`;
+    // tsc の "path(line,col): error TSxxxx: ..." 行のみ抽出 (= ノイズ排除)
+    const errorLines = output
+      .split(/\r?\n/)
+      .filter((ln) => /\berror TS\d+:/i.test(ln))
+      .slice(0, 5);
+    return {
+      ok: false,
+      errors: errorLines.length > 0 ? errorLines : [output.slice(0, 500)],
+    };
+  }
+}
+
 /** wrangler secret list --json をパースして {name} の配列を返す */
 export function fetchRemoteSecrets({ exec = execSync, cwd = REPO_ROOT } = {}) {
   try {
@@ -245,6 +284,10 @@ export async function runChecks({
   migrationsDir = join(REPO_ROOT, 'packages/db/migrations'),
   fetchSecrets = fetchRemoteSecrets,
   clientDistDir = join(REPO_ROOT, 'apps/worker/dist/client/assets'),
+  // default は env var `PREFLIGHT_SKIP_WEB_TYPECHECK=1` で skip 可 (= test 環境 / CI 軽量化用)。
+  // 未設定なら ON (= 私の手元 preflight で web 型 error を catch する design)。
+  skipWebTypecheck = process.env.PREFLIGHT_SKIP_WEB_TYPECHECK === '1',
+  webTypecheckFn = runWebTypecheck,
 } = {}) {
   const issues = [];
 
@@ -438,7 +481,35 @@ export async function runChecks({
     });
   }
 
-  // 5. wrangler.toml が naturism account を指しているか軽くチェック
+  // 5. apps/web typecheck (= Next.js page-level type error、 PR #37 Header bug の再発防止)
+  //    skipWebTypecheck=true で省略可 (= CI 軽量化 / 部分実行)
+  if (!skipWebTypecheck) {
+    const webRes = webTypecheckFn();
+    if (webRes.ok) {
+      issues.push({
+        severity: 'INFO',
+        check: 'web-typecheck',
+        message: 'apps/web typecheck passed (= page-level type errors なし)',
+      });
+    } else {
+      issues.push({
+        severity: 'CRITICAL',
+        check: 'web-typecheck',
+        message: 'apps/web typecheck failed — Next.js page で type error あり',
+        detail:
+          (webRes.errors ?? []).join(' / ').slice(0, 500) ||
+          'tsc --noEmit が exit code 1 を返した',
+      });
+    }
+  } else {
+    issues.push({
+      severity: 'INFO',
+      check: 'web-typecheck',
+      message: 'apps/web typecheck skipped (--no-web-typecheck)',
+    });
+  }
+
+  // 6. wrangler.toml が naturism account を指しているか軽くチェック
   try {
     const tomlPath = join(REPO_ROOT, 'apps/worker/wrangler.toml');
     if (existsSync(tomlPath)) {
@@ -494,9 +565,10 @@ async function main(argv) {
   const args = new Set(argv.slice(2));
   const mode = args.has('--full') ? 'full' : 'offline';
   const useColor = !args.has('--no-color');
+  const skipWebTypecheck = args.has('--no-web-typecheck');
 
   try {
-    const issues = await runChecks({ mode });
+    const issues = await runChecks({ mode, skipWebTypecheck });
     const exitCode = printReport(issues, useColor);
     return exitCode;
   } catch (err) {
