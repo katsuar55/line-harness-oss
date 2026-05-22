@@ -100,11 +100,45 @@ CREATE TABLE IF NOT EXISTS scenario_steps (
   -- Round 4 PR-6.2 (migration 043): dispatcher 経由の channel
   channel              TEXT NOT NULL DEFAULT 'line',
   email_template_id    TEXT,
+  -- migration 051: 編集 timestamp 追跡 (= technical debt #2、 TRIGGER で自動 set)
+  updated_at           TEXT,
   UNIQUE (scenario_id, step_order)
 );
 
 CREATE INDEX IF NOT EXISTS idx_scenario_steps_scenario_id ON scenario_steps (scenario_id);
 CREATE INDEX IF NOT EXISTS idx_scenario_steps_channel ON scenario_steps (channel);
+CREATE INDEX IF NOT EXISTS idx_scenario_steps_updated_at ON scenario_steps (updated_at);
+
+-- migration 051: scenario_steps.updated_at を編集時自動 set する trigger
+-- worker code 修正不要、 直接 SQL UPDATE でも自動 update される (SQLite default で recursive_triggers OFF)
+CREATE TRIGGER IF NOT EXISTS scenario_steps_set_updated_at_on_insert
+  AFTER INSERT ON scenario_steps
+  FOR EACH ROW
+  WHEN NEW.updated_at IS NULL
+  BEGIN
+    UPDATE scenario_steps
+      SET updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+      WHERE id = NEW.id;
+  END;
+
+CREATE TRIGGER IF NOT EXISTS scenario_steps_set_updated_at_on_update
+  AFTER UPDATE OF
+    step_order,
+    delay_minutes,
+    message_type,
+    message_content,
+    condition_type,
+    condition_value,
+    next_step_on_false,
+    channel,
+    email_template_id
+  ON scenario_steps
+  FOR EACH ROW
+  BEGIN
+    UPDATE scenario_steps
+      SET updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+      WHERE id = NEW.id;
+  END;
 
 -- ============================================================
 -- Friend Scenario Enrollments
