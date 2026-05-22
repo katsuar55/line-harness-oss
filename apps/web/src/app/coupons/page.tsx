@@ -1,6 +1,8 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
+import Link from 'next/link'
 import { fetchApi } from '@/lib/api'
 import Header from '@/components/layout/header'
 
@@ -131,10 +133,14 @@ function CouponRowItem({ row }: { row: CouponRow }) {
 // main page
 // ============================================================
 
-export default function CouponsPage() {
+function CouponsPageInner() {
+  // 5β-1d-2-followup polish: friend-detail から ?friendId=X で hidden filter として受け取る
+  const searchParams = useSearchParams()
+  const friendIdFilter = searchParams.get('friendId') ?? ''
+
   const [status, setStatus] = useState<'' | CouponStatus>('')
   const [source, setSource] = useState<'' | CouponSource>('')
-  const [days, setDays] = useState(30)
+  const [days, setDays] = useState(friendIdFilter ? 0 : 30) // friend 絞り込み時は全期間 default
   const [offset, setOffset] = useState(0)
 
   const [data, setData] = useState<CouponsListData | null>(null)
@@ -148,6 +154,8 @@ export default function CouponsPage() {
       const params = new URLSearchParams()
       if (status) params.set('status', status)
       if (source) params.set('source', source)
+      // 5β-1d-2-followup polish: friend 絞り込み (URL param 経由)
+      if (friendIdFilter) params.set('friendId', friendIdFilter)
       if (days > 0) {
         const since = new Date(Date.now() - days * 86_400_000).toISOString()
         params.set('since', since)
@@ -166,7 +174,7 @@ export default function CouponsPage() {
     } finally {
       setLoading(false)
     }
-  }, [status, source, days, offset])
+  }, [status, source, days, offset, friendIdFilter])
 
   useEffect(() => {
     load()
@@ -182,6 +190,18 @@ export default function CouponsPage() {
       />
 
       <main className="max-w-6xl mx-auto px-4 lg:px-6 py-6 space-y-4">
+        {/* 5β-1d-2-followup polish: friend filter banner (= friend-detail から遷移時) */}
+        {friendIdFilter && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center justify-between text-sm">
+            <span className="text-blue-700">
+              ⓘ friend_id <code className="font-mono bg-white px-1.5 py-0.5 rounded text-xs">{friendIdFilter.slice(0, 12)}...</code> で絞り込み中
+            </span>
+            <Link href="/coupons" className="text-xs text-blue-600 hover:underline">
+              絞り込み解除 →
+            </Link>
+          </div>
+        )}
+
         {/* filter UI */}
         <section className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -308,5 +328,14 @@ export default function CouponsPage() {
         )}
       </main>
     </div>
+  )
+}
+
+// 5β-1d-2-followup polish: useSearchParams は Suspense boundary 必須 (Next.js 15)
+export default function CouponsPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-gray-50"><Header title="クーポン発行履歴" /><div className="text-sm text-gray-500 py-8 text-center">読込中…</div></div>}>
+      <CouponsPageInner />
+    </Suspense>
   )
 }
