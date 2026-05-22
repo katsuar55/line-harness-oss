@@ -42,3 +42,19 @@ ALTER TABLE 再実行で `duplicate column name` エラーとなりデプロイ�
 ファイル名のアルファベット順 (= 番号順) で適用されるため、
 依存関係があるマイグレーションは必ず番号で順序を制御すること。
 番号が同じ場合は、依存される側を先に置く (今回の `009_*` はいずれも独立した ALTER で順序非依存)。
+
+### `d1_migrations` state drift (2026-05-22 解消)
+
+過去のいずれかの時点で production の `d1_migrations` table が空になり、
+`wrangler d1 migrations apply` が全 migration を「未適用」 と判定して再試行 →
+`duplicate column name` 等で fail する状態が続いていた。
+
+2026-05-22 に `scripts/d1-migrations-state-recovery.sql` を一度きり apply して、
+当時 production で適用済だった 50 migration (= 001〜051、 009 重複 +1、 038/046 欠番 -2)
+を `d1_migrations` table に bookkeeping のみ insert して state を sync 済。
+
+それ以後は `wrangler d1 migrations apply naturism-line-crm --remote` が
+正常動作する (= 「No migrations to apply」を返す)。
+
+将来また drift した場合は同 script を再利用可能 (= `INSERT OR IGNORE` で idempotent)。
+ただし、 drift が起きる根本原因 (= 過去に wipe された経緯) は不明、 再発時は調査すること。
