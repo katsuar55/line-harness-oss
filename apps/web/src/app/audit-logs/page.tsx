@@ -1,6 +1,8 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
+import Link from 'next/link'
 import { fetchApi } from '@/lib/api'
 import Header from '@/components/layout/header'
 
@@ -223,12 +225,18 @@ function LogRow({ log }: { log: AuditLog }) {
 // main page
 // ============================================================
 
-export default function AuditLogsPage() {
-  const [actionPrefix, setActionPrefix] = useState('line_friend_coupon.') // 5β-1d-2 課題 1 用 default
+function AuditLogsPageInner() {
+  // 5β-1d-2-followup polish: friend-detail から ?targetType=friend&targetId=X で hidden filter として受け取る
+  const searchParams = useSearchParams()
+  const targetIdFilter = searchParams.get('targetId') ?? ''
+  const targetTypeFilter = searchParams.get('targetType') ?? ''
+
+  // targetId 絞り込み時は action prefix の default (= line_friend_coupon.) を外す (= 全 action 見たい場合多い)
+  const [actionPrefix, setActionPrefix] = useState(targetIdFilter ? '' : 'line_friend_coupon.')
   const [actionExact, setActionExact] = useState('')
   const [result, setResult] = useState<'' | AuditResult>('')
   const [actorType, setActorType] = useState<'' | AuditActorType>('')
-  const [days, setDays] = useState(7)
+  const [days, setDays] = useState(targetIdFilter ? 0 : 7) // targetId 時は全期間 default
   const [offset, setOffset] = useState(0)
 
   const [data, setData] = useState<AuditLogsListData | null>(null)
@@ -244,6 +252,9 @@ export default function AuditLogsPage() {
       if (!actionExact && actionPrefix) params.set('actionPrefix', actionPrefix)
       if (result) params.set('result', result)
       if (actorType) params.set('actorType', actorType)
+      // 5β-1d-2-followup polish: friend-detail からの target 絞り込み (URL param 経由)
+      if (targetTypeFilter) params.set('targetType', targetTypeFilter)
+      if (targetIdFilter) params.set('targetId', targetIdFilter)
       if (days > 0) {
         const since = new Date(Date.now() - days * 86_400_000).toISOString()
         params.set('since', since)
@@ -262,7 +273,7 @@ export default function AuditLogsPage() {
     } finally {
       setLoading(false)
     }
-  }, [actionExact, actionPrefix, result, actorType, days, offset])
+  }, [actionExact, actionPrefix, result, actorType, days, offset, targetIdFilter, targetTypeFilter])
 
   useEffect(() => {
     load()
@@ -279,6 +290,23 @@ export default function AuditLogsPage() {
       />
 
       <main className="max-w-6xl mx-auto px-4 lg:px-6 py-6 space-y-4">
+        {/* 5β-1d-2-followup polish: target filter banner (= friend-detail から遷移時) */}
+        {targetIdFilter && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center justify-between text-sm">
+            <span className="text-blue-700">
+              ⓘ {targetTypeFilter && (
+                <>
+                  target_type=<code className="font-mono bg-white px-1.5 py-0.5 rounded text-xs">{targetTypeFilter}</code>{' '}
+                </>
+              )}
+              target_id=<code className="font-mono bg-white px-1.5 py-0.5 rounded text-xs">{targetIdFilter.slice(0, 12)}...</code> で絞り込み中
+            </span>
+            <Link href="/audit-logs" className="text-xs text-blue-600 hover:underline">
+              絞り込み解除 →
+            </Link>
+          </div>
+        )}
+
         {/* filter UI */}
         <section className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -436,5 +464,21 @@ export default function AuditLogsPage() {
         )}
       </main>
     </div>
+  )
+}
+
+// 5β-1d-2-followup polish: useSearchParams は Suspense boundary 必須 (Next.js 15)
+export default function AuditLogsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-gray-50">
+          <Header title="監査ログ" />
+          <div className="text-sm text-gray-500 py-8 text-center">読込中…</div>
+        </div>
+      }
+    >
+      <AuditLogsPageInner />
+    </Suspense>
   )
 }

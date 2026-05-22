@@ -31,6 +31,27 @@ interface ChatMessage {
   createdAt: string
 }
 
+// 5β-1d-2-followup polish: friend-detail に coupon + audit_log summary 追加
+interface CouponSummary {
+  id: string
+  coupon_code: string
+  discount_value: number
+  discount_currency: string
+  status: 'issued' | 'redeemed'
+  source: string
+  issued_at: string
+  expires_at: string | null
+}
+
+interface AuditLogSummary {
+  id: string
+  action: string
+  actor_type: string
+  result: 'success' | 'failure'
+  error_message: string | null
+  created_at: string
+}
+
 type ApiResponse_<T> = { success: boolean; data?: T; error?: string }
 
 // ─── Status Config ───
@@ -78,6 +99,10 @@ export default function FriendDetailPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [allTags, setAllTags] = useState<Tag[]>([])
   const [staffList, setStaffList] = useState<StaffMember[]>([])
+  // 5β-1d-2-followup polish: coupon + audit_log summary state
+  const [coupons, setCoupons] = useState<CouponSummary[]>([])
+  const [auditLogs, setAuditLogs] = useState<AuditLogSummary[]>([])
+  const [auditLogsTotal, setAuditLogsTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -116,6 +141,21 @@ export default function FriendDetailPage() {
           .then(r => { if (r.success && r.data) setOrders(r.data) }).catch(() => {}),
         fetchApi<ApiResponse_<{ results: ChatMessage[] }>>(`/api/friends/${id}/messages`)
           .then(r => { if (r.success && r.data) setMessages(r.data.results ?? []) }).catch(() => {}),
+        // 5β-1d-2-followup polish: coupon 一覧 (= /coupons の friendId filter と同じ endpoint)
+        fetchApi<ApiResponse_<{ coupons: CouponSummary[]; total: number }>>(
+          `/api/line-friend-coupons?friendId=${id}&limit=5`,
+        )
+          .then(r => { if (r.success && r.data) setCoupons(r.data.coupons ?? []) }).catch(() => {}),
+        // 5β-1d-2-followup polish: audit_log (= targetId='friend' で friend に関する全 action 集約)
+        fetchApi<ApiResponse_<{ logs: AuditLogSummary[]; total: number }>>(
+          `/api/audit-logs?targetType=friend&targetId=${id}&limit=5`,
+        )
+          .then(r => {
+            if (r.success && r.data) {
+              setAuditLogs(r.data.logs ?? [])
+              setAuditLogsTotal(r.data.total ?? 0)
+            }
+          }).catch(() => {}),
       ])
       setLoading(false)
     }
@@ -442,6 +482,70 @@ export default function FriendDetailPage() {
                   <button onClick={() => setActiveTab('messages')} className="text-xs text-green-600 hover:underline">
                     全{messages.length}件を表示 →
                   </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 5β-1d-2-followup polish: クーポン履歴 summary */}
+          <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-5">
+            <div className="flex items-baseline justify-between mb-4">
+              <h3 className="font-semibold text-gray-900">クーポン履歴</h3>
+              <Link href={`/coupons?friendId=${id}`} className="text-xs text-green-600 hover:underline">
+                /coupons で全件 →
+              </Link>
+            </div>
+            {coupons.length === 0 ? (
+              <p className="text-sm text-gray-400">クーポン発行履歴はありません</p>
+            ) : (
+              <div className="space-y-1.5">
+                {coupons.map((c) => {
+                  const expired = c.expires_at && new Date(c.expires_at).getTime() < Date.now()
+                  return (
+                    <div key={c.id} className="flex items-center gap-2 py-1.5 border-b border-gray-50 last:border-0 text-sm">
+                      <span className="font-mono text-gray-900 w-32 truncate" title={c.coupon_code}>{c.coupon_code}</span>
+                      <span className="text-xs text-gray-500 tabular-nums shrink-0">
+                        {c.discount_currency === 'JPY' ? `¥${c.discount_value.toLocaleString()}` : `${c.discount_value} ${c.discount_currency}`}
+                      </span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${c.status === 'redeemed' ? 'bg-purple-100 text-purple-700' : 'bg-green-100 text-green-700'}`}>
+                        {c.status}
+                      </span>
+                      {expired && <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0 bg-red-100 text-red-700">期限切れ</span>}
+                      <span className="text-xs text-gray-400 shrink-0 ml-auto">{formatDate(c.issued_at)}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* 5β-1d-2-followup polish: 監査ログ summary */}
+          <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-5">
+            <div className="flex items-baseline justify-between mb-4">
+              <h3 className="font-semibold text-gray-900">監査ログ</h3>
+              <Link
+                href={`/audit-logs?targetType=friend&targetId=${id}`}
+                className="text-xs text-green-600 hover:underline"
+              >
+                /audit-logs で全件 →
+              </Link>
+            </div>
+            {auditLogs.length === 0 ? (
+              <p className="text-sm text-gray-400">監査ログはありません</p>
+            ) : (
+              <div className="space-y-1.5">
+                {auditLogs.map((log) => (
+                  <div key={log.id} className="flex items-center gap-2 py-1.5 border-b border-gray-50 last:border-0 text-sm">
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0 bg-gray-100 text-gray-600">{log.actor_type}</span>
+                    <span className="font-mono text-xs text-gray-800 flex-1 truncate" title={log.action}>{log.action}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${log.result === 'failure' ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}>
+                      {log.result}
+                    </span>
+                    <span className="text-xs text-gray-400 shrink-0">{formatDatetime(log.created_at)}</span>
+                  </div>
+                ))}
+                {auditLogsTotal > 5 && (
+                  <p className="text-xs text-gray-400 pt-2">他 {auditLogsTotal - 5} 件あり</p>
                 )}
               </div>
             )}
