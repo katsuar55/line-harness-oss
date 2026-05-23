@@ -15,6 +15,8 @@ import { fireEvent } from '../services/event-bus.js';
 import { buildEmailDispatchConfig } from '../services/email-dispatch-config.js';
 import { buildMessage } from '../services/step-delivery.js';
 import { auditAdmin } from '../services/audit-logger.js';
+import { importFriendsRows } from '../services/friends-import.js';
+import { parseCsvWithHeader } from '../utils/csv-parser.js';
 import type { Env } from '../index.js';
 
 const friends = new Hono<Env>();
@@ -145,6 +147,73 @@ friends.get('/api/friends/count', async (c) => {
     return c.json({ success: true, data: { count } });
   } catch (err) {
     console.error('GET /api/friends/count error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/friends/import - CSV bulk import (LSTEP audit H1)
+// body: { csv: string, dryRun?: boolean }
+// max 5,000 data rows / 1 MB body
+friends.post('/api/friends/import', async (c) => {
+  const MAX_CSV_BYTES = 1_048_576; // 1 MB
+  const MAX_DATA_ROWS = 5000;
+  try {
+    const body = (await c.req
+      .json<{ csv?: unknown; dryRun?: unknown }>()
+      .catch(() => ({}))) as { csv?: unknown; dryRun?: unknown };
+    const csv = body.csv;
+    const dryRun = body.dryRun === true;
+    if (typeof csv !== 'string' || csv.trim().length === 0) {
+      return c.json({ success: false, error: '"csv" string is required' }, 400);
+    }
+    if (csv.length > MAX_CSV_BYTES) {
+      return c.json(
+        { success: false, error: `CSV exceeds max size ${MAX_CSV_BYTES} bytes` },
+        413,
+      );
+    }
+
+    let parsed: { headers: string[]; rows: string[][] };
+    try {
+      parsed = parseCsvWithHeader(csv, { maxRows: MAX_DATA_ROWS + 1 });
+    } catch (err) {
+      return c.json(
+        {
+          success: false,
+          error: `CSV parse failed: ${err instanceof Error ? err.message.slice(0, 200) : 'unknown'}`,
+        },
+        400,
+      );
+    }
+
+    if (parsed.rows.length > MAX_DATA_ROWS) {
+      return c.json(
+        { success: false, error: `Too many rows (max ${MAX_DATA_ROWS})` },
+        413,
+      );
+    }
+
+    const result = await importFriendsRows(c.env.DB, parsed.headers, parsed.rows, dryRun);
+
+    // audit (= dryRun でも記録、 admin 履歴に残す)
+    // errorCount > 0 でも全 row failure ではないので 'success' (= 部分成功は metadata.errorCount で識別)
+    await auditAdmin(c, {
+      action: dryRun ? 'friends.import.dry_run' : 'friends.import.run',
+      targetType: 'friends',
+      result: result.created + result.updated === 0 && result.errors.length > 0 ? 'failure' : 'success',
+      metadata: {
+        totalRows: result.totalRows,
+        created: result.created,
+        updated: result.updated,
+        skipped: result.skipped,
+        errorCount: result.errors.length,
+        dryRun: result.dryRun,
+      },
+    });
+
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    console.error('POST /api/friends/import error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
