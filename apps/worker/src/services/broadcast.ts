@@ -11,6 +11,7 @@ import type { Broadcast, BroadcastChannel, Friend } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
+import { auditSystem } from './audit-logger.js';
 import { dispatch, type ChannelDispatcherDeps } from './channel-dispatcher.js';
 import {
   buildEmailDispatcherDeps,
@@ -66,6 +67,16 @@ export async function processBroadcastSend(
   } catch (err) {
     // On failure, reset to draft so it can be retried
     await updateBroadcastStatus(db, broadcastId, 'draft');
+    // H5 (2026-05-22): broadcast 失敗を audit_logs に永続化 (best-effort)
+    await auditSystem(db, {
+      action: 'broadcast.send_failed',
+      actorType: 'system',
+      targetType: 'broadcast',
+      targetId: broadcastId,
+      result: 'failure',
+      errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown error',
+      metadata: { channel, broadcastId },
+    });
     throw err;
   }
 
@@ -164,6 +175,20 @@ async function sendBroadcastLine(
         }
       } catch (err) {
         console.error(`Multicast batch ${i / MULTICAST_BATCH_SIZE} failed:`, err);
+        // H5 (2026-05-22): batch 失敗を audit_logs に永続化
+        await auditSystem(db, {
+          action: 'broadcast.multicast_batch_failed',
+          actorType: 'system',
+          targetType: 'broadcast',
+          targetId: broadcastId,
+          result: 'failure',
+          errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown error',
+          metadata: {
+            batchIndex: i / MULTICAST_BATCH_SIZE,
+            batchSize: MULTICAST_BATCH_SIZE,
+            batchFriendCount: batch.length,
+          },
+        });
         // Continue with next batch; failed batch is not logged
       }
     }
@@ -354,6 +379,16 @@ async function sendBroadcastEmail(
         `[broadcast] email dispatch failed for friend=${r.friend.id}:`,
         err instanceof Error ? err.message : 'unknown',
       );
+      // H5 (2026-05-22): email dispatch 失敗を audit_logs に永続化
+      await auditSystem(db, {
+        action: 'broadcast.email_dispatch_failed',
+        actorType: 'system',
+        targetType: 'broadcast',
+        targetId: broadcast.id,
+        result: 'failure',
+        errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown error',
+        metadata: { friendId: r.friend.id },
+      });
       // continue with next recipient
     }
   }
@@ -450,6 +485,16 @@ async function sendBroadcastBoth(
         `[broadcast] both dispatch failed for friend=${friend.id}:`,
         err instanceof Error ? err.message : 'unknown',
       );
+      // H5 (2026-05-22): both dispatch 失敗を audit_logs に永続化
+      await auditSystem(db, {
+        action: 'broadcast.both_dispatch_failed',
+        actorType: 'system',
+        targetType: 'broadcast',
+        targetId: broadcast.id,
+        result: 'failure',
+        errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown error',
+        metadata: { friendId: friend.id },
+      });
     }
   }
 
@@ -481,6 +526,18 @@ export async function processScheduledBroadcasts(
       await processBroadcastSend(db, lineClient, broadcast.id, workerUrl, emailConfig ?? null);
     } catch (err) {
       console.error(`Failed to send scheduled broadcast ${broadcast.id}:`, err);
+      // H5 (2026-05-22): scheduled cron 失敗を audit_logs に永続化
+      // (内側 processBroadcastSend でも 'broadcast.send_failed' を出しているが、
+      //  cron 起点を別 action で識別したいので追記。 重複は metadata.via='scheduled_cron' で区別)
+      await auditSystem(db, {
+        action: 'broadcast.scheduled_send_failed',
+        actorType: 'cron',
+        targetType: 'broadcast',
+        targetId: broadcast.id,
+        result: 'failure',
+        errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown error',
+        metadata: { via: 'scheduled_cron' },
+      });
       // Continue with next broadcast
     }
   }
