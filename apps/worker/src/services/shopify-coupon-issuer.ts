@@ -257,6 +257,20 @@ export async function issueCouponForFriend(
   const existing = await findExistingCoupon(db, friendId);
   if (existing) {
     console.info('[shopify-coupon-issuer] already-issued friend=', friendId, 'code=', existing.code);
+    // H6 (2026-05-23): silent skip path に audit_log 追加
+    //   理由: LP リハーサル時に「リフォローしても何も起きない」 と運用側が困惑したため (= 課題 1 と
+    //   区別がつかない)。 既発行 idempotent skip を audit に残せば admin /audit-logs で
+    //   `action LIKE 'line_friend_coupon.already_issued'` で「正常 skip」 を視認できる。
+    //   result='success' で記録 (= 既発行 coupon の return は本来 success path)。
+    await auditSystem(db, {
+      action: 'line_friend_coupon.already_issued',
+      actorType: 'webhook',
+      targetType: 'friend',
+      targetId: friendId,
+      lineAccountId,
+      result: 'success',
+      metadata: { stage: 'idempotent_skip', existingCode: existing.code },
+    });
     return {
       code: existing.code,
       discountValue: existing.discount_value,
