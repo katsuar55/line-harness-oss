@@ -366,6 +366,21 @@ async function handleEvent(
             .prepare(`SELECT id FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ?`)
             .bind(friend.id, scenario.id)
             .first<{ id: string }>();
+          // H6 (2026-05-23): 既存 enrollment 検知 = silent skip path、 audit_log を残す
+          //   LP リハーサル時に「リフォローしても何も起きない」 と運用側が困惑したため。
+          //   `action='scenario.enrollment_skipped_already_enrolled'` で admin /audit-logs で
+          //   filter 可能。 既存 block 構造は維持 (= `if (!existing)` redundant 化はあえて許容)。
+          if (existing) {
+            await auditSystem(db, {
+              action: 'scenario.enrollment_skipped_already_enrolled',
+              actorType: 'webhook',
+              targetType: 'friend_scenarios',
+              targetId: existing.id,
+              lineAccountId,
+              result: 'success',
+              metadata: { friendId: friend.id, scenarioId: scenario.id, stage: 'idempotent_skip' },
+            });
+          }
           if (!existing) {
             const friendScenario = await enrollFriendInScenario(db, friend.id, scenario.id);
 
