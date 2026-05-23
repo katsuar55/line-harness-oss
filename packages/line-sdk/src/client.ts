@@ -3,6 +3,8 @@ import type {
   FlexContainer,
   InsightMessageEventResponse,
   Message,
+  MessageQuotaConsumptionResponse,
+  MessageQuotaResponse,
   MulticastRequest,
   PushMessageRequest,
   ReplyMessageRequest,
@@ -126,6 +128,27 @@ export class LineClient {
   ): Promise<{ status: string; success?: number }> {
     return this.request<{ status: string; success?: number }>(
       `/message/delivery/${type}?date=${date}`,
+      {},
+      'GET',
+    );
+  }
+
+  /**
+   * Get the monthly message quota (limit) for this channel.
+   * type='none' = unlimited (Pro/Premium), type='limited' = limited (Free 200/month etc).
+   * See: https://developers.line.biz/en/reference/messaging-api/#get-quota
+   */
+  async getMessageQuota(): Promise<MessageQuotaResponse> {
+    return this.request<MessageQuotaResponse>('/message/quota', {}, 'GET');
+  }
+
+  /**
+   * Get the number of additional messages sent this month (= consumption against quota).
+   * See: https://developers.line.biz/en/reference/messaging-api/#get-consumption
+   */
+  async getMessageQuotaConsumption(): Promise<MessageQuotaConsumptionResponse> {
+    return this.request<MessageQuotaConsumptionResponse>(
+      '/message/quota/consumption',
       {},
       'GET',
     );

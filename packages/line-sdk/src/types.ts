@@ -327,3 +327,20 @@ export interface InsightMessageEventResponse {
   messages: InsightMessageEventMessage[];
   clicks: InsightMessageEventClick[];
 }
+
+// ─── Message Quota types ─────────────────────────────────────────────────────
+// LINE Messaging API: GET /v2/bot/message/quota
+// type='none' = 無制限 (Pro/Premium plan)、 type='limited' = 月間上限あり (Free plan default 200/月、 Light plan 等)
+
+export interface MessageQuotaResponse {
+  type: 'none' | 'limited';
+  /** type='limited' の時のみ存在、 月間配信可能数 */
+  value?: number;
+}
+
+// LINE Messaging API: GET /v2/bot/message/quota/consumption
+// 今月の合計配信数 (= reply / push / multicast / broadcast 合算)
+
+export interface MessageQuotaConsumptionResponse {
+  totalUsage: number;
+}
