@@ -17,6 +17,7 @@
  */
 
 import { Hono } from 'hono';
+import { LineClient } from '@line-crm/line-sdk';
 import type { Env } from '../index.js';
 
 export const lineInsights = new Hono<Env>();
@@ -222,6 +223,83 @@ lineInsights.get('/api/line-insights/overview', async (c) => {
   } catch (err) {
     console.error('GET /api/line-insights/overview error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/line-insights/quota
+ * → LINE Messaging API の月次 quota + 今月の usage を取得
+ *
+ * (LSTEP audit H4、 2026-05-22)
+ *
+ * Response:
+ *   {
+ *     success: true,
+ *     data: {
+ *       type: 'none' | 'limited',     // 'none' = 無制限 (Pro/Premium)
+ *       limit?: number,               // 月間上限 (type='limited' 時のみ)
+ *       usage: number,                // 今月の使用数 (= reply/push/multicast/broadcast 合算)
+ *       remaining?: number,           // 残り (= limit - usage、 type='limited' 時のみ)
+ *       ratio?: number,               // usage / limit (= type='limited' 時のみ)
+ *       percentDisplay?: string,      // '80.0%' 等 (= UI 表示用)
+ *       severity?: 'warning' | 'critical' | 'reached',  // 閾値判定結果
+ *       fetchedAt: string,            // ISO 8601
+ *     }
+ *   }
+ *
+ * LINE API:
+ *   - GET /v2/bot/message/quota
+ *   - GET /v2/bot/message/quota/consumption
+ *
+ * 関連: services/line-quota-monitor.ts (= cron で同 API を叩いて Discord alert)
+ */
+lineInsights.get('/api/line-insights/quota', async (c) => {
+  try {
+    const token = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+    if (!token) {
+      return c.json(
+        { success: false, error: 'LINE_CHANNEL_ACCESS_TOKEN not configured' },
+        500,
+      );
+    }
+    const line = new LineClient(token);
+    const [quota, consumption] = await Promise.all([
+      line.getMessageQuota(),
+      line.getMessageQuotaConsumption(),
+    ]);
+    const fetchedAt = new Date().toISOString();
+    if (quota.type === 'none' || quota.value === undefined || quota.value <= 0) {
+      return c.json({
+        success: true,
+        data: {
+          type: 'none' as const,
+          usage: consumption.totalUsage,
+          fetchedAt,
+        },
+      });
+    }
+    const limit = quota.value;
+    const usage = consumption.totalUsage;
+    const remaining = Math.max(0, limit - usage);
+    const ratio = usage / limit;
+    const severity: 'warning' | 'critical' | 'reached' | undefined =
+      ratio >= 1.0 ? 'reached' : ratio >= 0.95 ? 'critical' : ratio >= 0.8 ? 'warning' : undefined;
+    return c.json({
+      success: true,
+      data: {
+        type: 'limited' as const,
+        limit,
+        usage,
+        remaining,
+        ratio: Math.round(ratio * 1000) / 1000,
+        percentDisplay: `${(ratio * 100).toFixed(1)}%`,
+        severity,
+        fetchedAt,
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/line-insights/quota error:', err);
+    return c.json({ success: false, error: 'Failed to fetch LINE quota' }, 502);
   }
 });
 

@@ -12,6 +12,7 @@ import { processAbandonedCartNotifications } from './services/abandoned-cart-not
 import { processTagElapsedDeliveries } from './services/tag-elapsed-delivery.js';
 import { fetchPendingBroadcastInsights } from './services/broadcast-insights-fetcher.js';
 import { checkAuditFailureSpike } from './services/audit-failure-monitor.js';
+import { checkLineQuota } from './services/line-quota-monitor.js';
 import { authMiddleware } from './middleware/auth.js';
 import { liffAuthMiddleware } from './middleware/liff-auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
@@ -124,6 +125,8 @@ export type Env = {
     CRON_MONITOR_FORCE?: string;
     /** Phase 7 (2026-05-01): 'true' で cron-cleanup の 03:00 JST gating を bypass */
     CRON_CLEANUP_FORCE?: string;
+    /** LSTEP audit H4 (2026-05-22): 'true' で line-quota-monitor の hour-boundary gating を bypass */
+    LINE_QUOTA_MONITOR_FORCE?: string;
     WEBHOOK_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
     API_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
     // Round 4: Email channel (Resend). Secret は wrangler secret put で別途登録
@@ -392,6 +395,28 @@ async function scheduled(
       return checkAuditFailureSpike(env.DB, monitorLogger);
     }),
   );
+
+  // LSTEP audit H4 (2026-05-22): LINE Messaging API 月次 quota 監視
+  // JST hour boundary (= 各時 0-4 分窓) のみ trigger、 cron は 5 分毎なので 1 hour に 1 回
+  // service 内 cooldown 24h で alert 重複防止
+  // multi-account は次 PR で対応 (= 今は default account のみ check)
+  const nowJstMinute = new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCMinutes();
+  const isHourBoundary = nowJstMinute < 5;
+  if (env.LINE_QUOTA_MONITOR_FORCE === 'true' || isHourBoundary) {
+    jobs.push(
+      withHeartbeat(env.DB, 'line-quota-monitor', async () => {
+        const quotaLogger = createLogger(env, ctx);
+        const defaultClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
+        const r = await checkLineQuota(env.DB, defaultClient, quotaLogger);
+        if (r.alerted) {
+          console.info(
+            `line-quota-monitor: severity=${r.severity} usage=${r.usage}/${r.limit} ratio=${r.ratio}`,
+          );
+        }
+        return r;
+      }),
+    );
+  }
 
   // Phase 3: 月次食事レポート (毎月 1 日のみ実行、サービス側で gating)
   // Phase 4 PR-5: 週次栄養コーチ push (火曜 10:00 JST のみ trigger、サービス側で gating)

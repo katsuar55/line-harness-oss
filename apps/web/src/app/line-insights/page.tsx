@@ -64,6 +64,24 @@ interface LineInsightsResponse {
   error?: string
 }
 
+// LSTEP audit H4: LINE Messaging API 月次 quota
+interface QuotaData {
+  type: 'none' | 'limited'
+  limit?: number
+  usage: number
+  remaining?: number
+  ratio?: number
+  percentDisplay?: string
+  severity?: 'warning' | 'critical' | 'reached'
+  fetchedAt: string
+}
+
+interface QuotaResponse {
+  success: boolean
+  data: QuotaData
+  error?: string
+}
+
 // ============================================================
 // stat card (= opt-in-campaign/page.tsx と同じ pattern、 inline で page scope 維持)
 // ============================================================
@@ -152,6 +170,8 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }
 
 export default function LineInsightsPage() {
   const [data, setData] = useState<LineInsightsData | null>(null)
+  const [quota, setQuota] = useState<QuotaData | null>(null)
+  const [quotaError, setQuotaError] = useState<string | null>(null)
   const [days, setDays] = useState(30)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -159,14 +179,32 @@ export default function LineInsightsPage() {
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
+    setQuotaError(null)
     try {
-      const res = await fetchApi<LineInsightsResponse>(
-        `/api/line-insights/overview?days=${days}`,
-      )
-      if (res.success) {
-        setData(res.data)
+      // overview + quota を並列取得 (= quota は LINE API 経由のため失敗しても overview は表示)
+      const [overviewRes, quotaRes] = await Promise.allSettled([
+        fetchApi<LineInsightsResponse>(`/api/line-insights/overview?days=${days}`),
+        fetchApi<QuotaResponse>(`/api/line-insights/quota`),
+      ])
+      if (overviewRes.status === 'fulfilled' && overviewRes.value.success) {
+        setData(overviewRes.value.data)
+      } else if (overviewRes.status === 'fulfilled') {
+        setError(overviewRes.value.error ?? '取得に失敗しました')
       } else {
-        setError(res.error ?? '取得に失敗しました')
+        setError(
+          overviewRes.reason instanceof Error
+            ? overviewRes.reason.message
+            : String(overviewRes.reason),
+        )
+      }
+      if (quotaRes.status === 'fulfilled' && quotaRes.value.success) {
+        setQuota(quotaRes.value.data)
+      } else if (quotaRes.status === 'fulfilled') {
+        setQuotaError(quotaRes.value.error ?? 'LINE quota 取得失敗')
+      } else {
+        setQuotaError(
+          quotaRes.reason instanceof Error ? quotaRes.reason.message : String(quotaRes.reason),
+        )
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -213,6 +251,114 @@ export default function LineInsightsPage() {
 
         {loading && !data && (
           <div className="text-sm text-gray-500 py-8 text-center">読込中…</div>
+        )}
+
+        {/* ── 0. LINE Messaging Quota (= LSTEP audit H4) ── */}
+        {quota && (
+          <section className="bg-white border border-gray-200 rounded-lg p-5">
+            <SectionHeader
+              title="LINE 月次配信枠"
+              subtitle={
+                quota.type === 'none'
+                  ? '無制限プラン (= Pro/Premium)、 今月の使用数のみ表示'
+                  : `Free/Light/Standard プラン、 月初リセット (今月 ${quota.usage.toLocaleString()} / ${quota.limit?.toLocaleString()} 通)`
+              }
+            />
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <StatCard
+                label="今月の使用数"
+                value={quota.usage}
+                hint="reply / push / multicast / broadcast 合算"
+                accent={
+                  quota.severity === 'reached'
+                    ? '#b91c1c'
+                    : quota.severity === 'critical'
+                      ? '#ef4444'
+                      : quota.severity === 'warning'
+                        ? '#f59e0b'
+                        : '#06C755'
+                }
+              />
+              {quota.type === 'limited' && quota.limit !== undefined && (
+                <>
+                  <StatCard
+                    label="月間上限"
+                    value={quota.limit}
+                    hint="LINE Free=200/月、 Light=15,000、 Standard=45,000"
+                    accent="#06C755"
+                  />
+                  <StatCard
+                    label="残り"
+                    value={quota.remaining ?? 0}
+                    hint={quota.percentDisplay ? `使用率 ${quota.percentDisplay}` : undefined}
+                    accent={
+                      (quota.remaining ?? 0) === 0
+                        ? '#b91c1c'
+                        : (quota.ratio ?? 0) >= 0.95
+                          ? '#ef4444'
+                          : (quota.ratio ?? 0) >= 0.8
+                            ? '#f59e0b'
+                            : '#3b82f6'
+                    }
+                  />
+                  <StatCard
+                    label="状態"
+                    value={
+                      quota.severity === 'reached'
+                        ? '上限到達'
+                        : quota.severity === 'critical'
+                          ? '残枠わずか'
+                          : quota.severity === 'warning'
+                            ? '80% 超え'
+                            : '正常'
+                    }
+                    hint={
+                      quota.severity
+                        ? '24h cooldown で Discord alert 配信中'
+                        : '配信枠に余裕あり'
+                    }
+                    accent={
+                      quota.severity === 'reached'
+                        ? '#b91c1c'
+                        : quota.severity === 'critical'
+                          ? '#ef4444'
+                          : quota.severity === 'warning'
+                            ? '#f59e0b'
+                            : '#06C755'
+                    }
+                  />
+                </>
+              )}
+            </div>
+            {quota.type === 'limited' && quota.ratio !== undefined && (
+              <div className="mt-3">
+                <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full transition-all"
+                    style={{
+                      width: `${Math.min(100, quota.ratio * 100)}%`,
+                      backgroundColor:
+                        quota.severity === 'reached'
+                          ? '#b91c1c'
+                          : quota.severity === 'critical'
+                            ? '#ef4444'
+                            : quota.severity === 'warning'
+                              ? '#f59e0b'
+                              : '#06C755',
+                    }}
+                  />
+                </div>
+                <p className="mt-1.5 text-[11px] text-gray-400 text-right">
+                  最終取得: {new Date(quota.fetchedAt).toLocaleString('ja-JP')}
+                </p>
+              </div>
+            )}
+          </section>
+        )}
+        {quotaError && !quota && (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-700">
+            LINE 配信枠の取得失敗: {quotaError} (= overview は引き続き表示)
+          </div>
         )}
 
         {data && (
