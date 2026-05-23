@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import FriendImportModal from '@/components/friends/FriendImportModal'
 import type { Tag } from '@line-crm/shared'
 import { api } from '@/lib/api'
 import type { FriendWithTags } from '@/lib/api'
@@ -40,6 +41,7 @@ export default function FriendsPage() {
   const [selectedTagId, setSelectedTagId] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [importOpen, setImportOpen] = useState(false)
 
   const loadTags = useCallback(async () => {
     try {
@@ -114,7 +116,20 @@ export default function FriendsPage() {
         <span className="text-sm text-gray-500">
           {loading ? '読み込み中...' : `${total.toLocaleString('ja-JP')} 件`}
         </span>
+        <button
+          type="button"
+          onClick={() => setImportOpen(true)}
+          className="text-sm px-3 py-2 min-h-[44px] rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 sm:ml-auto"
+        >
+          CSV インポート
+        </button>
       </div>
+
+      <FriendImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onSuccess={loadFriends}
+      />
 
       {/* Error */}
       {error && (
