@@ -921,14 +921,29 @@ async function handleEvent(
         // Phase 5β-prep adoption: AIRouter 経由
         const { createAIRouterFromEnv } = await import('../services/ai-router-factory.js');
         const aiRouter = createAIRouterFromEnv(env);
+        // Phase 3.1 ULTRATHINK (2026-05-24): friend profile context を AI に注入 (= 個別化)
+        //   birth_month / age_group / display_name を渡し、 system prompt 内の
+        //   「## このユーザーの情報」 セクションに表示される
+        const friendRecord = friend as {
+          score?: number;
+          created_at?: string;
+          birth_month?: number | null;
+          age_group?: string | null;
+          display_name?: string | null;
+        };
         const aiResult = await generateAiResponse(
           aiRouter,
           db,
           friend.id,
-          (friend as { score?: number }).score ?? 0,
-          (friend as { created_at?: string }).created_at ?? '',
+          friendRecord.score ?? 0,
+          friendRecord.created_at ?? '',
           incomingText,
           env.AI_SYSTEM_PROMPT || undefined,
+          {
+            birthMonth: friendRecord.birth_month ?? null,
+            ageGroup: friendRecord.age_group ?? null,
+            displayName: friendRecord.display_name ?? null,
+          },
         );
 
         // Flex Message カード形式で送信

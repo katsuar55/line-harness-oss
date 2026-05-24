@@ -57,6 +57,26 @@ CREATE INDEX IF NOT EXISTS idx_friends_age_group
   ON friends(age_group)
   WHERE age_group IS NOT NULL;
 
+-- Phase 3.1 ULTRATHINK (migration 053、 2026-05-24): AI 応答履歴 + 薬機法 NG 検知 trace
+CREATE TABLE IF NOT EXISTS conversation_logs (
+  id                   TEXT PRIMARY KEY,
+  friend_id            TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  user_message         TEXT NOT NULL,
+  ai_response          TEXT NOT NULL,
+  ai_layer             TEXT,
+  ai_model             TEXT,
+  ng_words_detected    TEXT,
+  friend_context       TEXT,
+  created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_logs_friend
+  ON conversation_logs(friend_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_conversation_logs_created
+  ON conversation_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_conversation_logs_ng
+  ON conversation_logs(created_at DESC)
+  WHERE ng_words_detected IS NOT NULL;
+
 -- ============================================================
 -- Tags
 -- ============================================================

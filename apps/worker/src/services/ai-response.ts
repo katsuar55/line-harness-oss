@@ -11,11 +11,24 @@
 
 import { getFriendTags } from '@line-crm/db';
 import type { AIRouter } from '@line-crm/ai-provider';
+import { detectNgWords } from './ai-ng-filter.js';
 
 interface AiResponseResult {
   text: string;
   layer: 'keyword' | 'ai' | 'fallback';
   model?: string;
+  /** Phase 3.1: 検出された薬機法 NG word (= 検出なしなら空配列) */
+  ngDetected?: string[];
+}
+
+/**
+ * Phase 3.1 ULTRATHINK (2026-05-24): generateAiResponse に渡せる friend profile context
+ * 既存 caller との後方互換のため optional、 未指定なら「未取得」 と prompt に出る。
+ */
+export interface AiResponseFriendContext {
+  birthMonth?: number | null;
+  ageGroup?: string | null;
+  displayName?: string | null;
 }
 
 const FALLBACK_MESSAGE = 'ただいま混み合っております。しばらくしてからもう一度お試しください🙏';
@@ -184,18 +197,24 @@ export async function generateAiResponse(
   friendCreatedAt: string,
   userMessage: string,
   systemPromptOverride?: string,
+  friendContext?: AiResponseFriendContext,
 ): Promise<AiResponseResult> {
   try {
     const tags = await getFriendTags(db, friendId);
     const tagNames = tags.map((t) => t.name);
 
     const basePrompt = buildSystemPrompt(systemPromptOverride);
-    const contextPrompt =
-      basePrompt +
-      '\n\n## このユーザーの情報\n' +
-      `タグ: ${tagNames.length > 0 ? tagNames.join(', ') : 'なし'}\n` +
-      `スコア: ${friendScore}pt\n` +
-      `友だち追加日: ${friendCreatedAt}\n`;
+    // Phase 3.1: friend profile context を AI に注入 (= birth_month / age_group で個別化)
+    const profileLines: string[] = [
+      '\n\n## このユーザーの情報',
+      `タグ: ${tagNames.length > 0 ? tagNames.join(', ') : 'なし'}`,
+      `スコア: ${friendScore}pt`,
+      `友だち追加日: ${friendCreatedAt}`,
+    ];
+    if (friendContext?.displayName) profileLines.push(`表示名: ${friendContext.displayName}`);
+    if (friendContext?.birthMonth) profileLines.push(`誕生月: ${friendContext.birthMonth}月`);
+    if (friendContext?.ageGroup) profileLines.push(`年代: ${friendContext.ageGroup}`);
+    const contextPrompt = basePrompt + profileLines.join('\n') + '\n';
 
     // プロンプトインジェクション対策: 入力を 500 文字に制限
     const sanitizedMessage = userMessage.slice(0, 500);
@@ -206,7 +225,33 @@ export async function generateAiResponse(
     });
 
     if (result.text) {
-      return { text: result.text, layer: 'ai', model: result.model };
+      // Phase 3.1: 薬機法 NG word 検出 (= safety net、 既存 prompt 指示破りの monitoring)
+      const ngResult = detectNgWords(result.text);
+      // Phase 3.1: conversation_logs INSERT (= best-effort、 失敗時も応答は壊さない)
+      await insertConversationLog(db, {
+        friendId,
+        userMessage: sanitizedMessage,
+        aiResponse: result.text,
+        aiLayer: 'ai',
+        aiModel: result.model,
+        ngWordsDetected: ngResult.hasNg ? ngResult.detected : null,
+        friendContext,
+        tagNames,
+        friendScore,
+      }).catch((err) =>
+        console.error('[ai-response] conversation_logs insert failed:', err instanceof Error ? err.message : String(err)),
+      );
+      if (ngResult.hasNg) {
+        console.warn(
+          `[ai-response] 薬機法 NG word detected: ${ngResult.detected.join(', ')} (friend=${friendId})`,
+        );
+      }
+      return {
+        text: result.text,
+        layer: 'ai',
+        model: result.model,
+        ngDetected: ngResult.detected,
+      };
     }
 
     return { text: FALLBACK_MESSAGE, layer: 'fallback' };
@@ -215,6 +260,51 @@ export async function generateAiResponse(
     console.error('AI response error:', errMsg);
     return { text: FALLBACK_MESSAGE, layer: 'fallback' };
   }
+}
+
+/**
+ * Phase 3.1 ULTRATHINK: conversation_logs INSERT (best-effort、 失敗時 caller 通知のみ)
+ * 後の fine-tune data / admin での質問傾向分析 / NG 検知 trace 元として保存。
+ */
+async function insertConversationLog(
+  db: D1Database,
+  input: {
+    friendId: string;
+    userMessage: string;
+    aiResponse: string;
+    aiLayer: AiResponseResult['layer'];
+    aiModel?: string;
+    ngWordsDetected: string[] | null;
+    friendContext?: AiResponseFriendContext;
+    tagNames: string[];
+    friendScore: number;
+  },
+): Promise<void> {
+  const id = crypto.randomUUID();
+  const friendContextJson = JSON.stringify({
+    birthMonth: input.friendContext?.birthMonth ?? null,
+    ageGroup: input.friendContext?.ageGroup ?? null,
+    displayName: input.friendContext?.displayName ?? null,
+    tags: input.tagNames,
+    score: input.friendScore,
+  });
+  await db
+    .prepare(
+      `INSERT INTO conversation_logs
+       (id, friend_id, user_message, ai_response, ai_layer, ai_model, ng_words_detected, friend_context)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id,
+      input.friendId,
+      input.userMessage,
+      input.aiResponse.slice(0, 4000), // 念のため上限 (= flex JSON で 4KB 程度)
+      input.aiLayer,
+      input.aiModel ?? null,
+      input.ngWordsDetected ? JSON.stringify(input.ngWordsDetected) : null,
+      friendContextJson,
+    )
+    .run();
 }
 
 /**
