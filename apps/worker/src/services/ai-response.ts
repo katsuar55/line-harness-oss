@@ -88,6 +88,11 @@ function buildSystemPrompt(overridePrompt?: string): string {
 
 ## 商品おすすめロジック（「どれがいい？」「初めて」「おすすめは？」と聞かれたら）
 
+**重要 (Plan A-6、 2026-05-24)**: user が **複数商品の価格比較** を聞いてきた場合 (= 例:「価格教えて」「価格一覧」「3 種類の値段は?」「BluePink どっちが安い?」「価格比較表」)、 **応答冒頭に 「[FMT:price_table]」 prefix を付ける**:
+- 例:「[FMT:price_table]naturism 3 種類の価格はこちらです💰」
+- prefix を検出すると、 Blue/Pink/Premium × 個包装/VP/1日換算 の grid table flex が自動表示される
+- 単一商品の価格 (= 「Blue の価格は?」 等) は prefix なしで「Blue は ¥2,376 (個包装) / ¥6,415 (VP) です」 等の text 回答
+
 **重要 (Plan A-3、 2026-05-24)**: user が **本人にあったおすすめ商品** を聞いてきた場合 (= 例:「私におすすめは?」「私に合うのはどれ?」「私はどれ買ったらいい?」「初めてでどれを選べばいい?」)、 想像で即答せず **応答冒頭に 「[FMT:quiz_invite]」 prefix を付けて 30 秒診断に誘導する**:
 - 例:「[FMT:quiz_invite]あなたに合う商品を診断しますね💚」
 - 例:「[FMT:quiz_invite]30 秒の診断で最適な商品をご提案します🌿」
