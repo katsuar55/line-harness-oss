@@ -1,28 +1,33 @@
 /**
- * Welcome postback handler (Phase 1 ULTRATHINK MVP、 2026-05-24)
+ * Welcome postback handler (Phase 1 ULTRATHINK v3、 2026-05-24)
  *
  * 役割:
  *   - LP welcome scenario の「次へ ▶」 (= 誕生月 → 年代) flow を postback chain で処理
  *   - friend.birth_month / age_group を column UPDATE (= migration 052)
  *   - audit_logs に `friend.demographic_collected` 記録
+ *   - **全 reply API**: postback event の replyToken を使い 0 通課金で全 sequence 完結
+ *   - 年代 tap 後の「ありがとう」 reply に **商品比較 flex + マイクーポン flex を同梱 (= 1 reply 3 message)**
+ *     → 旧 step 1 (15 min push) + step 2 (24h push) を統合、 push 0 通化
  *
  * postback data format (= 既存 `birthday_month` action と衝突しない `welcome_` prefix で分離):
- *   - `welcome_intro_step`               → 「お誕生日教えて」 flex push
- *   - `welcome_birthday:N` (N=1-12)      → friend.birth_month=N + 「年代教えて」 flex push
- *   - `welcome_age_group:X` (X='10s'..'70+') → friend.age_group=X + reply「ありがとう」
+ *   - `welcome_intro_step`               → reply 「お誕生日教えて」 flex
+ *   - `welcome_birthday:N` (N=1-12)      → friend.birth_month=N + reply 「年代教えて」 flex
+ *   - `welcome_age_group:X` (X='10s'..'70+') → friend.age_group=X + reply 「ありがとう + 商品比較 + マイクーポン」 (3 message)
  *
- * design 原則 (= user 合意済 5 軸):
+ * design 原則 (= user 合意済 5 軸 + cost zero ULTRATHINK):
  *   - 🌿 やさしい: skip しても coupon は使える (= 強制感ゼロ)
+ *   - 💰 お得: コスト 0 (= 全 reply、 push なし)
  *   - 🎯 楽しい: button tap で軽く進む
  *   - 🤝 つながる: 誕生月 → 月 1 通信 + 誕生月特典の data 起点
  *
  * 関連:
- *   - apps/worker/src/routes/webhook.ts (= dispatch 元)
+ *   - apps/worker/src/routes/webhook.ts (= dispatch 元、 replyToken 必須)
  *   - apps/worker/src/services/audit-logger.ts (= auditSystem)
  *   - packages/db/migrations/052_friend_demographics.sql (= birth_month + age_group column)
+ *   - scripts/welcome-scenario-v3-2026-05-24.sql (= step 1/2 削除 + step 0 content 微調整)
  */
 
-import type { LineClient, FlexContainer } from '@line-crm/line-sdk';
+import type { LineClient, FlexContainer, Message } from '@line-crm/line-sdk';
 import { auditSystem } from './audit-logger.js';
 
 const AGE_GROUPS = ['10s', '20s', '30s', '40s', '50s', '60s', '70+'] as const;
@@ -44,6 +49,10 @@ export function parseWelcomeAgeGroupPostback(data: string): AgeGroup | null {
   const candidate = match[1] as AgeGroup;
   return AGE_GROUPS.includes(candidate) ? candidate : null;
 }
+
+// ============================================================
+// Flex builders
+// ============================================================
 
 /** flex bubble: 「お誕生日教えてください 🎂」 12 月 button (= 4 列 × 3 行) */
 export function buildBirthdayAskFlex(): FlexContainer {
@@ -68,23 +77,8 @@ export function buildBirthdayAskFlex(): FlexContainer {
       backgroundColor: '#fff7ed',
       paddingAll: '14px',
       contents: [
-        {
-          type: 'text',
-          text: '🎂 お誕生日を教えてください',
-          size: 'md',
-          weight: 'bold',
-          color: '#9a3412',
-          align: 'center',
-        },
-        {
-          type: 'text',
-          text: '誕生月に特別なお知らせをお届けします',
-          size: 'xs',
-          color: '#7c2d12',
-          align: 'center',
-          margin: 'sm',
-          wrap: true,
-        },
+        { type: 'text', text: '🎂 お誕生日を教えてください', size: 'md', weight: 'bold', color: '#9a3412', align: 'center' },
+        { type: 'text', text: '誕生月に特別なお知らせをお届けします', size: 'xs', color: '#7c2d12', align: 'center', margin: 'sm', wrap: true },
       ],
     },
     body: {
@@ -96,20 +90,13 @@ export function buildBirthdayAskFlex(): FlexContainer {
         row([1, 2, 3, 4]),
         row([5, 6, 7, 8]),
         row([9, 10, 11, 12]),
-        {
-          type: 'text',
-          text: '※ 日にちは聞きません、 月だけで OK です',
-          size: 'xxs',
-          color: '#9ca3af',
-          align: 'center',
-          margin: 'md',
-        },
+        { type: 'text', text: '※ 日にちは聞きません、 月だけで OK です', size: 'xxs', color: '#9ca3af', align: 'center', margin: 'md' },
       ],
     },
   } as unknown as FlexContainer;
 }
 
-/** flex bubble: 「年代を教えてください ✨」 7 段階 button (= 2 列 × 4 行) */
+/** flex bubble: 「年代を教えてください ✨」 7 段階 button (= 2 列 × 3 行 + 1) */
 export function buildAgeGroupAskFlex(): FlexContainer {
   const ageButton = (label: string, data: string) => ({
     type: 'button' as const,
@@ -132,23 +119,8 @@ export function buildAgeGroupAskFlex(): FlexContainer {
       backgroundColor: '#eff6ff',
       paddingAll: '14px',
       contents: [
-        {
-          type: 'text',
-          text: '✨ 年代を教えてください',
-          size: 'md',
-          weight: 'bold',
-          color: '#1e40af',
-          align: 'center',
-        },
-        {
-          type: 'text',
-          text: 'あなたに合う情報をお届けします',
-          size: 'xs',
-          color: '#1e3a8a',
-          align: 'center',
-          margin: 'sm',
-          wrap: true,
-        },
+        { type: 'text', text: '✨ 年代を教えてください', size: 'md', weight: 'bold', color: '#1e40af', align: 'center' },
+        { type: 'text', text: 'あなたに合う情報をお届けします', size: 'xs', color: '#1e3a8a', align: 'center', margin: 'sm', wrap: true },
       ],
     },
     body: {
@@ -157,40 +129,144 @@ export function buildAgeGroupAskFlex(): FlexContainer {
       paddingAll: '14px',
       spacing: 'sm',
       contents: [
-        row([
-          { label: '10代', data: '10s' },
-          { label: '20代', data: '20s' },
-        ]),
-        row([
-          { label: '30代', data: '30s' },
-          { label: '40代', data: '40s' },
-        ]),
-        row([
-          { label: '50代', data: '50s' },
-          { label: '60代', data: '60s' },
-        ]),
+        row([{ label: '10代', data: '10s' }, { label: '20代', data: '20s' }]),
+        row([{ label: '30代', data: '30s' }, { label: '40代', data: '40s' }]),
+        row([{ label: '50代', data: '50s' }, { label: '60代', data: '60s' }]),
+        { type: 'box', layout: 'horizontal', spacing: 'sm', contents: [ageButton('70代以上', '70+')] },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+/** flex bubble: 商品比較 (= 旧 step 1 の content を移植、 年代 tap 後の同梱用) */
+export function buildProductCompareFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#f0fdf4',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🌿 あなたにぴったりの naturism は？', size: 'sm', weight: 'bold', color: '#15803d', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'lg',
+      contents: [
         {
-          type: 'box',
-          layout: 'horizontal',
-          spacing: 'sm',
-          contents: [ageButton('70代以上', '70+')],
+          type: 'box', layout: 'vertical', spacing: 'sm',
+          contents: [
+            { type: 'text', text: '💙 Blue — まずはここから', size: 'sm', weight: 'bold', color: '#1e293b' },
+            { type: 'text', text: '脂っこい食事が好きな方に。 8 成分配合、 1日¥64〜', size: 'xs', color: '#475569', wrap: true },
+          ],
         },
+        { type: 'separator' },
+        {
+          type: 'box', layout: 'vertical', spacing: 'sm',
+          contents: [
+            { type: 'text', text: '💗 Pink — 酵素で美容もケア', size: 'sm', weight: 'bold', color: '#1e293b' },
+            { type: 'text', text: 'Blue ＋活きた酵素配合。 美容も気になる方に。 1日¥75〜', size: 'xs', color: '#475569', wrap: true },
+          ],
+        },
+        { type: 'separator' },
+        {
+          type: 'box', layout: 'vertical', spacing: 'sm',
+          contents: [
+            { type: 'text', text: '🩶 Premium — 本気の体型管理に', size: 'sm', weight: 'bold', color: '#1e293b' },
+            { type: 'text', text: '全 16 成分の最高峰。 機能性表示食品。 1日¥149〜', size: 'xs', color: '#475569', wrap: true },
+          ],
+        },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'message', label: 'AI に相談 (おすすめ)', text: 'おすすめ' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'secondary', height: 'sm' },
       ],
     },
   } as unknown as FlexContainer;
 }
 
 /**
- * postback 'welcome_intro_step' 処理: 「お誕生日教えて」 flex を push。
+ * flex bubble: マイクーポン (= 旧 step 2 から格上げ、 永続表示用に強化)
+ * coupon code が null なら fallback text を表示。
+ */
+export function buildMyCouponFlex(couponCode: string | null): FlexContainer {
+  const couponSection = couponCode
+    ? [
+        {
+          type: 'box' as const,
+          layout: 'vertical' as const,
+          backgroundColor: '#fef3c7',
+          cornerRadius: '8px',
+          paddingAll: '12px',
+          spacing: 'sm' as const,
+          contents: [
+            { type: 'text' as const, text: 'クーポンコード', size: 'xxs' as const, color: '#92400e', align: 'center' as const },
+            { type: 'text' as const, text: couponCode, size: 'xl' as const, weight: 'bold' as const, color: '#06C755', align: 'center' as const, margin: 'sm' as const },
+            { type: 'text' as const, text: '3 日間有効 / naturism-diet.com', size: 'xxs' as const, color: '#78350f', align: 'center' as const, wrap: true },
+          ],
+        },
+        { type: 'text' as const, text: '💡 Blue 7日分 ¥696 → 500円 OFF で 実質 ¥196', size: 'xs' as const, color: '#475569', align: 'center' as const, wrap: true, margin: 'md' as const },
+      ]
+    : [
+        { type: 'text' as const, text: 'クーポンは間もなくお届けします', size: 'sm' as const, color: '#78350f', align: 'center' as const, wrap: true },
+      ];
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fef3c7',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🎁 マイクーポン (友だち限定)', size: 'sm', weight: 'bold', color: '#92400e', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: couponSection,
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'uri', label: '公式ストアで使う', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'message', label: 'AI に飲み方を聞く', text: '飲み方' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+// ============================================================
+// Handlers (= 全 replyMessage 化、 cost 0 通)
+// ============================================================
+
+/**
+ * postback 'welcome_intro_step' 処理: 「お誕生日教えて」 flex を reply。
+ * replyToken は postback event の replyToken (= 約 1 分有効、 1 回のみ使用可)。
  */
 export async function handleWelcomeIntroStep(
   db: D1Database,
   lineClient: LineClient,
   friendId: string,
-  lineUserId: string,
+  replyToken: string,
   lineAccountId: string | null,
 ): Promise<void> {
-  await lineClient.pushMessage(lineUserId, [
+  await lineClient.replyMessage(replyToken, [
     { type: 'flex', altText: 'お誕生日を教えてください 🎂', contents: buildBirthdayAskFlex() },
   ]);
   await auditSystem(db, {
@@ -200,18 +276,18 @@ export async function handleWelcomeIntroStep(
     targetId: friendId,
     lineAccountId,
     result: 'success',
-    metadata: { stage: 'ask_birthday' },
+    metadata: { stage: 'ask_birthday', api: 'reply' },
   });
 }
 
 /**
- * postback 'welcome_birthday:N' 処理: friend.birth_month UPDATE + 「年代教えて」 flex push。
+ * postback 'welcome_birthday:N' 処理: friend.birth_month UPDATE + 「年代教えて」 flex reply。
  */
 export async function handleWelcomeBirthday(
   db: D1Database,
   lineClient: LineClient,
   friendId: string,
-  lineUserId: string,
+  replyToken: string,
   lineAccountId: string | null,
   postbackData: string,
 ): Promise<{ ok: boolean; month?: number; reason?: string }> {
@@ -232,7 +308,7 @@ export async function handleWelcomeBirthday(
     .prepare('UPDATE friends SET birth_month = ?, updated_at = ? WHERE id = ?')
     .bind(month, new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, -1) + '+09:00', friendId)
     .run();
-  await lineClient.pushMessage(lineUserId, [
+  await lineClient.replyMessage(replyToken, [
     { type: 'flex', altText: '年代を教えてください ✨', contents: buildAgeGroupAskFlex() },
   ]);
   await auditSystem(db, {
@@ -242,18 +318,24 @@ export async function handleWelcomeBirthday(
     targetId: friendId,
     lineAccountId,
     result: 'success',
-    metadata: { field: 'birth_month', value: month, stage: 'ask_age_group' },
+    metadata: { field: 'birth_month', value: month, stage: 'ask_age_group', api: 'reply' },
   });
   return { ok: true, month };
 }
 
 /**
- * postback 'welcome_age_group:X' 処理: friend.age_group UPDATE + reply「ありがとう」。
+ * postback 'welcome_age_group:X' 処理: friend.age_group UPDATE + reply 3 message 同時:
+ *   1. text 「ありがとう」 (= 短く端的)
+ *   2. flex 商品比較 (= 旧 step 1 移植)
+ *   3. flex マイクーポン (= 旧 step 2 格上げ、 coupon code 動的注入)
+ *
+ * LINE reply API は 1 reply で最大 5 message 同時送信可、 通数 0 カウント。
+ * 旧 plan の「15 min 後 step 1 push + 24h 後 step 2 push」 を完全に統合、 全 sequence 0 通課金。
  */
 export async function handleWelcomeAgeGroup(
   db: D1Database,
   lineClient: LineClient,
-  friendId: string,
+  friend: { id: string; display_name: string | null },
   lineAccountId: string | null,
   replyToken: string,
   postbackData: string,
@@ -264,7 +346,7 @@ export async function handleWelcomeAgeGroup(
       action: 'welcome_postback.age_group_invalid',
       actorType: 'webhook',
       targetType: 'friend',
-      targetId: friendId,
+      targetId: friend.id,
       lineAccountId,
       result: 'failure',
       errorMessage: `invalid postback data: ${postbackData.slice(0, 80)}`,
@@ -273,23 +355,46 @@ export async function handleWelcomeAgeGroup(
   }
   await db
     .prepare('UPDATE friends SET age_group = ?, updated_at = ? WHERE id = ?')
-    .bind(ageGroup, new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, -1) + '+09:00', friendId)
+    .bind(ageGroup, new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, -1) + '+09:00', friend.id)
     .run();
-  // reply「ありがとう」 (= reply は free API、 24h 制限あり)
-  await lineClient.replyMessage(replyToken, [
+
+  // coupon code を D1 から SELECT (= follow event で issueCouponForFriend が INSERT 済の想定、 失敗時は null)
+  const couponRow = await db
+    .prepare(
+      "SELECT coupon_code FROM line_friend_coupons WHERE friend_id = ? AND status = 'issued' ORDER BY issued_at DESC LIMIT 1",
+    )
+    .bind(friend.id)
+    .first<{ coupon_code: string }>()
+    .catch(() => null);
+  const couponCode = couponRow?.coupon_code ?? null;
+
+  const displayName = friend.display_name ?? 'お客様';
+  const messages: Message[] = [
     {
       type: 'text',
-      text: 'ありがとうございます🌿\n\n誕生月と年代を保存しました。\n誕生月には特別なクーポンをお送りします🎁\n\n15 分後に商品の比較情報を、 翌日にはお得情報をお届けしますね。\n\nそれまでに何か質問があれば、 『違い』 『おすすめ』 『飲み方』 などと話しかけてください 😊',
+      text: `${displayName}さん、 ありがとうございます🌿\n誕生月と年代を保存しました。\n誕生月には特別なクーポンをお届けします🎁\n\n以下、 一緒に届けますね 👇`,
     },
-  ]);
+    {
+      type: 'flex',
+      altText: 'あなたにぴったりの naturism は?',
+      contents: buildProductCompareFlex(),
+    },
+    {
+      type: 'flex',
+      altText: 'マイクーポン (友だち限定)',
+      contents: buildMyCouponFlex(couponCode),
+    },
+  ];
+  await lineClient.replyMessage(replyToken, messages);
+
   await auditSystem(db, {
     action: 'friend.demographic_collected',
     actorType: 'webhook',
     targetType: 'friend',
-    targetId: friendId,
+    targetId: friend.id,
     lineAccountId,
     result: 'success',
-    metadata: { field: 'age_group', value: ageGroup, stage: 'complete' },
+    metadata: { field: 'age_group', value: ageGroup, stage: 'complete', api: 'reply', messagesSent: 3, couponCode: couponCode ?? null },
   });
   return { ok: true, ageGroup };
 }
