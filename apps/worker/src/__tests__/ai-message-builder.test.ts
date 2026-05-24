@@ -164,3 +164,72 @@ describe('ai-message-builder — constants', () => {
     expect(__test__.URL_REGEX.test('plain text without url')).toBe(false);
   });
 });
+
+// Plan A-6 (2026-05-24): 価格比較表 flex
+describe('ai-message-builder — buildPriceTableMessage ([FMT:price_table])', () => {
+  it('[FMT:price_table] prefix returns price table flex Message', () => {
+    const msg = buildAiMessage('[FMT:price_table]naturism 3 種類の価格です💰');
+    expect(msg.type).toBe('flex');
+    if (msg.type === 'flex') {
+      expect(msg.altText).toBe('💰 価格一覧 (税込)');
+      expect(msg.contents).toMatchObject({ type: 'bubble' });
+    }
+  });
+
+  it('price table flex contains all 3 products with correct prices', () => {
+    const msg = buildAiMessage('[FMT:price_table]');
+    expect(msg.type).toBe('flex');
+    if (msg.type === 'flex') {
+      const json = JSON.stringify(msg.contents);
+      // 商品名 + 価格 が全て含まれる
+      expect(json).toContain('Blue');
+      expect(json).toContain('Pink');
+      expect(json).toContain('Premium');
+      expect(json).toContain('¥2,376'); // Blue 個包装
+      expect(json).toContain('¥6,415'); // Blue VP
+      expect(json).toContain('¥64'); // Blue 1日
+      expect(json).toContain('¥2,830'); // Pink 個包装
+      expect(json).toContain('¥7,538'); // Pink VP
+      expect(json).toContain('¥75'); // Pink 1日
+      expect(json).toContain('¥3,564'); // Premium 個包装
+      expect(json).toContain('¥14,904'); // Premium VP
+      expect(json).toContain('¥149'); // Premium 1日
+    }
+  });
+
+  it('price table includes 送料無料 note + 公式ストア button', () => {
+    const msg = buildAiMessage('[FMT:price_table]');
+    expect(msg.type).toBe('flex');
+    if (msg.type === 'flex') {
+      const json = JSON.stringify(msg.contents);
+      expect(json).toContain('5,500'); // 送料無料閾値
+      expect(json).toContain('送料無料');
+      expect(json).toContain('naturism-diet.com'); // 公式ストア button URL
+    }
+  });
+
+  it('PRICE_ROWS export contains exactly 3 rows', () => {
+    expect(__test__.PRICE_ROWS).toHaveLength(3);
+    expect(__test__.PRICE_ROWS[0].name).toBe('Blue');
+    expect(__test__.PRICE_ROWS[1].name).toBe('Pink');
+    expect(__test__.PRICE_ROWS[2].name).toBe('Premium');
+  });
+
+  it('PRICE_ROWS use brand color #0ABAB5 for Blue (= Plan B integration)', () => {
+    expect(__test__.PRICE_ROWS[0].color).toBe('#0ABAB5'); // ティファニーブルー
+  });
+
+  it('FMT_PRICE_TABLE_PREFIX constant is exported correctly', () => {
+    expect(__test__.FMT_PRICE_TABLE_PREFIX).toBe('[FMT:price_table]');
+  });
+
+  it('prefix priority: [FMT:quiz_invite] is checked BEFORE [FMT:price_table]', () => {
+    // (= 同時 prefix は想定外だが、 quiz_invite が先 = AI 「おすすめ」 intent 優先)
+    const msg = buildAiMessage('[FMT:quiz_invite][FMT:price_table]両方');
+    expect(msg.type).toBe('flex');
+    if (msg.type === 'flex') {
+      // quiz_invite が優先された場合 altText が異なる
+      expect(msg.altText).toContain('診断');
+    }
+  });
+});
