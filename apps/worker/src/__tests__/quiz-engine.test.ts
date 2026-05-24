@@ -85,7 +85,7 @@ describe('Quiz Engine — naturism 商品診断', () => {
       q1: '初めてです',
       q8: '毎日の食事のお供としてシンプルに始めたい',
     });
-    expect(result.productInfo.emoji).toBe('💙');
+    expect(result.productInfo.emoji).toBe('🩵');
     expect(result.productInfo.price).toBe('¥64/日〜');
     expect(result.productInfo.components).toBe(8);
     expect(result.reason).toBeTruthy();
