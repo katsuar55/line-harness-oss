@@ -87,6 +87,7 @@ import { processSubscriptionReminders } from './services/subscription-reminder.j
 import { processMonthlyFoodReports } from './services/monthly-food-report.js';
 import { processWeeklyCoachPush } from './services/weekly-coach-push.js';
 import { processCronMonitor } from './services/cron-monitor.js';
+import { processBirthdayGreetings } from './services/birthday-cron.js';
 import { processEmailFailureMonitor } from './services/email-failure-monitor.js';
 import { processCronCleanup } from './services/cron-cleanup.js';
 import { withHeartbeat } from './services/cron-heartbeat.js';
@@ -474,6 +475,23 @@ async function scheduled(
   jobs.push(
     processCronCleanup(env).catch((err) =>
       console.error('cron-cleanup failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // Phase 2.2 (2026-05-24): birthday cron 雛形 (= 月初 1 日 10:00 JST ± 5 分 のみ実行、 service 側で gating)
+  //   - friends.birth_month = current month の friend に push 「お誕生月おめでとう + 特典 flex」
+  //   - 既送マーカー (friend_metadata.birthday_greeting_sent_YYYY_MM) で同月重複 push 防止
+  //   - BIRTHDAY_CRON_FORCE='true' で gating bypass (= テスト用)
+  jobs.push(
+    withHeartbeat(env.DB, 'birthday-greetings', () =>
+      processBirthdayGreetings(env as unknown as Parameters<typeof processBirthdayGreetings>[0]),
+      (r) => ({ candidates: r.candidates, sent: r.sent, errors: r.errors, skippedGating: r.skippedDueToGating }),
+    ).then((r) => {
+      if (r.sent > 0) {
+        console.info(`birthday-greetings: month=${r.month} sent=${r.sent} alreadySent=${r.alreadySent} errors=${r.errors}`);
+      }
+    }).catch((err) =>
+      console.error('birthday-greetings failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 
