@@ -1049,8 +1049,46 @@ async function handleEvent(
     };
 
     const sendSuccessPush = async (
-      analysis: { calories: number; protein_g: number; fat_g: number; carbs_g: number; items: ReadonlyArray<{ name: string; qty?: string }> },
+      analysis: { calories: number; protein_g: number; fat_g: number; carbs_g: number; items: ReadonlyArray<{ name: string; qty?: string }>; notes?: string },
     ): Promise<void> => {
+      // 判別困難判定: AI が「unknown」 を返した、 もしくは calories=0 (= 量推測も不可) なら正直に案内
+      const isUnknown =
+        analysis.items.length === 0 ||
+        analysis.items.every((it) => it.name === 'unknown' || it.name === '') ||
+        (analysis.calories === 0 && analysis.protein_g === 0 && analysis.fat_g === 0 && analysis.carbs_g === 0);
+
+      if (isUnknown) {
+        const unknownBubble = {
+          type: 'bubble',
+          header: {
+            type: 'box', layout: 'horizontal',
+            backgroundColor: '#fef3c7', paddingAll: '12px',
+            contents: [
+              { type: 'text', text: '🤔', size: 'sm', flex: 0 },
+              { type: 'text', text: '画像の詳細が判別できません',
+                size: 'sm', color: '#92400e', weight: 'bold',
+                gravity: 'center', margin: 'sm' },
+            ],
+          },
+          body: {
+            type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'sm',
+            contents: [
+              { type: 'text', text: analysis.notes || 'もしよろしければ、 料理名や食材を文字でお送りください🙏', size: 'sm', color: '#1e293b', wrap: true },
+              { type: 'separator', margin: 'md', color: '#e2e8f0' },
+              { type: 'text', text: '例: 「とんこつラーメン」 「サラダボウル (アボカド + チキン)」', size: 'xs', color: '#64748b', wrap: true, margin: 'md' },
+            ],
+          },
+        };
+        try {
+          await lineClient.pushMessage(friendLineUserId, [
+            buildMessage('flex', JSON.stringify(unknownBubble)),
+          ]);
+        } catch (err) {
+          console.error('Failed to push unknown image flex:', err);
+        }
+        return;
+      }
+
       const itemsLine = analysis.items
         .slice(0, 5)
         .map((it) => (it.qty ? `${it.name} (${it.qty})` : it.name))
