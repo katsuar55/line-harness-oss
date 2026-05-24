@@ -45,6 +45,12 @@ import {
   isMonthlyBroadcastPostback,
   handleMonthlyDetail,
 } from '../services/monthly-broadcast-postback.js';
+import {
+  isQuickQuizPostback,
+  isQuickQuizStartPostback,
+  handleQuickQuizStart,
+  handleQuickQuizAnswer,
+} from '../services/quick-quiz.js';
 import type { Env } from '../index.js';
 
 import { buildAiMessage } from '../services/ai-message-builder.js';
@@ -395,6 +401,33 @@ async function handleEvent(
         console.error('[webhook] monthly broadcast postback failed:', err);
         await auditSystem(db, {
           action: 'monthly_postback.handler_threw',
+          actorType: 'webhook',
+          targetType: 'friend',
+          targetId: friend.id,
+          lineAccountId,
+          result: 'failure',
+          errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown',
+          metadata: { postbackData: data.slice(0, 200) },
+        });
+      }
+      return;
+    }
+
+    // Plan A-3 (2026-05-24): LINE chat 内 5 質問 quick diagnose の postback chain
+    // `quick_quiz:start` → Q1 reply、 `quick_quiz:a:XXXX` → 次質問 or 結果 reply
+    if (isQuickQuizPostback(data)) {
+      const friend = await getFriendByLineUserId(db, userId);
+      if (!friend) return;
+      try {
+        if (isQuickQuizStartPostback(data)) {
+          await handleQuickQuizStart(db, lineClient, friend.id, event.replyToken, lineAccountId);
+        } else {
+          await handleQuickQuizAnswer(db, lineClient, friend.id, event.replyToken, lineAccountId, data);
+        }
+      } catch (err) {
+        console.error('[webhook] quick_quiz postback failed:', err);
+        await auditSystem(db, {
+          action: 'quick_quiz.handler_threw',
           actorType: 'webhook',
           targetType: 'friend',
           targetId: friend.id,
