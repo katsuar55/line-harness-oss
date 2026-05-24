@@ -152,13 +152,14 @@ describe('buildBirthdayAskFlex / buildAgeGroupAskFlex', () => {
 describe('handleWelcomeIntroStep', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('push birthday flex + audit', async () => {
+  it('reply birthday flex + audit (v3 cost-zero)', async () => {
     const db = new FakeDb();
     const lc = makeLineClient();
-    await handleWelcomeIntroStep(db as unknown as D1Database, lc, FRIEND_ID, LINE_USER_ID, null);
-    expect(lc.pushMessage).toHaveBeenCalledTimes(1);
-    expect(lc.pushMessage).toHaveBeenCalledWith(
-      LINE_USER_ID,
+    await handleWelcomeIntroStep(db as unknown as D1Database, lc, FRIEND_ID, 'reply-token-intro', null);
+    expect(lc.replyMessage).toHaveBeenCalledTimes(1);
+    expect(lc.pushMessage).not.toHaveBeenCalled();
+    expect(lc.replyMessage).toHaveBeenCalledWith(
+      'reply-token-intro',
       expect.arrayContaining([expect.objectContaining({ type: 'flex' })]),
     );
     expect(db.auditRows).toHaveLength(1);
@@ -170,14 +171,14 @@ describe('handleWelcomeIntroStep', () => {
 describe('handleWelcomeBirthday', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('valid postback → UPDATE birth_month + push age_group flex + audit success', async () => {
+  it('valid postback → UPDATE birth_month + reply age_group flex + audit success (v3 cost-zero)', async () => {
     const db = new FakeDb();
     const lc = makeLineClient();
     const result = await handleWelcomeBirthday(
       db as unknown as D1Database,
       lc,
       FRIEND_ID,
-      LINE_USER_ID,
+      'reply-token-bday',
       null,
       'welcome_birthday:7',
     );
@@ -186,7 +187,8 @@ describe('handleWelcomeBirthday', () => {
     expect(db.updateCalls).toHaveLength(1);
     expect(db.updateCalls[0].params[0]).toBe(7);
     expect(db.updateCalls[0].params[2]).toBe(FRIEND_ID);
-    expect(lc.pushMessage).toHaveBeenCalledTimes(1);
+    expect(lc.replyMessage).toHaveBeenCalledTimes(1);
+    expect(lc.pushMessage).not.toHaveBeenCalled();
     expect(db.auditRows).toHaveLength(1);
     expect(db.auditRows[0].action).toBe('friend.demographic_collected');
   });
@@ -198,14 +200,14 @@ describe('handleWelcomeBirthday', () => {
       db as unknown as D1Database,
       lc,
       FRIEND_ID,
-      LINE_USER_ID,
+      'reply-token-bday',
       null,
       'welcome_birthday:99',
     );
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('invalid_format');
     expect(db.updateCalls).toHaveLength(0);
-    expect(lc.pushMessage).not.toHaveBeenCalled();
+    expect(lc.replyMessage).not.toHaveBeenCalled();
     expect(db.auditRows).toHaveLength(1);
     expect(db.auditRows[0].action).toBe('welcome_postback.birthday_invalid');
     expect(db.auditRows[0].result).toBe('failure');
@@ -215,13 +217,13 @@ describe('handleWelcomeBirthday', () => {
 describe('handleWelcomeAgeGroup', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('valid postback → UPDATE age_group + reply thank you + audit success', async () => {
+  it('valid postback → UPDATE age_group + reply 3 messages (text + product + coupon) + audit (v3 cost-zero)', async () => {
     const db = new FakeDb();
     const lc = makeLineClient();
     const result = await handleWelcomeAgeGroup(
       db as unknown as D1Database,
       lc,
-      FRIEND_ID,
+      { id: FRIEND_ID, display_name: 'テストユーザー' },
       null,
       'reply-token-xxx',
       'welcome_age_group:30s',
@@ -231,12 +233,36 @@ describe('handleWelcomeAgeGroup', () => {
     expect(db.updateCalls).toHaveLength(1);
     expect(db.updateCalls[0].params[0]).toBe('30s');
     expect(lc.replyMessage).toHaveBeenCalledTimes(1);
-    expect(lc.replyMessage).toHaveBeenCalledWith(
-      'reply-token-xxx',
-      expect.arrayContaining([expect.objectContaining({ type: 'text' })]),
-    );
+    expect(lc.pushMessage).not.toHaveBeenCalled();
+    // v3: 1 reply 内に 3 message (= text + flex + flex)
+    const [token, messages] = lc.replyMessage.mock.calls[0];
+    expect(token).toBe('reply-token-xxx');
+    expect(messages).toHaveLength(3);
+    expect(messages[0].type).toBe('text');
+    expect(messages[0].text).toMatch(/テストユーザー/);
+    expect(messages[1].type).toBe('flex');
+    expect(messages[1].altText).toMatch(/naturism/);
+    expect(messages[2].type).toBe('flex');
+    expect(messages[2].altText).toMatch(/マイクーポン/);
     expect(db.auditRows).toHaveLength(1);
     expect(db.auditRows[0].action).toBe('friend.demographic_collected');
+  });
+
+  it('display_name が null でも reply は成功 (= 「お客様」 fallback)', async () => {
+    const db = new FakeDb();
+    const lc = makeLineClient();
+    const result = await handleWelcomeAgeGroup(
+      db as unknown as D1Database,
+      lc,
+      { id: FRIEND_ID, display_name: null },
+      null,
+      'reply-token-null',
+      'welcome_age_group:20s',
+    );
+    expect(result.ok).toBe(true);
+    expect(lc.replyMessage).toHaveBeenCalledTimes(1);
+    const [, messages] = lc.replyMessage.mock.calls[0];
+    expect(messages[0].text).toMatch(/お客様/);
   });
 
   it('invalid postback → no UPDATE, no reply, audit failure', async () => {
@@ -245,7 +271,7 @@ describe('handleWelcomeAgeGroup', () => {
     const result = await handleWelcomeAgeGroup(
       db as unknown as D1Database,
       lc,
-      FRIEND_ID,
+      { id: FRIEND_ID, display_name: 'X' },
       null,
       'reply-token-xxx',
       'welcome_age_group:young',
@@ -264,7 +290,7 @@ describe('handleWelcomeAgeGroup', () => {
     const result = await handleWelcomeAgeGroup(
       db as unknown as D1Database,
       lc,
-      FRIEND_ID,
+      { id: FRIEND_ID, display_name: 'A' },
       null,
       'reply-token',
       'welcome_age_group:70+',

@@ -488,19 +488,28 @@ async function handleEvent(
 
     const data = (event as { postback?: { data?: string } }).postback?.data ?? '';
 
-    // Phase 1 ULTRATHINK (2026-05-24): welcome scenario の postback chain
+    // Phase 1 ULTRATHINK v3 (2026-05-24): welcome scenario の postback chain
     // `welcome_intro_step` / `welcome_birthday:N` / `welcome_age_group:X` を early dispatch
     // (= 既存 URLSearchParams ベースの `action=birthday_month` 等とは別系統)
+    // **全 reply API 化**: postback event の replyToken を全 handler に渡し、 push を一切使わない。
+    // 年代 tap 後は 1 reply で 3 message 同時 (= ありがとう + 商品比較 + マイクーポン) でコスト 0 通。
     if (isWelcomePostback(data)) {
       const friend = await getFriendByLineUserId(db, userId);
       if (!friend) return;
       try {
         if (data === 'welcome_intro_step') {
-          await handleWelcomeIntroStep(db, lineClient, friend.id, userId, lineAccountId);
+          await handleWelcomeIntroStep(db, lineClient, friend.id, event.replyToken, lineAccountId);
         } else if (data.startsWith('welcome_birthday:')) {
-          await handleWelcomeBirthday(db, lineClient, friend.id, userId, lineAccountId, data);
+          await handleWelcomeBirthday(db, lineClient, friend.id, event.replyToken, lineAccountId, data);
         } else if (data.startsWith('welcome_age_group:')) {
-          await handleWelcomeAgeGroup(db, lineClient, friend.id, lineAccountId, event.replyToken, data);
+          await handleWelcomeAgeGroup(
+            db,
+            lineClient,
+            { id: friend.id, display_name: friend.display_name },
+            lineAccountId,
+            event.replyToken,
+            data,
+          );
         }
       } catch (err) {
         console.error('[webhook] welcome postback failed:', err);
