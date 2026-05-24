@@ -181,9 +181,151 @@ function build6JuneCallToAction(): FlexContainer {
   } as unknown as FlexContainer;
 }
 
+/** 7 月: 夏本番 / BBQ / 焼肉 / かき氷 (= naturism 軸: Blue 強化、 脂質対策、 夏キャンペーン 予告) */
+function build7JulyIntro(displayName: string): Message {
+  return {
+    type: 'text',
+    text: `${displayName}さん、 7 月のお知らせです🌻\n\n夏本番、 ビアガーデン・BBQ・焼肉・かき氷の季節☀\n脂っこい食事・甘いものが増えるこの時期、 naturism から夏の食習慣のヒントをお届けします🌿\n\n4 つのカードを順番にどうぞ 👇`,
+  };
+}
+
+function build7JulyTipFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fef3c7',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '☀ 夏の食習慣 3 つの tip', size: 'sm', weight: 'bold', color: '#92400e', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '🍖 食前に 1 杯の水', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: 'BBQ や焼肉の前に水を飲むことで食べ過ぎを防ぎ、 消化もスムーズに。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🍨 冷たいものは少量ずつ', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: 'かき氷・アイスは胃腸を冷やしやすい。 一気食いを避けて少量で楽しむ。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🌿 食事中に naturism を', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '「食べたら、 飲んでおく」 を脂っこい食事の時に意識。 Blue 6 粒 (約 1 食分) が目安。', size: 'xs', color: '#475569', wrap: true },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build7JulyBlueFlex(): FlexContainer {
+  // Blue (= 脂質カット特化) を BBQ / 焼肉 文脈で推す
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#cffafe',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🩵 Blue — BBQ・焼肉 に安心の 8 成分', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '夏の外食は脂質が高め。 Blue は脂質カットに特化した naturism のエントリーモデル。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '8 成分配合 (= ウーロン茶ポリフェノール / アロエベラ / サンザシ 等)。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '1日¥64〜 / 7日分お試し ¥696', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'uri', label: 'Blue を見る', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'message', label: 'AI に成分を聞く', text: 'Blue の成分' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build7JulyCampaignFlex(): FlexContainer {
+  // 夏キャンペーン予告 (= 紹介 reminder と統合、 Phase 4 で実装予定)
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fce7f3',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🎁 夏のキャンペーン (予告)', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '7-8 月限定の特典を準備中です🌸', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🌿 友だち紹介で 500 円 OFF (= あなた + お友だち 両方)', size: 'xs', color: '#9d174d', wrap: true, margin: 'sm' },
+        { type: 'text', text: '🌿 Blue + Pink セット お試し企画 (検討中)', size: 'xs', color: '#9d174d', wrap: true },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '※ 詳細は公式 LINE で随時お知らせ。 公式 Instagram @naturism_supplement もチェック✨', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build7JulyCallToAction(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#eff6ff',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '✨ 何でもお気軽にどうぞ', size: 'sm', weight: 'bold', color: '#1e40af', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'sm',
+      contents: [
+        { type: 'text', text: '夏の食事相談、 商品選び等は気軽に AI へ。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '『私におすすめ』 『価格比較』 『飲み方』 『成分』', size: 'sm', weight: 'bold', color: '#1e40af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '等と話しかけると AI が即お答えします 🤖', size: 'sm', color: '#1e293b', wrap: true },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'message', label: 'AI に私のおすすめを聞く', text: '私におすすめは?' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
 /**
  * month (1-12) → 5 message (= reply 1 回で送信)
- * Phase 2.1: 6 月のみ充実、 他月は placeholder text (= Phase 2.2 で順次拡充)
+ * Phase 2.1: 6 月のみ充実、 Phase 2.2 で 7 月追加、 他月は placeholder text (= 順次拡充)
  */
 export function getMonthlyDetailMessages(month: number, displayName: string): Message[] {
   switch (month) {
@@ -194,6 +336,15 @@ export function getMonthlyDetailMessages(month: number, displayName: string): Me
         { type: 'flex', altText: 'Pink — 酵素で美容もケア', contents: build6JunePinkFlex() },
         { type: 'flex', altText: '友だち紹介で 500 円 OFF', contents: build6JuneReferralFlex() },
         { type: 'flex', altText: '何でもお気軽に', contents: build6JuneCallToAction() },
+      ];
+    case 7:
+      // Phase 2.2 (2026-05-24): 7 月 = 夏本番 / BBQ / 焼肉 / かき氷 / Blue 強化推奨
+      return [
+        build7JulyIntro(displayName),
+        { type: 'flex', altText: '夏の食習慣 3 つの tip', contents: build7JulyTipFlex() },
+        { type: 'flex', altText: 'Blue 強化 — BBQ・焼肉 に安心', contents: build7JulyBlueFlex() },
+        { type: 'flex', altText: '夏キャンペーン (予告)', contents: build7JulyCampaignFlex() },
+        { type: 'flex', altText: '何でもお気軽に', contents: build7JulyCallToAction() },
       ];
     default:
       // Phase 2.2 で順次拡充、 当面 placeholder

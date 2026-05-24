@@ -108,11 +108,33 @@ describe('getMonthlyDetailMessages', () => {
     expect(altTexts.join(' ')).toMatch(/紹介/);
   });
 
-  it('7 月 (= Phase 2.2 で拡充予定) は placeholder text のみ 1 件', () => {
-    const messages = getMonthlyDetailMessages(7, 'A');
+  it('7 月 (= Phase 2.2、 夏本番 / BBQ / Blue 強化) → 5 message (= text + 4 flex)', () => {
+    const messages = getMonthlyDetailMessages(7, 'テスト夏太郎');
+    expect(messages).toHaveLength(5);
+    expect(messages[0].type).toBe('text');
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('テスト夏太郎') });
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('夏本番') });
+    expect(messages[1].type).toBe('flex');
+    expect(messages[2].type).toBe('flex');
+    expect(messages[3].type).toBe('flex');
+    expect(messages[4].type).toBe('flex');
+  });
+
+  it('7 月 alt_text に「夏」 「Blue」 「キャンペーン」 を含む', () => {
+    const messages = getMonthlyDetailMessages(7, 'X');
+    const altTexts = messages
+      .filter((m): m is Extract<typeof m, { type: 'flex' }> => m.type === 'flex')
+      .map((m) => m.altText);
+    expect(altTexts.join(' ')).toMatch(/夏/);
+    expect(altTexts.join(' ')).toMatch(/Blue/);
+    expect(altTexts.join(' ')).toMatch(/キャンペーン/);
+  });
+
+  it('8 月以降 (= 未実装) は placeholder text のみ 1 件', () => {
+    const messages = getMonthlyDetailMessages(8, 'A');
     expect(messages).toHaveLength(1);
     expect(messages[0].type).toBe('text');
-    expect(messages[0]).toMatchObject({ text: expect.stringContaining('7 月') });
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('8 月') });
   });
 
   it('display_name null → fallback (= 「お客様」 文字列を返す側で対応、 直接呼出時は呼出側担当)', () => {
@@ -148,7 +170,7 @@ describe('handleMonthlyDetail', () => {
     expect(db.auditRows[0].result).toBe('success');
   });
 
-  it('valid 7 月 → reply 1 message (= placeholder)', async () => {
+  it('valid 7 月 → reply 5 messages (= Phase 2.2 拡充済)', async () => {
     const db = new FakeDb();
     const lc = makeLineClient();
     const result = await handleMonthlyDetail(
@@ -158,6 +180,22 @@ describe('handleMonthlyDetail', () => {
       null,
       'reply-token',
       'monthly_detail:7',
+    );
+    expect(result.ok).toBe(true);
+    const [, messages] = lc.replyMessage.mock.calls[0];
+    expect(messages).toHaveLength(5);
+  });
+
+  it('valid 8 月 → reply 1 message (= placeholder)', async () => {
+    const db = new FakeDb();
+    const lc = makeLineClient();
+    const result = await handleMonthlyDetail(
+      db as unknown as D1Database,
+      lc,
+      { id: FRIEND_ID, display_name: 'X' },
+      null,
+      'reply-token',
+      'monthly_detail:8',
     );
     expect(result.ok).toBe(true);
     const [, messages] = lc.replyMessage.mock.calls[0];
