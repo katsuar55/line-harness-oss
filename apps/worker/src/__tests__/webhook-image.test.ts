@@ -399,6 +399,93 @@ describe('webhook image message — analyzer failure', () => {
   });
 });
 
+describe('webhook image message — analyzer returns unknown (= 画像判別不能)', () => {
+  it('pushes an "unknown" flex when analyzer returns items=[{name:"unknown"}] + calories=0', async () => {
+    const userId = 'U_unknown_image';
+    seedFriend(userId);
+
+    downloadLineContentMock.mockResolvedValue({
+      bytes: new Uint8Array([1, 2]),
+      contentType: 'image/jpeg',
+      size: 2,
+    });
+    analyzeFoodImageMock.mockResolvedValue({
+      calories: 0,
+      protein_g: 0,
+      fat_g: 0,
+      carbs_g: 0,
+      items: [{ name: 'unknown' }],
+      notes: '画像の詳細が判別できません。 もしよろしければ料理名や食材を文字で教えていただけませんか？🙏',
+    });
+
+    await postImageWebhook(makeImageMessageBody(userId, 'msg_unknown'), {
+      anthropicKey: 'sk-test',
+    });
+
+    expect(capturedReplies).toHaveLength(1); // analyzing reply
+    expect(capturedPushes).toHaveLength(1);
+    const pushed = capturedPushes[0].messages[0] as { type: string; contents?: unknown };
+    expect(pushed.type).toBe('flex');
+    const contentsJson = JSON.stringify(pushed.contents);
+    expect(contentsJson).toMatch(/判別できません/);
+    // 「0 kcal」 等の fabricate 数値を出していないことを確認
+    expect(contentsJson).not.toContain('kcal');
+  });
+
+  it('treats empty items array also as unknown', async () => {
+    const userId = 'U_empty_items';
+    seedFriend(userId);
+
+    downloadLineContentMock.mockResolvedValue({
+      bytes: new Uint8Array([1]),
+      contentType: 'image/jpeg',
+      size: 1,
+    });
+    analyzeFoodImageMock.mockResolvedValue({
+      calories: 0,
+      protein_g: 0,
+      fat_g: 0,
+      carbs_g: 0,
+      items: [],
+    });
+
+    await postImageWebhook(makeImageMessageBody(userId, 'msg_empty'), {
+      anthropicKey: 'sk-test',
+    });
+
+    expect(capturedPushes).toHaveLength(1);
+    const pushed = capturedPushes[0].messages[0] as { type: string; contents?: unknown };
+    expect(pushed.type).toBe('flex');
+    expect(JSON.stringify(pushed.contents)).toMatch(/判別できません/);
+  });
+
+  it('treats all-zero macros (= 量も推測不可) as unknown even when items non-empty', async () => {
+    const userId = 'U_all_zero';
+    seedFriend(userId);
+
+    downloadLineContentMock.mockResolvedValue({
+      bytes: new Uint8Array([1]),
+      contentType: 'image/jpeg',
+      size: 1,
+    });
+    analyzeFoodImageMock.mockResolvedValue({
+      calories: 0,
+      protein_g: 0,
+      fat_g: 0,
+      carbs_g: 0,
+      items: [{ name: 'なにか' }],
+    });
+
+    await postImageWebhook(makeImageMessageBody(userId, 'msg_zero'), {
+      anthropicKey: 'sk-test',
+    });
+
+    const pushed = capturedPushes[0].messages[0] as { type: string; contents?: unknown };
+    expect(pushed.type).toBe('flex');
+    expect(JSON.stringify(pushed.contents)).toMatch(/判別できません/);
+  });
+});
+
 describe('webhook image message — reply + push counts', () => {
   it('sends exactly one reply (analyzing) and one push (result) on success', async () => {
     const userId = 'U_count';
