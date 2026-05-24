@@ -158,7 +158,7 @@ INSERT INTO scenario_steps (id, scenario_id, step_order, delay_minutes, message_
         "layout": "vertical",
         "spacing": "sm",
         "contents": [
-          {"type": "text", "text": "💙 Blue — まずはここから", "size": "sm", "weight": "bold", "color": "#1e293b"},
+          {"type": "text", "text": "🩵 Blue — まずはここから", "size": "sm", "weight": "bold", "color": "#0ABAB5"},
           {"type": "text", "text": "脂っこい食事が好きな方に。8成分配合、1日¥64〜", "size": "xs", "color": "#475569", "wrap": true}
         ]
       },

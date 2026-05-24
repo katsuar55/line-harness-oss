@@ -10,7 +10,7 @@ INSERT INTO auto_replies (id, keyword, match_type, response_type, response_conte
  '飲み方', 'contains', 'text',
  '【飲み方ガイド】🌿
 
-💙 Blue・💗Pink
+🩵 Blue・💗Pink
 1回2〜3粒、1日6〜9粒
 食事中または食直後に水かぬるま湯で😊
 
@@ -26,7 +26,7 @@ INSERT INTO auto_replies (id, keyword, match_type, response_type, response_conte
  'ドンキ', 'contains', 'text',
  'はい！2025年7月より全国のドン・キホーテで販売中です🎉
 3日分・7日分・30日分の各サイズをお取り扱いしています。
-Blue💙・Pink💗・Premium🩶の3種類すべてございます✨', 1);
+Blue🩵・Pink💗・Premium🩶の3種類すべてございます✨', 1);
 
 INSERT INTO auto_replies (id, keyword, match_type, response_type, response_content, is_active) VALUES
 (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))),
@@ -51,7 +51,7 @@ INSERT INTO auto_replies (id, keyword, match_type, response_type, response_conte
  '違い', 'contains', 'text',
  '【3種類の違い】🌿
 
-💙 Blue（8成分）
+🩵 Blue（8成分）
 脂質カット特化。1日¥64〜
 
 💗 Pink（10成分）
@@ -71,7 +71,7 @@ INSERT INTO auto_replies (id, keyword, match_type, response_type, response_conte
 💗 Pink・🩶 Premiumに含まれるアレルギー物質:
 オレンジ、キウイフルーツ、バナナ、リンゴ、大豆、ゴマ、カシューナッツ
 
-💙 Blueには上記アレルゲンは含まれていません。
+🩵 Blueには上記アレルゲンは含まれていません。
 詳しくは商品パッケージの原材料表示をご確認ください🙏', 1);
 
 -- 価格
@@ -80,12 +80,12 @@ INSERT INTO auto_replies (id, keyword, match_type, response_type, response_conte
  '価格', 'contains', 'text',
  '【価格一覧（税込）】💰
 
-💙 Blue: ¥100〜¥6,415
+🩵 Blue: ¥100〜¥6,415
 💗 Pink: ¥121〜¥7,538
 🩶 Premium: ¥720〜¥14,904
 
 おトクなバリューパック（100日分）なら
-💙 ¥6,415（1日約¥64）
+🩵 ¥6,415（1日約¥64）
 💗 ¥7,538（1日約¥75）
 🩶 ¥14,904（1日約¥149）
 
@@ -97,7 +97,7 @@ INSERT INTO auto_replies (id, keyword, match_type, response_type, response_conte
  '成分', 'contains', 'text',
  '🌿 全商品100%天然由来・国内製造です
 
-💙 Blue（8成分）
+🩵 Blue（8成分）
 ウーロン茶ポリフェノール、アロエベラ、L-カルニチン、サンザシ、ケイシ、イヌリン、アマチャヅル、デキストリン
 
 💗 Pink: Blue＋穀物麹（活きた酵素360mg）

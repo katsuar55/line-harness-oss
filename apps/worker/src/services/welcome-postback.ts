@@ -160,7 +160,7 @@ export function buildProductCompareFlex(): FlexContainer {
         {
           type: 'box', layout: 'vertical', spacing: 'sm',
           contents: [
-            { type: 'text', text: '💙 Blue — まずはここから', size: 'sm', weight: 'bold', color: '#1e293b' },
+            { type: 'text', text: '🩵 Blue — まずはここから', size: 'sm', weight: 'bold', color: '#0ABAB5' },
             { type: 'text', text: '脂っこい食事が好きな方に。 8 成分配合、 1日¥64〜', size: 'xs', color: '#475569', wrap: true },
           ],
         },
