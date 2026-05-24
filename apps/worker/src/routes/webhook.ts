@@ -930,6 +930,7 @@ async function handleEvent(
           birth_month?: number | null;
           age_group?: string | null;
           display_name?: string | null;
+          line_account_id?: string | null;
         };
         const aiResult = await generateAiResponse(
           aiRouter,
@@ -943,6 +944,8 @@ async function handleEvent(
             birthMonth: friendRecord.birth_month ?? null,
             ageGroup: friendRecord.age_group ?? null,
             displayName: friendRecord.display_name ?? null,
+            // Plan A-2: broadcast context filter 用 (= multi-tenant 対応)
+            lineAccountId: friendRecord.line_account_id ?? lineAccountId ?? null,
           },
         );
 
