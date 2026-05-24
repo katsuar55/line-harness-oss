@@ -35,6 +35,12 @@ import { downloadLineContent, LineContentError } from '../services/line-content.
 import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
 import { issueCouponForFriend } from '../services/shopify-coupon-issuer.js';
 import { auditSystem } from '../services/audit-logger.js';
+import {
+  isWelcomePostback,
+  handleWelcomeIntroStep,
+  handleWelcomeBirthday,
+  handleWelcomeAgeGroup,
+} from '../services/welcome-postback.js';
 import type { Env } from '../index.js';
 
 /**
@@ -481,6 +487,37 @@ async function handleEvent(
     if (!userId) return;
 
     const data = (event as { postback?: { data?: string } }).postback?.data ?? '';
+
+    // Phase 1 ULTRATHINK (2026-05-24): welcome scenario の postback chain
+    // `welcome_intro_step` / `welcome_birthday:N` / `welcome_age_group:X` を early dispatch
+    // (= 既存 URLSearchParams ベースの `action=birthday_month` 等とは別系統)
+    if (isWelcomePostback(data)) {
+      const friend = await getFriendByLineUserId(db, userId);
+      if (!friend) return;
+      try {
+        if (data === 'welcome_intro_step') {
+          await handleWelcomeIntroStep(db, lineClient, friend.id, userId, lineAccountId);
+        } else if (data.startsWith('welcome_birthday:')) {
+          await handleWelcomeBirthday(db, lineClient, friend.id, userId, lineAccountId, data);
+        } else if (data.startsWith('welcome_age_group:')) {
+          await handleWelcomeAgeGroup(db, lineClient, friend.id, lineAccountId, event.replyToken, data);
+        }
+      } catch (err) {
+        console.error('[webhook] welcome postback failed:', err);
+        await auditSystem(db, {
+          action: 'welcome_postback.handler_threw',
+          actorType: 'webhook',
+          targetType: 'friend',
+          targetId: friend.id,
+          lineAccountId,
+          result: 'failure',
+          errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown',
+          metadata: { postbackData: data.slice(0, 200) },
+        });
+      }
+      return;
+    }
+
     const params = new URLSearchParams(data);
     const action = params.get('action');
 

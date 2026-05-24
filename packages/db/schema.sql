@@ -33,7 +33,11 @@ CREATE TABLE IF NOT EXISTS friends (
   -- Phase 5α-7: ブロック復活施策トラッキング (migration 049)
   last_unfollowed_at   TEXT,
   last_refollowed_at   TEXT,
-  unfollow_count       INTEGER NOT NULL DEFAULT 0);
+  unfollow_count       INTEGER NOT NULL DEFAULT 0,
+  -- Phase 1 ULTRATHINK (migration 052、 2026-05-24): welcome 後 postback で取得する demographics
+  -- 既存 `birthday` column (TEXT、 YYYY-MM-DD) とは別概念 — birth_month のみ 1-12 で持つ
+  birth_month          INTEGER NULL CHECK (birth_month IS NULL OR (birth_month >= 1 AND birth_month <= 12)),
+  age_group            TEXT NULL CHECK (age_group IS NULL OR age_group IN ('10s', '20s', '30s', '40s', '50s', '60s', '70+')));
 
 CREATE INDEX IF NOT EXISTS idx_friends_line_user_id ON friends (line_user_id);
 CREATE INDEX IF NOT EXISTS idx_friends_user_id ON friends (user_id);
@@ -45,6 +49,13 @@ CREATE INDEX IF NOT EXISTS idx_friends_refollowed
 CREATE INDEX IF NOT EXISTS idx_friends_unfollowed
   ON friends(is_following, last_unfollowed_at DESC)
   WHERE last_unfollowed_at IS NOT NULL;
+-- Phase 1 ULTRATHINK (migration 052): 月 1 通信 birthday cron 用
+CREATE INDEX IF NOT EXISTS idx_friends_birth_month
+  ON friends(birth_month)
+  WHERE birth_month IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_friends_age_group
+  ON friends(age_group)
+  WHERE age_group IS NOT NULL;
 
 -- ============================================================
 -- Tags
