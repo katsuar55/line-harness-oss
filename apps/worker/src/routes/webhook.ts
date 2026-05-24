@@ -41,6 +41,10 @@ import {
   handleWelcomeBirthday,
   handleWelcomeAgeGroup,
 } from '../services/welcome-postback.js';
+import {
+  isMonthlyBroadcastPostback,
+  handleMonthlyDetail,
+} from '../services/monthly-broadcast-postback.js';
 import type { Env } from '../index.js';
 
 /**
@@ -515,6 +519,36 @@ async function handleEvent(
         console.error('[webhook] welcome postback failed:', err);
         await auditSystem(db, {
           action: 'welcome_postback.handler_threw',
+          actorType: 'webhook',
+          targetType: 'friend',
+          targetId: friend.id,
+          lineAccountId,
+          result: 'failure',
+          errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown',
+          metadata: { postbackData: data.slice(0, 200) },
+        });
+      }
+      return;
+    }
+
+    // Phase 2.1 (2026-05-24): 月 1 通信 (= 年 12 イベント broadcast) の「詳しく見る ▶」 postback chain
+    // `monthly_detail:N` (N=1-12) → reply で当該月の詳細 5 message 同時送信、 push 0 通追加
+    if (isMonthlyBroadcastPostback(data)) {
+      const friend = await getFriendByLineUserId(db, userId);
+      if (!friend) return;
+      try {
+        await handleMonthlyDetail(
+          db,
+          lineClient,
+          { id: friend.id, display_name: friend.display_name },
+          lineAccountId,
+          event.replyToken,
+          data,
+        );
+      } catch (err) {
+        console.error('[webhook] monthly broadcast postback failed:', err);
+        await auditSystem(db, {
+          action: 'monthly_postback.handler_threw',
           actorType: 'webhook',
           targetType: 'friend',
           targetId: friend.id,
