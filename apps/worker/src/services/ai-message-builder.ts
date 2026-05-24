@@ -23,8 +23,10 @@
  */
 
 import type { Message } from '@line-crm/line-sdk';
+import { buildQuickQuizInviteMessage } from './quick-quiz.js';
 
 const FMT_TEXT_PREFIX = '[FMT:text]';
+const FMT_QUIZ_INVITE_PREFIX = '[FMT:quiz_invite]'; // Plan A-3 (2026-05-24): AI が「おすすめ」 intent 検出時に返す
 const SHORT_TEXT_THRESHOLD = 50; // 字以下で markdown 構造なしなら text
 const URL_TEXT_THRESHOLD = 200; // URL 含む短文なら text
 
@@ -40,6 +42,11 @@ const MARKDOWN_STRUCTURE_REGEX = /^(##\s+|[■●▶]|\*\*[^*]+\*\*[:：]|[*・\
 export function buildAiMessage(text: string): Message {
   // 1. prefix check
   const trimmedRaw = text.trim();
+  // Plan A-3: [FMT:quiz_invite] prefix → quick_quiz 招待 flex Message (= 「診断スタート ▶」 button)
+  // prefix 後の text は無視 (= AI 解説文が無くても button だけで自然な誘導が可能)
+  if (trimmedRaw.startsWith(FMT_QUIZ_INVITE_PREFIX)) {
+    return buildQuickQuizInviteMessage();
+  }
   if (trimmedRaw.startsWith(FMT_TEXT_PREFIX)) {
     const stripped = trimmedRaw.slice(FMT_TEXT_PREFIX.length).trim();
     return { type: 'text', text: stripped || trimmedRaw };
@@ -238,6 +245,7 @@ export function buildAiFlexJson(text: string): string {
 // テスト用 export
 export const __test__ = {
   FMT_TEXT_PREFIX,
+  FMT_QUIZ_INVITE_PREFIX,
   SHORT_TEXT_THRESHOLD,
   URL_TEXT_THRESHOLD,
   URL_REGEX,
