@@ -12,6 +12,7 @@
 import { getFriendTags } from '@line-crm/db';
 import type { AIRouter } from '@line-crm/ai-provider';
 import { detectNgWords } from './ai-ng-filter.js';
+import { getActiveBroadcastsContext, getFriendCouponContext } from './ai-fact-context.js';
 
 interface AiResponseResult {
   text: string;
@@ -29,6 +30,8 @@ export interface AiResponseFriendContext {
   birthMonth?: number | null;
   ageGroup?: string | null;
   displayName?: string | null;
+  /** Plan A-2 (2026-05-24): broadcast filter 用、 未指定なら全 active broadcasts を context 注入 */
+  lineAccountId?: string | null;
 }
 
 const FALLBACK_MESSAGE = 'ただいま混み合っております。しばらくしてからもう一度お試しください🙏';
@@ -45,8 +48,8 @@ function buildSystemPrompt(overridePrompt?: string): string {
 
 ## 最重要ルール（必ず守ること）
 1. **ハルシネーション禁止**: このプロンプトに記載されていない成分・効果・数値・事実は絶対に生成しない。知らないことは「詳しくはカスタマーサポートへ」と案内する。特に以下は要注意:
-   - 進行中キャンペーン詳細: 「現在開催中のキャンペーンについては、 最新情報を公式サイト naturism-diet.com でご確認いただけます」 と案内
-   - 個別クーポン詳細: 「お持ちのクーポンは『マイクーポン』 メニューからご確認いただけます」 と案内
+   - 進行中キャンペーン詳細: **下方の「## 進行中のお知らせ」 セクションに記載があればそれを引用**。 セクションがない or 質問内容が該当しない場合は「現時点で開催中のキャンペーンはございません。 最新情報は公式サイト naturism-diet.com / 公式 X @naturism_afterdiet でご案内しています」 と固定応答
+   - 個別クーポン詳細: **下方の「## あなた専用クーポン」 セクションに記載があればコード/値引/期限を正確に引用**。 セクションがない場合は「現在お持ちのクーポンはございません。 友だち追加直後にお届けしたマイクーポンをご確認ください」 と固定応答。 **クーポンコードを想像で生成することは絶対禁止**
    - 在庫情報: 「在庫状況は公式ストア naturism-diet.com でリアルタイムにご確認いただけます」 と案内
 2. **未実装機能の対応（重要）**: 以下の機能は現在開発中です。 質問されたら「○○機能は近日リリース予定です。 今しばらくお待ちください🌿」 と必ず固定応答し、 想像で答えない:
    - 会員ランク / ステータス（Silver/Gold/Platinum 等）
@@ -223,7 +226,15 @@ export async function generateAiResponse(
     if (friendContext?.displayName) profileLines.push(`表示名: ${friendContext.displayName}`);
     if (friendContext?.birthMonth) profileLines.push(`誕生月: ${friendContext.birthMonth}月`);
     if (friendContext?.ageGroup) profileLines.push(`年代: ${friendContext.ageGroup}`);
-    const contextPrompt = basePrompt + profileLines.join('\n') + '\n';
+
+    // Plan A-2 (2026-05-24): D1 から fact context を取得して prompt に注入 (= ハルシネーション防止)
+    //   失敗しても空文字を返すので AI 応答は壊さない (fail-safe)
+    const [broadcastsContext, couponContext] = await Promise.all([
+      getActiveBroadcastsContext(db, friendContext?.lineAccountId ?? null),
+      getFriendCouponContext(db, friendId),
+    ]);
+
+    const contextPrompt = basePrompt + profileLines.join('\n') + broadcastsContext + couponContext + '\n';
 
     // プロンプトインジェクション対策: 入力を 500 文字に制限
     const sanitizedMessage = userMessage.slice(0, 500);
