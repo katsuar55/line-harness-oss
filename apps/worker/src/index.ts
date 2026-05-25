@@ -88,6 +88,7 @@ import { processMonthlyFoodReports } from './services/monthly-food-report.js';
 import { processWeeklyCoachPush } from './services/weekly-coach-push.js';
 import { processCronMonitor } from './services/cron-monitor.js';
 import { processBirthdayGreetings } from './services/birthday-cron.js';
+import { syncAiModelsCatalog } from './services/ai-models-catalog.js';
 import { processEmailFailureMonitor } from './services/email-failure-monitor.js';
 import { processCronCleanup } from './services/cron-cleanup.js';
 import { withHeartbeat } from './services/cron-heartbeat.js';
@@ -142,6 +143,10 @@ export type Env = {
     // Phase 5β-1: email opt-in
     EMAIL_OPTIN_HMAC_KEY?: string;       // HMAC token 署名 secret (web 経路で必須)
     // 5β-1e (2026-05-18): EMAIL_OPTIN_DEFAULT_COUPON 削除 (商業判断、 メルマガ登録ではクーポンを付与しない)
+    // 自動 update 戦略 #1 (2026-05-26): Cloudflare AI models catalog sync
+    CLOUDFLARE_ACCOUNT_ID?: string;
+    CLOUDFLARE_API_TOKEN?: string;
+    AI_MODELS_SYNC_FORCE?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -492,6 +497,23 @@ async function scheduled(
       }
     }).catch((err) =>
       console.error('birthday-greetings failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // 自動 update 戦略 #1 (2026-05-26): Cloudflare AI models catalog daily sync
+  //   - JST 04:00-04:04 window のみ trigger (= service 側で gating)
+  //   - secret 未設定なら graceful skip (= seed catalog のみで運用継続)
+  //   - 新着 / deprecated 検出時 Discord 通知
+  //   - 内部で insertCronRunLog 呼ぶため withHeartbeat 不要
+  jobs.push(
+    syncAiModelsCatalog(env).then((r) => {
+      if (r.triggered && (r.inserted > 0 || r.newlyDeprecated > 0)) {
+        console.info(
+          `ai-models-catalog-sync: fetched=${r.fetched} inserted=${r.inserted} updated=${r.updated} newlyDeprecated=${r.newlyDeprecated} errors=${r.errors}`,
+        );
+      }
+    }).catch((err) =>
+      console.error('ai-models-catalog-sync failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 

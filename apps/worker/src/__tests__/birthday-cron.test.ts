@@ -65,7 +65,7 @@ class FakeDb {
 
 function makeLineClient() {
   return {
-    pushMessage: vi.fn(async () => {}),
+    pushMessage: vi.fn(async (_userId: string, _messages: unknown[]) => {}),
   };
 }
 
@@ -211,7 +211,7 @@ describe('birthday-cron — push 挙動', () => {
       { id: 'friend-ok2', line_user_id: 'U_ok2', display_name: 'OK2', line_account_id: null, metadata: null, birth_month: 7 },
     ];
     const lc = makeLineClient();
-    lc.pushMessage.mockImplementation(async (userId: string) => {
+    lc.pushMessage.mockImplementation(async (userId: string, _messages: unknown[]) => {
       if (userId === 'U_fail') throw new Error('LINE API down');
     });
     const now = new Date('2026-07-01T01:00:00.000Z');
