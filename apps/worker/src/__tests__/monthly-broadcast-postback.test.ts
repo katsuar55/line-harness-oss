@@ -211,11 +211,47 @@ describe('getMonthlyDetailMessages', () => {
     expect(altTexts.join(' ')).toMatch(/季節の変わり目/);
   });
 
-  it('12 月以降 (= 未実装) は placeholder text のみ 1 件', () => {
-    const messages = getMonthlyDetailMessages(12, 'A');
+  it('12 月 (= Phase 2.2 PR #76、 年末年始) → 5 message', () => {
+    const messages = getMonthlyDetailMessages(12, 'テスト年末子');
+    expect(messages).toHaveLength(5);
+    expect(messages[0].type).toBe('text');
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('テスト年末子') });
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('クリスマス') });
+  });
+
+  it('1 月 (= Phase 2.2 PR #76、 新年リセット) → 5 message', () => {
+    const messages = getMonthlyDetailMessages(1, 'テスト新年子');
+    expect(messages).toHaveLength(5);
+    expect(messages[0].type).toBe('text');
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('テスト新年子') });
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('新年') });
+  });
+
+  it('12 月 alt_text に「年末年始」 「帰省土産」 「発送」 を含む', () => {
+    const messages = getMonthlyDetailMessages(12, 'X');
+    const altTexts = messages
+      .filter((m): m is Extract<typeof m, { type: 'flex' }> => m.type === 'flex')
+      .map((m) => m.altText);
+    expect(altTexts.join(' ')).toMatch(/年末年始/);
+    expect(altTexts.join(' ')).toMatch(/帰省土産/);
+    expect(altTexts.join(' ')).toMatch(/発送/);
+  });
+
+  it('1 月 alt_text に「新年リセット」 「Pink」 「習慣化」 を含む', () => {
+    const messages = getMonthlyDetailMessages(1, 'X');
+    const altTexts = messages
+      .filter((m): m is Extract<typeof m, { type: 'flex' }> => m.type === 'flex')
+      .map((m) => m.altText);
+    expect(altTexts.join(' ')).toMatch(/新年リセット/);
+    expect(altTexts.join(' ')).toMatch(/Pink/);
+    expect(altTexts.join(' ')).toMatch(/習慣化/);
+  });
+
+  it('2 月以降 (= 未実装) は placeholder text のみ 1 件', () => {
+    const messages = getMonthlyDetailMessages(2, 'A');
     expect(messages).toHaveLength(1);
     expect(messages[0].type).toBe('text');
-    expect(messages[0]).toMatchObject({ text: expect.stringContaining('12 月') });
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('2 月') });
   });
 
   it('display_name null → fallback (= 「お客様」 文字列を返す側で対応、 直接呼出時は呼出側担当)', () => {
@@ -331,7 +367,7 @@ describe('handleMonthlyDetail', () => {
     expect(messages).toHaveLength(5);
   });
 
-  it('valid 12 月 → reply 1 message (= 未実装 placeholder)', async () => {
+  it('valid 12 月 → reply 5 messages (= Phase 2.2 PR #76 で拡充済)', async () => {
     const db = new FakeDb();
     const lc = makeLineClient();
     const result = await handleMonthlyDetail(
@@ -341,6 +377,38 @@ describe('handleMonthlyDetail', () => {
       null,
       'reply-token',
       'monthly_detail:12',
+    );
+    expect(result.ok).toBe(true);
+    const [, messages] = lc.replyMessage.mock.calls[0];
+    expect(messages).toHaveLength(5);
+  });
+
+  it('valid 1 月 → reply 5 messages (= Phase 2.2 PR #76 で拡充済)', async () => {
+    const db = new FakeDb();
+    const lc = makeLineClient();
+    const result = await handleMonthlyDetail(
+      db as unknown as D1Database,
+      lc,
+      { id: FRIEND_ID, display_name: 'X' },
+      null,
+      'reply-token',
+      'monthly_detail:1',
+    );
+    expect(result.ok).toBe(true);
+    const [, messages] = lc.replyMessage.mock.calls[0];
+    expect(messages).toHaveLength(5);
+  });
+
+  it('valid 2 月 → reply 1 message (= 未実装 placeholder)', async () => {
+    const db = new FakeDb();
+    const lc = makeLineClient();
+    const result = await handleMonthlyDetail(
+      db as unknown as D1Database,
+      lc,
+      { id: FRIEND_ID, display_name: 'X' },
+      null,
+      'reply-token',
+      'monthly_detail:2',
     );
     expect(result.ok).toBe(true);
     const [, messages] = lc.replyMessage.mock.calls[0];
