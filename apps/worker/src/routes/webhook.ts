@@ -55,7 +55,7 @@ import type { Env } from '../index.js';
 
 import { buildAiMessage } from '../services/ai-message-builder.js';
 // ULTRATHINK fix (2026-05-26): deterministic keyword routing (= Plan A-1/A-3/A-6 safety net)
-import { detectIntent } from '../services/intent-router.js';
+import { detectIntent, buildMessagesForIntentAsync } from '../services/intent-router.js';
 
 const webhook = new Hono<Env>();
 
@@ -799,7 +799,12 @@ async function handleEvent(
       const intentResult = detectIntent(incomingText);
       if (intentResult) {
         try {
-          await lineClient.replyMessage(event.replyToken, [...intentResult.messages]);
+          // PR 2 (2026-05-26): async build に切替 (= my_coupon の D1 SELECT 等で fact 取得可)
+          const messages = await buildMessagesForIntentAsync(intentResult.intent, {
+            db,
+            friendId: friend.id,
+          });
+          await lineClient.replyMessage(event.replyToken, [...messages]);
           replyTokenConsumed = true;
           matched = true;
           await auditSystem(db, {
@@ -813,6 +818,7 @@ async function handleEvent(
               intent: intentResult.intent,
               matchedKeyword: intentResult.matchedKeyword,
               textHead: incomingText.slice(0, 100),
+              messagesSent: messages.length,
               api: 'reply',
             },
           });

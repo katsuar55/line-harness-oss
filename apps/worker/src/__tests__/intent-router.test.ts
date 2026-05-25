@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { detectIntent, __test__ } from '../services/intent-router.js';
+import { detectIntent, buildMessagesForIntentAsync, __test__ } from '../services/intent-router.js';
 
 describe('intent-router — quiz_invite', () => {
   it.each([
@@ -121,6 +121,100 @@ describe('intent-router — priority', () => {
   it('returns first matched keyword string for debugging', () => {
     const r = detectIntent('価格教えて、 3 商品の');
     expect(r?.matchedKeyword).toBe('価格教えて');
+  });
+});
+
+// PR 2 (2026-05-26): product_compare + my_coupon intent
+describe('intent-router — product_compare (= 「違い」 Step 7 fix)', () => {
+  it.each([
+    '3 種類の違いは？',
+    '3種類の違いを教えて',
+    'Blue Pink Premium の比較',
+    '商品比較教えて',
+    '違い教えて',
+    '違い',
+    '比較',
+  ])('matches "%s" → product_compare', (text) => {
+    const r = detectIntent(text);
+    expect(r?.intent.type).toBe('product_compare');
+    expect(r?.messages[0]?.type).toBe('flex');
+    if (r?.messages[0]?.type === 'flex') {
+      expect(String(r.messages[0].altText)).toMatch(/3 ?種類|違い|比較/);
+    }
+  });
+});
+
+describe('intent-router — my_coupon (= Step 3 UX、 sync sentinel)', () => {
+  it.each(['私のクーポン', 'マイクーポン', 'クーポンコード教えて', '使えるクーポンある'])(
+    'matches "%s" → my_coupon',
+    (text) => {
+      const r = detectIntent(text);
+      expect(r?.intent.type).toBe('my_coupon');
+    },
+  );
+
+  it('sync buildMessagesForIntent returns sentinel text (= async 経由を期待)', () => {
+    const r = detectIntent('私のクーポン');
+    expect(r?.messages[0]?.type).toBe('text');
+    if (r?.messages[0]?.type === 'text') {
+      expect(r.messages[0].text).toMatch(/確認中/);
+    }
+  });
+});
+
+// async build の挙動 (= D1 mock + getFriendActiveCoupon)
+describe('intent-router — buildMessagesForIntentAsync (my_coupon)', () => {
+  function mockDb(coupon: { coupon_code: string; discount_value: number; discount_currency: string; expires_at: string | null } | null): D1Database {
+    return {
+      prepare: () => ({
+        bind: () => ({
+          first: async <T,>(): Promise<T | null> => coupon as T | null,
+        }),
+      }),
+    } as unknown as D1Database;
+  }
+
+  it('returns 2 messages (= flex + text code) when coupon exists', async () => {
+    const db = mockDb({
+      coupon_code: 'LINE-TEST-001',
+      discount_value: 500,
+      discount_currency: 'JPY',
+      expires_at: '2026-12-31T23:59:00+09:00',
+    });
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    expect(r).toHaveLength(2);
+    expect(r[0]?.type).toBe('flex');
+    expect(r[1]?.type).toBe('text');
+    if (r[1]?.type === 'text') {
+      expect(r[1].text).toContain('LINE-TEST-001');
+      expect(r[1].text).toMatch(/長押しでコピー/);
+    }
+  });
+
+  it('returns 1 message fallback text when no coupon', async () => {
+    const db = mockDb(null);
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0]?.type).toBe('text');
+    if (r[0]?.type === 'text') {
+      expect(r[0].text).toMatch(/お持ちのクーポンはございません/);
+    }
+  });
+
+  it('async build passes through for non-coupon intent (= falls back to sync)', async () => {
+    const db = mockDb(null);
+    const r = await buildMessagesForIntentAsync(
+      { type: 'quiz_invite', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0]?.type).toBe('flex');
   });
 });
 
