@@ -107,6 +107,10 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
   // は getLastSuccessfulRun の対象外なので、 silent と判定される。 ただしそれは「設計と
   // 異なる運用 = sync 機能 dormant」 を可視化するため意図通り)。
   { jobName: 'ai-models-catalog-sync', maxSilentHours: 30 },
+  // 自動 update 戦略 #2 (2026-05-26): Cloudflare developer changelog sync
+  // 1 日 1 回 04:30 JST。 認証不要なので production で sync 失敗が継続的に発生したら
+  // RSS feed の URL 変更 or 大規模障害の signal。
+  { jobName: 'cloudflare-changelog-sync', maxSilentHours: 30 },
 ];
 
 // ============================================================

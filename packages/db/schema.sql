@@ -1748,6 +1748,18 @@ CREATE TABLE IF NOT EXISTS ai_models_catalog (
   updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+-- from 055_changelog_entries.sql
+CREATE TABLE IF NOT EXISTS changelog_entries_seen (
+  id             TEXT PRIMARY KEY,
+  entry_url      TEXT NOT NULL UNIQUE,
+  title          TEXT NOT NULL,
+  category       TEXT NOT NULL,
+  published_at   TEXT,
+  first_seen_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  notified_at    TEXT,
+  description    TEXT
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -1933,3 +1945,10 @@ CREATE INDEX IF NOT EXISTS idx_ai_models_catalog_primary
 CREATE INDEX IF NOT EXISTS idx_ai_models_catalog_fallback
   ON ai_models_catalog(fallback_candidate, last_seen_at DESC)
   WHERE fallback_candidate = 1 AND is_deprecated = 0;
+CREATE INDEX IF NOT EXISTS idx_changelog_seen_category
+  ON changelog_entries_seen(category, published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_changelog_seen_unnotified
+  ON changelog_entries_seen(category, first_seen_at DESC)
+  WHERE notified_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_changelog_seen_first
+  ON changelog_entries_seen(first_seen_at DESC);

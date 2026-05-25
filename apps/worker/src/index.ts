@@ -89,6 +89,7 @@ import { processWeeklyCoachPush } from './services/weekly-coach-push.js';
 import { processCronMonitor } from './services/cron-monitor.js';
 import { processBirthdayGreetings } from './services/birthday-cron.js';
 import { syncAiModelsCatalog } from './services/ai-models-catalog.js';
+import { syncCloudflareChangelog } from './services/cloudflare-changelog-sync.js';
 import { processEmailFailureMonitor } from './services/email-failure-monitor.js';
 import { processCronCleanup } from './services/cron-cleanup.js';
 import { withHeartbeat } from './services/cron-heartbeat.js';
@@ -147,6 +148,9 @@ export type Env = {
     CLOUDFLARE_ACCOUNT_ID?: string;
     CLOUDFLARE_API_TOKEN?: string;
     AI_MODELS_SYNC_FORCE?: string;
+    // 自動 update 戦略 #2 (2026-05-26): Cloudflare changelog RSS sync
+    //   認証不要 (= public RSS feed)。 Discord 通知用に DISCORD_WEBHOOK_URL があれば便利。
+    CHANGELOG_SYNC_FORCE?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -514,6 +518,22 @@ async function scheduled(
       }
     }).catch((err) =>
       console.error('ai-models-catalog-sync failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // 自動 update 戦略 #2 (2026-05-26): Cloudflare developer changelog daily sync
+  //   - JST 04:30-04:34 window (= ai-models の 04:00 と分離)
+  //   - 認証不要 (= public RSS)、 DISCORD_WEBHOOK_URL 未設定でも upsert は実行 (= catchup)
+  //   - 内部で insertCronRunLog 呼ぶため withHeartbeat 不要
+  jobs.push(
+    syncCloudflareChangelog(env).then((r) => {
+      if (r.triggered && r.newEntries > 0) {
+        console.info(
+          `cloudflare-changelog-sync: feeds=${r.feedsProcessed}/${r.feedsProcessed + r.feedsFailed} new=${r.newEntries} notified=${r.notified} errors=${r.errors}`,
+        );
+      }
+    }).catch((err) =>
+      console.error('cloudflare-changelog-sync failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 

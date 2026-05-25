@@ -157,7 +157,7 @@ function makeFetchImpl(opts: {
         url,
         body: init?.body ? JSON.parse(String(init.body)) : null,
       });
-      return new Response('ok', { status: 204 });
+      return new Response(null, { status: 204 });
     }
     if (opts.throws) {
       throw new Error('network error');
