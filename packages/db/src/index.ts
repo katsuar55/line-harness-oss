@@ -42,6 +42,7 @@ export * from './email-subscribers';
 export * from './email-logs';
 export * from './email-templates';
 export * from './ai-models-catalog';
+export * from './changelog-entries';
 
 /**
  * Thin wrapper around D1Database.
