@@ -621,9 +621,294 @@ function build9SeptemberCallToAction(): FlexContainer {
   } as unknown as FlexContainer;
 }
 
+/** 10 月: 紅葉 / スポーツの秋 / 行楽 (= naturism 軸: 旅先 / 外食を楽しむ Blue 推奨) */
+function build10OctoberIntro(displayName: string): Message {
+  return {
+    type: 'text',
+    text: `${displayName}さん、 10 月のお知らせです🍁\n\n紅葉シーズン到来、 行楽 + スポーツの秋を満喫する時期。\n旅先・外食の機会が増えるので、 食事を楽しみつつ食習慣も整えたい月🌿\n\n4 つのカードを順番にどうぞ 👇`,
+  };
+}
+
+function build10OctoberTipFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fef3c7',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🍁 行楽シーズンの食習慣 3 つ', size: 'sm', weight: 'bold', color: '#854d0e', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '🍱 旅先のお弁当は「半分シェア」 を活用', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '色々食べたい時は、 同行者とシェアすれば味のバリエーション + 量も控えめに。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🚶‍♀️ 食後の散策が消化を助ける', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: 'スポーツの秋にちなんで、 食後 10-15 分の散歩。 紅葉狩りと一石二鳥。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🌿 旅行カバンに naturism を入れる', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '袋ごと持ち運べる小型パッケージ。 旅先の脂質高め食事の時に Blue 6 粒で安心。', size: 'xs', color: '#475569', wrap: true },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build10OctoberTravelKitFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#cffafe',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🩵 Blue を旅のお供に', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: 'naturism Blue は 1 包ずつ個包装。 ポーチや旅行カバンに数日分入れるだけ。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🍣 寿司 / 🍖 焼肉 / 🍝 パスタ等、 外食で気になる時に「食べたら飲んでおく」 を 6 粒で。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '1日¥64〜 / 7日分お試し ¥696', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'message', label: 'AI に飲み方を聞く', text: 'Blue の飲み方' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build10OctoberPrePartyHintFlex(): FlexContainer {
+  // 忘年会シーズン前の意識づけ (= 11 月以降への布石)
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fce7f3',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '📅 忘年会シーズン まで 2 ヶ月', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '11 月後半から忘年会シーズン。 今月から食習慣を整えておくと preview 効果◎', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🌿 おすすめ準備', size: 'xs', weight: 'bold', color: '#9d174d', margin: 'sm' },
+        { type: 'text', text: '・naturism Blue を週 2-3 回継続 (= 体に馴染ませる)', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・「食べたら飲む」 を習慣化', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・水分補給を意識する', size: 'xs', color: '#334155' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build10OctoberCallToAction(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#eff6ff',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '✨ 何でもお気軽にどうぞ', size: 'sm', weight: 'bold', color: '#1e40af', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'sm',
+      contents: [
+        { type: 'text', text: '旅行 / 外食 / 飲み方は気軽に AI へ。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '『旅先で何粒?』 『外食の時の飲み方』 『おすすめ』', size: 'sm', weight: 'bold', color: '#1e40af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '等と話しかけると AI が即お答えします 🤖', size: 'sm', color: '#1e293b', wrap: true },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'message', label: 'AI に飲み方を聞く', text: '飲み方' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+/** 11 月: 忘年会シーズン突入 / 飲み会 / 季節の変わり目 (= naturism 軸: Blue 強化、 飲み会対策) */
+function build11NovemberIntro(displayName: string): Message {
+  return {
+    type: 'text',
+    text: `${displayName}さん、 11 月のお知らせです🍂\n\n忘年会シーズンが本格スタート🍻\n季節の変わり目で体調管理も大事な時期、 naturism から飲み会対策のヒントをお届けします🌿\n\n4 つのカードを順番にどうぞ 👇`,
+  };
+}
+
+function build11NovemberPartyTipFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fed7aa',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🍻 忘年会シーズン 3 つの対策', size: 'sm', weight: 'bold', color: '#9a3412', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '🥤 飲む前に水 1 杯', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '空腹で飲酒スタートすると吸収速い + 食べ過ぎリスク高。 まず水で胃を整える。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🍢 「先に野菜・タンパク質」 を意識', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '枝豆 / 焼き鳥 / サラダから手をつけると糖質吸収もマイルドに。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🌿 食べたら飲んでおく習慣', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '揚げ物・脂質が多いコースの時に Blue 6 粒。 「翌日が違う」 と言う実感の声も。', size: 'xs', color: '#475569', wrap: true },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build11NovemberBlueBoostFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#cffafe',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🩵 Blue — 忘年会の頼れる相棒', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '11 月-12 月は飲み会が連続しがち。 「いつでも 1 包」 をバッグに入れる習慣を🌿', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '8 成分配合 (= ウーロン茶ポリフェノール / アロエベラ / サンザシ 等) で脂質カットに特化。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '💡 1 ヶ月分 (30 袋) でほぼ毎晩カバー可', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
+        { type: 'text', text: '1日¥64〜 / 30日分 ¥1,980', size: 'xs', color: '#475569', align: 'center' },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'uri', label: 'Blue を見る', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'message', label: 'AI に飲み会対策を聞く', text: '飲み会対策' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build11NovemberHealthFlex(): FlexContainer {
+  // 季節変わり目 = 体調管理 / インフル対策
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#dcfce7',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🍵 季節の変わり目を整える', size: 'sm', weight: 'bold', color: '#15803d', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '気温差で体調を崩しやすい時期。 食事 + 睡眠 + 適度な水分補給を意識。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🌿 忘年会で疲れた翌朝は…', size: 'xs', weight: 'bold', color: '#15803d', margin: 'sm' },
+        { type: 'text', text: '・温かいお茶・スープで胃腸を労る', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・朝食は軽めに (おかゆ / 味噌汁 等)', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・水分補給を 1.5L 目安に', size: 'xs', color: '#334155' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '※ 体調不良時は無理せず医療機関を受診してください', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build11NovemberCallToAction(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#eff6ff',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '✨ 何でもお気軽にどうぞ', size: 'sm', weight: 'bold', color: '#1e40af', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'sm',
+      contents: [
+        { type: 'text', text: '飲み会対策・体調管理・商品選びは気軽に AI へ。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '『飲み会対策』 『飲み方』 『私におすすめ』', size: 'sm', weight: 'bold', color: '#1e40af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '等と話しかけると AI が即お答えします 🤖', size: 'sm', color: '#1e293b', wrap: true },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'message', label: 'AI に飲み会対策を聞く', text: '飲み会対策' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
 /**
  * month (1-12) → 5 message (= reply 1 回で送信)
- * Phase 2.1: 6 月のみ充実、 Phase 2.2 で 7 / 8 / 9 月追加、 他月は placeholder text (= 順次拡充)
+ * Phase 2.1: 6 月のみ充実、 Phase 2.2 で 7-11 月追加、 他月は placeholder text (= 順次拡充)
  */
 export function getMonthlyDetailMessages(month: number, displayName: string): Message[] {
   switch (month) {
@@ -661,6 +946,24 @@ export function getMonthlyDetailMessages(month: number, displayName: string): Me
         { type: 'flex', altText: 'Blue と Pink の使い分け', contents: build9SeptemberCompareFlex() },
         { type: 'flex', altText: '続けることで実感する成分 (再購入)', contents: build9SeptemberReorderFlex() },
         { type: 'flex', altText: '何でもお気軽に', contents: build9SeptemberCallToAction() },
+      ];
+    case 10:
+      // Phase 2.2 PR #75 (2026-05-26): 10 月 = 紅葉 / スポーツの秋 / 行楽 / Blue 旅のお供
+      return [
+        build10OctoberIntro(displayName),
+        { type: 'flex', altText: '行楽シーズンの食習慣 3 つ', contents: build10OctoberTipFlex() },
+        { type: 'flex', altText: 'Blue を旅のお供に', contents: build10OctoberTravelKitFlex() },
+        { type: 'flex', altText: '忘年会シーズン まで 2 ヶ月', contents: build10OctoberPrePartyHintFlex() },
+        { type: 'flex', altText: '何でもお気軽に', contents: build10OctoberCallToAction() },
+      ];
+    case 11:
+      // Phase 2.2 PR #75 (2026-05-26): 11 月 = 忘年会シーズン / 飲み会 / 季節変わり目 / Blue 強化
+      return [
+        build11NovemberIntro(displayName),
+        { type: 'flex', altText: '忘年会シーズン 3 つの対策', contents: build11NovemberPartyTipFlex() },
+        { type: 'flex', altText: 'Blue — 忘年会の頼れる相棒', contents: build11NovemberBlueBoostFlex() },
+        { type: 'flex', altText: '季節の変わり目を整える', contents: build11NovemberHealthFlex() },
+        { type: 'flex', altText: '何でもお気軽に', contents: build11NovemberCallToAction() },
       ];
     default:
       // Phase 2.2 で順次拡充、 当面 placeholder
