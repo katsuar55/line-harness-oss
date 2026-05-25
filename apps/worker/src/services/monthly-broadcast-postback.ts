@@ -906,9 +906,296 @@ function build11NovemberCallToAction(): FlexContainer {
   } as unknown as FlexContainer;
 }
 
+/** 12 月: 年末年始 / クリスマス / 大晦日 / おせち準備 (= naturism 軸: Blue 主役、 帰省土産 hint) */
+function build12DecemberIntro(displayName: string): Message {
+  return {
+    type: 'text',
+    text: `${displayName}さん、 12 月のお知らせです🎄\n\nクリスマス / 忘年会 / 大晦日 / おせち準備 — 1 年で最も食事イベントが多い月🍗\n暴飲暴食しがちな時期、 naturism から年末対策のヒントをお届けします🌿\n\n4 つのカードを順番にどうぞ 👇`,
+  };
+}
+
+function build12DecemberTipFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fee2e2',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🎄 年末年始 3 つの食事 tip', size: 'sm', weight: 'bold', color: '#991b1b', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '🍗 クリスマス / 大晦日の主役は楽しんで', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: 'チキン・寿司・年越し蕎麦は美味しく頂きつつ、 「飲んでおく」 を意識すれば気持ち的にも楽。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🍱 おせちは「タンパク質+食物繊維」 を先に', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '黒豆・昆布巻き・煮しめ等を先に取ると糖質吸収もマイルドに。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🌿 連続イベント時こそ naturism', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: 'クリスマス→忘年会→大晦日→正月、 と続く時期は「毎晩 6 粒」 を目安に。', size: 'xs', color: '#475569', wrap: true },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build12DecemberGiftFlex(): FlexContainer {
+  // 帰省土産 / 家族用 hint (= 60 代の親世代も購入対象)
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fce7f3',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🎁 帰省土産にも naturism', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '帰省でご家族と過ごす方へ、 食習慣サポートを「会話のきっかけ」 として持参するのも◎', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🎀 親世代へのちょっとしたプレゼントに', size: 'xs', weight: 'bold', color: '#9d174d', margin: 'sm' },
+        { type: 'text', text: '・7 日分お試し ¥696 (Blue) / ¥816 (Pink)', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・「最近健康気になるよね」 の自然な会話と一緒に', size: 'xs', color: '#334155' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '※ 個人差があります、 商品はサプリメントです', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build12DecemberShippingFlex(): FlexContainer {
+  // 年末年始 発送案内
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fde68a',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '📦 年末年始 発送スケジュール', size: 'sm', weight: 'bold', color: '#854d0e', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '🚛 年末発送 最終受付', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '12/27 までのご注文 → 年内発送 (= 配送業者次第で 12/29-31 着)', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🎍 年始発送 再開', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '1/4 から順次発送再開 (= 1/3 までは年末年始休業)', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '💡 早めの注文がオススメ', size: 'xs', weight: 'bold', color: '#854d0e', margin: 'sm' },
+        { type: 'text', text: '帰省前に届けたい方は 12/25 までに注文を', size: 'xs', color: '#475569', wrap: true },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build12DecemberCallToAction(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#eff6ff',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '✨ 何でもお気軽にどうぞ', size: 'sm', weight: 'bold', color: '#1e40af', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'sm',
+      contents: [
+        { type: 'text', text: '年末年始の食事 / 飲み方 / 帰省土産は気軽に AI へ。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '『年末対策』 『飲み方』 『親へのプレゼント』', size: 'sm', weight: 'bold', color: '#1e40af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '等と話しかけると AI が即お答えします 🤖', size: 'sm', color: '#1e293b', wrap: true },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'message', label: 'AI に年末対策を聞く', text: '年末対策' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+/** 1 月: 新年リセット / 三が日 / 七草粥 / 寒さで運動少 (= naturism 軸: 新年習慣スタート、 Pink 推奨) */
+function build1JanuaryIntro(displayName: string): Message {
+  return {
+    type: 'text',
+    text: `${displayName}さん、 新年あけましておめでとうございます🎍\n\n1 月は「新しい習慣をスタートしやすい」 時期。\n年末年始で食べ過ぎた方も多いはず、 naturism から新年リセットのヒントをお届けします🌿\n\n4 つのカードを順番にどうぞ 👇`,
+  };
+}
+
+function build1JanuaryResetTipFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#e0f2fe',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🎍 新年リセット 3 つの tip', size: 'sm', weight: 'bold', color: '#075985', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '🍵 七草粥でゆっくり胃腸を労る', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '1/7 の七草粥は消化に優しく、 年末年始の胃腸疲れリセットに最適 (= 古くからの知恵)。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '💧 水分補給を意識的に', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '冬は喉の渇きを感じにくく水分不足になりがち。 1.5L を目安に。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🌿 「今年こそ習慣化」 を naturism と', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '新年は新しい習慣を始めるベストタイミング。 食事毎に Blue / Pink 6 粒で「習慣化」 を。', size: 'xs', color: '#475569', wrap: true },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build1JanuaryPinkFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fce7f3',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '💗 Pink — 新年は美容も含めてケア', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '年末年始で胃腸も肌コンディションも乱れがち。 Pink は Blue + 活きた酵素で総合ケア。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🌸 新年から「自分への投資」 を始める方に', size: 'xs', weight: 'bold', color: '#9d174d', margin: 'sm' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '1日¥75〜 / 30日分 ¥2,250', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'uri', label: 'Pink を見る', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'message', label: 'AI に Pink を聞く', text: 'Pink の成分' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build1JanuaryHabitFlex(): FlexContainer {
+  // 新年の習慣化応援 hint
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#dcfce7',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🎯 1 月の「習慣化チャレンジ」', size: 'sm', weight: 'bold', color: '#15803d', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '行動心理学的に、 21 日続けると習慣として定着しやすい (= "21 日の法則")', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🌱 1 月にスタートすると…', size: 'xs', weight: 'bold', color: '#15803d', margin: 'sm' },
+        { type: 'text', text: '・1/1 から始めれば 1/21 で定着、 春までに 3 ヶ月習慣', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・「食べたら飲む」 を当たり前に', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・新年の目標と一緒に達成感も◎', size: 'xs', color: '#334155' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build1JanuaryCallToAction(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#eff6ff',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '✨ 何でもお気軽にどうぞ', size: 'sm', weight: 'bold', color: '#1e40af', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'sm',
+      contents: [
+        { type: 'text', text: '新年の食習慣 / リセット / 商品選びは気軽に AI へ。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '『新年リセット』 『私におすすめ』 『習慣化のコツ』', size: 'sm', weight: 'bold', color: '#1e40af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '等と話しかけると AI が即お答えします 🤖', size: 'sm', color: '#1e293b', wrap: true },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'message', label: 'AI に新年リセットを聞く', text: '新年リセット' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
 /**
  * month (1-12) → 5 message (= reply 1 回で送信)
- * Phase 2.1: 6 月のみ充実、 Phase 2.2 で 7-11 月追加、 他月は placeholder text (= 順次拡充)
+ * Phase 2.1: 6 月のみ充実、 Phase 2.2 で 7-12 + 1 月追加、 他月は placeholder text (= 順次拡充)
  */
 export function getMonthlyDetailMessages(month: number, displayName: string): Message[] {
   switch (month) {
@@ -964,6 +1251,24 @@ export function getMonthlyDetailMessages(month: number, displayName: string): Me
         { type: 'flex', altText: 'Blue — 忘年会の頼れる相棒', contents: build11NovemberBlueBoostFlex() },
         { type: 'flex', altText: '季節の変わり目を整える', contents: build11NovemberHealthFlex() },
         { type: 'flex', altText: '何でもお気軽に', contents: build11NovemberCallToAction() },
+      ];
+    case 12:
+      // Phase 2.2 PR #76 (2026-05-26): 12 月 = 年末年始 / クリスマス / 大晦日 / おせち / 帰省土産
+      return [
+        build12DecemberIntro(displayName),
+        { type: 'flex', altText: '年末年始 3 つの食事 tip', contents: build12DecemberTipFlex() },
+        { type: 'flex', altText: '帰省土産にも naturism', contents: build12DecemberGiftFlex() },
+        { type: 'flex', altText: '年末年始 発送スケジュール', contents: build12DecemberShippingFlex() },
+        { type: 'flex', altText: '何でもお気軽に', contents: build12DecemberCallToAction() },
+      ];
+    case 1:
+      // Phase 2.2 PR #76 (2026-05-26): 1 月 = 新年リセット / 七草粥 / Pink / 21 日習慣化
+      return [
+        build1JanuaryIntro(displayName),
+        { type: 'flex', altText: '新年リセット 3 つの tip', contents: build1JanuaryResetTipFlex() },
+        { type: 'flex', altText: 'Pink — 新年は美容もケア', contents: build1JanuaryPinkFlex() },
+        { type: 'flex', altText: '1 月の習慣化チャレンジ', contents: build1JanuaryHabitFlex() },
+        { type: 'flex', altText: '何でもお気軽に', contents: build1JanuaryCallToAction() },
       ];
     default:
       // Phase 2.2 で順次拡充、 当面 placeholder
