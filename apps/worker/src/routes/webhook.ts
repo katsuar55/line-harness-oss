@@ -54,6 +54,8 @@ import {
 import type { Env } from '../index.js';
 
 import { buildAiMessage } from '../services/ai-message-builder.js';
+// ULTRATHINK fix (2026-05-26): deterministic keyword routing (= Plan A-1/A-3/A-6 safety net)
+import { detectIntent } from '../services/intent-router.js';
 
 const webhook = new Hono<Env>();
 
@@ -784,6 +786,49 @@ async function handleEvent(
         }
       } catch (err) {
         console.error('daily-cap guard query failed:', err);
+      }
+    }
+
+    // Layer 1.5: deterministic intent routing (= 5/26 ULTRATHINK fix)
+    //   AI に prefix を任せると Llama が rule を無視するため、 重要 intent は keyword で確実に
+    //   - quiz_invite: 「私におすすめ」 等 → buildQuickQuizInviteMessage flex
+    //   - price_table: 「価格教えて」 等 → buildPriceTableMessage grid flex
+    //   - feature_unavailable: 「会員ランク」 「紹介プログラム」 等 → 「近日リリース」 固定 text
+    //   matched 後は Layer 2 (= AI) を skip
+    if (!matched && !replyTokenConsumed) {
+      const intentResult = detectIntent(incomingText);
+      if (intentResult) {
+        try {
+          await lineClient.replyMessage(event.replyToken, [...intentResult.messages]);
+          replyTokenConsumed = true;
+          matched = true;
+          await auditSystem(db, {
+            action: `intent_router.${intentResult.intent.type}`,
+            actorType: 'webhook',
+            targetType: 'friend',
+            targetId: friend.id,
+            lineAccountId,
+            result: 'success',
+            metadata: {
+              intent: intentResult.intent,
+              matchedKeyword: intentResult.matchedKeyword,
+              textHead: incomingText.slice(0, 100),
+              api: 'reply',
+            },
+          });
+        } catch (err) {
+          console.error('[intent-router] reply failed:', err);
+          await auditSystem(db, {
+            action: 'intent_router.reply_failed',
+            actorType: 'webhook',
+            targetType: 'friend',
+            targetId: friend.id,
+            lineAccountId,
+            result: 'failure',
+            errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown',
+            metadata: { intent: intentResult.intent, matchedKeyword: intentResult.matchedKeyword },
+          });
+        }
       }
     }
 

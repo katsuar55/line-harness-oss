@@ -618,20 +618,23 @@ describe('Auto-reply matching', () => {
     };
     (db.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
-    // "料金" exact won't match "料金について教えて"
-    const body = makeTextMessageBody(userId, '料金について教えて');
+    // ULTRATHINK fix (2026-05-26): 「料金」 は intent-router に keyword 追加されたので
+    // 「料金について教えて」 → intent-router で price_table match してしまう。
+    // 既存 test の意図 (auto_reply exact 失敗 + AI null → matched=false) を保つため、
+    // intent-router にも match しない中立 text に変更。
+    const body = makeTextMessageBody(userId, 'ありがとうございます');
     const res = await postWebhook(body, undefined, { db, ai: null });
 
     expect(res.status).toBe(200);
 
     await new Promise((r) => setTimeout(r, 100));
 
-    // No auto-reply should fire (no AI either since ai is null)
+    // No auto-reply should fire (no AI either since ai is null)、 intent-router にも match しない
     const repliesForThisUser = capturedReplies.filter((r) =>
       r.replyToken.startsWith('reply-'),
     );
-    // The exact keyword "料金" does NOT match "料金について教えて", so no auto-reply
-    // and no AI (ai is null), so event bus should fire with matched=false
+    void repliesForThisUser; // intentionally unused; assertion is on event bus below
+    // event bus should fire with matched=false (= 何にも match しない)
     const messageEvents = firedEvents.filter((e) => e.type === 'message_received');
     if (messageEvents.length > 0) {
       expect((messageEvents[0].payload as { eventData: { matched: boolean } }).eventData.matched).toBe(false);
