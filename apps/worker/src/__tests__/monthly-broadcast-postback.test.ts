@@ -175,11 +175,47 @@ describe('getMonthlyDetailMessages', () => {
     expect(altTexts.join(' ')).toMatch(/再購入/);
   });
 
-  it('10 月以降 (= 未実装) は placeholder text のみ 1 件', () => {
-    const messages = getMonthlyDetailMessages(10, 'A');
+  it('10 月 (= Phase 2.2 PR #75、 紅葉 / 行楽 / Blue 旅のお供) → 5 message', () => {
+    const messages = getMonthlyDetailMessages(10, 'テスト紅葉子');
+    expect(messages).toHaveLength(5);
+    expect(messages[0].type).toBe('text');
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('テスト紅葉子') });
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('紅葉') });
+  });
+
+  it('11 月 (= Phase 2.2 PR #75、 忘年会シーズン突入) → 5 message', () => {
+    const messages = getMonthlyDetailMessages(11, 'テスト宴会太郎');
+    expect(messages).toHaveLength(5);
+    expect(messages[0].type).toBe('text');
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('テスト宴会太郎') });
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('忘年会') });
+  });
+
+  it('10 月 alt_text に「行楽」 「Blue」 「忘年会」 を含む', () => {
+    const messages = getMonthlyDetailMessages(10, 'X');
+    const altTexts = messages
+      .filter((m): m is Extract<typeof m, { type: 'flex' }> => m.type === 'flex')
+      .map((m) => m.altText);
+    expect(altTexts.join(' ')).toMatch(/行楽/);
+    expect(altTexts.join(' ')).toMatch(/Blue/);
+    expect(altTexts.join(' ')).toMatch(/忘年会/);
+  });
+
+  it('11 月 alt_text に「忘年会」 「Blue」 「季節の変わり目」 を含む', () => {
+    const messages = getMonthlyDetailMessages(11, 'X');
+    const altTexts = messages
+      .filter((m): m is Extract<typeof m, { type: 'flex' }> => m.type === 'flex')
+      .map((m) => m.altText);
+    expect(altTexts.join(' ')).toMatch(/忘年会/);
+    expect(altTexts.join(' ')).toMatch(/Blue/);
+    expect(altTexts.join(' ')).toMatch(/季節の変わり目/);
+  });
+
+  it('12 月以降 (= 未実装) は placeholder text のみ 1 件', () => {
+    const messages = getMonthlyDetailMessages(12, 'A');
     expect(messages).toHaveLength(1);
     expect(messages[0].type).toBe('text');
-    expect(messages[0]).toMatchObject({ text: expect.stringContaining('10 月') });
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('12 月') });
   });
 
   it('display_name null → fallback (= 「お客様」 文字列を返す側で対応、 直接呼出時は呼出側担当)', () => {
@@ -263,7 +299,7 @@ describe('handleMonthlyDetail', () => {
     expect(messages).toHaveLength(5);
   });
 
-  it('valid 10 月 → reply 1 message (= 未実装 placeholder)', async () => {
+  it('valid 10 月 → reply 5 messages (= Phase 2.2 PR #75 で拡充済)', async () => {
     const db = new FakeDb();
     const lc = makeLineClient();
     const result = await handleMonthlyDetail(
@@ -273,6 +309,38 @@ describe('handleMonthlyDetail', () => {
       null,
       'reply-token',
       'monthly_detail:10',
+    );
+    expect(result.ok).toBe(true);
+    const [, messages] = lc.replyMessage.mock.calls[0];
+    expect(messages).toHaveLength(5);
+  });
+
+  it('valid 11 月 → reply 5 messages (= Phase 2.2 PR #75 で拡充済)', async () => {
+    const db = new FakeDb();
+    const lc = makeLineClient();
+    const result = await handleMonthlyDetail(
+      db as unknown as D1Database,
+      lc,
+      { id: FRIEND_ID, display_name: 'X' },
+      null,
+      'reply-token',
+      'monthly_detail:11',
+    );
+    expect(result.ok).toBe(true);
+    const [, messages] = lc.replyMessage.mock.calls[0];
+    expect(messages).toHaveLength(5);
+  });
+
+  it('valid 12 月 → reply 1 message (= 未実装 placeholder)', async () => {
+    const db = new FakeDb();
+    const lc = makeLineClient();
+    const result = await handleMonthlyDetail(
+      db as unknown as D1Database,
+      lc,
+      { id: FRIEND_ID, display_name: 'X' },
+      null,
+      'reply-token',
+      'monthly_detail:12',
     );
     expect(result.ok).toBe(true);
     const [, messages] = lc.replyMessage.mock.calls[0];
