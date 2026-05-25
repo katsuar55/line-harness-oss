@@ -1466,15 +1466,220 @@ export function getMonthlyDetailMessages(month: number, displayName: string): Me
         { type: 'flex', altText: '卒業 / 新生活ギフト hint', contents: build3MarchGiftFlex() },
         { type: 'flex', altText: '何でもお気軽に', contents: build3MarchCallToAction() },
       ];
+    case 4:
+      // Phase 2.2 PR #78 (2026-05-26): 4 月 = 新生活 / 入学 / 入社 / 歓迎会 / 環境変化
+      return [
+        build4AprilIntro(displayName),
+        { type: 'flex', altText: '新生活食習慣 3 つの tip', contents: build4AprilTipFlex() },
+        { type: 'flex', altText: 'Blue — 歓迎会シーズンに', contents: build4AprilBlueFlex() },
+        { type: 'flex', altText: '環境変化の体調管理', contents: build4AprilHealthFlex() },
+        { type: 'flex', altText: '何でもお気軽に', contents: build4AprilCallToAction() },
+      ];
+    case 5:
+      // Phase 2.2 PR #78 (2026-05-26): 5 月 = GW / アウトドア / 五月病 / 夏前準備
+      return [
+        build5MayIntro(displayName),
+        { type: 'flex', altText: 'GW 食事 3 つの tip', contents: build5MayTipFlex() },
+        { type: 'flex', altText: '五月病ケア — 食 + 習慣', contents: build5MayHealthFlex() },
+        { type: 'flex', altText: '夏前準備 (= 6 月梅雨 / 7 月 BBQ への布石)', contents: build5MayPrepFlex() },
+        { type: 'flex', altText: '何でもお気軽に', contents: build5MayCallToAction() },
+      ];
     default:
-      // Phase 2.2 で順次拡充、 当面 placeholder
+      // 全 12 ヶ月実装完了 (= 本 PR #78 で完成)、 default は invalid 月 (= 0 / 13+) 用
       return [
         {
           type: 'text',
-          text: `${displayName}さん、 今月 (${month} 月) のコンテンツを準備中です🌿\n\nそれまでに何かご質問あれば、 『違い』 『おすすめ』 『飲み方』 などと話しかけてください 😊`,
+          text: `${displayName}さん、 月の指定が不正です (${month})。\nお手数ですが時間をおいて再度お試しください 🌿`,
         },
       ];
   }
+}
+
+// ============================================================
+// 4 / 5 月 (= Phase 2.2 PR #78、 全 12 ヶ月完成)
+// ============================================================
+
+/** 4 月: 新生活 / 入学 / 入社 / 歓迎会 / 環境変化 (= naturism 軸: Blue で歓迎会対策) */
+function build4AprilIntro(displayName: string): Message {
+  return {
+    type: 'text',
+    text: `${displayName}さん、 4 月のお知らせです🌸\n\n新生活 / 入学 / 入社 / 歓迎会シーズン本格スタート🌱\n環境変化で生活リズムが乱れがちな時期、 naturism から新生活の食習慣をお届けします🌿\n\n4 つのカードを順番にどうぞ 👇`,
+  };
+}
+
+function build4AprilTipFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#dcfce7', paddingAll: '14px',
+      contents: [{ type: 'text', text: '🌱 新生活 食習慣 3 つの tip', size: 'sm', weight: 'bold', color: '#15803d', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+      contents: [
+        { type: 'text', text: '🍳 朝食ルーティンを最初に決める', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '通勤・通学パターンに合わせ「同じ時刻に同じもの」 を 1 週間続けると体内時計が整う。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🥡 外食頻度を把握する', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '新生活初月は外食 + コンビニ食に頼りがち。 週 5 日以上ならご自宅食を増やす意識を。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🌿 歓迎会の翌日を軽く整える', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '飲み会連続時は naturism Blue 6 粒で当日対策 + 翌朝は軽めの和食 / お粥で胃腸を労る。', size: 'xs', color: '#475569', wrap: true },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build4AprilBlueFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#cffafe', paddingAll: '14px',
+      contents: [{ type: 'text', text: '🩵 Blue — 歓迎会シーズンに', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+      contents: [
+        { type: 'text', text: '4 月は歓迎会が連続。 「飲み会の日は持ち歩く」 を習慣に。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '8 成分配合で脂質高めの居酒屋メニューにも◎ コース料理時に Blue 6 粒。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '💡 新生活初月の習慣化に最適タイミング', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
+        { type: 'text', text: '1日¥64〜 / 30日分 ¥1,980', size: 'xs', color: '#475569', align: 'center' },
+      ],
+    },
+    footer: { type: 'box', layout: 'vertical', paddingAll: '14px', spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'uri', label: 'Blue を見る', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'message', label: 'AI に飲み方を聞く', text: '飲み方' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build4AprilHealthFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#fef9c3', paddingAll: '14px',
+      contents: [{ type: 'text', text: '🌡 環境変化の体調管理', size: 'sm', weight: 'bold', color: '#854d0e', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+      contents: [
+        { type: 'text', text: '環境変化 + 気温差 + 花粉 + 睡眠時間のズレで体調を崩しやすい時期。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🌿 おすすめ習慣', size: 'xs', weight: 'bold', color: '#854d0e', margin: 'sm' },
+        { type: 'text', text: '・睡眠時間を 7h 確保', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・水分 1.5L (= コーヒー/お茶含めない目安)', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・無理な飲み会は断る勇気も大切', size: 'xs', color: '#334155' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '※ 体調不良時は無理せず医療機関を受診してください', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build4AprilCallToAction(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#eff6ff', paddingAll: '14px',
+      contents: [{ type: 'text', text: '✨ 何でもお気軽にどうぞ', size: 'sm', weight: 'bold', color: '#1e40af', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'sm',
+      contents: [
+        { type: 'text', text: '新生活の食習慣 / 歓迎会対策 / 商品選びは気軽に AI へ。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '『歓迎会対策』 『飲み方』 『私におすすめ』', size: 'sm', weight: 'bold', color: '#1e40af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '等と話しかけると AI が即お答えします 🤖', size: 'sm', color: '#1e293b', wrap: true },
+      ],
+    },
+    footer: { type: 'box', layout: 'vertical', paddingAll: '14px', spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'message', label: 'AI に歓迎会対策を聞く', text: '歓迎会対策' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+/** 5 月: GW / アウトドア / 五月病 / 夏前準備 (= naturism 軸: Blue/Pink 二刀流) */
+function build5MayIntro(displayName: string): Message {
+  return {
+    type: 'text',
+    text: `${displayName}さん、 5 月のお知らせです🌿\n\nゴールデンウィークでアウトドア / 旅行 / BBQ シーズン到来🏕\n環境変化の疲れが出やすい五月病の時期でもあります。 naturism から 5 月のヒントをお届けします🌿\n\n4 つのカードを順番にどうぞ 👇`,
+  };
+}
+
+function build5MayTipFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#fef3c7', paddingAll: '14px',
+      contents: [{ type: 'text', text: '🏕 GW 食事 3 つの tip', size: 'sm', weight: 'bold', color: '#854d0e', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+      contents: [
+        { type: 'text', text: '🍖 BBQ / アウトドア の準備', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '5 月は 7 月の本格 BBQ シーズン前の練習月。 「先に野菜・肉」 順序を意識。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🚗 旅先で「ご当地グルメ」 を計画的に', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '1 日 1-2 食はご当地、 他は軽めに。 全食ご当地は胃腸負担↑。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🌿 連休明けこそ習慣を戻す', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: 'GW 明けの 1 週間は朝食 + naturism + 早寝を意識。 五月病対策にも◎', size: 'xs', color: '#475569', wrap: true },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build5MayHealthFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#fce7f3', paddingAll: '14px',
+      contents: [{ type: 'text', text: '🌷 五月病ケア — 食 + 習慣', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+      contents: [
+        { type: 'text', text: '4 月の環境変化 + GW のリズム崩れで「だるさ・やる気↓」 が出やすい時期。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🌿 整える 3 ポイント', size: 'xs', weight: 'bold', color: '#9d174d', margin: 'sm' },
+        { type: 'text', text: '・規則正しい食事 (= 朝食を抜かない)', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・日光を浴びる朝散歩 5-10 分', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・趣味の時間を意識的に確保', size: 'xs', color: '#334155' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '※ 症状が続く場合は医療機関 / メンタルヘルス窓口へ', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build5MayPrepFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#e0f2fe', paddingAll: '14px',
+      contents: [{ type: 'text', text: '🌞 夏前準備 — 6/7 月への布石', size: 'sm', weight: 'bold', color: '#075985', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+      contents: [
+        { type: 'text', text: '6 月 梅雨 / 7 月 BBQ・夏本番 が控える時期。 5 月から食習慣を整えておくと preview 効果◎', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🌿 6/7 月の naturism 主役', size: 'xs', weight: 'bold', color: '#075985', margin: 'sm' },
+        { type: 'text', text: '・6 月 = 梅雨対策 + Pink (酵素) で美容も', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・7 月 = BBQ / 焼肉 対策 + Blue 強化', size: 'xs', color: '#334155' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '今月 Blue / Pink を試して「自分に合う方」 を見つけるのもオススメ。', size: 'xs', color: '#475569', wrap: true },
+      ],
+    },
+    footer: { type: 'box', layout: 'vertical', paddingAll: '14px', spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'uri', label: '両方を見る (公式)', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'message', label: 'AI に違いを聞く', text: '違い' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build5MayCallToAction(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#eff6ff', paddingAll: '14px',
+      contents: [{ type: 'text', text: '✨ 何でもお気軽にどうぞ', size: 'sm', weight: 'bold', color: '#1e40af', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'sm',
+      contents: [
+        { type: 'text', text: 'GW 食事 / 五月病ケア / 商品選びは気軽に AI へ。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '『GW 対策』 『五月病』 『私におすすめ』', size: 'sm', weight: 'bold', color: '#1e40af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '等と話しかけると AI が即お答えします 🤖', size: 'sm', color: '#1e293b', wrap: true },
+      ],
+    },
+    footer: { type: 'box', layout: 'vertical', paddingAll: '14px', spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'message', label: 'AI に GW 対策を聞く', text: 'GW 対策' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
 }
 
 // ============================================================
