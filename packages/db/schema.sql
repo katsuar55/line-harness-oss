@@ -1724,6 +1724,30 @@ CREATE TABLE IF NOT EXISTS line_friend_coupons (
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id) ON DELETE SET NULL
 );
 
+-- from 054_ai_models_catalog.sql
+CREATE TABLE IF NOT EXISTS ai_models_catalog (
+  id                   TEXT PRIMARY KEY,
+  model_id             TEXT NOT NULL UNIQUE,
+  vendor               TEXT NOT NULL,
+  family               TEXT NOT NULL,
+  size_label           TEXT,
+  task                 TEXT NOT NULL,
+  capabilities         TEXT,
+  context_window       INTEGER,
+  description          TEXT,
+  is_beta              INTEGER NOT NULL DEFAULT 0,
+  is_deprecated        INTEGER NOT NULL DEFAULT 0,
+  primary_candidate    INTEGER NOT NULL DEFAULT 0,
+  fallback_candidate   INTEGER NOT NULL DEFAULT 0,
+  first_seen_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  last_seen_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  last_synced_at       TEXT,
+  raw_metadata         TEXT,
+  source               TEXT NOT NULL DEFAULT 'seed',
+  created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -1894,3 +1918,18 @@ CREATE INDEX IF NOT EXISTS idx_line_friend_coupons_code
   ON line_friend_coupons(coupon_code);
 CREATE INDEX IF NOT EXISTS idx_line_friend_coupons_status
   ON line_friend_coupons(status, issued_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_models_catalog_vendor_family
+  ON ai_models_catalog(vendor, family);
+CREATE INDEX IF NOT EXISTS idx_ai_models_catalog_task
+  ON ai_models_catalog(task);
+CREATE INDEX IF NOT EXISTS idx_ai_models_catalog_seen
+  ON ai_models_catalog(last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_models_catalog_active
+  ON ai_models_catalog(model_id)
+  WHERE is_deprecated = 0;
+CREATE INDEX IF NOT EXISTS idx_ai_models_catalog_primary
+  ON ai_models_catalog(primary_candidate, last_seen_at DESC)
+  WHERE primary_candidate = 1 AND is_deprecated = 0;
+CREATE INDEX IF NOT EXISTS idx_ai_models_catalog_fallback
+  ON ai_models_catalog(fallback_candidate, last_seen_at DESC)
+  WHERE fallback_candidate = 1 AND is_deprecated = 0;

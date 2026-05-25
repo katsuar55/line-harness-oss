@@ -41,6 +41,7 @@ export * from './cross-sell';
 export * from './email-subscribers';
 export * from './email-logs';
 export * from './email-templates';
+export * from './ai-models-catalog';
 
 /**
  * Thin wrapper around D1Database.
