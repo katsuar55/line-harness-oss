@@ -130,11 +130,56 @@ describe('getMonthlyDetailMessages', () => {
     expect(altTexts.join(' ')).toMatch(/キャンペーン/);
   });
 
-  it('8 月以降 (= 未実装) は placeholder text のみ 1 件', () => {
-    const messages = getMonthlyDetailMessages(8, 'A');
+  it('8 月 (= Phase 2.2 PR #74、 お盆 / 夏バテ / Pink 強化) → 5 message', () => {
+    const messages = getMonthlyDetailMessages(8, 'テスト盆太郎');
+    expect(messages).toHaveLength(5);
+    expect(messages[0].type).toBe('text');
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('テスト盆太郎') });
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('お盆') });
+    expect(messages[1].type).toBe('flex');
+    expect(messages[2].type).toBe('flex');
+    expect(messages[3].type).toBe('flex');
+    expect(messages[4].type).toBe('flex');
+  });
+
+  it('8 月 alt_text に「夏バテ」 「Pink」 「お盆」 を含む', () => {
+    const messages = getMonthlyDetailMessages(8, 'X');
+    const altTexts = messages
+      .filter((m): m is Extract<typeof m, { type: 'flex' }> => m.type === 'flex')
+      .map((m) => m.altText);
+    expect(altTexts.join(' ')).toMatch(/夏バテ/);
+    expect(altTexts.join(' ')).toMatch(/Pink/);
+    expect(altTexts.join(' ')).toMatch(/お盆/);
+  });
+
+  it('9 月 (= Phase 2.2 PR #74、 秋 / 食欲の秋 / Blue vs Pink 使い分け / 再購入) → 5 message', () => {
+    const messages = getMonthlyDetailMessages(9, 'テスト秋子');
+    expect(messages).toHaveLength(5);
+    expect(messages[0].type).toBe('text');
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('テスト秋子') });
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('秋') });
+    expect(messages[1].type).toBe('flex');
+    expect(messages[2].type).toBe('flex');
+    expect(messages[3].type).toBe('flex');
+    expect(messages[4].type).toBe('flex');
+  });
+
+  it('9 月 alt_text に「秋」 「Blue」 「Pink」 「再購入」 を含む', () => {
+    const messages = getMonthlyDetailMessages(9, 'X');
+    const altTexts = messages
+      .filter((m): m is Extract<typeof m, { type: 'flex' }> => m.type === 'flex')
+      .map((m) => m.altText);
+    expect(altTexts.join(' ')).toMatch(/秋/);
+    expect(altTexts.join(' ')).toMatch(/Blue/);
+    expect(altTexts.join(' ')).toMatch(/Pink/);
+    expect(altTexts.join(' ')).toMatch(/再購入/);
+  });
+
+  it('10 月以降 (= 未実装) は placeholder text のみ 1 件', () => {
+    const messages = getMonthlyDetailMessages(10, 'A');
     expect(messages).toHaveLength(1);
     expect(messages[0].type).toBe('text');
-    expect(messages[0]).toMatchObject({ text: expect.stringContaining('8 月') });
+    expect(messages[0]).toMatchObject({ text: expect.stringContaining('10 月') });
   });
 
   it('display_name null → fallback (= 「お客様」 文字列を返す側で対応、 直接呼出時は呼出側担当)', () => {
@@ -186,7 +231,7 @@ describe('handleMonthlyDetail', () => {
     expect(messages).toHaveLength(5);
   });
 
-  it('valid 8 月 → reply 1 message (= placeholder)', async () => {
+  it('valid 8 月 → reply 5 messages (= Phase 2.2 PR #74 で拡充済)', async () => {
     const db = new FakeDb();
     const lc = makeLineClient();
     const result = await handleMonthlyDetail(
@@ -196,6 +241,38 @@ describe('handleMonthlyDetail', () => {
       null,
       'reply-token',
       'monthly_detail:8',
+    );
+    expect(result.ok).toBe(true);
+    const [, messages] = lc.replyMessage.mock.calls[0];
+    expect(messages).toHaveLength(5);
+  });
+
+  it('valid 9 月 → reply 5 messages (= Phase 2.2 PR #74 で拡充済)', async () => {
+    const db = new FakeDb();
+    const lc = makeLineClient();
+    const result = await handleMonthlyDetail(
+      db as unknown as D1Database,
+      lc,
+      { id: FRIEND_ID, display_name: 'X' },
+      null,
+      'reply-token',
+      'monthly_detail:9',
+    );
+    expect(result.ok).toBe(true);
+    const [, messages] = lc.replyMessage.mock.calls[0];
+    expect(messages).toHaveLength(5);
+  });
+
+  it('valid 10 月 → reply 1 message (= 未実装 placeholder)', async () => {
+    const db = new FakeDb();
+    const lc = makeLineClient();
+    const result = await handleMonthlyDetail(
+      db as unknown as D1Database,
+      lc,
+      { id: FRIEND_ID, display_name: 'X' },
+      null,
+      'reply-token',
+      'monthly_detail:10',
     );
     expect(result.ok).toBe(true);
     const [, messages] = lc.replyMessage.mock.calls[0];

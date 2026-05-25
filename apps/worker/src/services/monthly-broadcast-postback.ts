@@ -323,9 +323,307 @@ function build7JulyCallToAction(): FlexContainer {
   } as unknown as FlexContainer;
 }
 
+/** 8 月: お盆 / 夏バテ / 残暑 (= naturism 軸: Pink (酵素) で美容 + 疲労、 お盆休み発送 reminder) */
+function build8AugustIntro(displayName: string): Message {
+  return {
+    type: 'text',
+    text: `${displayName}さん、 8 月のお知らせです🍉\n\n夏の盛り、 お盆休みや帰省で食生活が乱れがち。\n残暑と紫外線で疲労 + 肌コンディションも気になる季節🥵\nnaturism から夏疲れリカバリのヒントをお届けします🌿\n\n4 つのカードを順番にどうぞ 👇`,
+  };
+}
+
+function build8AugustTipFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fed7aa',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🥵 夏バテ対策 3 つの tip', size: 'sm', weight: 'bold', color: '#9a3412', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '🌅 朝食は抜かない', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '食欲低下時こそ朝の 1 品 (= 味噌汁 / バナナ / ヨーグルト) で 1 日のリズムを整える。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🍦 冷たいものは「少量×回数」', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '一気食いではなく、 室温の水・常温の麦茶を挟んで胃腸を冷やしすぎない。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '😴 食後 30 分は休む', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '消化に血流が必要な時期。 食後すぐの炎天下外出は dehydration ↑。', size: 'xs', color: '#475569', wrap: true },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build8AugustPinkFlex(): FlexContainer {
+  // Pink (= 酵素 + 美容) を「夏疲れリカバリ」 文脈で推す
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fce7f3',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '💗 Pink — 夏疲れ + 美容ケア', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '夏の紫外線・疲労で代謝が落ちると、 食事の重さを感じやすい時期。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: 'Pink は Blue (8 成分) + 活きた酵素 を配合した上位モデル。 美容を気にする方へ。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '1日¥75〜 / 7日分お試し ¥816', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'uri', label: 'Pink を見る', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'message', label: 'Blue との違いを AI に聞く', text: 'Blue と Pink の違い' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build8AugustCampaignFlex(): FlexContainer {
+  // お盆休み発送 + 夏キャンペーン 継続
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fde68a',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '📦 お盆休み + 夏キャンペーン', size: 'sm', weight: 'bold', color: '#854d0e', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '📅 お盆休み発送案内', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '8/11-15 はご注文受付のみ、 発送は 8/16 から順次対応となります。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🌿 友だち紹介で 500 円 OFF (= 7-8 月継続)', size: 'sm', weight: 'bold', color: '#15803d' },
+        { type: 'text', text: 'あなた → 次回購入 / お友だち → 初回購入 で両方お得。 帰省で会うご家族にも🌸', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '※ 紹介プログラム詳細は Phase 4 で実装予定 — まずは LINE 公式で随時お知らせします', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build8AugustCallToAction(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#eff6ff',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '✨ 何でもお気軽にどうぞ', size: 'sm', weight: 'bold', color: '#1e40af', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'sm',
+      contents: [
+        { type: 'text', text: '夏バテ対策・商品選び・飲み方は気軽に AI へ。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '『夏バテ対策に何がいい?』 『Pink と Blue の違い』 『飲み方』', size: 'sm', weight: 'bold', color: '#1e40af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '等と話しかけると AI が即お答えします 🤖', size: 'sm', color: '#1e293b', wrap: true },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'message', label: '私におすすめを AI に聞く', text: '私におすすめは?' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+/** 9 月: 秋の入口 / 食欲の秋 / 涼しさで体調整える (= naturism 軸: Pink/Blue 両方の使い分け、 食べ過ぎ対策) */
+function build9SeptemberIntro(displayName: string): Message {
+  return {
+    type: 'text',
+    text: `${displayName}さん、 9 月のお知らせです🍂\n\n少しずつ涼しくなり、 食欲の秋がやってきます🍠\n夏に乱れた食生活を整え、 旬の味覚を楽しむ準備の月。\nnaturism から、 秋の食習慣のヒントをお届けします🌿\n\n4 つのカードを順番にどうぞ 👇`,
+  };
+}
+
+function build9SeptemberTipFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#fed7aa',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🍂 秋の食習慣 3 つの tip', size: 'sm', weight: 'bold', color: '#9a3412', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '🍠 旬の根菜・きのこを取り入れる', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: 'さつまいも・かぼちゃ・しめじ・舞茸は食物繊維が豊富、 腸内環境を整える秋の味方。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🌾 主食は「先に野菜」 から', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '新米・パスタが美味しい季節。 サラダや野菜スープから食べ始めると糖質吸収もマイルドに。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🌿 食べ過ぎた日のリセット習慣', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '宴会・外食が増える前に、 「食べたら飲んでおく」 を naturism Blue 6 粒で。', size: 'xs', color: '#475569', wrap: true },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build9SeptemberCompareFlex(): FlexContainer {
+  // Pink vs Blue 使い分け (= 秋は二刀流推奨、 Pink を初めて検討する人向け)
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#e0e7ff',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🩵💗 Blue と Pink の使い分け', size: 'sm', weight: 'bold', color: '#3730a3', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: '🩵 Blue は脂質カット 8 成分 — 焼肉 / 揚げ物 等の脂質高めの食事の時に', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '💗 Pink は Blue + 酵素 — 美容も気になる方、 食事量が多い方に', size: 'sm', color: '#1e293b', wrap: true, margin: 'sm' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '秋は外食 + 旬食材の食べ過ぎが増えるので、 二刀流で使い分けるユーザーも多数。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'text', text: '1日¥64〜 (Blue) / ¥75〜 (Pink)', size: 'sm', weight: 'bold', color: '#3730a3', align: 'center', margin: 'sm' },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'uri', label: '両方見る (公式)', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'message', label: 'AI に違いを聞く', text: '違い' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build9SeptemberReorderFlex(): FlexContainer {
+  // 9 月: 再購入リマインダー (= 7 月初回購入者の 2 ヶ月目 cycle)
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#dcfce7',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '🔁 続けることで実感する成分', size: 'sm', weight: 'bold', color: '#15803d', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'md',
+      contents: [
+        { type: 'text', text: 'naturism の素材は「日々の食習慣をサポート」 する設計。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '7 月にお試しいただいた方は、 そろそろ次のサイクルを検討する頃かも🌿', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '🌱 続けると…', size: 'xs', weight: 'bold', color: '#15803d', margin: 'sm' },
+        { type: 'text', text: '・宴会後の翌朝がラク (個人差あります)', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・食事中に「飲んでおく」 が習慣化', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・1 日¥64〜 で長く続けやすい設計', size: 'xs', color: '#334155' },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'uri', label: '公式ストアで再購入', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build9SeptemberCallToAction(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#eff6ff',
+      paddingAll: '14px',
+      contents: [
+        { type: 'text', text: '✨ 何でもお気軽にどうぞ', size: 'sm', weight: 'bold', color: '#1e40af', align: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'sm',
+      contents: [
+        { type: 'text', text: '秋の食事相談・商品選び・飲み方は気軽に AI へ。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '『私におすすめ』 『Blue と Pink の違い』 『飲み方』 『成分』', size: 'sm', weight: 'bold', color: '#1e40af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '等と話しかけると AI が即お答えします 🤖', size: 'sm', color: '#1e293b', wrap: true },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'message', label: 'AI に私のおすすめを聞く', text: '私におすすめは?' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
 /**
  * month (1-12) → 5 message (= reply 1 回で送信)
- * Phase 2.1: 6 月のみ充実、 Phase 2.2 で 7 月追加、 他月は placeholder text (= 順次拡充)
+ * Phase 2.1: 6 月のみ充実、 Phase 2.2 で 7 / 8 / 9 月追加、 他月は placeholder text (= 順次拡充)
  */
 export function getMonthlyDetailMessages(month: number, displayName: string): Message[] {
   switch (month) {
@@ -345,6 +643,24 @@ export function getMonthlyDetailMessages(month: number, displayName: string): Me
         { type: 'flex', altText: 'Blue 強化 — BBQ・焼肉 に安心', contents: build7JulyBlueFlex() },
         { type: 'flex', altText: '夏キャンペーン (予告)', contents: build7JulyCampaignFlex() },
         { type: 'flex', altText: '何でもお気軽に', contents: build7JulyCallToAction() },
+      ];
+    case 8:
+      // Phase 2.2 (2026-05-26): 8 月 = お盆 / 夏バテ / 残暑 / Pink (酵素 + 美容) 強化推奨
+      return [
+        build8AugustIntro(displayName),
+        { type: 'flex', altText: '夏バテ対策 3 つの tip', contents: build8AugustTipFlex() },
+        { type: 'flex', altText: 'Pink — 夏疲れ + 美容ケア', contents: build8AugustPinkFlex() },
+        { type: 'flex', altText: 'お盆休み + 夏キャンペーン', contents: build8AugustCampaignFlex() },
+        { type: 'flex', altText: '何でもお気軽に', contents: build8AugustCallToAction() },
+      ];
+    case 9:
+      // Phase 2.2 (2026-05-26): 9 月 = 秋の入口 / 食欲の秋 / Blue vs Pink 使い分け / 再購入 reminder
+      return [
+        build9SeptemberIntro(displayName),
+        { type: 'flex', altText: '秋の食習慣 3 つの tip', contents: build9SeptemberTipFlex() },
+        { type: 'flex', altText: 'Blue と Pink の使い分け', contents: build9SeptemberCompareFlex() },
+        { type: 'flex', altText: '続けることで実感する成分 (再購入)', contents: build9SeptemberReorderFlex() },
+        { type: 'flex', altText: '何でもお気軽に', contents: build9SeptemberCallToAction() },
       ];
     default:
       // Phase 2.2 で順次拡充、 当面 placeholder
