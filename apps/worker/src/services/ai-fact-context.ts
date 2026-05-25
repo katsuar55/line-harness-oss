@@ -35,6 +35,50 @@ interface CouponRow {
   expires_at: string | null;
 }
 
+export interface ActiveCoupon {
+  readonly couponCode: string;
+  readonly discountValue: number;
+  readonly discountCurrency: string;
+  readonly expiresAt: string | null;
+}
+
+/**
+ * friend の active coupon を 1 件返す (= row 形式、 intent-router 等で再利用)。
+ * 「active」 = status='issued' AND (expires_at IS NULL OR expires_at >= now)。
+ * 失敗時 / 無い時は null (fail-safe)。
+ */
+export async function getFriendActiveCoupon(
+  db: D1Database,
+  friendId: string,
+): Promise<ActiveCoupon | null> {
+  try {
+    const nowIso = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, -1) + '+09:00';
+    const row = await db
+      .prepare(
+        `SELECT coupon_code, discount_value, discount_currency, expires_at
+         FROM line_friend_coupons
+         WHERE friend_id = ? AND status = 'issued'
+           AND (expires_at IS NULL OR expires_at >= ?)
+         ORDER BY issued_at DESC LIMIT 1`,
+      )
+      .bind(friendId, nowIso)
+      .first<CouponRow>();
+    if (!row) return null;
+    return {
+      couponCode: row.coupon_code,
+      discountValue: row.discount_value,
+      discountCurrency: row.discount_currency,
+      expiresAt: row.expires_at,
+    };
+  } catch (err) {
+    console.error(
+      '[ai-fact-context] getFriendActiveCoupon failed:',
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
+}
+
 /**
  * 現在 active な broadcasts を「## 進行中のお知らせ」 セクション形式で返す。
  * D1 query 失敗時は空文字 (= caller が無視できる)。

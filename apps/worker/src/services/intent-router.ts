@@ -28,16 +28,26 @@
 import type { Message } from '@line-crm/line-sdk';
 import { buildPriceTableMessage } from './ai-message-builder.js';
 import { buildQuickQuizInviteMessage } from './quick-quiz.js';
+import { buildProductCompareFlex, buildMyCouponFlex } from './welcome-postback.js';
+import { getFriendActiveCoupon } from './ai-fact-context.js';
 
 export type Intent =
   | { readonly type: 'quiz_invite'; readonly reason: string }
   | { readonly type: 'price_table'; readonly reason: string }
+  | { readonly type: 'product_compare'; readonly reason: string }
+  | { readonly type: 'my_coupon'; readonly reason: string }
   | { readonly type: 'feature_unavailable'; readonly feature: string; readonly reason: string };
 
 export interface IntentRouteResult {
   readonly intent: Intent;
   readonly messages: ReadonlyArray<Message>;
   readonly matchedKeyword: string;
+}
+
+/** async build 用の context (= my_coupon の D1 SELECT 等で利用) */
+export interface IntentBuildContext {
+  readonly db: D1Database;
+  readonly friendId: string;
 }
 
 interface PatternRule {
@@ -75,6 +85,27 @@ const PATTERNS: ReadonlyArray<PatternRule> = [
       '価格', '値段', '料金',
     ],
     intent: { type: 'price_table', reason: 'price comparison intent' },
+  },
+
+  // ========= product_compare (= 3 商品比較 flex、 PR 2: 「違い」 Step 7 fix) =========
+  {
+    keywords: [
+      '3 種類の違い', '3種類の違い', '3 種類比較', '3種類比較',
+      'Blue Pink Premium', 'BluePinkPremium', 'BluePremium',
+      '商品比較', '比較教えて', '比較を教えて',
+      // 短形 fallback
+      '違い教えて', '違い', '比較',
+    ],
+    intent: { type: 'product_compare', reason: 'product comparison intent' },
+  },
+
+  // ========= my_coupon (= friend coupon flex + code text、 PR 2: Step 3 UX) =========
+  {
+    keywords: [
+      '私のクーポン', 'マイクーポン', 'クーポンコード', 'クーポン教えて', 'クーポンある',
+      '使えるクーポン', 'クーポンは', 'coupon',
+    ],
+    intent: { type: 'my_coupon', reason: 'user coupon query' },
   },
 
   // ========= feature_unavailable (= 未実装機能、 固定応答) =========
@@ -135,6 +166,22 @@ function buildMessagesForIntent(intent: Intent): ReadonlyArray<Message> {
       return [buildQuickQuizInviteMessage()];
     case 'price_table':
       return [buildPriceTableMessage()];
+    case 'product_compare':
+      return [
+        {
+          type: 'flex',
+          altText: '🌿 naturism 3 種類の違い',
+          contents: buildProductCompareFlex(),
+        },
+      ];
+    case 'my_coupon':
+      // sync build では coupon 不明 fallback、 実 reply は buildMessagesForIntentAsync 経由を期待
+      return [
+        {
+          type: 'text',
+          text: 'お持ちのクーポンを確認中です…少々お待ちください 🙏',
+        },
+      ];
     case 'feature_unavailable':
       return [
         {
@@ -143,6 +190,42 @@ function buildMessagesForIntent(intent: Intent): ReadonlyArray<Message> {
         },
       ];
   }
+}
+
+/**
+ * async build (= D1 依存可能、 my_coupon 等で利用)。
+ * 上記 sync `buildMessagesForIntent` の super-set、 webhook caller はこちらを使う。
+ */
+export async function buildMessagesForIntentAsync(
+  intent: Intent,
+  ctx: IntentBuildContext,
+): Promise<ReadonlyArray<Message>> {
+  if (intent.type === 'my_coupon') {
+    const coupon = await getFriendActiveCoupon(ctx.db, ctx.friendId);
+    if (!coupon) {
+      return [
+        {
+          type: 'text',
+          text: '現在お持ちのクーポンはございません🌿\n\n友だち追加直後にお届けしたマイクーポンをご確認ください💝',
+        },
+      ];
+    }
+    return [
+      {
+        type: 'flex',
+        altText: `🎁 マイクーポン ${coupon.couponCode}`,
+        contents: buildMyCouponFlex(coupon.couponCode),
+      },
+      // 5/26 user feedback: クーポンコードは copy したいので **別 text message として送る** (= reply 内、 push 0 通追加)
+      // LINE では text message を長押しで copy 可能
+      {
+        type: 'text',
+        text: `🎁 クーポンコード：\n${coupon.couponCode}\n\n↑ 長押しでコピーして公式ストアでご利用ください💝`,
+      },
+    ];
+  }
+  // 他 intent は sync build をそのまま流用
+  return buildMessagesForIntent(intent);
 }
 
 // テスト用 export
