@@ -1193,9 +1193,187 @@ function build1JanuaryCallToAction(): FlexContainer {
   } as unknown as FlexContainer;
 }
 
+/** 2 月: バレンタイン / チョコ消費 / 寒さで運動少 (= naturism 軸: Blue で甘いもの対策) */
+function build2FebruaryIntro(displayName: string): Message {
+  return {
+    type: 'text',
+    text: `${displayName}さん、 2 月のお知らせです🍫\n\nバレンタインでチョコレートが家に増える時期。\n寒さで運動量が減りがちな季節、 naturism から甘いもの対策のヒントをお届けします🌿\n\n4 つのカードを順番にどうぞ 👇`,
+  };
+}
+
+function build2FebruaryTipFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#fce7f3', paddingAll: '14px',
+      contents: [{ type: 'text', text: '🍫 チョコ消費 3 つの工夫', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+      contents: [
+        { type: 'text', text: '🌰 高カカオ (= 70% 以上) を選ぶ', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '砂糖少なめ + カカオポリフェノール。 1 日 1-2 片を目安に少量で満足感も◎', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '☕ コーヒー / 紅茶と一緒に', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '温かい飲み物とゆっくり味わうと「満足度」 が高まり食べ過ぎ防止に。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🌿 食後のスイーツこそ naturism', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '甘い → 脂質 (= 生クリーム / バター) の組合せには Blue 6 粒で対策。', size: 'xs', color: '#475569', wrap: true },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build2FebruaryBlueFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#cffafe', paddingAll: '14px',
+      contents: [{ type: 'text', text: '🩵 Blue — 甘いものの強い味方', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+      contents: [
+        { type: 'text', text: 'チョコ・ケーキ・クッキーは「砂糖+脂質」 のダブル。 Blue の 8 成分でケア。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '💡 バレンタイン期は「食後に Blue」 を意識すると気持ち的にも罪悪感少なく楽しめる', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '1日¥64〜 / 7日分お試し ¥696', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
+      ],
+    },
+    footer: { type: 'box', layout: 'vertical', paddingAll: '14px', spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'uri', label: 'Blue を見る', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'message', label: 'AI に甘いもの対策を聞く', text: '甘いもの対策' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build2FebruaryExerciseFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#dcfce7', paddingAll: '14px',
+      contents: [{ type: 'text', text: '🏠 寒い日の室内軽運動', size: 'sm', weight: 'bold', color: '#15803d', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+      contents: [
+        { type: 'text', text: '寒さで外出 + 運動量が減る時期。 食事+小さな運動で日々のバランスを。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🌿 おすすめ 5 分習慣', size: 'xs', weight: 'bold', color: '#15803d', margin: 'sm' },
+        { type: 'text', text: '・朝のストレッチ 5 分 (= 体温上げる)', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・食後 5 分の家事掃除 (= 消化助ける)', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・寝る前のスクワット 10 回 (= 代謝維持)', size: 'xs', color: '#334155' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build2FebruaryCallToAction(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#eff6ff', paddingAll: '14px',
+      contents: [{ type: 'text', text: '✨ 何でもお気軽にどうぞ', size: 'sm', weight: 'bold', color: '#1e40af', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'sm',
+      contents: [
+        { type: 'text', text: '甘いもの対策・室内運動・商品選びは気軽に AI へ。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '『甘いもの対策』 『チョコと一緒に』 『私におすすめ』', size: 'sm', weight: 'bold', color: '#1e40af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '等と話しかけると AI が即お答えします 🤖', size: 'sm', color: '#1e293b', wrap: true },
+      ],
+    },
+    footer: { type: 'box', layout: 'vertical', paddingAll: '14px', spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'message', label: 'AI に甘いもの対策を聞く', text: '甘いもの対策' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+/** 3 月: 春先 / 花粉 / 卒業祝い / 送別会 / 新生活準備 (= naturism 軸: Pink、 環境変化応援) */
+function build3MarchIntro(displayName: string): Message {
+  return {
+    type: 'text',
+    text: `${displayName}さん、 3 月のお知らせです🌸\n\n卒業 / 送別会 / 新生活準備で食事会が増える時期。\n花粉症の影響や春の体調変化が気になる方も多いはず、 naturism から春先のヒントをお届けします🌿\n\n4 つのカードを順番にどうぞ 👇`,
+  };
+}
+
+function build3MarchTipFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#fce7f3', paddingAll: '14px',
+      contents: [{ type: 'text', text: '🌸 春先の食習慣 3 つ', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+      contents: [
+        { type: 'text', text: '🍃 旬の春野菜を取り入れる', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '菜の花 / 春キャベツ / 新玉ねぎは食物繊維 + 抗酸化で春バテ予防にも。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🍶 送別会 / 歓送迎会 の頻度に注意', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '飲み会連続で胃腸負担↑。 翌日は軽めの和食 + 水分多めで回復を意識。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'separator', margin: 'sm' },
+        { type: 'text', text: '🌿 新生活前に習慣を見直す', size: 'sm', weight: 'bold', color: '#1e293b' },
+        { type: 'text', text: '4 月の新生活前に「健康ルーティン」 を整える 1 ヶ月。 naturism を「日常の一部」 に。', size: 'xs', color: '#475569', wrap: true },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build3MarchPinkFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#fce7f3', paddingAll: '14px',
+      contents: [{ type: 'text', text: '💗 Pink — 春の体調変化に', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+      contents: [
+        { type: 'text', text: '春の気温差 + 花粉で胃腸も肌コンディションも揺らぎがち。 Pink は酵素 + 美容ケア。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🌸 春の自分メンテに', size: 'xs', weight: 'bold', color: '#9d174d', margin: 'sm' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '1日¥75〜 / 7日分お試し ¥816', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' },
+      ],
+    },
+    footer: { type: 'box', layout: 'vertical', paddingAll: '14px', spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'uri', label: 'Pink を見る', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
+function build3MarchGiftFlex(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#fef9c3', paddingAll: '14px',
+      contents: [{ type: 'text', text: '🎓 卒業 / 新生活ギフト hint', size: 'sm', weight: 'bold', color: '#854d0e', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
+      contents: [
+        { type: 'text', text: '卒業・進学・就職で新生活を始めるご家族 / 友人への「健康サポートギフト」 として naturism。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🎁 おすすめ場面', size: 'xs', weight: 'bold', color: '#854d0e', margin: 'sm' },
+        { type: 'text', text: '・社会人になる方 → 飲み会対策に Blue 30 日', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・新生活で美容気になる方 → Pink お試し', size: 'xs', color: '#334155' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '※ サプリメントです、 個人差があります', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
+      ],
+    },
+    footer: { type: 'box', layout: 'vertical', paddingAll: '14px', spacing: 'sm',
+      contents: [{ type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'primary', color: '#06C755', height: 'sm' }] },
+  } as unknown as FlexContainer;
+}
+
+function build3MarchCallToAction(): FlexContainer {
+  return {
+    type: 'bubble',
+    header: { type: 'box', layout: 'vertical', backgroundColor: '#eff6ff', paddingAll: '14px',
+      contents: [{ type: 'text', text: '✨ 何でもお気軽にどうぞ', size: 'sm', weight: 'bold', color: '#1e40af', align: 'center' }] },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'sm',
+      contents: [
+        { type: 'text', text: '春先の食習慣 / 送別会 / 新生活ギフト相談は気軽に AI へ。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '『春の食事』 『送別会対策』 『プレゼント』', size: 'sm', weight: 'bold', color: '#1e40af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '等と話しかけると AI が即お答えします 🤖', size: 'sm', color: '#1e293b', wrap: true },
+      ],
+    },
+    footer: { type: 'box', layout: 'vertical', paddingAll: '14px', spacing: 'sm',
+      contents: [
+        { type: 'button', action: { type: 'message', label: 'AI に春の食事を聞く', text: '春の食事' }, style: 'primary', color: '#06C755', height: 'sm' },
+        { type: 'button', action: { type: 'uri', label: '公式ストアを見る', uri: 'https://naturism-diet.com/' }, style: 'secondary', height: 'sm' },
+      ],
+    },
+  } as unknown as FlexContainer;
+}
+
 /**
  * month (1-12) → 5 message (= reply 1 回で送信)
- * Phase 2.1: 6 月のみ充実、 Phase 2.2 で 7-12 + 1 月追加、 他月は placeholder text (= 順次拡充)
+ * Phase 2.1: 6 月のみ充実、 Phase 2.2 で 7-12 + 1-3 月追加、 4-5 月は後続 PR
  */
 export function getMonthlyDetailMessages(month: number, displayName: string): Message[] {
   switch (month) {
@@ -1269,6 +1447,24 @@ export function getMonthlyDetailMessages(month: number, displayName: string): Me
         { type: 'flex', altText: 'Pink — 新年は美容もケア', contents: build1JanuaryPinkFlex() },
         { type: 'flex', altText: '1 月の習慣化チャレンジ', contents: build1JanuaryHabitFlex() },
         { type: 'flex', altText: '何でもお気軽に', contents: build1JanuaryCallToAction() },
+      ];
+    case 2:
+      // Phase 2.2 PR #77 (2026-05-26): 2 月 = バレンタイン / チョコ消費 / 寒さ運動少 / Blue
+      return [
+        build2FebruaryIntro(displayName),
+        { type: 'flex', altText: 'チョコ消費 3 つの工夫', contents: build2FebruaryTipFlex() },
+        { type: 'flex', altText: 'Blue — 甘いものの強い味方', contents: build2FebruaryBlueFlex() },
+        { type: 'flex', altText: '寒い日の室内軽運動', contents: build2FebruaryExerciseFlex() },
+        { type: 'flex', altText: '何でもお気軽に', contents: build2FebruaryCallToAction() },
+      ];
+    case 3:
+      // Phase 2.2 PR #77 (2026-05-26): 3 月 = 春先 / 花粉 / 卒業祝い / 送別会 / 新生活ギフト
+      return [
+        build3MarchIntro(displayName),
+        { type: 'flex', altText: '春先の食習慣 3 つ', contents: build3MarchTipFlex() },
+        { type: 'flex', altText: 'Pink — 春の体調変化に', contents: build3MarchPinkFlex() },
+        { type: 'flex', altText: '卒業 / 新生活ギフト hint', contents: build3MarchGiftFlex() },
+        { type: 'flex', altText: '何でもお気軽に', contents: build3MarchCallToAction() },
       ];
     default:
       // Phase 2.2 で順次拡充、 当面 placeholder
