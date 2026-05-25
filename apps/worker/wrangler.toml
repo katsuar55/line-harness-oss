@@ -34,8 +34,12 @@ crons = ["*/5 * * * *"]
 
 [vars]
 ACCOUNT_NAME = "naturism"
-AI_MODEL_PRIMARY = "@cf/qwen/qwen3-30b-a3b-fp8"
-AI_MODEL_FALLBACK = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+# 2026-05-26 model 切替 (= 案 A): Qwen 常時 fail 問題 + 最新世代採用
+#   PRIMARY: Meta Llama 4 Scout (= 17B MoE、 multimodal、 多言語 GA、 ~20 neurons/q = ~500 q/day free)
+#   FALLBACK: Google Gemma 4 26B (= vision 対応、 多言語 GA、 別系統で安全性向上)
+#   旧: qwen3-30b-a3b-fp8 (primary 常時 fail) → llama-3.3-70b-fast (fallback、 hallucination 多)
+AI_MODEL_PRIMARY = "@cf/meta/llama-4-scout-17b-16e-instruct"
+AI_MODEL_FALLBACK = "@cf/google/gemma-4-26b-a4b-it"
 # AI_SYSTEM_PROMPT is set via: npx wrangler secret put AI_SYSTEM_PROMPT
 
 # ============================================================
