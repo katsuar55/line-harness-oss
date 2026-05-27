@@ -43,42 +43,96 @@ GMC ダッシュボード:
 
 ## ✅ user action 手順 (= 5 分)
 
-### Step 1: GMC ダッシュボード「Add details to show how you ship your products」 click
+### Step 0: GMC ダッシュボード「Add details to show how you ship your products」 click
 
-スクショの **「Add」 button** click:
 ```
 URL: https://merchants.google.com/mc/overview?a=11652571
 → Show your products on Google → Add details to show how you ship your products → 「Add」
 ```
 
-### Step 2: Shipping service 追加
+「Add your shipping information」 wizard が開く (= 4 step process)。
 
-「Shipping service」 設定画面で:
+---
 
-#### 推奨値 (= naturism 商品 spec + 既存 Shopify 設定 整合)
+### Step 1: Countries (= 配送対象国を選択)
 
-| 項目 | 推奨値 | 理由 |
-|---|---|---|
-| Service name | `日本国内 標準配送` | わかりやすさ |
-| Shipping origin | 日本 (JP) | 既存 Shopify 設定 |
-| Shipping destination | 日本 (JP) | naturism は国内 only confirmed |
-| Delivery time | 2-5 営業日 | naturism Shopify 既存設定と整合 |
-| **Shipping cost** | **送料無料 (= 0 円)** | LP launch インセンティブ + Shopify 商品単価 ¥389-¥2,000 で送料無料が conversion 最適 |
+スクショ画面 (= 2026-05-28 user 確認済):
+- Policy name: `Shipping Policy 5 9` (= 自動生成、 そのまま OK or `日本国内 配送ポリシー` に編集任意)
+- Countries 一覧 (= 32 国程度の checkbox list)
 
-#### 代替案 (= 送料設定したい場合)
+**📌 推奨**: **Japan のみ check** (= naturism は国内 only confirmed)
+- ❌ Australia / Austria / Belgium / Canada / Czechia / Denmark / Finland / France / Gambia / Germany / Greece / Hong Kong / Ireland / Israel / Italy
+- ✅ **Japan**  ← この 1 つだけ check
+- ❌ Malaysia / Netherlands / New Zealand / Norway / Poland / Portugal / Singapore / South Korea / Spain / Sweden / Switzerland / Taiwan / Thailand / United Arab Emirates / United Kingdom / United States
 
-| 設定 | 値 | 注意 |
-|---|---|---|
-| 一律 ¥800 | 全国一律 | naturism 既存 Shopify 設定と一致 |
-| 一定額以上送料無料 | 例: ¥3,000 以上送料無料、 未満 ¥800 | upsell 効果あり、 但し設定が複雑 |
+→ 「Continue」 click
 
-**📌 推奨は「送料無料」**: LP launch 初期は friction 最小化が conversion 優先。 既存 Shopify でも naturism 商品単価が低いため送料が conversion blocker になりやすい。
+---
 
-### Step 3: 保存 + 確認
+### Step 2: Products (= 適用 product 範囲)
 
-「Save」 click → GMC dashboard に戻る → 「Show your products on Google」 step が全て ✅ になるか確認。
+「Apply to which products?」 選択肢:
+- **All products** ← 推奨 (= 12 商品全てに同じ shipping policy)
+- Specific products only
 
-### Step 4: 24h 待機
+**📌 推奨**: **All products** select → 「Continue」
+
+理由: naturism 商品 12 種類は全て同じサプリメント (= ¥389-¥2,000)、 配送料 + 配送時間 を商品ごとに差別化する理由ない。 1 つの policy で全部カバー。
+
+---
+
+### Step 3: Delivery times (= 配送時間)
+
+「How long does it take to deliver?」 設定:
+- **Order cutoff time**: 注文の締め時刻 (= 推奨: `12:00` 平日昼まで翌営業日発送)
+- **Order handling time**: 注文処理日数 (= 推奨: `0-1 business days` 即日 or 翌営業日発送)
+- **Transit time**: 配送日数 (= 推奨: `1-4 business days` 全国 1-4 営業日)
+
+**📌 推奨設定**:
+| 項目 | 値 |
+|---|---|
+| Order cutoff time | 12:00 (= 平日昼) |
+| Min handling time | 0 days |
+| Max handling time | 1 day |
+| Min transit time | 1 day |
+| Max transit time | 4 days |
+
+合計 customer 視点では「**注文 → 1-5 営業日で到着**」 表示 = naturism Shopify 既存設定 (= 2-5 営業日) と整合。
+
+→ 「Continue」 click
+
+---
+
+### Step 4: Shipping costs (= 送料設定)
+
+「How much does shipping cost?」 選択肢:
+- **Free shipping** ← **推奨**
+- Flat rate (= 一律料金)
+- Calculated rate (= 重量 / 距離計算)
+
+**📌 推奨**: **Free shipping** (= 送料無料)
+
+理由 (= LP launch インセンティブ):
+- naturism 商品単価 ¥389-¥2,000 で送料 ¥800 を加算すると **送料が商品価格を超える case** がある → conversion blocker
+- LP launch 初期は friction 最小化が conversion 優先
+- 既存 Shopify は ¥3,000 以上送料無料、 未満 ¥600 設定だが、 GMC 表示は **送料無料 で広告 click 率最大化**
+- 実際の checkout で Shopify 配送料計算ロジック (= ¥3,000 未満 ¥600) が走るため、 GMC「送料無料」 表示 + Shopify checkout 配送料は **不一致リスクあり** → 但し Google Merchant Center policy 上 「shipping cost in GMC ≦ actual checkout cost」 は OK (= 顧客に有利な direction)
+
+→ 「**Free shipping**」 select → 「Save」 click
+
+---
+
+### Step 5: 保存後の確認
+
+「Save」 click → GMC dashboard に戻る:
+- 「Show your products on Google」 step が **全て ✅** になることを確認
+- 「Add details to show how you ship your products」 → ✅ 消える
+
+→ 24h 以内に GMC 再 audit 実行
+
+---
+
+### Step 6: 24h 待機
 
 GMC が再 audit 実行 (= 24h 程度)。 翌日 (= 2026-05-29 朝) に再度:
 - https://merchants.google.com/mc/products/diagnostics?a=11652571
