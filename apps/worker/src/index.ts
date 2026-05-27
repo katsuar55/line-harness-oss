@@ -91,6 +91,7 @@ import { processMonthlyFoodReports } from './services/monthly-food-report.js';
 import { processWeeklyCoachPush } from './services/weekly-coach-push.js';
 import { processCronMonitor } from './services/cron-monitor.js';
 import { processBirthdayGreetings } from './services/birthday-cron.js';
+import { processMembershipPromotionSanity } from './services/membership-promotion-cron.js';
 import { syncAiModelsCatalog } from './services/ai-models-catalog.js';
 import { syncCloudflareChangelog } from './services/cloudflare-changelog-sync.js';
 import { processEmailFailureMonitor } from './services/email-failure-monitor.js';
@@ -507,6 +508,23 @@ async function scheduled(
       }
     }).catch((err) =>
       console.error('birthday-greetings failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // Phase 4-δ (2026-05-28): membership 月次 promotion sanity cron
+  //   - 月初 1 日 09:00 JST ± 5 分 のみ実行 (= birthday 10:00 と分離、 service 側で gating)
+  //   - 全 members で promoteMemberIfEligible (= 都度 promote の safety net、 漏れ救済)
+  //   - MEMBERSHIP_CRON_FORCE='true' で gating bypass
+  jobs.push(
+    withHeartbeat(env.DB, 'membership-promotion-sanity', () =>
+      processMembershipPromotionSanity(env as unknown as Parameters<typeof processMembershipPromotionSanity>[0]),
+      (r) => ({ candidates: r.candidates, promoted: r.promoted, errors: r.errors, skippedGating: r.skippedDueToGating }),
+    ).then((r) => {
+      if (r.promoted > 0) {
+        console.info(`membership-promotion-sanity: month=${r.month} promoted=${r.promoted} unchanged=${r.unchanged} errors=${r.errors}`);
+      }
+    }).catch((err) =>
+      console.error('membership-promotion-sanity failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 
