@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { LineClient } from '@line-crm/line-sdk';
 import { notifyAbandonedCart } from '../services/abandoned-cart-notify.js';
+import { syncOrderToMember } from '../services/shopify-order-member-sync.js';
 import {
   upsertAbandonedCart,
   getAbandonedCartByCheckoutId,
@@ -493,6 +494,36 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/payment', async (c) => {
       })();
       try { c.executionCtx.waitUntil(asyncWork); } catch { /* no exec ctx in tests */ }
     }
+
+    // 非同期: Phase 4-γ member sync (= 累計購入額加算 + tier promote check + 昇格通知)
+    // friend マッチしなくても event 記録 (= audit trail) のため条件不問で実行。
+    const memberSyncWork = (async () => {
+      try {
+        const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+        const result = await syncOrderToMember(
+          { DB: db, LINE_CHANNEL_ACCESS_TOKEN: c.env.LINE_CHANNEL_ACCESS_TOKEN },
+          lineClient,
+          {
+            shopifyOrderId,
+            amountJpy: totalPrice ?? 0,
+            currency,
+            orderNumber: orderNumber ?? null,
+            email: email ?? null,
+            phone: phone ?? null,
+            existingFriendId: friendId ?? null,
+            source: 'webhook',
+          },
+        );
+        if (result.promote?.promoted) {
+          console.log(
+            `[membership] order ${shopifyOrderId} promoted friend ${result.event.friendId}: ${result.promote.fromTier} → ${result.promote.toTier}`,
+          );
+        }
+      } catch (err) {
+        console.error('Shopify payment webhook member sync error:', err);
+      }
+    })();
+    try { c.executionCtx.waitUntil(memberSyncWork); } catch { /* no exec ctx in tests */ }
 
     return c.json({ success: true, data: { id: notification.id, shopifyOrderId } });
   } catch (err) {
