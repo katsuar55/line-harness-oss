@@ -444,6 +444,7 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/payment', async (c) => {
     const customer = body.customer as Record<string, unknown> | undefined;
     const email = (body.email as string) ?? (customer?.email as string) ?? undefined;
     const phone = (body.phone as string) ?? (customer?.phone as string) ?? undefined;
+    const shopifyCustomerIdPayment = customer?.id ? String(customer.id) : undefined;
 
     // 内部注文IDを取得
     let orderId: string | undefined;
@@ -463,6 +464,22 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/payment', async (c) => {
         .bind(friendId)
         .first<{ line_user_id: string | null }>();
       lineUserId = friend?.line_user_id ?? null;
+    } else if (shopifyCustomerIdPayment) {
+      // Phase 4-ι (2026-05-28): shopify_customer_id direct match path
+      const friendByCustomer = await db
+        .prepare(`SELECT id, line_user_id FROM friends WHERE shopify_customer_id = ?`)
+        .bind(shopifyCustomerIdPayment)
+        .first<{ id: string; line_user_id: string | null }>();
+      if (friendByCustomer) {
+        friendId = friendByCustomer.id;
+        lineUserId = friendByCustomer.line_user_id;
+      } else {
+        const match = await findFriendByEmailOrPhone(db, email, phone);
+        if (match) {
+          friendId = match.friendId;
+          lineUserId = match.lineUserId;
+        }
+      }
     } else {
       const match = await findFriendByEmailOrPhone(db, email, phone);
       if (match) {
@@ -510,6 +527,7 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/payment', async (c) => {
             orderNumber: orderNumber ?? null,
             email: email ?? null,
             phone: phone ?? null,
+            shopifyCustomerId: shopifyCustomerIdPayment ?? null,
             existingFriendId: friendId ?? null,
             source: 'webhook',
           },
