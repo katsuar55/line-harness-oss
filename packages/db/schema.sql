@@ -1760,6 +1760,42 @@ CREATE TABLE IF NOT EXISTS changelog_entries_seen (
   description    TEXT
 );
 
+-- from 056_google_merchant_audit.sql
+CREATE TABLE IF NOT EXISTS google_merchant_audit_runs (
+  id                  TEXT PRIMARY KEY,
+  run_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  trigger             TEXT NOT NULL,            -- 'cron' / 'manual' / 'admin-ui'
+  status              TEXT NOT NULL,            -- 'success' / 'partial' / 'error'
+  total_products      INTEGER NOT NULL DEFAULT 0,
+  products_with_issues INTEGER NOT NULL DEFAULT 0,
+  high_severity_count INTEGER NOT NULL DEFAULT 0,
+  medium_severity_count INTEGER NOT NULL DEFAULT 0,
+  low_severity_count  INTEGER NOT NULL DEFAULT 0,
+  issues_by_category  TEXT,                     -- JSON: { ng_keyword: 3, missing_gtin: 12, ... }
+  duration_ms         INTEGER,
+  error_message       TEXT,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 056_google_merchant_audit.sql
+CREATE TABLE IF NOT EXISTS product_audit_issues (
+  id                  TEXT PRIMARY KEY,
+  run_id              TEXT NOT NULL,            -- google_merchant_audit_runs.id
+  shopify_product_id  TEXT NOT NULL,            -- gid://shopify/Product/123
+  product_title       TEXT NOT NULL,
+  product_handle      TEXT,
+  category            TEXT NOT NULL,            -- 'ng_keyword' / 'missing_gtin' / 'missing_gpc' / 'missing_brand' / 'image_overlay_suspected' / 'price_inconsistency' / 'inventory_zero' / 'missing_description'
+  severity            TEXT NOT NULL,            -- 'high' / 'medium' / 'low'
+  field               TEXT,                     -- 'title' / 'description' / 'metafield.google.identifier_exists' / etc.
+  original_value      TEXT,                     -- before fix
+  suggested_value     TEXT,                     -- recommended fix
+  applied             INTEGER NOT NULL DEFAULT 0, -- 0 = pending, 1 = applied
+  applied_at          TEXT,
+  applied_by          TEXT,                     -- 'auto' / 'admin-ui' / user-id
+  metadata            TEXT,                     -- JSON for extra context (= ng_pattern matched, etc.)
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -1952,3 +1988,16 @@ CREATE INDEX IF NOT EXISTS idx_changelog_seen_unnotified
   WHERE notified_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_changelog_seen_first
   ON changelog_entries_seen(first_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_gma_runs_at
+  ON google_merchant_audit_runs(run_at DESC);
+CREATE INDEX IF NOT EXISTS idx_gma_runs_status
+  ON google_merchant_audit_runs(status, run_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pai_run
+  ON product_audit_issues(run_id, severity);
+CREATE INDEX IF NOT EXISTS idx_pai_product
+  ON product_audit_issues(shopify_product_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pai_pending
+  ON product_audit_issues(severity, created_at DESC)
+  WHERE applied = 0;
+CREATE INDEX IF NOT EXISTS idx_pai_category
+  ON product_audit_issues(category, severity);
