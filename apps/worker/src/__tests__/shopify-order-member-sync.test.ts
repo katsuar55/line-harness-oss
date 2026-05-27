@@ -40,7 +40,8 @@ interface MockUser {
 
 interface MockFriend {
   id: string;
-  user_id: string;
+  user_id?: string;
+  shopify_customer_id?: string;
 }
 
 function makeDb(opts: { users?: MockUser[]; friends?: MockFriend[] }): D1Database {
@@ -66,6 +67,10 @@ function makeDb(opts: { users?: MockUser[]; friends?: MockFriend[] }): D1Databas
           if (sql.includes('FROM friends') && sql.includes('user_id = ?')) {
             const target = bound[0];
             return friends.find((f) => f.user_id === target) ?? null;
+          }
+          if (sql.includes('FROM friends') && sql.includes('shopify_customer_id = ?')) {
+            const target = bound[0];
+            return friends.find((f) => f.shopify_customer_id === target) ?? null;
           }
           return null;
         },
@@ -117,6 +122,46 @@ describe('resolveFriendForOrder', () => {
     const db = makeDb({ users: [], friends: [] });
     const result = await resolveFriendForOrder(db, { email: 'x@example.com' });
     expect(result).toEqual({ friendId: null, matchedBy: null });
+  });
+
+  it('matches by shopify_customer_id (= Phase 4-ι direct bridge)', async () => {
+    const { resolveFriendForOrder } = await loadService();
+    const db = makeDb({
+      friends: [{ id: 'friend-cust-1', shopify_customer_id: 'cust-12345' }],
+    });
+    const result = await resolveFriendForOrder(db, { shopifyCustomerId: 'cust-12345' });
+    expect(result).toEqual({ friendId: 'friend-cust-1', matchedBy: 'customer_id' });
+  });
+
+  it('customer_id match takes precedence over email/phone', async () => {
+    const { resolveFriendForOrder } = await loadService();
+    const db = makeDb({
+      users: [{ id: 'user-1', email: 'a@example.com' }],
+      friends: [
+        { id: 'friend-via-email', user_id: 'user-1' },
+        { id: 'friend-via-customer', shopify_customer_id: 'cust-99' },
+      ],
+    });
+    const result = await resolveFriendForOrder(db, {
+      shopifyCustomerId: 'cust-99',
+      email: 'a@example.com',
+    });
+    expect(result.friendId).toBe('friend-via-customer');
+    expect(result.matchedBy).toBe('customer_id');
+  });
+
+  it('falls back to email when customer_id provided but no friend match', async () => {
+    const { resolveFriendForOrder } = await loadService();
+    const db = makeDb({
+      users: [{ id: 'user-1', email: 'a@example.com' }],
+      friends: [{ id: 'friend-via-email', user_id: 'user-1' }],
+    });
+    const result = await resolveFriendForOrder(db, {
+      shopifyCustomerId: 'unknown-cust',
+      email: 'a@example.com',
+    });
+    expect(result.friendId).toBe('friend-via-email');
+    expect(result.matchedBy).toBe('email');
   });
 
   it('email match takes precedence over phone', async () => {

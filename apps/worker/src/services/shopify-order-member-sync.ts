@@ -38,23 +38,35 @@ export interface ResolveFriendInput {
   existingFriendId?: string | null;
 }
 
+export type MatchedBy = 'existing' | 'customer_id' | 'email' | 'phone' | null;
+
 /**
- * Shopify order の email/phone/customer から friend を lookup (= 純関数、 既存 shopify_orders.friend_id 優先)。
+ * Shopify order の existing/customer_id/email/phone から friend を lookup (= 純関数)。
  *
- * 優先順位:
+ * 優先順位 (= Phase 4-ι 2026-05-28、 customer_id 追加):
  *   1. existingFriendId (= shopify_orders.friend_id が既設定なら即返す)
- *   2. email match (= users.email → friends.user_id)
- *   3. phone match (= users.phone → friends.user_id、 正規化付き)
- *
- * Note: shopify_customer_id 経由 lookup は別 service (shopify-customer-sync) で実装済のため、
- *       ここでは scope 外。 既存 friend 紐付けは shopify_orders.friend_id を信頼する。
+ *   2. **shopify_customer_id direct match** (= friends.shopify_customer_id = ?)
+ *      - migration 060 で friends に column 追加
+ *      - 1 Shopify customer ≦ 1 LINE friend 制約 (= UNIQUE index)
+ *      - LP launch 後 friend が LIFF で Shopify customer link 完了後に効果発揮
+ *   3. email match (= users.email → friends.user_id)
+ *   4. phone match (= users.phone → friends.user_id、 正規化付き)
  */
 export async function resolveFriendForOrder(
   db: D1Database,
   input: ResolveFriendInput,
-): Promise<{ friendId: string | null; matchedBy: 'existing' | 'email' | 'phone' | null }> {
+): Promise<{ friendId: string | null; matchedBy: MatchedBy }> {
   if (input.existingFriendId) {
     return { friendId: input.existingFriendId, matchedBy: 'existing' };
+  }
+  if (input.shopifyCustomerId) {
+    const friendByCustomer = await db
+      .prepare(`SELECT id FROM friends WHERE shopify_customer_id = ?`)
+      .bind(input.shopifyCustomerId)
+      .first<{ id: string }>();
+    if (friendByCustomer) {
+      return { friendId: friendByCustomer.id, matchedBy: 'customer_id' };
+    }
   }
   if (input.email) {
     const userByEmail = await db
@@ -109,7 +121,7 @@ export interface SyncOrderInput {
 export interface SyncOrderResult {
   event: AddPurchaseEventResult;
   promote: PromoteAndNotifyResult | null;
-  matchedBy: 'existing' | 'email' | 'phone' | null;
+  matchedBy: MatchedBy;
 }
 
 /**

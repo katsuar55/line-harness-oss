@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS friends (
   -- Phase 1 ULTRATHINK (migration 052、 2026-05-24): welcome 後 postback で取得する demographics
   -- 既存 `birthday` column (TEXT、 YYYY-MM-DD) とは別概念 — birth_month のみ 1-12 で持つ
   birth_month          INTEGER NULL CHECK (birth_month IS NULL OR (birth_month >= 1 AND birth_month <= 12)),
-  age_group            TEXT NULL CHECK (age_group IS NULL OR age_group IN ('10s', '20s', '30s', '40s', '50s', '60s', '70+')));
+  age_group            TEXT NULL CHECK (age_group IS NULL OR age_group IN ('10s', '20s', '30s', '40s', '50s', '60s', '70+')),
+  shopify_customer_id  TEXT);
 
 CREATE INDEX IF NOT EXISTS idx_friends_line_user_id ON friends (line_user_id);
 CREATE INDEX IF NOT EXISTS idx_friends_user_id ON friends (user_id);
@@ -2061,3 +2062,8 @@ CREATE INDEX IF NOT EXISTS idx_member_purchase_events_friend
   ON member_purchase_events(friend_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_member_purchase_events_unapplied
   ON member_purchase_events(applied_at) WHERE applied_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_friends_shopify_customer_id
+  ON friends(shopify_customer_id)
+  WHERE shopify_customer_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_friends_shopify_customer_id_lookup
+  ON friends(shopify_customer_id);
