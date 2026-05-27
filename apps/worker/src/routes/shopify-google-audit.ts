@@ -101,7 +101,9 @@ googleAudit.get('/api/google-audit/runs/:runId', async (c) => {
 googleAudit.post('/api/google-audit/issues/:id/apply', async (c) => {
   try {
     const issueId = c.req.param('id');
-    const body = await c.req.json<{ dryRun?: boolean; appliedBy?: string }>().catch(() => ({}));
+    const body = await c.req
+      .json<{ dryRun?: boolean; appliedBy?: string }>()
+      .catch(() => ({}) as { dryRun?: boolean; appliedBy?: string });
     const dryRun = body.dryRun === true;
     const appliedBy = body.appliedBy || 'admin-ui';
 

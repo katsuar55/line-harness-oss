@@ -1796,6 +1796,35 @@ CREATE TABLE IF NOT EXISTS product_audit_issues (
   created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+-- from 058_membership_tiers.sql
+CREATE TABLE IF NOT EXISTS membership_tiers (
+  id                    TEXT PRIMARY KEY,                -- e.g. 'bronze', 'silver'
+  name                  TEXT NOT NULL,                   -- 表示名 (= 「ブロンズ」 「シルバー」)
+  display_order         INTEGER NOT NULL,                -- sort order (= 1=bronze, 2=silver, ...)
+  min_total_purchase_jpy INTEGER NOT NULL DEFAULT 0,     -- 累計購入額の閾値 (= 円)
+  min_referral_count    INTEGER NOT NULL DEFAULT 0,      -- 紹介人数の閾値 (= alternative path)
+  perks                 TEXT,                            -- JSON: { discount_percent: 5, exclusive_products: [], priority_support: false, ... }
+  badge_emoji           TEXT,                            -- LIFF 表示用絵文字 (= 🥉 / 🥈 / 🥇 / 💎)
+  badge_color           TEXT,                            -- hex color (= UI tinting 用)
+  is_active             INTEGER NOT NULL DEFAULT 1,      -- 0/1
+  created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+-- from 058_membership_tiers.sql
+CREATE TABLE IF NOT EXISTS members (
+  id                    TEXT PRIMARY KEY,
+  friend_id             TEXT NOT NULL UNIQUE,            -- friends.id FK
+  current_tier_id       TEXT NOT NULL DEFAULT 'bronze',  -- membership_tiers.id FK
+  total_purchase_jpy    INTEGER NOT NULL DEFAULT 0,      -- 累計購入額 (= Shopify 連動で更新)
+  total_referral_count  INTEGER NOT NULL DEFAULT 0,      -- 紹介成功人数 (= referral_codes でカウント)
+  last_purchase_at      TEXT,                            -- 最終購入時刻
+  last_promotion_at     TEXT,                            -- 最終 tier 昇格時刻
+  joined_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -2001,3 +2030,11 @@ CREATE INDEX IF NOT EXISTS idx_pai_pending
   WHERE applied = 0;
 CREATE INDEX IF NOT EXISTS idx_pai_category
   ON product_audit_issues(category, severity);
+CREATE INDEX IF NOT EXISTS idx_membership_tiers_order
+  ON membership_tiers(display_order, is_active);
+CREATE INDEX IF NOT EXISTS idx_members_friend
+  ON members(friend_id);
+CREATE INDEX IF NOT EXISTS idx_members_tier
+  ON members(current_tier_id, total_purchase_jpy DESC);
+CREATE INDEX IF NOT EXISTS idx_members_purchase
+  ON members(total_purchase_jpy DESC);
