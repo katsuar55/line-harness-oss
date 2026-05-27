@@ -44,6 +44,7 @@ export * from './email-templates';
 export * from './ai-models-catalog';
 export * from './changelog-entries';
 export * from './google-merchant-audit';
+export * from './membership';
 
 /**
  * Thin wrapper around D1Database.
