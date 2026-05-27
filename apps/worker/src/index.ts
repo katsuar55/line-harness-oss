@@ -80,6 +80,7 @@ import { reorderAdmin } from './routes/reorder-admin.js';
 import { emailAdmin } from './routes/email-admin.js';
 import { aiModels } from './routes/ai-models.js';
 import { googleAudit } from './routes/shopify-google-audit.js';
+import { membership as membershipRoutes } from './routes/membership.js';
 import { processScheduledAbTests } from './services/ab-test.js';
 // Phase 1 (2026-04-26): processIntakeReminders は能動pull化により cron 停止。
 // 既存 service コードは残置 (将来オプトイン式に再活性化する可能性あり)。
@@ -256,6 +257,7 @@ app.route('/', reorderAdmin);
 app.route('/', emailAdmin);
 app.route('/', aiModels);
 app.route('/', googleAudit);
+app.route('/', membershipRoutes);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
