@@ -312,6 +312,175 @@ export async function getMembersByTier(
   return (result.results ?? []).map(rowToMember);
 }
 
+// ============================================================
+// purchase events (= Phase 4-γ Shopify orders 連動、 migration 059)
+// ============================================================
+
+export interface MemberPurchaseEventRow {
+  id: string;
+  shopify_order_id: string;
+  friend_id: string | null;
+  amount_jpy: number;
+  currency: string;
+  order_number: number | null;
+  email: string | null;
+  phone: string | null;
+  applied_at: string | null;
+  source: string;
+  metadata: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AddPurchaseEventInput {
+  shopifyOrderId: string;
+  friendId?: string | null;
+  amountJpy: number;
+  currency?: string;
+  orderNumber?: number | null;
+  email?: string | null;
+  phone?: string | null;
+  source?: 'webhook' | 'backfill' | 'manual';
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface AddPurchaseEventResult {
+  inserted: boolean;
+  applied: boolean;
+  eventId: string;
+  friendId: string | null;
+  amountJpy: number;
+  newTotalPurchaseJpy: number | null;
+  reason?: string;
+}
+
+/**
+ * Shopify order 1 件の購入 event を冪等に記録 + members.total_purchase_jpy を加算 (= Phase 4-γ entry)。
+ *
+ * 設計:
+ *   - shopify_order_id を UNIQUE key として冪等性確保 (= webhook 再送対策)
+ *   - friend_id NULL なら member 加算 skip (= audit only)
+ *   - 既存 event 検出時、 applied_at NULL なら再適用試行 (= 初回失敗 → 後段 retry path)
+ *   - members row が無ければ自動 INSERT (= bronze で seed)
+ */
+export async function addPurchaseEvent(
+  db: D1Database,
+  input: AddPurchaseEventInput,
+): Promise<AddPurchaseEventResult> {
+  const now = jstNow();
+  const existing = await db
+    .prepare(`SELECT * FROM member_purchase_events WHERE shopify_order_id = ?`)
+    .bind(input.shopifyOrderId)
+    .first<MemberPurchaseEventRow>();
+
+  let eventId: string;
+  let inserted = false;
+  if (existing) {
+    if (existing.applied_at) {
+      return {
+        inserted: false,
+        applied: true,
+        eventId: existing.id,
+        friendId: existing.friend_id,
+        amountJpy: existing.amount_jpy,
+        newTotalPurchaseJpy: null,
+        reason: 'duplicate (already applied)',
+      };
+    }
+    eventId = existing.id;
+  } else {
+    eventId = crypto.randomUUID();
+    await db
+      .prepare(
+        `INSERT INTO member_purchase_events (
+           id, shopify_order_id, friend_id, amount_jpy, currency,
+           order_number, email, phone, source, metadata, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        eventId,
+        input.shopifyOrderId,
+        input.friendId ?? null,
+        Math.max(0, Math.floor(input.amountJpy)),
+        input.currency ?? 'JPY',
+        input.orderNumber ?? null,
+        input.email ?? null,
+        input.phone ?? null,
+        input.source ?? 'webhook',
+        input.metadata ? JSON.stringify(input.metadata) : null,
+        now,
+        now,
+      )
+      .run();
+    inserted = true;
+  }
+
+  if (!input.friendId) {
+    return {
+      inserted,
+      applied: false,
+      eventId,
+      friendId: null,
+      amountJpy: input.amountJpy,
+      newTotalPurchaseJpy: null,
+      reason: 'friend not matched',
+    };
+  }
+
+  const member = await getMemberByFriendId(db, input.friendId);
+  const newTotal = (member?.totalPurchaseJpy ?? 0) + Math.max(0, Math.floor(input.amountJpy));
+  await upsertMember(db, {
+    friendId: input.friendId,
+    totalPurchaseJpy: newTotal,
+    lastPurchaseAt: now,
+  });
+
+  await db
+    .prepare(
+      `UPDATE member_purchase_events SET applied_at = ?, friend_id = ?, updated_at = ? WHERE id = ?`,
+    )
+    .bind(now, input.friendId, now, eventId)
+    .run();
+
+  return {
+    inserted,
+    applied: true,
+    eventId,
+    friendId: input.friendId,
+    amountJpy: input.amountJpy,
+    newTotalPurchaseJpy: newTotal,
+  };
+}
+
+export async function getPurchaseEventByOrderId(
+  db: D1Database,
+  shopifyOrderId: string,
+): Promise<MemberPurchaseEventRow | null> {
+  const row = await db
+    .prepare(`SELECT * FROM member_purchase_events WHERE shopify_order_id = ?`)
+    .bind(shopifyOrderId)
+    .first<MemberPurchaseEventRow>();
+  return row ?? null;
+}
+
+export async function listUnappliedPurchaseEvents(
+  db: D1Database,
+  limit = 100,
+): Promise<MemberPurchaseEventRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT * FROM member_purchase_events WHERE applied_at IS NULL
+        ORDER BY created_at ASC LIMIT ?`,
+    )
+    .bind(limit)
+    .all<MemberPurchaseEventRow>();
+  return result.results ?? [];
+}
+
+// ============================================================
+// stats
+// ============================================================
+
 export interface MembershipStats {
   totalMembers: number;
   byTier: Record<string, { count: number; totalPurchaseJpy: number }>;
