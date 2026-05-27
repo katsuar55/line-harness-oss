@@ -798,10 +798,23 @@ shopifyPhase2a.get('/api/integrations/shopify/coupons/assignments', async (c) =>
 });
 
 // =============================================
-// CRUD エンドポイント: 会員ランク
+// CRUD エンドポイント: 会員ランク (= ⚠️ DEPRECATED 2026-05-28、 詳細は docs/MEMBER_RANKS_DEPRECATION_2026-05-28.md)
+// 2026-06-15: 410 Gone に変更予定
+// 2026-07-15: migration 062 で member_ranks / friend_ranks DROP 予定
+// 新 API: /api/membership/* (= Phase 4-η PR #84)
 // =============================================
 
+/** Phase 4 deprecated rank API に X-Deprecation-Notice header を付与 */
+function addRanksDeprecationHeader(c: { header: (k: string, v: string) => void }): void {
+  c.header(
+    'X-Deprecation-Notice',
+    'This API is deprecated. Use /api/membership/* instead. See docs/MEMBER_RANKS_DEPRECATION_2026-05-28.md',
+  );
+  c.header('X-Sunset-Date', '2026-06-15');
+}
+
 shopifyPhase2a.get('/api/integrations/shopify/ranks', async (c) => {
+  addRanksDeprecationHeader(c);
   try {
     const items = await getMemberRanks(c.env.DB);
     return c.json({ success: true, data: items });
@@ -812,6 +825,7 @@ shopifyPhase2a.get('/api/integrations/shopify/ranks', async (c) => {
 });
 
 shopifyPhase2a.post('/api/integrations/shopify/ranks', async (c) => {
+  addRanksDeprecationHeader(c);
   try {
     const body = await c.req.json<{
       name: string;
@@ -845,6 +859,7 @@ shopifyPhase2a.post('/api/integrations/shopify/ranks', async (c) => {
 });
 
 shopifyPhase2a.put('/api/integrations/shopify/ranks/:id', async (c) => {
+  addRanksDeprecationHeader(c);
   try {
     const id = c.req.param('id');
     const body = await c.req.json<{
@@ -881,6 +896,7 @@ shopifyPhase2a.put('/api/integrations/shopify/ranks/:id', async (c) => {
 });
 
 shopifyPhase2a.delete('/api/integrations/shopify/ranks/:id', async (c) => {
+  addRanksDeprecationHeader(c);
   try {
     const id = c.req.param('id');
     const existing = await c.env.DB
@@ -901,6 +917,7 @@ shopifyPhase2a.delete('/api/integrations/shopify/ranks/:id', async (c) => {
 });
 
 shopifyPhase2a.get('/api/integrations/shopify/ranks/friend/:friendId', async (c) => {
+  addRanksDeprecationHeader(c);
   try {
     const friendId = c.req.param('friendId');
     const rank = await getFriendRank(c.env.DB, friendId);
@@ -917,6 +934,7 @@ shopifyPhase2a.get('/api/integrations/shopify/ranks/friend/:friendId', async (c)
 });
 
 shopifyPhase2a.post('/api/integrations/shopify/ranks/calculate/:friendId', async (c) => {
+  addRanksDeprecationHeader(c);
   try {
     const friendId = c.req.param('friendId');
     const rank = await calculateAndUpdateFriendRank(c.env.DB, friendId);
