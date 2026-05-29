@@ -118,15 +118,26 @@ async function requestNewToken(
   clientSecret: string,
 ): Promise<ShopifyTokenResponse> {
   const url = `https://${storeDomain}/admin/oauth/access_token`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'client_credentials',
-      client_id: clientId,
-      client_secret: clientSecret,
-    }),
-  });
+  // 5s timeout: follow event の coupon 発行は welcome reply の前に直列実行されるため、
+  // token endpoint が hang すると reply token 期限切れで welcome が届かない。
+  // timeout 時は throw → caller (webhook) が coupon なし welcome に safe fallback。
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: clientId,
+        client_secret: clientSecret,
+      }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!res.ok) {
     const body = await res.text();
