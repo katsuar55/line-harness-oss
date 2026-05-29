@@ -69,8 +69,10 @@ export async function resolveFriendForOrder(
     }
   }
   if (input.email) {
+    // email は case-insensitive 照合 (= Shopify は小文字化するが LINE/LIFF 登録は mixed-case 可)。
+    // COLLATE NOCASE で「Foo@Bar.com」 と「foo@bar.com」 の取り違えによる attribution miss を防ぐ。
     const userByEmail = await db
-      .prepare(`SELECT id FROM users WHERE email = ?`)
+      .prepare(`SELECT id FROM users WHERE email = ? COLLATE NOCASE`)
       .bind(input.email)
       .first<{ id: string }>();
     if (userByEmail) {
