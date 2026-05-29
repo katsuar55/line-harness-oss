@@ -62,10 +62,10 @@ async function findFriendByEmailOrPhone(
   email?: string,
   phone?: string,
 ): Promise<{ friendId: string; lineUserId: string | null } | null> {
-  // メールでフレンドを検索
+  // メールでフレンドを検索 (= case-insensitive、 COLLATE NOCASE で大文字小文字差の取りこぼし防止)
   if (email) {
     const userByEmail = await db
-      .prepare(`SELECT id FROM users WHERE email = ?`)
+      .prepare(`SELECT id FROM users WHERE email = ? COLLATE NOCASE`)
       .bind(email)
       .first<{ id: string }>();
     if (userByEmail) {

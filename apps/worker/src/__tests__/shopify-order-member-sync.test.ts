@@ -58,7 +58,15 @@ function makeDb(opts: { users?: MockUser[]; friends?: MockFriend[] }): D1Databas
         first: async () => {
           if (sql.includes('FROM users') && sql.includes('email = ?')) {
             const target = bound[0];
-            return users.find((u) => u.email === target) ?? null;
+            // COLLATE NOCASE 指定時は case-insensitive 照合をシミュレート
+            const ci = sql.includes('COLLATE NOCASE');
+            return (
+              users.find((u) =>
+                ci
+                  ? (u.email ?? '').toLowerCase() === String(target).toLowerCase()
+                  : u.email === target,
+              ) ?? null
+            );
           }
           if (sql.includes('FROM users') && sql.includes('phone = ?')) {
             const target = bound[0];
@@ -104,6 +112,16 @@ describe('resolveFriendForOrder', () => {
       friends: [{ id: 'friend-1', user_id: 'user-1' }],
     });
     const result = await resolveFriendForOrder(db, { email: 'a@example.com' });
+    expect(result).toEqual({ friendId: 'friend-1', matchedBy: 'email' });
+  });
+
+  it('matches by email case-insensitively (= COLLATE NOCASE)', async () => {
+    const { resolveFriendForOrder } = await loadService();
+    const db = makeDb({
+      users: [{ id: 'user-1', email: 'a@example.com' }],
+      friends: [{ id: 'friend-1', user_id: 'user-1' }],
+    });
+    const result = await resolveFriendForOrder(db, { email: 'A@Example.COM' });
     expect(result).toEqual({ friendId: 'friend-1', matchedBy: 'email' });
   });
 

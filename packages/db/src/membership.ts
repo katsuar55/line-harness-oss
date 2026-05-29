@@ -172,6 +172,11 @@ export function determineEligibleTier(
 ): MembershipTier {
   // display_order 降順で check、 first match が最高 tier
   const sorted = [...tiers].filter((t) => t.isActive).sort((a, b) => b.displayOrder - a.displayOrder);
+  if (sorted.length === 0) {
+    // active tier が 1 つも無い = 設定不整合。 undefined 返しでの caller crash より明示 throw が安全。
+    // (= 通常経路の promoteMemberIfEligible は tiers.length===0 で事前 guard 済、 ここは直接呼出の防御)
+    throw new Error('determineEligibleTier: no active membership tiers configured');
+  }
   for (const t of sorted) {
     const purchaseOk = totalPurchaseJpy >= t.minTotalPurchaseJpy;
     const referralOk = totalReferralCount >= t.minReferralCount;
@@ -180,8 +185,8 @@ export function determineEligibleTier(
       return t;
     }
   }
-  // fallback: 最低 tier (= bronze)
-  return sorted[sorted.length - 1] ?? sorted[0]!;
+  // fallback: 最低 tier (= display_order 最小 = sorted 末尾、 通常 bronze)
+  return sorted[sorted.length - 1]!;
 }
 
 // ============================================================
@@ -368,6 +373,10 @@ export async function addPurchaseEvent(
   input: AddPurchaseEventInput,
 ): Promise<AddPurchaseEventResult> {
   const now = jstNow();
+  // 金額正規化: NaN / Infinity / 負数 を 0 に丸める (= Shopify malformed payload 防御)。
+  // Number(undefined)→NaN や Number("abc")→NaN が member に NaN 加算されるのを防ぐ。
+  const amount = Math.max(0, Math.floor(Number.isFinite(input.amountJpy) ? input.amountJpy : 0));
+
   const existing = await db
     .prepare(`SELECT * FROM member_purchase_events WHERE shopify_order_id = ?`)
     .bind(input.shopifyOrderId)
@@ -401,7 +410,7 @@ export async function addPurchaseEvent(
         eventId,
         input.shopifyOrderId,
         input.friendId ?? null,
-        Math.max(0, Math.floor(input.amountJpy)),
+        amount,
         input.currency ?? 'JPY',
         input.orderNumber ?? null,
         input.email ?? null,
@@ -421,34 +430,62 @@ export async function addPurchaseEvent(
       applied: false,
       eventId,
       friendId: null,
-      amountJpy: input.amountJpy,
+      amountJpy: amount,
       newTotalPurchaseJpy: null,
       reason: 'friend not matched',
     };
   }
 
-  const member = await getMemberByFriendId(db, input.friendId);
-  const newTotal = (member?.totalPurchaseJpy ?? 0) + Math.max(0, Math.floor(input.amountJpy));
-  await upsertMember(db, {
-    friendId: input.friendId,
-    totalPurchaseJpy: newTotal,
-    lastPurchaseAt: now,
-  });
-
-  await db
+  // CAS claim: applied_at NULL → now を atomic に flip。
+  // 同一 order の並行処理/再配信でも changes=1 になるのは「最初の 1 回」 のみ → 二重加算を防ぐ
+  // (= F-5)。 claim 先行設計 = worker 中断時は「未加算」 に倒れる (= 過剰加算より under-count が安全)。
+  const claim = await db
     .prepare(
-      `UPDATE member_purchase_events SET applied_at = ?, friend_id = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE member_purchase_events
+          SET applied_at = ?, friend_id = ?, updated_at = ?
+        WHERE id = ? AND applied_at IS NULL`,
     )
     .bind(now, input.friendId, now, eventId)
     .run();
+  if ((claim.meta?.changes ?? 0) < 1) {
+    return {
+      inserted,
+      applied: true,
+      eventId,
+      friendId: input.friendId,
+      amountJpy: amount,
+      newTotalPurchaseJpy: null,
+      reason: 'already applied (concurrent)',
+    };
+  }
+
+  // members への atomic 加算 (= F-4 lost-update race fix)。
+  // read-modify-write を 1 文の `total_purchase_jpy = total_purchase_jpy + ?` に置換し、
+  // 異なる order の並行 webhook で片方の加算が消える bug を解消。
+  // members row が無ければ bronze で seed、 既存なら加算 (= ON CONFLICT、 friend_id は UNIQUE)。
+  await db
+    .prepare(
+      `INSERT INTO members (
+         id, friend_id, current_tier_id, total_purchase_jpy,
+         last_purchase_at, joined_at, created_at, updated_at
+       ) VALUES (?, ?, 'bronze', ?, ?, ?, ?, ?)
+       ON CONFLICT(friend_id) DO UPDATE SET
+         total_purchase_jpy = total_purchase_jpy + excluded.total_purchase_jpy,
+         last_purchase_at   = excluded.last_purchase_at,
+         updated_at         = excluded.updated_at`,
+    )
+    .bind(crypto.randomUUID(), input.friendId, amount, now, now, now, now)
+    .run();
+
+  const member = await getMemberByFriendId(db, input.friendId);
 
   return {
     inserted,
     applied: true,
     eventId,
     friendId: input.friendId,
-    amountJpy: input.amountJpy,
-    newTotalPurchaseJpy: newTotal,
+    amountJpy: amount,
+    newTotalPurchaseJpy: member?.totalPurchaseJpy ?? amount,
   };
 }
 
