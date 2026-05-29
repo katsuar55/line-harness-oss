@@ -103,9 +103,12 @@ export async function upsertFriend(
          WHERE line_user_id = ?`,
       )
       .bind(
-        'displayName' in input ? (input.displayName ?? null) : existing.display_name,
-        'pictureUrl' in input ? (input.pictureUrl ?? null) : existing.picture_url,
-        'statusMessage' in input ? (input.statusMessage ?? null) : existing.status_message,
+        // null/undefined は「値なし = 既存維持」。 profile 取得失敗 (= getProfile throw) や
+        // LIFF 由来 null での re-follow で、 既存の display_name 等を null 上書きしないため。
+        // (= 明示 null で「clear」 する用途は profile sync には無い)
+        input.displayName ?? existing.display_name,
+        input.pictureUrl ?? existing.picture_url,
+        input.statusMessage ?? existing.status_message,
         now,
         now,
         input.lineUserId,
