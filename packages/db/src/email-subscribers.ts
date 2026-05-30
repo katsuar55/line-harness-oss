@@ -215,6 +215,10 @@ export async function unsubscribeById(
 
 /**
  * 配信停止解除 (= 再 opt-in)。
+ *
+ * 過去に spam 苦情 (complaint) を出した subscriber は再有効化しない
+ * (= 特定電子メール法 / sender-reputation の保護)。 complaint_count > 0 の場合
+ * changes=0 で false を返す。 苦情者の復帰は意図的・監査付きの admin 操作でのみ行う。
  */
 export async function resubscribeById(
   db: D1Database,
@@ -226,7 +230,7 @@ export async function resubscribeById(
           SET is_active = 1,
               unsubscribed_at = NULL,
               updated_at = ?
-        WHERE id = ?`,
+        WHERE id = ? AND COALESCE(complaint_count, 0) = 0`,
     )
     .bind(jstNow(), subscriberId)
     .run();

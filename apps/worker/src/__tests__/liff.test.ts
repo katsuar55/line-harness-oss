@@ -196,6 +196,8 @@ function createApp() {
   app.use('/api/liff/orders', testLiffAuth);
   app.use('/api/liff/orders/*', testLiffAuth);
   app.use('/api/liff/orders-summary', testLiffAuth);
+  // /api/liff/profile now derives identity from the verified middleware (not body)
+  app.use('/api/liff/profile', testLiffAuth);
   app.route('/', liffRoutes);
   return app;
 }
@@ -352,6 +354,38 @@ describe('LIFF Routes', () => {
       expect(body.data.id).toBe('friend-1');
       expect(body.data.displayName).toBe('Test User');
       expect(body.data.isFollowing).toBe(true);
+    });
+
+    it('ignores body.lineUserId and uses the verified identity (IDOR regression)', async () => {
+      // Verified identity is fixed to friend-1; body carries a different victim id.
+      // The handler must return friend-1 (verified), never the body-supplied id.
+      const idApp = new Hono<Env>();
+      idApp.use('/api/liff/profile', async (c: any, next: () => Promise<void>) => {
+        c.set('liffUser', { lineUserId: 'U_EXISTING', friendId: 'friend-1' });
+        return next();
+      });
+      idApp.route('/', liffRoutes);
+      const res = await idApp.request('/api/liff/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_VICTIM_OTHER' }),
+      }, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { success: boolean; data: { id: string } };
+      expect(body.success).toBe(true);
+      expect(body.data.id).toBe('friend-1');
+    });
+
+    it('returns 401 when no verified identity is present', async () => {
+      // Profile mounted with NO liff auth middleware → c.get('liffUser') undefined.
+      const bareApp = new Hono<Env>();
+      bareApp.route('/', liffRoutes);
+      const res = await bareApp.request('/api/liff/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_EXISTING' }),
+      }, env);
+      expect(res.status).toBe(401);
     });
   });
 

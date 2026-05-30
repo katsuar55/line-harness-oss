@@ -168,6 +168,11 @@ describe('Shopify Auth Routes', () => {
       expect(location).toContain('https://custom-store.myshopify.com/admin/oauth/authorize');
     });
 
+    it('should reject (400) a non-myshopify.com shop param (token-exfil guard)', async () => {
+      const res = await app.request('/auth/shopify?shop=evil.example.com', {}, env);
+      expect(res.status).toBe(400);
+    });
+
     it('should save nonce state to D1', async () => {
       const mockPrepare = vi.fn(() => ({
         bind: vi.fn(() => ({
@@ -267,6 +272,18 @@ describe('Shopify Auth Routes', () => {
       const body = (await res.json()) as { success: boolean; error: string };
       expect(body.success).toBe(false);
       expect(body.error).toBe('Missing required parameters');
+    });
+
+    it('should reject (400) a non-myshopify.com shop on callback (token-exfil guard)', async () => {
+      // All params present, but shop is an attacker-controlled host → reject before token exchange.
+      const res = await app.request(
+        '/auth/shopify/callback?code=c&shop=evil.example.com&state=s&hmac=abc123',
+        {},
+        env,
+      );
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body.error).toBe('Invalid shop domain');
     });
 
     it('should fail with 400 when state is invalid (not found in D1)', async () => {

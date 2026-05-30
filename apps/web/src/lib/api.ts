@@ -88,7 +88,12 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
       ...options?.headers,
     },
   })
-  if (!res.ok) throw new Error(`API error: ${res.status}`)
+  if (!res.ok) {
+    // Surface the server's structured { success:false, error } message instead of
+    // a bare status code, so the ~25 callers can show a meaningful error.
+    const body = (await res.json().catch(() => null)) as { error?: string } | null
+    throw new Error(body?.error || `API error: ${res.status}`)
+  }
   return res.json() as Promise<T>
 }
 

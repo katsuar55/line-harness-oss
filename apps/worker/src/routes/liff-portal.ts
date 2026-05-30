@@ -284,6 +284,11 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
       // Reorder from past order
       const order = await getShopifyOrderById(c.env.DB, orderId);
       if (!order) return c.json({ success: false, error: 'Order not found' }, 404);
+      // Ownership check (IDOR guard): a verified friend may only reorder their OWN
+      // order. Return 404 (not 403) so the endpoint is not an order-existence oracle.
+      if ((order as unknown as { friend_id?: string }).friend_id !== user.friendId) {
+        return c.json({ success: false, error: 'Order not found' }, 404);
+      }
 
       const parsed = order.line_items ? JSON.parse(order.line_items as string) : [];
       lineItems = parsed
