@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS loyalty_rank_snapshots (
 CREATE INDEX IF NOT EXISTS idx_loyalty_rank_snapshots_friend
   ON loyalty_rank_snapshots(friend_id, evaluated_at DESC);
 
+-- period 内の rank 分布集計 (= 将来 admin stats: GROUP BY rank_id WHERE period=?) 用 covering index
 CREATE INDEX IF NOT EXISTS idx_loyalty_rank_snapshots_period
   ON loyalty_rank_snapshots(period, rank_id);
 

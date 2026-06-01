@@ -67,7 +67,8 @@ export async function getLatestRankSnapshot(
 ): Promise<RankSnapshot | null> {
   const row = await db
     .prepare(
-      `SELECT * FROM loyalty_rank_snapshots
+      `SELECT id, friend_id, period, rank_id, trailing_12mo_jpy, prev_rank_id, direction, brand_id, evaluated_at, created_at
+         FROM loyalty_rank_snapshots
         WHERE friend_id = ?
         ORDER BY evaluated_at DESC
         LIMIT 1`,
@@ -85,7 +86,8 @@ export async function getRankSnapshotForPeriod(
 ): Promise<RankSnapshot | null> {
   const row = await db
     .prepare(
-      `SELECT * FROM loyalty_rank_snapshots WHERE friend_id = ? AND period = ?`,
+      `SELECT id, friend_id, period, rank_id, trailing_12mo_jpy, prev_rank_id, direction, brand_id, evaluated_at, created_at
+         FROM loyalty_rank_snapshots WHERE friend_id = ? AND period = ?`,
     )
     .bind(friendId, period)
     .first<RankSnapshotRow>();
@@ -103,7 +105,8 @@ export async function getPreviousRankSnapshot(
 ): Promise<RankSnapshot | null> {
   const row = await db
     .prepare(
-      `SELECT * FROM loyalty_rank_snapshots
+      `SELECT id, friend_id, period, rank_id, trailing_12mo_jpy, prev_rank_id, direction, brand_id, evaluated_at, created_at
+         FROM loyalty_rank_snapshots
         WHERE friend_id = ? AND period < ?
         ORDER BY period DESC, evaluated_at DESC
         LIMIT 1`,
@@ -148,6 +151,7 @@ export async function recordRankSnapshot(
          trailing_12mo_jpy = excluded.trailing_12mo_jpy,
          prev_rank_id      = excluded.prev_rank_id,
          direction         = excluded.direction,
+         brand_id          = excluded.brand_id,
          evaluated_at      = excluded.evaluated_at`,
     )
     .bind(
@@ -174,7 +178,8 @@ export async function listDemotionsForPeriod(
 ): Promise<RankSnapshot[]> {
   const result = await db
     .prepare(
-      `SELECT * FROM loyalty_rank_snapshots
+      `SELECT id, friend_id, period, rank_id, trailing_12mo_jpy, prev_rank_id, direction, brand_id, evaluated_at, created_at
+         FROM loyalty_rank_snapshots
         WHERE period = ? AND direction = 'down'
         ORDER BY evaluated_at DESC
         LIMIT ?`,

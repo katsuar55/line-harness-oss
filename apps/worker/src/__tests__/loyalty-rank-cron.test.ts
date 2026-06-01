@@ -258,4 +258,29 @@ describe('processLoyaltyRankReeval', () => {
     expect(snaps.filter((s) => s.friend_id === 'f1' && s.period === '2026-05').length).toBe(1);
     expect(snaps[0].direction).toBe('initial');
   });
+
+  it('2 期間で昇格検知 (bronze→gold, direction up + promotedFriendIds)', async () => {
+    const events: EvtSeed[] = [
+      { friend_id: 'f1', amount_jpy: 5000, applied_at: 'x', created_at: '2026-04-01T00:00:00.000+09:00' },
+    ];
+    const { db, snaps } = makeDb({ members: ['f1'], events });
+    const env: LoyaltyRankCronEnv = { DB: db, LOYALTY_RANK_CRON_FORCE: 'true' };
+    await processLoyaltyRankReeval(env, { now: may1_0905 }); // 2026-05: 5000 → bronze (initial)
+    events.push({ friend_id: 'f1', amount_jpy: 30000, applied_at: 'x', created_at: '2026-05-20T00:00:00.000+09:00' }); // 新規購入
+    const r2 = await processLoyaltyRankReeval(env, { now: jun1_0905 }); // 2026-06: 35000 → gold (up)
+    expect(r2.promoted).toBe(1);
+    expect(r2.promotedFriendIds).toEqual(['f1']);
+    const jun = snaps.find((s) => s.period === '2026-06');
+    expect(jun?.rank_id).toBe('gold');
+    expect(jun?.direction).toBe('up');
+    expect(jun?.prev_rank_id).toBe('bronze');
+  });
+
+  it('FORCE なしでも JST 1日 09:05 の gating window で発火', async () => {
+    const { db } = makeDb({ members: [] });
+    const env: LoyaltyRankCronEnv = { DB: db };
+    const r = await processLoyaltyRankReeval(env, { now: may1_0905 });
+    expect(r.skippedDueToGating).toBe(false);
+    expect(r.period).toBe('2026-05');
+  });
 });

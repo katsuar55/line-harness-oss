@@ -58,7 +58,10 @@ interface ProcessOptions {
   now?: Date;
 }
 
-/** JST Date から 'YYYY-MM' period 文字列を作る。 */
+/**
+ * JST_OFFSET shift 済 Date から 'YYYY-MM' period 文字列を作る。
+ * getUTC* で JST wall-clock の年月を読む (= toJstString と同パターン、 将来の誤"修正"予防)。
+ */
 function toPeriod(jst: Date): string {
   const y = jst.getUTCFullYear();
   const m = String(jst.getUTCMonth() + 1).padStart(2, '0');
@@ -103,6 +106,8 @@ export async function processLoyaltyRankReeval(
   }
 
   // members = 購入実績のある friend (= addPurchaseEvent が seed)。 regular(購入0)は評価不要。
+  // NOTE: 現 naturism 規模 (数百) は無制限 SELECT で可。 ~1,000 member 到達前に paginate +
+  // direction==='same' の skip-write を検討 (= PR#94 review S-2、 D1 write 上限対策)。
   const result = await env.DB.prepare(`SELECT friend_id FROM members`).all<{ friend_id: string }>();
   const rows = result.results ?? [];
 
