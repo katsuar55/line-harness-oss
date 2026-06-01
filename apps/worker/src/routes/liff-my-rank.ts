@@ -139,22 +139,25 @@ let idToken = null;
 
 function esc(s){ if(s===null||s===undefined) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function yen(n){ try{ return '\\u00A5' + Number(n||0).toLocaleString('ja-JP'); }catch(e){ return '\\u00A5' + (n||0); } }
+// badgeColor は style 属性に入るため HTML-escape では不十分 (CSS injection 防止)。hex のみ allowlist 正規化。
+// multi-brand で badge_color が DB ソース化しても安全 (= 現状 hardcoded だが将来 brand_config 由来になる)。
+function safeColor(c){ return /^#[0-9A-Fa-f]{3,8}$/.test(String(c)) ? String(c) : '#0ABAB5'; }
 
 function renderRank(d){
   var rank = d.rank || {};
-  var color = rank.badgeColor || '#0ABAB5';
+  var color = safeColor(rank.badgeColor || '#0ABAB5');
   var emoji = rank.badgeEmoji || '\\u2728';
-  var pct = rank.discountPercent || 0;
+  var pct = Number.isFinite(rank.discountPercent) ? Math.floor(rank.discountPercent) : 0;
   var card = document.getElementById('rank-card');
   card.className = 'card p-6 pop';
   card.style.display = 'block';
   card.innerHTML =
     '<div class="text-center">' +
-      '<div class="badge-glow" style="font-size:64px;line-height:1">' + emoji + '</div>' +
-      '<p class="mt-2 text-xs tracking-widest font-semibold" style="color:' + esc(color) + '">YOUR RANK</p>' +
+      '<div class="badge-glow" style="font-size:64px;line-height:1">' + esc(emoji) + '</div>' +
+      '<p class="mt-2 text-xs tracking-widest font-semibold" style="color:' + color + '">YOUR RANK</p>' +
       '<p class="text-2xl font-extrabold text-gray-800 mt-1">' + esc(rank.name) + '</p>' +
       (pct > 0
-        ? '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-white text-sm font-bold" style="background:' + esc(color) + '">' + pct + '% OFF 常時割引</div>'
+        ? '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-white text-sm font-bold" style="background:' + color + '">' + pct + '% OFF 常時割引</div>'
         : '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-gray-600 text-sm font-bold" style="background:#f1f5f9">まずは1回のお買い物でブロンズ会員に</div>') +
       '<p class="text-xs text-gray-400 mt-4">直近12ヶ月のお買い上げ ' + esc(yen(d.trailing12moJpy)) + '</p>' +
     '</div>';

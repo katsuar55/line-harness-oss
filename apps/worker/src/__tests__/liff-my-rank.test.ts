@@ -83,11 +83,19 @@ describe('GET /api/liff/my-rank', () => {
     expect(body.data.official).toBeNull();
   });
 
-  it('regular (¥0): 0% + 次=bronze', async () => {
+  it('regular (¥0): 0% + 次=bronze + progressRatio 0', async () => {
     const { body } = await callApi(makeApp(USER), makeDb(0));
     expect(body.data.rank.id).toBe('regular');
     expect(body.data.rank.discountPercent).toBe(0);
     expect(body.data.next.id).toBe('bronze');
+    expect(body.data.next.remainingJpy).toBe(1);
+    expect(body.data.progressRatio).toBe(0);
+  });
+
+  it('¥1 境界: bronze (2%)', async () => {
+    const { body } = await callApi(makeApp(USER), makeDb(1));
+    expect(body.data.rank.id).toBe('bronze');
+    expect(body.data.rank.discountPercent).toBe(2);
   });
 
   it('platinum (¥50,000): 8% + next=null (最高ランク)', async () => {
