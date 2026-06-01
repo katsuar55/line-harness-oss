@@ -27,13 +27,22 @@ export function toJstString(date: Date): string {
  * the trailing-12-month loyalty rank. The result is lexically comparable with
  * stored `created_at` values (same fixed-width `+09:00` format), so it can be
  * used directly in `created_at >= ?` SQL bounds.
+ *
+ * Month-end days are clamped: subtracting months from e.g. `3/31` would let
+ * `setUTCMonth` roll forward into the next month (Feb has no 31st → `3/3`), so
+ * we detect the day change and snap back to the last day of the target month.
  */
 export function isoMonthsAgo(months: number, asOf?: string): string {
   const base = asOf ? new Date(asOf) : new Date();
   // Shift to JST wall clock, subtract whole months on that wall clock, then
   // re-stamp the +09:00 suffix — mirrors toJstString so comparisons line up.
   const jst = new Date(base.getTime() + JST_OFFSET_MS);
+  const originalDay = jst.getUTCDate();
   jst.setUTCMonth(jst.getUTCMonth() - months);
+  // overflow した (= day が変わった) 場合は対象月の末日へ clamp (setUTCDate(0) = 前月末日)。
+  if (jst.getUTCDate() !== originalDay) {
+    jst.setUTCDate(0);
+  }
   return jst.toISOString().slice(0, -1) + '+09:00';
 }
 

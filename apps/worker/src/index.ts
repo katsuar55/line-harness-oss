@@ -92,6 +92,7 @@ import { processWeeklyCoachPush } from './services/weekly-coach-push.js';
 import { processCronMonitor } from './services/cron-monitor.js';
 import { processBirthdayGreetings } from './services/birthday-cron.js';
 import { processMembershipPromotionSanity } from './services/membership-promotion-cron.js';
+import { processLoyaltyRankReeval } from './services/loyalty-rank-cron.js';
 import { syncAiModelsCatalog } from './services/ai-models-catalog.js';
 import { syncCloudflareChangelog } from './services/cloudflare-changelog-sync.js';
 import { processEmailFailureMonitor } from './services/email-failure-monitor.js';
@@ -525,6 +526,23 @@ async function scheduled(
       }
     }).catch((err) =>
       console.error('membership-promotion-sanity failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // 自社内製ロイヤリティ (2026-06-01, PR2): 月次 rank 再判定 cron
+  //   - 月初 1 日 09:05 JST ± 5 分 のみ実行 (= membership 09:00 と分離、 service 側で gating)
+  //   - 全 member の trailing-12ヶ月 rank を再判定 → loyalty_rank_snapshots に記録 (昇格/降格/同)
+  //   - LOYALTY_RANK_CRON_FORCE='true' で gating bypass
+  jobs.push(
+    withHeartbeat(env.DB, 'loyalty-rank-reeval', () =>
+      processLoyaltyRankReeval(env as unknown as Parameters<typeof processLoyaltyRankReeval>[0]),
+      (r) => ({ candidates: r.candidates, promoted: r.promoted, demoted: r.demoted, errors: r.errors, skippedGating: r.skippedDueToGating }),
+    ).then((r) => {
+      if (r.promoted > 0 || r.demoted > 0) {
+        console.info(`loyalty-rank-reeval: period=${r.period} promoted=${r.promoted} demoted=${r.demoted} unchanged=${r.unchanged} errors=${r.errors}`);
+      }
+    }).catch((err) =>
+      console.error('loyalty-rank-reeval failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 

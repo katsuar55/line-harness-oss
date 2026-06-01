@@ -1843,6 +1843,21 @@ CREATE TABLE IF NOT EXISTS member_purchase_events (
   updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+-- from 061_loyalty_rank_snapshots.sql
+CREATE TABLE IF NOT EXISTS loyalty_rank_snapshots (
+  id                 TEXT PRIMARY KEY,
+  friend_id          TEXT NOT NULL,                   -- friends.id
+  period             TEXT NOT NULL,                   -- 'YYYY-MM' (= 評価対象月、 同月冪等 key)
+  rank_id            TEXT NOT NULL,                   -- regular/bronze/silver/gold/platinum
+  trailing_12mo_jpy  INTEGER NOT NULL DEFAULT 0,      -- 算出時の trailing-12ヶ月 購入額
+  prev_rank_id       TEXT,                            -- 前 snapshot の rank (= 降格/昇格検知)
+  direction          TEXT NOT NULL DEFAULT 'initial', -- 'initial' | 'up' | 'down' | 'same'
+  brand_id           TEXT,                            -- multi-brand (= NULL は naturism default)
+  evaluated_at       TEXT NOT NULL,                   -- 算出時点 (JST)
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE(friend_id, period)
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -2067,3 +2082,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_friends_shopify_customer_id
   WHERE shopify_customer_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_friends_shopify_customer_id_lookup
   ON friends(shopify_customer_id);
+CREATE INDEX IF NOT EXISTS idx_loyalty_rank_snapshots_friend
+  ON loyalty_rank_snapshots(friend_id, evaluated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_loyalty_rank_snapshots_period
+  ON loyalty_rank_snapshots(period, rank_id);
+CREATE INDEX IF NOT EXISTS idx_loyalty_rank_snapshots_demotion
+  ON loyalty_rank_snapshots(period, direction);
