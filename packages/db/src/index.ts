@@ -1,4 +1,4 @@
-export { jstNow, toJstString, isTimeBefore } from './utils';
+export { jstNow, toJstString, isTimeBefore, isoMonthsAgo } from './utils';
 export * from './friends';
 export * from './tags';
 export * from './scenarios';
@@ -45,6 +45,7 @@ export * from './ai-models-catalog';
 export * from './changelog-entries';
 export * from './google-merchant-audit';
 export * from './membership';
+export * from './loyalty-rank';
 
 /**
  * Thin wrapper around D1Database.
