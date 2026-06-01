@@ -45,6 +45,7 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
         discountPercent: resolved.rank.discountPercent,
         badgeEmoji: resolved.rank.badgeEmoji ?? null,
         badgeColor: resolved.rank.badgeColor ?? null,
+        badgeImageUrl: resolved.rank.badgeImageUrl ?? null,
       },
       trailing12moJpy: resolved.trailing12moJpy,
       next: p.next
@@ -138,7 +139,7 @@ const LIFF_ID = '${escapeHtml(liffId)}';
 const API_BASE = '${escapeHtml(apiBase)}';
 let idToken = null;
 // ?demo=1 でサンプル会員証を表示 (= LINE 文脈外でも UI 確認用、 認証/実データ不要)。
-var DEMO_DATA = { rank: { id: 'silver', name: 'シルバー', discountPercent: 4, badgeEmoji: '\\uD83E\\uDD48', badgeColor: '#C0C0C0' }, trailing12moJpy: 15000, next: { id: 'gold', name: 'ゴールド', remainingJpy: 9000 }, progressRatio: 0.25, official: null };
+var DEMO_DATA = { rank: { id: 'silver', name: 'シルバー', discountPercent: 4, badgeEmoji: '\\uD83E\\uDD48', badgeColor: '#C0C0C0', badgeImageUrl: '/images/rank-silver.png' }, trailing12moJpy: 15000, next: { id: 'gold', name: 'ゴールド', remainingJpy: 9000 }, progressRatio: 0.25, official: null };
 
 function esc(s){ if(s===null||s===undefined) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function yen(n){ try{ return '\\u00A5' + Number(n||0).toLocaleString('ja-JP'); }catch(e){ return '\\u00A5' + (n||0); } }
@@ -151,12 +152,16 @@ function renderRank(d){
   var color = safeColor(rank.badgeColor || '#0ABAB5');
   var emoji = rank.badgeEmoji || '\\u2728';
   var pct = Number.isFinite(rank.discountPercent) ? Math.floor(rank.discountPercent) : 0;
+  var imgUrl = rank.badgeImageUrl;
+  var badgeHtml = imgUrl
+    ? '<img id="badge-img" src="' + esc(imgUrl) + '" alt="' + esc(rank.name) + '" style="width:148px;height:148px;object-fit:contain;display:block;margin:0 auto;filter:drop-shadow(0 8px 18px rgba(0,0,0,.12))"><div id="badge-fallback" class="badge-glow" style="display:none;font-size:64px;line-height:1">' + esc(emoji) + '</div>'
+    : '<div class="badge-glow" style="font-size:64px;line-height:1">' + esc(emoji) + '</div>';
   var card = document.getElementById('rank-card');
   card.className = 'card p-6 pop';
   card.style.display = 'block';
   card.innerHTML =
     '<div class="text-center">' +
-      '<div class="badge-glow" style="font-size:64px;line-height:1">' + esc(emoji) + '</div>' +
+      badgeHtml +
       '<p class="mt-2 text-xs tracking-widest font-semibold" style="color:' + color + '">YOUR RANK</p>' +
       '<p class="text-2xl font-extrabold text-gray-800 mt-1">' + esc(rank.name) + '</p>' +
       (pct > 0
@@ -164,6 +169,12 @@ function renderRank(d){
         : '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-gray-600 text-sm font-bold" style="background:#f1f5f9">まずは1回のお買い物でブロンズ会員に</div>') +
       '<p class="text-xs text-gray-400 mt-4">直近12ヶ月のお買い上げ ' + esc(yen(d.trailing12moJpy)) + '</p>' +
     '</div>';
+  // 画像が無い/読込失敗時は emoji にフォールバック (inline onerror を避け JS で attach)。
+  var bimg = document.getElementById('badge-img');
+  if (bimg) {
+    bimg.onerror = function(){ bimg.style.display = 'none'; var f = document.getElementById('badge-fallback'); if (f) f.style.display = 'block'; };
+    if (bimg.complete && bimg.naturalWidth === 0) { bimg.onerror(); }
+  }
 }
 
 function renderProgress(d){
