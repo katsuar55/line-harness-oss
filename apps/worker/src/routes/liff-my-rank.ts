@@ -115,6 +115,7 @@ function myRankPage(liffId: string, apiBase: string): string {
   </header>
 
   <main class="max-w-lg mx-auto px-4 py-5 space-y-4" id="main">
+    <div id="demo-note" style="display:none;background:#fef9c3;color:#854d0e;border:1px solid #fde68a;border-radius:10px;padding:8px 12px;font-size:12px;text-align:center;">&#x1F441; これはデモ表示です（サンプルデータ）。実際のランクは LINE 内で表示されます。</div>
     <section id="card-skeleton" class="card p-6">
       <div class="skeleton h-32 rounded-2xl"></div>
     </section>
@@ -136,6 +137,8 @@ function myRankPage(liffId: string, apiBase: string): string {
 const LIFF_ID = '${escapeHtml(liffId)}';
 const API_BASE = '${escapeHtml(apiBase)}';
 let idToken = null;
+// ?demo=1 でサンプル会員証を表示 (= LINE 文脈外でも UI 確認用、 認証/実データ不要)。
+var DEMO_DATA = { rank: { id: 'silver', name: 'シルバー', discountPercent: 4, badgeEmoji: '\\uD83E\\uDD48', badgeColor: '#C0C0C0' }, trailing12moJpy: 15000, next: { id: 'gold', name: 'ゴールド', remainingJpy: 9000 }, progressRatio: 0.25, official: null };
 
 function esc(s){ if(s===null||s===undefined) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function yen(n){ try{ return '\\u00A5' + Number(n||0).toLocaleString('ja-JP'); }catch(e){ return '\\u00A5' + (n||0); } }
@@ -212,6 +215,12 @@ async function loadRank(){
 
 async function initLiff(){
   try {
+    if (new URLSearchParams(location.search).get('demo') === '1'){
+      renderRank(DEMO_DATA); renderProgress(DEMO_DATA);
+      var dn = document.getElementById('demo-note'); if (dn) dn.style.display = 'block';
+      document.getElementById('card-skeleton').style.display = 'none';
+      return;
+    }
     if (!LIFF_ID) throw new Error('LIFF_ID not configured');
     await liff.init({ liffId: LIFF_ID });
     if (!liff.isLoggedIn()){ liff.login(); return; }
