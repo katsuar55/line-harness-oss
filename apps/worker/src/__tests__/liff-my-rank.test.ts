@@ -22,7 +22,19 @@ interface SnapshotRowLike {
   created_at: string;
 }
 
-function makeDb(trailingTotal: number, snapshot: SnapshotRowLike | null = null): D1Database {
+interface CouponRowLike {
+  code: string;
+  title: string;
+  discount_type: string;
+  discount_value: number;
+  expires_at: string | null;
+}
+
+function makeDb(
+  trailingTotal: number,
+  snapshot: SnapshotRowLike | null = null,
+  coupons: CouponRowLike[] = [],
+): D1Database {
   return {
     prepare(sql: string) {
       const stmt = {
@@ -39,6 +51,10 @@ function makeDb(trailingTotal: number, snapshot: SnapshotRowLike | null = null):
           return null;
         },
         async all<T>(): Promise<{ results: T[]; success: boolean }> {
+          // getCouponAssignmentsByFriend は shopify_coupon_assignments を all() で読む
+          if (sql.includes('shopify_coupon_assignments')) {
+            return { results: coupons as unknown as T[], success: true };
+          }
           return { results: [], success: true };
         },
         async run(): Promise<{ success: boolean; meta: { changes: number } }> {
@@ -116,9 +132,86 @@ describe('GET /api/liff/my-rank', () => {
     expect(body.data.official).toEqual({ rankId: 'gold', period: '2026-06', direction: 'up' });
   });
 
+  it('ladder: 全ランク (regular〜platinum) を defs 由来で返す', async () => {
+    const { body } = await callApi(makeApp(USER), makeDb(15000));
+    expect(Array.isArray(body.data.ladder)).toBe(true);
+    expect(body.data.ladder.map((r: any) => r.id)).toEqual(['regular', 'bronze', 'silver', 'gold', 'platinum']);
+    const platinum = body.data.ladder.find((r: any) => r.id === 'platinum');
+    expect(platinum.discountPercent).toBe(8);
+    expect(platinum.minTrailing12moJpy).toBe(45000);
+  });
+
+  it('coupons: 未使用クーポンを code/title/割引/期限にマップ', async () => {
+    const coupons = [
+      { code: 'LINE-ABC123', title: '友だちクーポン', discount_type: 'fixed_amount', discount_value: 500, expires_at: '2026-06-30T14:59:59Z' },
+    ];
+    const { body } = await callApi(makeApp(USER), makeDb(15000, null, coupons));
+    expect(body.data.coupons).toHaveLength(1);
+    expect(body.data.coupons[0]).toEqual({
+      code: 'LINE-ABC123', title: '友だちクーポン', discountType: 'fixed_amount', discountValue: 500, expiresAt: '2026-06-30T14:59:59Z',
+    });
+  });
+
+  it('coupons: 無い場合は空配列', async () => {
+    const { body } = await callApi(makeApp(USER), makeDb(15000));
+    expect(body.data.coupons).toEqual([]);
+  });
+
   it('liffUser 未設定 → 401', async () => {
     const { status, body } = await callApi(makeApp(null), makeDb(15000));
     expect(status).toBe(401);
     expect(body.success).toBe(false);
+  });
+});
+
+describe('GET /liff/my-rank (会員証ページ HTML)', () => {
+  const env = {
+    LIFF_URL: 'https://liff.line.me/2000000000-abcd1234',
+    WORKER_URL: 'https://example.workers.dev',
+    SHOPIFY_STORE_DOMAIN: 'naturism-diet.com',
+  };
+  async function fetchPage(path = '/liff/my-rank'): Promise<{ status: number; body: string }> {
+    const res = await liffMyRank.request(path, {}, env as unknown as Record<string, unknown>);
+    return { status: res.status, body: await res.text() };
+  }
+
+  it('200 + LIFF SDK + LIFF_ID 注入', async () => {
+    const r = await fetchPage();
+    expect(r.status).toBe(200);
+    expect(r.body).toContain("const LIFF_ID = '2000000000-abcd1234'");
+    expect(r.body).toMatch(/static\.line-scdn\.net\/liff\/edge\/2\/sdk\.js/);
+  });
+
+  it('末尾スラッシュも 200', async () => {
+    expect((await fetchPage('/liff/my-rank/')).status).toBe(200);
+  });
+
+  it('英語ランク名マップ (SILVER / PLATINUM 等) を含む', async () => {
+    const r = await fetchPage();
+    expect(r.body).toContain("silver:'SILVER'");
+    expect(r.body).toContain("platinum:'PLATINUM'");
+  });
+
+  it('メダル背景を radial mask で透明化する CSS を含む', async () => {
+    const r = await fetchPage();
+    expect(r.body).toContain('-webkit-mask-image:radial-gradient');
+    expect(r.body).toContain('mask-image:radial-gradient');
+  });
+
+  it('新要素 (次回判定日 / 保有クーポン / 会員ランクについて) を含む', async () => {
+    const r = await fetchPage();
+    expect(r.body).toContain('次回の会員ランク判定日');
+    expect(r.body).toContain('保有クーポン');
+    expect(r.body).toContain('会員ランクについて');
+  });
+
+  it('店舗 CTA に SHOPIFY_STORE_DOMAIN を使う', async () => {
+    const r = await fetchPage();
+    expect(r.body).toContain('https://naturism-diet.com');
+  });
+
+  it('テンプレートリテラル汚染なし (未展開の ${ が body に残らない)', async () => {
+    const r = await fetchPage();
+    expect(r.body).not.toContain('${');
   });
 });
