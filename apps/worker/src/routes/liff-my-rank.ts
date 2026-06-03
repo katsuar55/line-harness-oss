@@ -93,7 +93,8 @@ function escapeHtml(str: string): string {
 const myRankPageHandler = (c: { env: Env['Bindings']; html: (html: string) => Response }) => {
   const liffUrl = c.env.LIFF_URL || '';
   const workerUrl = c.env.WORKER_URL || '';
-  const storeDomain = c.env.SHOPIFY_STORE_DOMAIN || 'naturism-diet.com';
+  // 顧客向けストア導線は公式ストアフロント。SHOPIFY_STORE_DOMAIN は Admin/API 用ドメイン (xn--...myshopify.com) なので使わない。
+  const storeDomain = 'naturism-diet.com';
   const liffId = liffUrl.replace('https://liff.line.me/', '');
   return c.html(myRankPage(liffId, workerUrl, storeDomain));
 };
@@ -209,6 +210,8 @@ function esc(s){ if(s===null||s===undefined) return ''; return String(s).replace
 function yen(n){ try{ return '¥' + Number(n||0).toLocaleString('ja-JP'); }catch(e){ return '¥' + (n||0); } }
 // badgeColor は style 属性に入るため HTML-escape では不十分 (CSS injection 防止)。hex のみ allowlist 正規化。
 function safeColor(c){ return /^#[0-9A-Fa-f]{3,8}$/.test(String(c)) ? String(c) : '#0ABAB5'; }
+// 背景色の明度から読みやすい文字色を選ぶ (= 明るい金/銀バッジに白文字で潰れるのを防止)。
+function textOn(hex){ var h=String(hex).replace('#',''); if(h.length===3){ h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2]; } var r=parseInt(h.substr(0,2),16),g=parseInt(h.substr(2,2),16),b=parseInt(h.substr(4,2),16); if(isNaN(r)) return '#ffffff'; return (0.299*r+0.587*g+0.114*b)/255 > 0.62 ? '#1f2937' : '#ffffff'; }
 // rank id → 英語表示名 (この画面はランク名を英語で大きく見せる)。
 function enName(id){ var m={regular:'REGULAR',bronze:'BRONZE',silver:'SILVER',gold:'GOLD',platinum:'PLATINUM'}; return m[id] || (id ? String(id).toUpperCase() : 'MEMBER'); }
 // 次回判定日 = 毎月1日 (今日が1日ならば今日、 そうでなければ翌月1日)。ブラウザ local = JST。
@@ -237,6 +240,7 @@ function copyCode(code){
 function renderRank(d){
   var rank = d.rank || {};
   var color = safeColor(rank.badgeColor || '#0ABAB5');
+  var txt = textOn(color);
   var emoji = rank.badgeEmoji || '✨';
   var pct = Number.isFinite(rank.discountPercent) ? Math.floor(rank.discountPercent) : 0;
   var imgUrl = rank.badgeImageUrl;
@@ -256,7 +260,7 @@ function renderRank(d){
         '<p class="en text-4xl font-extrabold mt-0.5" style="color:#1f2937;letter-spacing:.02em">'+esc(enName(rank.id))+'</p>' +
         '<p class="text-xs text-gray-400 mt-0.5">'+esc(rank.name)+'会員</p>' +
         (pct > 0
-          ? '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-white text-sm font-bold shadow" style="background:linear-gradient(135deg,'+color+','+color+'cc)">'+pct+'% OFF 常時割引</div>'
+          ? '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-sm font-bold shadow" style="background:linear-gradient(135deg,'+color+','+color+'cc);color:'+txt+'">'+pct+'% OFF 常時割引</div>'
           : '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-gray-600 text-sm font-bold" style="background:#f1f5f9">まずは1回のお買い物でブロンズ会員に</div>') +
       '</div>' +
       '<p class="text-xs text-gray-400 text-center pb-5 pt-3">直近12ヶ月のお買い上げ <span class="font-bold text-gray-600">'+esc(yen(d.trailing12moJpy))+'</span></p>' +

@@ -168,7 +168,8 @@ describe('GET /liff/my-rank (会員証ページ HTML)', () => {
   const env = {
     LIFF_URL: 'https://liff.line.me/2000000000-abcd1234',
     WORKER_URL: 'https://example.workers.dev',
-    SHOPIFY_STORE_DOMAIN: 'naturism-diet.com',
+    // Admin/API 用の myshopify ドメイン。CTA はこれを使わず公式ストアフロントを指すべき。
+    SHOPIFY_STORE_DOMAIN: 'xn-0ckn0a9fxa4a.myshopify.com',
   };
   async function fetchPage(path = '/liff/my-rank'): Promise<{ status: number; body: string }> {
     const res = await liffMyRank.request(path, {}, env as unknown as Record<string, unknown>);
@@ -205,9 +206,10 @@ describe('GET /liff/my-rank (会員証ページ HTML)', () => {
     expect(r.body).toContain('会員ランクについて');
   });
 
-  it('店舗 CTA に SHOPIFY_STORE_DOMAIN を使う', async () => {
+  it('店舗 CTA は公式ストアフロント naturism-diet.com を指す (Admin ドメインを使わない)', async () => {
     const r = await fetchPage();
     expect(r.body).toContain('https://naturism-diet.com');
+    expect(r.body).not.toContain('myshopify.com');
   });
 
   it('テンプレートリテラル汚染なし (未展開の ${ が body に残らない)', async () => {
