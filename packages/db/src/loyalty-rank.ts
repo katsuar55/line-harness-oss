@@ -46,11 +46,11 @@ export interface LoyaltyRankDef {
  * 閾値は「以上」判定 (例: ¥12,000 ちょうどで silver)。
  */
 export const NATURISM_RANK_DEFS: readonly LoyaltyRankDef[] = [
-  { id: 'regular', name: 'レギュラー', order: 0, minTrailing12moJpy: 0, discountPercent: 0, badgeEmoji: '🌱', badgeColor: '#9CA3AF', badgeImageUrl: '/images/rank-regular.png' },
-  { id: 'bronze', name: 'ブロンズ', order: 1, minTrailing12moJpy: 1, discountPercent: 2, badgeEmoji: '🥉', badgeColor: '#CD7F32', badgeImageUrl: '/images/rank-bronze.png' },
-  { id: 'silver', name: 'シルバー', order: 2, minTrailing12moJpy: 12000, discountPercent: 4, badgeEmoji: '🥈', badgeColor: '#C0C0C0', badgeImageUrl: '/images/rank-silver.png' },
-  { id: 'gold', name: 'ゴールド', order: 3, minTrailing12moJpy: 24000, discountPercent: 6, badgeEmoji: '🥇', badgeColor: '#FFD700', badgeImageUrl: '/images/rank-gold.png' },
-  { id: 'platinum', name: 'プラチナ', order: 4, minTrailing12moJpy: 45000, discountPercent: 8, badgeEmoji: '💎', badgeColor: '#0ABAB5', badgeImageUrl: '/images/rank-platinum.png' },
+  { id: 'regular', name: 'レギュラー', order: 0, minTrailing12moJpy: 0, discountPercent: 0, badgeEmoji: '🌱', badgeColor: '#9CA3AF', badgeImageUrl: '/images/rank-regular-v2.png' },
+  { id: 'bronze', name: 'ブロンズ', order: 1, minTrailing12moJpy: 1, discountPercent: 2, badgeEmoji: '🥉', badgeColor: '#CD7F32', badgeImageUrl: '/images/rank-bronze-v2.png' },
+  { id: 'silver', name: 'シルバー', order: 2, minTrailing12moJpy: 12000, discountPercent: 4, badgeEmoji: '🥈', badgeColor: '#C0C0C0', badgeImageUrl: '/images/rank-silver-v2.png' },
+  { id: 'gold', name: 'ゴールド', order: 3, minTrailing12moJpy: 24000, discountPercent: 6, badgeEmoji: '🥇', badgeColor: '#FFD700', badgeImageUrl: '/images/rank-gold-v2.png' },
+  { id: 'platinum', name: 'プラチナ', order: 4, minTrailing12moJpy: 45000, discountPercent: 8, badgeEmoji: '💎', badgeColor: '#0ABAB5', badgeImageUrl: '/images/rank-platinum-v2.png' },
 ];
 
 // ============================================================
