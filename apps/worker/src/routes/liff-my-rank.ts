@@ -45,6 +45,7 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
         discountPercent: resolved.rank.discountPercent,
         badgeEmoji: resolved.rank.badgeEmoji ?? null,
         badgeColor: resolved.rank.badgeColor ?? null,
+        badgeImageUrl: resolved.rank.badgeImageUrl ?? null,
       },
       trailing12moJpy: resolved.trailing12moJpy,
       next: p.next
@@ -115,6 +116,7 @@ function myRankPage(liffId: string, apiBase: string): string {
   </header>
 
   <main class="max-w-lg mx-auto px-4 py-5 space-y-4" id="main">
+    <div id="demo-note" style="display:none;background:#fef9c3;color:#854d0e;border:1px solid #fde68a;border-radius:10px;padding:8px 12px;font-size:12px;text-align:center;">&#x1F441; これはデモ表示です（サンプルデータ）。実際のランクは LINE 内で表示されます。</div>
     <section id="card-skeleton" class="card p-6">
       <div class="skeleton h-32 rounded-2xl"></div>
     </section>
@@ -136,6 +138,8 @@ function myRankPage(liffId: string, apiBase: string): string {
 const LIFF_ID = '${escapeHtml(liffId)}';
 const API_BASE = '${escapeHtml(apiBase)}';
 let idToken = null;
+// ?demo=1 でサンプル会員証を表示 (= LINE 文脈外でも UI 確認用、 認証/実データ不要)。
+var DEMO_DATA = { rank: { id: 'silver', name: 'シルバー', discountPercent: 4, badgeEmoji: '\\uD83E\\uDD48', badgeColor: '#C0C0C0', badgeImageUrl: '/images/rank-silver-v2.png' }, trailing12moJpy: 15000, next: { id: 'gold', name: 'ゴールド', remainingJpy: 9000 }, progressRatio: 0.25, official: null };
 
 function esc(s){ if(s===null||s===undefined) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function yen(n){ try{ return '\\u00A5' + Number(n||0).toLocaleString('ja-JP'); }catch(e){ return '\\u00A5' + (n||0); } }
@@ -148,12 +152,16 @@ function renderRank(d){
   var color = safeColor(rank.badgeColor || '#0ABAB5');
   var emoji = rank.badgeEmoji || '\\u2728';
   var pct = Number.isFinite(rank.discountPercent) ? Math.floor(rank.discountPercent) : 0;
+  var imgUrl = rank.badgeImageUrl;
+  var badgeHtml = imgUrl
+    ? '<img id="badge-img" src="' + esc(imgUrl) + '" alt="' + esc(rank.name) + '" style="height:176px;width:auto;max-width:172px;object-fit:contain;display:block;margin:0 auto;filter:drop-shadow(0 10px 22px rgba(0,0,0,.16))"><div id="badge-fallback" class="badge-glow" style="display:none;font-size:64px;line-height:1">' + esc(emoji) + '</div>'
+    : '<div class="badge-glow" style="font-size:64px;line-height:1">' + esc(emoji) + '</div>';
   var card = document.getElementById('rank-card');
   card.className = 'card p-6 pop';
   card.style.display = 'block';
   card.innerHTML =
     '<div class="text-center">' +
-      '<div class="badge-glow" style="font-size:64px;line-height:1">' + esc(emoji) + '</div>' +
+      badgeHtml +
       '<p class="mt-2 text-xs tracking-widest font-semibold" style="color:' + color + '">YOUR RANK</p>' +
       '<p class="text-2xl font-extrabold text-gray-800 mt-1">' + esc(rank.name) + '</p>' +
       (pct > 0
@@ -161,6 +169,12 @@ function renderRank(d){
         : '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-gray-600 text-sm font-bold" style="background:#f1f5f9">まずは1回のお買い物でブロンズ会員に</div>') +
       '<p class="text-xs text-gray-400 mt-4">直近12ヶ月のお買い上げ ' + esc(yen(d.trailing12moJpy)) + '</p>' +
     '</div>';
+  // 画像が無い/読込失敗時は emoji にフォールバック (inline onerror を避け JS で attach)。
+  var bimg = document.getElementById('badge-img');
+  if (bimg) {
+    bimg.onerror = function(){ bimg.style.display = 'none'; var f = document.getElementById('badge-fallback'); if (f) f.style.display = 'block'; };
+    if (bimg.complete && bimg.naturalWidth === 0) { bimg.onerror(); }
+  }
 }
 
 function renderProgress(d){
@@ -212,6 +226,12 @@ async function loadRank(){
 
 async function initLiff(){
   try {
+    if (new URLSearchParams(location.search).get('demo') === '1'){
+      renderRank(DEMO_DATA); renderProgress(DEMO_DATA);
+      var dn = document.getElementById('demo-note'); if (dn) dn.style.display = 'block';
+      document.getElementById('card-skeleton').style.display = 'none';
+      return;
+    }
     if (!LIFF_ID) throw new Error('LIFF_ID not configured');
     await liff.init({ liffId: LIFF_ID });
     if (!liff.isLoggedIn()){ liff.login(); return; }

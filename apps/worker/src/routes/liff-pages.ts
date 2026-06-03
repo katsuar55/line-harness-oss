@@ -699,6 +699,13 @@ async function initLiff() {
       liff.login();
       return;
     }
+    // マイランク導線: リッチメニュー「マイランク」(hash #rank) は新・会員証ページ /liff/my-rank
+    // (trailing-12mo ランク) に集約する canonical entry。LIFF init 後 = hash 復元済 (liff.state 経由でも OK)、
+    // 重い portal data load の前に redirect することで画面 flash と二重ロードを最小化する。
+    if (location.hash === '#rank' && new URLSearchParams(location.search).get('demo') !== '1') {
+      location.replace('/liff/my-rank');
+      return;
+    }
     idToken = liff.getIDToken();
     const profile = await liff.getProfile();
     if (profile.pictureUrl) {
@@ -879,6 +886,7 @@ function handleDeepLink() {
     switchTab(target);
   }
   // ホームタブ内のセクションへスクロール
+  // 注: 通常の #rank は initLiff で /liff/my-rank へ redirect 済。この分岐は ?demo=1 で redirect を skip した時のみ到達するフォールバック。
   if (hash === 'rank') { setTimeout(function() { var el = document.getElementById('rank-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
   if (hash === 'referral') { setTimeout(function() { var el = document.getElementById('referral-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
   // ショップタブ内のカードへスクロール
