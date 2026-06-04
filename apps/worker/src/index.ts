@@ -94,6 +94,7 @@ import { processCronMonitor } from './services/cron-monitor.js';
 import { processBirthdayGreetings } from './services/birthday-cron.js';
 import { processMembershipPromotionSanity } from './services/membership-promotion-cron.js';
 import { processLoyaltyRankReeval } from './services/loyalty-rank-cron.js';
+import { processFriendCustomerLink } from './services/friend-customer-linker.js';
 import { syncAiModelsCatalog } from './services/ai-models-catalog.js';
 import { syncCloudflareChangelog } from './services/cloudflare-changelog-sync.js';
 import { processEmailFailureMonitor } from './services/email-failure-monitor.js';
@@ -157,6 +158,12 @@ export type Env = {
     // 自動 update 戦略 #2 (2026-05-26): Cloudflare changelog RSS sync
     //   認証不要 (= public RSS feed)。 Discord 通知用に DISCORD_WEBHOOK_URL があれば便利。
     CHANGELOG_SYNC_FORCE?: string;
+    // 自社内製ロイヤリティ PR3 (2026-06-05): friend↔Shopify customer metafield 自動リンク
+    //   'true' で本番リンク有効化 (= 未設定なら cron は no-op、 本番未書込)。 metafield ns/key も必須。
+    FRIEND_LINK_ENABLED?: string;
+    FRIEND_LINK_METAFIELD_NAMESPACE?: string; // CRM PLUS「LINE ID」customer metafield の namespace
+    FRIEND_LINK_METAFIELD_KEY?: string;       // 同 key (= 実機 Admin で確認後に設定)
+    FRIEND_LINK_CRON_FORCE?: string;          // 'true' で JST 02:00-02:04 gating を bypass (テスト/手動)
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -545,6 +552,23 @@ async function scheduled(
       }
     }).catch((err) =>
       console.error('loyalty-rank-reeval failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // 自社内製ロイヤリティ (2026-06-05, PR3): friend↔Shopify customer metafield 自動リンク cron
+  //   - FRIEND_LINK_ENABLED='true' + metafield ns/key 設定時のみ (= default off、 本番未書込)
+  //   - JST 02:00-02:04 window のみ実行 (= Shopify 呼出を 1 日 1 回に制限、 FRIEND_LINK_CRON_FORCE で bypass)
+  //   - 未 link friend を metafield 逆引きで Shopify customer に紐付け (= 後続 PR3-B 過去注文 backfill の前提)
+  jobs.push(
+    withHeartbeat(env.DB, 'friend-customer-link', () =>
+      processFriendCustomerLink(env as unknown as Parameters<typeof processFriendCustomerLink>[0]),
+      (r) => ({ scanned: r.scanned, linked: r.linked, ambiguous: r.ambiguous, notFound: r.notFound, errors: r.errors, skippedGating: r.skipped }),
+    ).then((r) => {
+      if (r.linked > 0 || r.ambiguous > 0) {
+        console.info(`friend-customer-link: scanned=${r.scanned} linked=${r.linked} ambiguous=${r.ambiguous} notFound=${r.notFound} errors=${r.errors}`);
+      }
+    }).catch((err) =>
+      console.error('friend-customer-link failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 

@@ -11,6 +11,8 @@ export interface Friend {
   metadata: string;
   created_at: string;
   updated_at: string;
+  /** Shopify customer 数値 ID (= migration 060。 PR3 で metafield 逆引きにより populate)。 未 link は null。 */
+  shopify_customer_id: string | null;
 }
 
 export interface GetFriendsOptions {
@@ -220,4 +222,60 @@ export async function setFriendMetadataField(
     .prepare(`UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?`)
     .bind(JSON.stringify(obj), jstNow(), friendId)
     .run();
+}
+
+/**
+ * friends.shopify_customer_id を設定 (= PR3 friend↔Shopify customer link)。
+ * 既に link 済 (= shopify_customer_id IS NOT NULL) の場合は上書きせず no-op (idempotent)。
+ * UNIQUE partial index (idx_friends_shopify_customer_id) により、 同 customer が別 friend に
+ * 既 link 済の場合は constraint violation で throw する (= caller が getFriendByShopifyCustomerId で事前検査)。
+ *
+ * @returns linked=true なら新規に link した (changes>0)、 false なら既 link 済で no-op。
+ */
+export async function setFriendShopifyCustomerId(
+  db: D1Database,
+  friendId: string,
+  shopifyCustomerId: string,
+): Promise<{ linked: boolean }> {
+  const res = await db
+    .prepare(
+      `UPDATE friends SET shopify_customer_id = ?, updated_at = ?
+        WHERE id = ? AND shopify_customer_id IS NULL`,
+    )
+    .bind(shopifyCustomerId, jstNow(), friendId)
+    .run();
+  return { linked: (res.meta?.changes ?? 0) > 0 };
+}
+
+/**
+ * shopify_customer_id 未設定 (= 未 link) かつ line_user_id を持つ friend を取得 (= PR3 link scan 用)。
+ * line_user_id は metafield 逆引きの key なので必須。 created_at 昇順で古い friend を優先。
+ */
+export async function listUnlinkedFriends(
+  db: D1Database,
+  limit = 25,
+): Promise<Array<{ id: string; line_user_id: string }>> {
+  const res = await db
+    .prepare(
+      `SELECT id, line_user_id FROM friends
+        WHERE shopify_customer_id IS NULL
+          AND line_user_id IS NOT NULL AND line_user_id != ''
+        ORDER BY created_at ASC LIMIT ?`,
+    )
+    .bind(limit)
+    .all<{ id: string; line_user_id: string }>();
+  return res.results ?? [];
+}
+
+/**
+ * shopify_customer_id から friend を逆引き (= link 重複検査用。 UNIQUE 制約 throw を事前回避)。
+ */
+export async function getFriendByShopifyCustomerId(
+  db: D1Database,
+  shopifyCustomerId: string,
+): Promise<Friend | null> {
+  return db
+    .prepare(`SELECT * FROM friends WHERE shopify_customer_id = ?`)
+    .bind(shopifyCustomerId)
+    .first<Friend>();
 }

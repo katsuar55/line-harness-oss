@@ -127,6 +127,7 @@ function makeFriend(over: Partial<Friend> = {}): Friend {
     metadata: '{}',
     created_at: '2026-04-01T00:00:00+09:00',
     updated_at: '2026-04-01T00:00:00+09:00',
+    shopify_customer_id: null,
     ...over,
   };
 }
