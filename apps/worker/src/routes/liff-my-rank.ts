@@ -5,7 +5,14 @@ import {
   resolveFriendRank,
   getLatestRankSnapshot,
   getCouponAssignmentsByFriend,
+  getActiveRankDiscountCode,
+  getShopifyProducts,
 } from '@line-crm/db';
+import { buildCartPermalink, buildDiscountApplyUrl } from '../services/cart-permalink.js';
+
+// 顧客向けストアフロント (= 公式ドメイン)。SHOPIFY_STORE_DOMAIN は Admin/API 用なので使わない。
+const STORE_DOMAIN = 'naturism-diet.com';
+const QUICK_BUY_LIMIT = 3;
 
 /**
  * マイランク LIFF (= 自社内製ロイヤリティ, 2026-06-01 PR4, 2026-06-03 会員証リデザイン)
@@ -42,6 +49,37 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
   }
   const p = resolved.progress;
 
+  // ─── 3タップ購入 (= PR5-5b): ランク割引コード + cart permalink ───
+  // ランク割引は RANK_DISCOUNT_ENABLED 有効化 (= 5c 承認後) で発行される。未発行なら null → コード無し cart に graceful。
+  const rankDiscount = await getActiveRankDiscountCode(c.env.DB, liffUser.friendId).catch(() => null);
+  const discountCode = rankDiscount?.code ?? null;
+  const discountApplyUrl = discountCode ? buildDiscountApplyUrl(STORE_DOMAIN, discountCode) : null;
+
+  // かんたん購入: アクティブ商品の先頭 variant で cart permalink (= ランク割引コードがあれば自動付与)。
+  const quickBuy: Array<{ title: string; price: string | null; imageUrl: string | null; url: string }> = [];
+  try {
+    const products = await getShopifyProducts(c.env.DB, { status: 'active', limit: 8 });
+    for (const prod of products) {
+      let variantId: string | number | null = null;
+      try {
+        const variants = prod.variants_json
+          ? (JSON.parse(prod.variants_json) as Array<{ id?: string | number; admin_graphql_api_id?: string }>)
+          : [];
+        const v = Array.isArray(variants) ? variants[0] : null;
+        variantId = v ? (v.id ?? v.admin_graphql_api_id ?? null) : null;
+      } catch {
+        variantId = null;
+      }
+      const url = buildCartPermalink(STORE_DOMAIN, [{ variantId, quantity: 1 }], discountCode);
+      if (url) {
+        quickBuy.push({ title: prod.title, price: prod.price, imageUrl: prod.image_url, url });
+      }
+      if (quickBuy.length >= QUICK_BUY_LIMIT) break;
+    }
+  } catch {
+    // 商品取得失敗時は quickBuy なしで会員証本体は表示
+  }
+
   return c.json({
     success: true,
     data: {
@@ -77,6 +115,10 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
         discountPercent: r.discountPercent,
         minTrailing12moJpy: r.minTrailing12moJpy,
       })),
+      // 3タップ購入 (= PR5-5b)。 code 自体は URL に内包 (= 認証済本人のみ取得)。
+      rankDiscount: rankDiscount ? { discountPercent: rankDiscount.discountPercent } : null,
+      discountApplyUrl,
+      quickBuy,
     },
   });
 });
@@ -87,7 +129,8 @@ function escapeHtml(str: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;'); // single-quote も escape (= 単一引用符 JS 文字列への注入を防ぐ defense-in-depth)
 }
 
 const myRankPageHandler = (c: { env: Env['Bindings']; html: (html: string) => Response }) => {
@@ -163,6 +206,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
     </section>
     <section id="rank-card" style="display:none;"></section>
     <section id="progress-card" style="display:none;"></section>
+    <section id="shop-card" style="display:none;"></section>
     <section id="coupons-card" style="display:none;"></section>
     <section id="about-card" style="display:none;"></section>
     <a id="store-cta" href="https://${escapeHtml(storeDomain)}" style="display:none;" class="block text-center card tap" >
@@ -203,6 +247,12 @@ var DEMO_DATA = {
     { id: 'silver', name: 'シルバー', discountPercent: 4, minTrailing12moJpy: 12000 },
     { id: 'gold', name: 'ゴールド', discountPercent: 6, minTrailing12moJpy: 24000 },
     { id: 'platinum', name: 'プラチナ', discountPercent: 8, minTrailing12moJpy: 45000 }
+  ],
+  rankDiscount: { discountPercent: 4 },
+  discountApplyUrl: 'https://naturism-diet.com/discount/NLR-SILVER-DEMO2345',
+  quickBuy: [
+    { title: 'KOSO in naturism ToGo (Pink) 180粒 (30日分)', price: '2830', imageUrl: null, url: 'https://naturism-diet.com/cart/42884926636285:1?discount=NLR-SILVER-DEMO2345' },
+    { title: 'KOSO in naturism (Pink) 18粒 (3日分)', price: '430', imageUrl: null, url: 'https://naturism-diet.com/cart/42885035819261:1?discount=NLR-SILVER-DEMO2345' }
   ]
 };
 
@@ -299,6 +349,41 @@ function renderProgress(d){
   setTimeout(function(){ var b=document.getElementById('bar'); if(b) b.style.width = pctW + '%'; }, 80);
 }
 
+// ─── おトクにお買い物 (= 3タップ購入: 割引適用リンク + cart permalink) ───
+function renderShop(d){
+  var card = document.getElementById('shop-card');
+  var items = (d.quickBuy || []).filter(function(q){ return q && q.url; });
+  var applyUrl = d.discountApplyUrl;
+  var pct = (d.rankDiscount && Number.isFinite(d.rankDiscount.discountPercent)) ? Math.floor(d.rankDiscount.discountPercent) : 0;
+  if (!applyUrl && items.length === 0){ card.style.display = 'none'; return; }
+  card.className = 'card p-5 rise';
+  card.style.display = 'block';
+  var html = '<div class="flex items-center justify-between mb-3">' +
+    '<p class="text-sm font-bold text-gray-700">&#x1F6CD;&#xFE0F; おトクにお買い物</p>' +
+    (pct > 0 ? '<span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:#ecfeff;color:#0ABAB5">ランク特典 ' + pct + '% OFF</span>' : '') +
+  '</div>';
+  if (applyUrl){
+    html += '<a href="' + esc(applyUrl) + '" class="tap block text-center text-white text-sm font-bold py-3 rounded-xl shadow mb-3" style="background:linear-gradient(135deg,#0ABAB5,#22d3ee)">' +
+      (pct > 0 ? pct + '% OFF を使ってお買い物' : 'お買い物にすすむ') + ' &rarr;</a>';
+  }
+  if (items.length){
+    if (applyUrl) html += '<p class="text-xs text-gray-400 mb-2">かんたん購入 (割引適用済み)</p>';
+    html += '<div class="space-y-2">' + items.map(function(q){
+      var price = q.price ? '¥' + Number(q.price).toLocaleString('ja-JP') : '';
+      var img = q.imageUrl
+        ? '<img src="' + esc(q.imageUrl) + '" alt="" style="width:48px;height:48px;object-fit:cover;border-radius:10px;flex-shrink:0">'
+        : '<div style="width:48px;height:48px;border-radius:10px;background:#f1f5f9;flex-shrink:0"></div>';
+      return '<a href="' + esc(q.url) + '" class="tap flex items-center gap-3 p-2.5 rounded-xl" style="border:1px solid #e2e8f0">' +
+        img +
+        '<div class="flex-1 min-w-0"><p class="text-xs font-bold text-gray-800 truncate">' + esc(q.title) + '</p>' +
+          (price ? '<p class="text-xs text-gray-500 mt-0.5">' + esc(price) + '</p>' : '') + '</div>' +
+        '<span class="text-xs font-bold text-white px-3 py-1.5 rounded-lg shrink-0" style="background:#0ABAB5">購入</span>' +
+      '</a>';
+    }).join('') + '</div>';
+  }
+  card.innerHTML = html;
+}
+
 function renderCoupons(d){
   var card = document.getElementById('coupons-card');
   card.className = 'card p-5 rise';
@@ -370,6 +455,7 @@ function renderAll(d){
   document.getElementById('card-skeleton').style.display='none';
   renderRank(d);
   renderProgress(d);
+  renderShop(d);
   renderCoupons(d);
   renderAbout(d);
   var cta=document.getElementById('store-cta'); if(cta) cta.style.display='block';
