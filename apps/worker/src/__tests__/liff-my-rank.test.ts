@@ -30,10 +30,32 @@ interface CouponRowLike {
   expires_at: string | null;
 }
 
+interface RankDiscountRowLike {
+  id: string;
+  friend_id: string;
+  rank_id: string;
+  code: string;
+  shopify_discount_node_id: string | null;
+  discount_percent: number;
+  status: string;
+  brand_id: string | null;
+  issued_at: string;
+  expires_at: string | null;
+}
+
+interface ProductRowLike {
+  title: string;
+  price: string | null;
+  image_url: string | null;
+  variants_json: string | null;
+}
+
 function makeDb(
   trailingTotal: number,
   snapshot: SnapshotRowLike | null = null,
   coupons: CouponRowLike[] = [],
+  rankDiscount: RankDiscountRowLike | null = null,
+  products: ProductRowLike[] = [],
 ): D1Database {
   return {
     prepare(sql: string) {
@@ -48,12 +70,19 @@ function makeDb(
           if (sql.includes('loyalty_rank_snapshots')) {
             return (snapshot ?? null) as unknown as T | null;
           }
+          if (sql.includes('loyalty_rank_discounts') && sql.includes("status = 'active'")) {
+            return (rankDiscount ?? null) as unknown as T | null;
+          }
           return null;
         },
         async all<T>(): Promise<{ results: T[]; success: boolean }> {
           // getCouponAssignmentsByFriend は shopify_coupon_assignments を all() で読む
           if (sql.includes('shopify_coupon_assignments')) {
             return { results: coupons as unknown as T[], success: true };
+          }
+          // getShopifyProducts は shopify_products を all() で読む
+          if (sql.includes('shopify_products')) {
+            return { results: products as unknown as T[], success: true };
           }
           return { results: [], success: true };
         },
@@ -157,6 +186,69 @@ describe('GET /api/liff/my-rank', () => {
     expect(body.data.coupons).toEqual([]);
   });
 
+  const RANK_DISCOUNT: RankDiscountRowLike = {
+    id: 'rd1',
+    friend_id: 'f1',
+    rank_id: 'silver',
+    code: 'NLR-SILVER-ABCD2345',
+    shopify_discount_node_id: 'gid://x/1',
+    discount_percent: 4,
+    status: 'active',
+    brand_id: null,
+    issued_at: '2026-06-04T00:00:00Z',
+    expires_at: null,
+  };
+
+  it('rankDiscount: 発行済みなら discountPercent + discountApplyUrl', async () => {
+    const { body } = await callApi(makeApp(USER), makeDb(15000, null, [], RANK_DISCOUNT));
+    expect(body.data.rankDiscount).toEqual({ discountPercent: 4 });
+    expect(body.data.discountApplyUrl).toBe('https://naturism-diet.com/discount/NLR-SILVER-ABCD2345');
+    // code 自体は JSON に直接露出しない (= URL 経由のみ)
+    expect(JSON.stringify(body.data.rankDiscount)).not.toContain('NLR-SILVER-ABCD2345');
+  });
+
+  it('rankDiscount: 未発行なら null + discountApplyUrl null', async () => {
+    const { body } = await callApi(makeApp(USER), makeDb(15000));
+    expect(body.data.rankDiscount).toBeNull();
+    expect(body.data.discountApplyUrl).toBeNull();
+  });
+
+  it('quickBuy: active 商品の先頭 variant で cart permalink (割引コード付与)', async () => {
+    const products: ProductRowLike[] = [
+      {
+        title: 'KOSO 30日分',
+        price: '2830',
+        image_url: null,
+        variants_json:
+          '[{"id":42884926636285,"admin_graphql_api_id":"gid://shopify/ProductVariant/42884926636285"}]',
+      },
+    ];
+    const { body } = await callApi(makeApp(USER), makeDb(15000, null, [], RANK_DISCOUNT, products));
+    expect(body.data.quickBuy).toHaveLength(1);
+    expect(body.data.quickBuy[0].title).toBe('KOSO 30日分');
+    expect(body.data.quickBuy[0].url).toBe(
+      'https://naturism-diet.com/cart/42884926636285:1?discount=NLR-SILVER-ABCD2345',
+    );
+  });
+
+  it('quickBuy: コード未発行でも cart permalink (割引なし) を返す', async () => {
+    const products: ProductRowLike[] = [
+      { title: 'KOSO 3日分', price: '430', image_url: null, variants_json: '[{"id":42885035819261}]' },
+    ];
+    const { body } = await callApi(makeApp(USER), makeDb(15000, null, [], null, products));
+    expect(body.data.quickBuy).toHaveLength(1);
+    expect(body.data.quickBuy[0].url).toBe('https://naturism-diet.com/cart/42885035819261:1');
+  });
+
+  it('quickBuy: variants_json 不正/欠損の商品はスキップ', async () => {
+    const products: ProductRowLike[] = [
+      { title: 'no-variant', price: '100', image_url: null, variants_json: null },
+      { title: 'bad-json', price: '100', image_url: null, variants_json: 'not-json' },
+    ];
+    const { body } = await callApi(makeApp(USER), makeDb(15000, null, [], null, products));
+    expect(body.data.quickBuy).toEqual([]);
+  });
+
   it('liffUser 未設定 → 401', async () => {
     const { status, body } = await callApi(makeApp(null), makeDb(15000));
     expect(status).toBe(401);
@@ -204,6 +296,17 @@ describe('GET /liff/my-rank (会員証ページ HTML)', () => {
     expect(r.body).toContain('次回の会員ランク判定日');
     expect(r.body).toContain('保有クーポン');
     expect(r.body).toContain('会員ランクについて');
+  });
+
+  it('おトクにお買い物セクション (3タップ購入) を含む', async () => {
+    const r = await fetchPage();
+    expect(r.body).toContain('おトクにお買い物');
+    expect(r.body).toContain('function renderShop');
+    expect(r.body).toContain('id="shop-card"');
+    // DEMO の quickBuy / discountApplyUrl
+    expect(r.body).toContain('KOSO in naturism');
+    expect(r.body).toContain('/discount/NLR-SILVER-DEMO2345');
+    expect(r.body).toContain('/cart/42884926636285:1');
   });
 
   it('店舗 CTA は公式ストアフロント naturism-diet.com を指す (Admin ドメインを使わない)', async () => {

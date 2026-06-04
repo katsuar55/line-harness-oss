@@ -1858,6 +1858,22 @@ CREATE TABLE IF NOT EXISTS loyalty_rank_snapshots (
   UNIQUE(friend_id, period)
 );
 
+-- from 062_loyalty_rank_discounts.sql
+CREATE TABLE IF NOT EXISTS loyalty_rank_discounts (
+  id                       TEXT PRIMARY KEY,
+  friend_id                TEXT NOT NULL,                   -- friends.id
+  rank_id                  TEXT NOT NULL,                   -- bronze/silver/gold/platinum (= regular は発行しない)
+  code                     TEXT NOT NULL UNIQUE,            -- NLR-{RANK}-{suffix}
+  shopify_discount_node_id TEXT,                            -- gid://shopify/DiscountCodeNode/...
+  discount_percent         INTEGER NOT NULL DEFAULT 0,      -- 2/4/6/8
+  status                   TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'superseded'
+  brand_id                 TEXT,                            -- multi-brand (= NULL は naturism default)
+  issued_at                TEXT NOT NULL,                   -- 発行時刻 (JST ISO)
+  expires_at               TEXT,                            -- NULL=無期限 (= 既定は ~45日で再発行)
+  superseded_at            TEXT,                            -- supersede 時刻
+  created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -2088,3 +2104,7 @@ CREATE INDEX IF NOT EXISTS idx_loyalty_rank_snapshots_period
   ON loyalty_rank_snapshots(period, rank_id);
 CREATE INDEX IF NOT EXISTS idx_loyalty_rank_snapshots_demotion
   ON loyalty_rank_snapshots(period, direction);
+CREATE INDEX IF NOT EXISTS idx_loyalty_rank_discounts_friend_status
+  ON loyalty_rank_discounts(friend_id, status);
+CREATE INDEX IF NOT EXISTS idx_loyalty_rank_discounts_code
+  ON loyalty_rank_discounts(code);

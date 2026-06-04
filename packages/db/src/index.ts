@@ -47,6 +47,7 @@ export * from './google-merchant-audit';
 export * from './membership';
 export * from './loyalty-rank';
 export * from './loyalty-rank-snapshots';
+export * from './loyalty-rank-discount';
 
 /**
  * Thin wrapper around D1Database.
