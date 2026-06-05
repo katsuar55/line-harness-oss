@@ -85,8 +85,11 @@ async function resolveAudience(
   }
 
   // target_type === 'all': query all following friends
+  // ブラックリスト除外 (consent/景表法): segment-query.ts / getFriendsByTag と同じ規約。
   const result = await db
-    .prepare('SELECT id, line_user_id FROM friends WHERE is_following = 1')
+    .prepare(
+      'SELECT id, line_user_id FROM friends WHERE is_following = 1 AND COALESCE(is_blacklisted, 0) = 0',
+    )
     .all<AudienceFriend>();
   return result.results;
 }

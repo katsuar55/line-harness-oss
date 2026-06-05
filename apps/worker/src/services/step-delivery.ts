@@ -167,7 +167,10 @@ async function processSingleDelivery(
 
   // Get friend first to read preferred delivery hour from metadata
   const friend = await getFriendById(db, fs.friend_id);
-  if (!friend || !friend.is_following) {
+  // 未 follow と ブラックリスト (= do-not-contact / 苦情) は terminal 扱い: シナリオを完了し配信停止。
+  // consent/景表法のため全配信経路 (segment-query / broadcast / 各 cron) と整合させる。
+  // completeFriendScenario が claim lease (= 一時的な将来値) を最終値で上書きするため #103 不変条件を保持。
+  if (!friend || !friend.is_following || friend.is_blacklisted) {
     await completeFriendScenario(db, fs.id);
     return;
   }

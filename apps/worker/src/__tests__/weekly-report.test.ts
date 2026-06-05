@@ -164,4 +164,29 @@ describe('processWeeklyReports', () => {
     expect(result.errors).toBe(1);
     expect(result.sent).toBe(0);
   });
+
+  it('friends SELECT excludes blacklisted (consent/景表法)', async () => {
+    mockJstMonday();
+    // SQL を捕捉する recording db (friends を空 results にして loop を回さない)
+    const sqls: string[] = [];
+    const stmt = (sql: string) => ({
+      bind: vi.fn(() => stmt(sql)),
+      all: vi.fn(async () => ({ results: [] as unknown[] })),
+      run: vi.fn(async () => ({})),
+    });
+    const db = {
+      prepare: vi.fn((sql: string) => {
+        sqls.push(sql);
+        return stmt(sql);
+      }),
+    } as unknown as D1Database;
+
+    await processWeeklyReports(db, mockLineClient);
+
+    const friendsQuery = sqls
+      .map((s) => s.replace(/\s+/g, ' ').trim())
+      .find((s) => s.includes('FROM friends') && s.includes('is_following = 1'));
+    expect(friendsQuery).toBeDefined();
+    expect(friendsQuery).toContain('COALESCE(is_blacklisted, 0) = 0');
+  });
 });

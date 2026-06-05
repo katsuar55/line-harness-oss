@@ -12,6 +12,14 @@ LP launch 前の data-integrity / reliability 予防 hardening の優先ロー�
 | #102 | event-bus per-row 隔離（review #13）+ AI fallback の conversation_logs 記録（silent fallback 可視化） | merged + deploy（`db0082f8`） |
 | #103 | step 配信 atomic claim（review #8、重複 cron 二重配信防止、CAS、migration なし） | merged + deploy |
 
+## このセッションで shipped（2026-06-06）
+
+| PR | 内容 | 状態 |
+|---|---|---|
+| H | blacklist を全 mass 配信に適用（broadcast tag/all + A/B test tag/all + step-delivery guard + getFriendsByTag）。並列 security review で発見した weekly-report cron + birthday-collection route の同種 gap も folded。consent/景表法。migration なし・live-safe・gated 不要（recipient を狭めるのみ） | 本PR |
+
+> H 実装メモ: 共有 `getFriendsByTag`（db 層）に `COALESCE(is_blacklisted,0)=0` を入れて broadcast/A-B の tag 経路を一括カバー。inline 'all' SELECT（broadcast 2本 scoped/unscoped・ab-test 1本・weekly-report・birthday-collection /send + /stats×2）にも同節を追加。step-delivery は既存 `!is_following` terminal guard に `|| is_blacklisted` を追加し #103 の claim-lease 不変条件を保持。Friend 型に optional `is_blacklisted?:number` を追加（blast radius 最小）。
+
 ## 残り（優先度順、次セッション着手推奨）
 
 > 各項目: survey ランク / value / risk / effort / gated-or-live / key files
@@ -31,8 +39,11 @@ LP launch 前の data-integrity / reliability 予防 hardening の優先ロー�
 ### 配信整合性（残り、live-safe）
 - **E. broadcast の atomic claim + retry**（survey #7, value high, risk med, M, live-safe）
   - `broadcast.ts:33-41,67-81,508-526`。`UPDATE broadcasts SET status='sending' WHERE id=? AND status='scheduled'` CAS + bounded retry（現状 fail で 'draft' dead-end）。#103 の step claim と同設計。
-- **H. blacklist を broadcast/step に適用**（survey #6, value med, risk low, **S**, live-safe）
-  - `getFriendsByTag` と 'all' email query に `COALESCE(is_blacklisted,0)=0`、`processSingleDelivery` でも check。`segment-query.ts` は既に対応済 = 不整合が proven。**小さく high-value、次の着手に最適**。
+- ~~**H. blacklist を broadcast/step に適用**~~ → ✅ **2026-06-06 shipped（本PR）**。broadcast/A-B/step に加え weekly-report・birthday-collection も folded。
+- **H2. blacklist を残りの opt-in/per-friend 配信に適用**（security review Finding 4, value med, risk low, S, live-safe）
+  - `liff-portal.ts getActiveIntakeReminders`（JOIN friends）+ `intake-reminder.ts` の friend guard / `reminders.ts getDueReminderDeliveries` + `reminder-delivery.ts` の friend guard。opt-in リマインダー（transactional 寄り）のため H 本体から分離したが、do-not-contact 厳守の観点では追加すべき。step-delivery と同じ `|| friend.is_blacklisted` guard パターン。
+- **H3. LINE `target_type='all'` broadcast の blacklist 構造的回避**（security review Finding 5, value med, risk med, M）
+  - LINE broadcast API は全 follower に server-side 配信し friend を列挙しないため blacklist 不可（本PRで comment 明記済）。完全遵守には 'all' LINE broadcast を「全 follower − blacklist の multicast」に置換（quota/insight tracking 影響あり = 要設計）、または admin UI で 'all' LINE broadcast が blacklist を bypass する旨を警告表示。
 
 ### AI-native observability / compliance（live-safe）
 - **J. 薬機法 NG-word を redact 前 raw 出力で検出**（survey #8, value med, risk low, S）

@@ -13,6 +13,12 @@ export interface Friend {
   updated_at: string;
   /** Shopify customer 数値 ID (= migration 060。 PR3 で metafield 逆引きにより populate)。 未 link は null。 */
   shopify_customer_id: string | null;
+  /**
+   * ブラックリスト (= do-not-contact)。 全配信から除外される (consent/景表法)。
+   * 列は `INTEGER NOT NULL DEFAULT 0` で常に存在するが、 多くの既存 Friend literal が
+   * 省略しているため optional として宣言 (= blast radius 最小化)。 読む側は 0/undefined を falsy 扱い。
+   */
+  is_blacklisted?: number;
 }
 
 export interface GetFriendsOptions {
