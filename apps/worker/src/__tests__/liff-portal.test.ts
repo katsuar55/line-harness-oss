@@ -60,11 +60,25 @@ vi.mock('@line-crm/db', async (importOriginal) => {
       if (id === 'o1') {
         return {
           id: 'o1',
+          friend_id: 'friend-1', // owned by the test user (U_EXISTING)
           order_number: 1001,
           total_price: 6415,
           email: 'test@example.com',
           line_items: '[{"name":"naturism Blue VP","variant_id":"44000001","quantity":1,"price":"6415"}]',
           created_at: '2026-03-01',
+          fulfillment_status: 'fulfilled',
+        };
+      }
+      if (id === 'o_other') {
+        // owned by a DIFFERENT friend — used by the IDOR regression test
+        return {
+          id: 'o_other',
+          friend_id: 'friend-OTHER',
+          order_number: 2002,
+          total_price: 9999,
+          email: 'victim@example.com',
+          line_items: '[{"name":"naturism Pink","variant_id":"44000002","quantity":1,"price":"9999"}]',
+          created_at: '2026-03-02',
           fulfillment_status: 'fulfilled',
         };
       }
@@ -309,6 +323,14 @@ describe('LIFF Portal Routes', () => {
 
     it('returns 404 for nonexistent order', async () => {
       const res = await post(app, '/api/liff/reorder/create', { lineUserId: 'U_EXISTING', orderId: 'nonexistent' });
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 when reordering another friend's order (IDOR regression)", async () => {
+      // U_EXISTING (friend-1) attempts to reorder o_other, owned by friend-OTHER.
+      // Must be rejected as 404 (not an existence oracle), and must NOT expose the
+      // victim's line items / create a draft from them.
+      const res = await post(app, '/api/liff/reorder/create', { lineUserId: 'U_EXISTING', orderId: 'o_other' });
       expect(res.status).toBe(404);
     });
 

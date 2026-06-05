@@ -87,6 +87,17 @@ function generateNonce(): string {
     .join('');
 }
 
+/**
+ * Shopify shop ドメインの allowlist 検証。
+ * `shop` は token 交換 URL (`https://${shop}/admin/oauth/access_token`) と
+ * 同意画面 URL の組み立てに verbatim で使われるため、 攻撃者が任意ホストを
+ * 渡すと client_secret 付き token 要求の宛先を乗っ取れる (= token 漏洩)。
+ * 正規の Shopify admin ホストは必ず `<handle>.myshopify.com`。
+ */
+function isValidShopDomain(shop: string): boolean {
+  return /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(shop);
+}
+
 // ========== Step 1: OAuth 開始 ==========
 
 shopifyAuth.get('/auth/shopify', async (c) => {
@@ -98,8 +109,13 @@ shopifyAuth.get('/auth/shopify', async (c) => {
       return c.json({ success: false, error: 'Shopify credentials not configured' }, 500);
     }
 
-    // shop パラメータがあればそちらを優先（Shopify からのリダイレクト時）
-    const shop = c.req.query('shop') || storeDomain;
+    // shop パラメータがあればそちらを優先（Shopify からのリダイレクト時）。
+    // query 由来の shop は untrusted — myshopify.com allowlist で検証してから使う。
+    const shopParam = c.req.query('shop');
+    if (shopParam && !isValidShopDomain(shopParam)) {
+      return c.json({ success: false, error: 'Invalid shop domain' }, 400);
+    }
+    const shop = shopParam || storeDomain;
 
     // CSRF 保護用 nonce を生成して D1 に保存
     const nonce = generateNonce();
@@ -151,6 +167,11 @@ shopifyAuth.get('/auth/shopify/callback', async (c) => {
       return c.json({ success: false, error: 'Missing required parameters' }, 400);
     }
 
+    // 0. shop allowlist (= 任意ホストへの token 交換を拒否、 token 漏洩防止)
+    if (!isValidShopDomain(shop)) {
+      return c.json({ success: false, error: 'Invalid shop domain' }, 400);
+    }
+
     // 1. HMAC 署名検証
     const valid = await verifyOAuthHmac(query, clientSecret);
     if (!valid) {
@@ -180,6 +201,11 @@ shopifyAuth.get('/auth/shopify/callback', async (c) => {
     await c.env.DB.prepare(`DELETE FROM shopify_oauth_states WHERE nonce = ?`)
       .bind(state)
       .run();
+
+    // shop が state に紐づく store_domain と一致するか検証 (= 別ストアへの token 交換を拒否)
+    if (storedState.store_domain && storedState.store_domain !== shop) {
+      return c.json({ success: false, error: 'Shop does not match authorization request' }, 400);
+    }
 
     // 3. 認証コードをアクセストークンに交換
     const tokenRes = await fetch(`https://${shop}/admin/oauth/access_token`, {

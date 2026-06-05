@@ -111,7 +111,7 @@ class FakeDb {
         cloned.bounce_count = params[0] as number;
         if ((params[1] as number) === 1) cloned.is_active = 0;
         cloned.updated_at = String(params[2]);
-      } else if (sql.includes('complaint_count')) {
+      } else if (sql.includes('complaint_count = ?')) {
         cloned.complaint_count = params[0] as number;
         if ((params[1] as number) === 1) cloned.is_active = 0;
         cloned.updated_at = String(params[2]);
@@ -121,6 +121,10 @@ class FakeDb {
         cloned.unsubscribed_at = String(params[0]);
         cloned.updated_at = String(params[1]);
       } else if (sql.includes('is_active = 1') && sql.includes('unsubscribed_at = NULL')) {
+        // resubscribeById: WHERE COALESCE(complaint_count,0)=0 — 苦情者は復活させない
+        if (sql.includes('complaint_count') && (existing.complaint_count ?? 0) > 0) {
+          return { success: true, meta: { changes: 0 } };
+        }
         cloned.is_active = 1;
         cloned.unsubscribed_at = null;
         cloned.updated_at = String(params[0]);
@@ -257,6 +261,16 @@ describe('unsubscribeById / resubscribeById', () => {
     const after = await getEmailSubscriberById(db, sub.id);
     expect(after?.is_active).toBe(1);
     expect(after?.unsubscribed_at).toBeNull();
+  });
+
+  it('resubscribe は苦情履歴ありの subscriber を復活させない (changes=0)', async () => {
+    // spam complaint を出した subscriber は再有効化不可 (= 特定電子メール法 / reputation 保護)
+    const sub = await upsertEmailSubscriber(db, { email: 'j@x.com', marketingOptIn: true });
+    await recordComplaint(db, 'j@x.com'); // complaint_count=1, is_active=0
+    const ok = await resubscribeById(db, sub.id);
+    expect(ok).toBe(false);
+    const after = await getEmailSubscriberById(db, sub.id);
+    expect(after?.is_active).toBe(0);
   });
 });
 

@@ -2,6 +2,17 @@ import type { Context, Next } from 'hono';
 import { getStaffByApiKey } from '@line-crm/db';
 import type { Env } from '../index.js';
 
+/**
+ * Constant-time string comparison — avoids leaking the master key via response
+ * timing. Length mismatch returns immediately (key length is not secret).
+ */
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 export async function authMiddleware(c: Context<Env>, next: Next): Promise<Response | void> {
   // Skip auth for the LINE webhook endpoint — it uses signature verification instead
   // Skip auth for OpenAPI docs — public documentation
@@ -58,8 +69,10 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     return next();
   }
 
-  // Fallback: env API_KEY acts as owner
-  if (token === c.env.API_KEY) {
+  // Fallback: env API_KEY acts as owner.
+  // Guard against an unset/empty API_KEY authenticating an empty/garbage bearer,
+  // and compare in constant time.
+  if (c.env.API_KEY && constantTimeEqual(token, c.env.API_KEY)) {
     c.set('staff', { id: 'env-owner', name: 'Owner', role: 'owner' as const });
     return next();
   }

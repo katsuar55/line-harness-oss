@@ -504,15 +504,19 @@ liffRoutes.get('/auth/callback', async (c) => {
 
 // ─── Existing LIFF endpoints ────────────────────────────────────
 
-// POST /api/liff/profile - get friend by LINE userId (public, no auth)
+// POST /api/liff/profile - get the *caller's own* friend record.
+// Identity is taken from the verified LINE id token (liffAuthMiddleware), NOT
+// from the request body. Previously this trusted body.lineUserId, which was an
+// IDOR: any authenticated friend could read another friend's internal id +
+// account user_id by supplying someone else's lineUserId.
 liffRoutes.post('/api/liff/profile', async (c) => {
   try {
-    const body = await c.req.json<{ lineUserId: string }>();
-    if (!body.lineUserId) {
-      return c.json({ success: false, error: 'lineUserId is required' }, 400);
+    const liffUser = c.get('liffUser');
+    if (!liffUser) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
     }
 
-    const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
+    const friend = await getFriendByLineUserId(c.env.DB, liffUser.lineUserId);
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
@@ -523,6 +527,7 @@ liffRoutes.post('/api/liff/profile', async (c) => {
         id: friend.id,
         displayName: friend.display_name,
         isFollowing: Boolean(friend.is_following),
+        // The caller's own user_id only (identity is verified) — never another friend's.
         userId: (friend as unknown as Record<string, unknown>).user_id ?? null,
       },
     });

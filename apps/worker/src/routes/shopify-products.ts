@@ -2,13 +2,12 @@ import { Hono } from 'hono';
 import {
   getShopifyProducts,
   getShopifyProductById,
-  getShopifyProductByShopifyId,
   deleteShopifyProduct,
   upsertShopifyProduct,
 } from '@line-crm/db';
 import type { ShopifyProduct as DbProduct } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
-import { syncProductFromWebhook, buildProductCarousel, sendProductRecommendations } from '../services/product-display.js';
+import { buildProductCarousel, sendProductRecommendations } from '../services/product-display.js';
 import type { Env } from '../index.js';
 
 const shopifyProducts = new Hono<Env>();
@@ -221,86 +220,14 @@ shopifyProducts.post('/api/shopify/products/send', async (c) => {
   }
 });
 
-// POST /api/integrations/shopify/webhook/product — product webhook handler
-shopifyProducts.post('/api/integrations/shopify/webhook/product', async (c) => {
-  try {
-    const topic = c.req.header('X-Shopify-Topic') || '';
-    const rawBody = await c.req.text();
-
-    // Verify HMAC signature if secret is configured
-    const hmac = c.req.header('X-Shopify-Hmac-Sha256');
-    if (c.env.SHOPIFY_WEBHOOK_SECRET && hmac) {
-      const { verifyShopifySignature } = await import('../utils/shopify-hmac.js');
-      const valid = await verifyShopifySignature(c.env.SHOPIFY_WEBHOOK_SECRET, rawBody, hmac);
-      if (!valid) {
-        return c.json({ success: false, error: 'Invalid signature' }, 401);
-      }
-    }
-
-    const body = JSON.parse(rawBody);
-
-    if (topic === 'products/delete') {
-      const shopifyId = String(body.id);
-      const existing = await getShopifyProductByShopifyId(c.env.DB, shopifyId);
-      if (existing) {
-        await deleteShopifyProduct(c.env.DB, existing.id);
-      }
-      return c.json({ success: true, data: { action: 'deleted', shopifyProductId: shopifyId } });
-    }
-
-    // products/create or products/update
-    const product = await syncProductFromWebhook(
-      c.env.DB,
-      body,
-      c.env.SHOPIFY_STORE_DOMAIN,
-    );
-
-    // ㉗ Auto-notify: 新商品登録時、関連カテゴリに興味あるユーザーに自動通知
-    if (topic === 'products/create' && product.status === 'active') {
-      try {
-        const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
-        // Find friends who have purchased this product_type before (via shopify_orders)
-        const recipients = await c.env.DB
-          .prepare(
-            `SELECT DISTINCT f.id, f.line_user_id FROM friends f
-             JOIN shopify_orders so ON so.friend_id = f.id
-             JOIN shopify_products sp ON sp.shopify_product_id = so.shopify_customer_id
-             WHERE f.is_following = 1 AND COALESCE(f.is_blacklisted, 0) = 0
-             LIMIT 50`,
-          )
-          .all<{ id: string; line_user_id: string }>();
-
-        // If no order-based recipients, fall back to recently active followers
-        const targets = recipients.results.length > 0
-          ? recipients.results
-          : (await c.env.DB
-              .prepare(
-                `SELECT f.id, f.line_user_id FROM friends f
-                 WHERE f.is_following = 1 AND COALESCE(f.is_blacklisted, 0) = 0
-                 ORDER BY f.updated_at DESC LIMIT 0`,
-              )
-              .all<{ id: string; line_user_id: string }>()).results;
-
-        if (targets.length > 0) {
-          const carousel = buildProductCarousel([product]);
-          if (carousel) {
-            for (const t of targets) {
-              try {
-                await lineClient.pushMessage(t.line_user_id, [carousel]);
-              } catch { /* skip individual send errors */ }
-            }
-          }
-        }
-      } catch (notifyErr) {
-        console.error('Product auto-notify error:', notifyErr);
-      }
-    }
-
-    return c.json({ success: true, data: { action: 'synced', id: product.id } });
-  } catch (err) {
-    console.error('Shopify product webhook error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
-  }
-});
+// NOTE (2026-05-30 code review): the POST /api/integrations/shopify/webhook/product
+// handler that lived here was DEAD CODE. routes/shopify.ts mounts first (index.ts)
+// and registers the same path+method, so Hono routed every product webhook to
+// shopify.ts and this handler never executed. It also carried a broken recipient
+// query (JOIN sp.shopify_product_id = so.shopify_customer_id — disjoint id spaces)
+// and divergent delete semantics (hard-delete vs shopify.ts soft-archive).
+// Removed to eliminate the silent shadow. The products/create auto-notify feature
+// it attempted was never live; re-implement it in shopify.ts with a correct
+// product_type→recipient query if desired (see CODE_REVIEW_2026-05-30.md rank #10/#20).
 
 export { shopifyProducts };
