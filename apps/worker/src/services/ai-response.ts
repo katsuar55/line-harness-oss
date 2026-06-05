@@ -301,10 +301,40 @@ export async function generateAiResponse(
       };
     }
 
+    // 全モデルが空応答 → fallback。 silent fallback を可視化するため log
+    // (= [[feedback_ai_model_silent_fallback]] の Qwe→Llama 1ヶ月黙殺の教訓。 provider 健全性を query 可能に)。
+    await insertConversationLog(db, {
+      friendId,
+      userMessage: sanitizedMessage,
+      aiResponse: FALLBACK_MESSAGE,
+      aiLayer: 'fallback',
+      aiModel: result.model,
+      ngWordsDetected: null,
+      friendContext,
+      tagNames,
+      friendScore,
+    }).catch((err) =>
+      console.error('[ai-response] fallback log (empty) failed:', err instanceof Error ? err.message : String(err)),
+    );
     return { text: FALLBACK_MESSAGE, layer: 'fallback' };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error('AI response error:', errMsg);
+    // provider 障害も conversation_logs に残す (= silent fallback 可視化)。
+    // try 内の変数 (tagNames/sanitizedMessage/result) は scope 外なので param のみで最小限 log。
+    await insertConversationLog(db, {
+      friendId,
+      userMessage: userMessage.slice(0, 500),
+      aiResponse: FALLBACK_MESSAGE,
+      aiLayer: 'fallback',
+      aiModel: undefined,
+      ngWordsDetected: null,
+      friendContext,
+      tagNames: [],
+      friendScore,
+    }).catch((logErr) =>
+      console.error('[ai-response] fallback log (error) failed:', logErr instanceof Error ? logErr.message : String(logErr)),
+    );
     return { text: FALLBACK_MESSAGE, layer: 'fallback' };
   }
 }
