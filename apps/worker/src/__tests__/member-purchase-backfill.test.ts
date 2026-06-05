@@ -1,0 +1,306 @@
+/**
+ * Tests for member-purchase-backfill (= 自社内製ロイヤリティ PR3-B, 2026-06-05)
+ *
+ * link 連動 過去注文 backfill の money path を検証:
+ *   - gating (MEMBER_BACKFILL_ENABLED / shopify config / accessToken / customerId allowlist)
+ *   - order gid → 数値正規化 (= webhook の shopify_order_id と一致 → 二重計上防止)
+ *   - occurred_at = 実注文日 / source='backfill' / JPY zero-decimal (× 100 しない)
+ *   - 非JPY skip / pagination + cap / HTTP・GraphQL エラーで打ち切り (= 部分 backfill、 link は壊さない)
+ *
+ * addPurchaseEvent は spy (= service の責務 = 「Shopify から取得して正しい引数で addPurchaseEvent を呼ぶ」 を検証)。
+ * idempotency の dedup 本体 (UNIQUE shopify_order_id) は membership-db.test.ts で別途検証済。
+ * isoMonthsAgo / jstNow は importActual で実物 (= window 計算の正確性を保つ)。
+ * service は static import のみ (= vi.mock + dynamic import 干渉トラップなし)。
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const { addPurchaseEventMock } = vi.hoisted(() => ({ addPurchaseEventMock: vi.fn() }));
+
+vi.mock('@line-crm/db', async (importActual) => {
+  const actual = await importActual<typeof import('@line-crm/db')>();
+  return { ...actual, addPurchaseEvent: addPurchaseEventMock };
+});
+
+import {
+  backfillCustomerOrders,
+  normalizeShopifyOrderId,
+  type BackfillEnv,
+} from '../services/member-purchase-backfill.js';
+
+// ─── no-op D1 (= addPurchaseEvent は mock、 auditSystem は best-effort no-op) ───
+const fakeDb = {
+  prepare: () => ({
+    bind: () => ({
+      run: async () => ({ success: true, meta: { changes: 1 } }),
+      first: async () => null,
+      all: async () => ({ results: [], success: true }),
+    }),
+  }),
+} as unknown as D1Database;
+
+const ENV_ON: BackfillEnv = {
+  SHOPIFY_STORE_DOMAIN: 'shop.myshopify.com',
+  MEMBER_BACKFILL_ENABLED: 'true',
+};
+
+const BASE = {
+  customerId: '6601471787261',
+  friendId: 'f1',
+  accessToken: 'shpat_test',
+  asOfIso: '2026-06-05T00:00:00.000+09:00',
+};
+
+interface OrderNode {
+  id: string;
+  createdAt?: string | null;
+  displayFinancialStatus?: string | null;
+  totalPriceSet?: { shopMoney?: { amount?: string | null; currencyCode?: string | null } | null } | null;
+}
+
+function order(id: string, amount: string, createdAt: string, currency = 'JPY', status = 'PAID'): OrderNode {
+  return {
+    id,
+    createdAt,
+    displayFinancialStatus: status,
+    totalPriceSet: { shopMoney: { amount, currencyCode: currency } },
+  };
+}
+
+/** orders ページを順番に返す fetch mock (= after cursor を辿る pagination 再現) */
+function mockOrdersFetch(pages: Array<{ nodes: OrderNode[]; hasNextPage?: boolean; endCursor?: string | null }>) {
+  let call = 0;
+  return vi.fn(async () => {
+    const p = pages[Math.min(call, pages.length - 1)];
+    call += 1;
+    return new Response(
+      JSON.stringify({
+        data: {
+          orders: {
+            edges: p.nodes.map((n, i) => ({ cursor: `c${call}_${i}`, node: n })),
+            pageInfo: { hasNextPage: p.hasNextPage ?? false, endCursor: p.endCursor ?? null },
+          },
+        },
+      }),
+      { status: 200 },
+    );
+  });
+}
+
+beforeEach(() => {
+  addPurchaseEventMock.mockReset();
+  // default: 新規 applied (= newTotalPurchaseJpy 非 null → backfilled としてカウント)
+  addPurchaseEventMock.mockImplementation(async (_db: unknown, input: { shopifyOrderId: string; amountJpy: number; friendId: string }) => ({
+    inserted: true,
+    applied: true,
+    eventId: `e-${input.shopifyOrderId}`,
+    friendId: input.friendId,
+    amountJpy: Math.floor(input.amountJpy),
+    newTotalPurchaseJpy: Math.floor(input.amountJpy),
+  }));
+});
+
+describe('normalizeShopifyOrderId', () => {
+  it('gid → 数値 / 数値はそのまま / 不正は null', () => {
+    expect(normalizeShopifyOrderId('gid://shopify/Order/6874188710141')).toBe('6874188710141');
+    expect(normalizeShopifyOrderId('123456')).toBe('123456');
+    expect(normalizeShopifyOrderId('gid://shopify/Customer/1')).toBeNull();
+    expect(normalizeShopifyOrderId(null)).toBeNull();
+    expect(normalizeShopifyOrderId('')).toBeNull();
+  });
+});
+
+describe('backfillCustomerOrders — gating', () => {
+  it('MEMBER_BACKFILL_ENABLED!=true → skipped (gated_off)・fetch せず', async () => {
+    const fetchImpl = mockOrdersFetch([{ nodes: [order('gid://shopify/Order/1', '2830', '2026-05-01T00:00:00Z')] }]);
+    const r = await backfillCustomerOrders(
+      fakeDb,
+      { ...ENV_ON, MEMBER_BACKFILL_ENABLED: undefined },
+      { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    expect(r.skipped).toBe(true);
+    expect(r.reason).toBe('gated_off');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(addPurchaseEventMock).not.toHaveBeenCalled();
+  });
+
+  it('SHOPIFY_STORE_DOMAIN 未設定 → skipped (shopify_not_configured)', async () => {
+    const r = await backfillCustomerOrders(fakeDb, { ...ENV_ON, SHOPIFY_STORE_DOMAIN: undefined }, { ...BASE });
+    expect(r.skipped).toBe(true);
+    expect(r.reason).toBe('shopify_not_configured');
+  });
+
+  it('accessToken 空 → skipped (no_access_token)', async () => {
+    const r = await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, accessToken: '' });
+    expect(r.skipped).toBe(true);
+    expect(r.reason).toBe('no_access_token');
+  });
+
+  it('customerId が数値でない (= 注入リスク) → skipped (invalid_customer_id)・fetch せず', async () => {
+    const fetchImpl = mockOrdersFetch([{ nodes: [] }]);
+    const r = await backfillCustomerOrders(
+      fakeDb,
+      ENV_ON,
+      { ...BASE, customerId: '123 OR 1=1', fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    expect(r.skipped).toBe(true);
+    expect(r.reason).toBe('invalid_customer_id');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('backfillCustomerOrders — backfill', () => {
+  it('paid 注文を addPurchaseEvent(source=backfill, occurredAt=実注文日) で記録', async () => {
+    const fetchImpl = mockOrdersFetch([
+      {
+        nodes: [
+          order('gid://shopify/Order/100', '2830', '2026-05-01T10:00:00Z'),
+          order('gid://shopify/Order/101', '14159.0', '2026-04-12T09:00:00Z'),
+        ],
+      },
+    ]);
+    const r = await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(r.skipped).toBe(false);
+    expect(r.scanned).toBe(2);
+    expect(r.backfilled).toBe(2);
+    expect(r.totalJpy).toBe(2830 + 14159);
+
+    expect(addPurchaseEventMock).toHaveBeenCalledTimes(2);
+    const first = addPurchaseEventMock.mock.calls[0][1];
+    expect(first.shopifyOrderId).toBe('100'); // gid → 数値正規化 (= webhook と一致)
+    expect(first.source).toBe('backfill');
+    expect(first.occurredAt).toBe('2026-05-01T10:00:00Z');
+    expect(first.amountJpy).toBe(2830);
+  });
+
+  it('JPY zero-decimal: amount を × 100 しない ("14159.0" → 14159)', async () => {
+    const fetchImpl = mockOrdersFetch([{ nodes: [order('gid://shopify/Order/9', '14159.0', '2026-05-01T00:00:00Z')] }]);
+    await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(addPurchaseEventMock.mock.calls[0][1].amountJpy).toBe(14159);
+  });
+
+  it('既適用 (newTotalPurchaseJpy=null) は alreadyApplied として冪等カウント', async () => {
+    addPurchaseEventMock.mockResolvedValue({
+      inserted: false,
+      applied: true,
+      eventId: 'e',
+      friendId: 'f1',
+      amountJpy: 2830,
+      newTotalPurchaseJpy: null,
+      reason: 'duplicate (already applied)',
+    });
+    const fetchImpl = mockOrdersFetch([{ nodes: [order('gid://shopify/Order/100', '2830', '2026-05-01T00:00:00Z')] }]);
+    const r = await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(r.backfilled).toBe(0);
+    expect(r.alreadyApplied).toBe(1);
+    expect(r.totalJpy).toBe(0);
+  });
+
+  it('非JPY 通貨は skip (= amount_jpy 整数前提の防御)', async () => {
+    const fetchImpl = mockOrdersFetch([
+      {
+        nodes: [
+          order('gid://shopify/Order/1', '2830', '2026-05-01T00:00:00Z', 'JPY'),
+          order('gid://shopify/Order/2', '20.00', '2026-05-02T00:00:00Z', 'USD'),
+        ],
+      },
+    ]);
+    const r = await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(r.scanned).toBe(1);
+    expect(addPurchaseEventMock).toHaveBeenCalledTimes(1);
+    expect(addPurchaseEventMock.mock.calls[0][1].shopifyOrderId).toBe('1');
+  });
+
+  it('displayFinancialStatus が PAID でない order は skip (= 過剰 credit 防止)', async () => {
+    const fetchImpl = mockOrdersFetch([
+      {
+        nodes: [
+          order('gid://shopify/Order/1', '2830', '2026-05-01T00:00:00Z', 'JPY', 'PAID'),
+          order('gid://shopify/Order/2', '5000', '2026-05-02T00:00:00Z', 'JPY', 'REFUNDED'),
+        ],
+      },
+    ]);
+    const r = await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(r.scanned).toBe(1);
+    expect(addPurchaseEventMock.mock.calls[0][1].shopifyOrderId).toBe('1');
+  });
+});
+
+describe('backfillCustomerOrders — pagination', () => {
+  it('hasNextPage を辿って全ページ処理', async () => {
+    const fetchImpl = mockOrdersFetch([
+      { nodes: [order('gid://shopify/Order/1', '1000', '2026-05-01T00:00:00Z')], hasNextPage: true, endCursor: 'cur1' },
+      { nodes: [order('gid://shopify/Order/2', '2000', '2026-05-02T00:00:00Z')], hasNextPage: false },
+    ]);
+    const r = await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(r.scanned).toBe(2);
+    expect(r.backfilled).toBe(2);
+    expect(r.capped).toBe(false);
+  });
+
+  it('maxPages cap 到達で capped=true (= silent 切捨て禁止)', async () => {
+    const fetchImpl = mockOrdersFetch([
+      { nodes: [order('gid://shopify/Order/1', '1000', '2026-05-01T00:00:00Z')], hasNextPage: true, endCursor: 'cur1' },
+    ]);
+    const r = await backfillCustomerOrders(
+      fakeDb,
+      ENV_ON,
+      { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch, maxPages: 1 },
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(r.capped).toBe(true);
+    expect(r.scanned).toBe(1);
+  });
+});
+
+describe('backfillCustomerOrders — error handling (link を壊さない)', () => {
+  it('HTTP error → errors++ で打ち切り (skipped=false)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('err', { status: 500 }));
+    const r = await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(r.skipped).toBe(false);
+    expect(r.errors).toBe(1);
+    expect(r.backfilled).toBe(0);
+    expect(addPurchaseEventMock).not.toHaveBeenCalled();
+  });
+
+  it('GraphQL errors → errors++ で打ち切り', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ errors: [{ message: 'throttled' }] }), { status: 200 }));
+    const r = await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(r.errors).toBe(1);
+    expect(r.backfilled).toBe(0);
+  });
+
+  it('fetch throw (network) → errors++ で打ち切り', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('network down');
+    });
+    const r = await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(r.errors).toBe(1);
+    expect(r.backfilled).toBe(0);
+  });
+
+  it('個別 addPurchaseEvent 失敗は errors++ するが他 order は継続', async () => {
+    addPurchaseEventMock
+      .mockRejectedValueOnce(new Error('db busy'))
+      .mockImplementation(async (_db: unknown, input: { shopifyOrderId: string; amountJpy: number; friendId: string }) => ({
+        inserted: true,
+        applied: true,
+        eventId: 'e',
+        friendId: input.friendId,
+        amountJpy: input.amountJpy,
+        newTotalPurchaseJpy: input.amountJpy,
+      }));
+    const fetchImpl = mockOrdersFetch([
+      {
+        nodes: [
+          order('gid://shopify/Order/1', '1000', '2026-05-01T00:00:00Z'),
+          order('gid://shopify/Order/2', '2000', '2026-05-02T00:00:00Z'),
+        ],
+      },
+    ]);
+    const r = await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(r.errors).toBe(1);
+    expect(r.backfilled).toBe(1);
+    expect(r.totalJpy).toBe(2000);
+  });
+});

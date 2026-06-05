@@ -1,0 +1,34 @@
+-- Migration 063: member_purchase_events.occurred_at column (= 自社内製ロイヤリティ PR3-B、 2026-06-05)
+--
+-- 目的:
+--   link 連動 過去注文 backfill (= friend↔Shopify customer link 後に過去 paid 注文を遡及加算) のため、
+--   「実際の注文日 (Shopify order.createdAt)」 を保持する occurred_at 列を追加する。
+--
+-- 背景 (= money path の核心バグ予防):
+--   trailing-12mo rank 判定 (loyalty-rank.ts computeTrailing12moJpyForFriend) は従来
+--   created_at (= webhook 受信時刻 / row 挿入時刻) を時間基準にしていた。
+--   live webhook では「注文時刻 ≈ 記録時刻」 なので問題なかったが、
+--   過去注文を now で backfill すると「古い注文が直近12ヶ月に誤計上」 → rank 膨張のバグになる。
+--   → occurred_at に「実際の注文日」 を入れ、 rank window を
+--     COALESCE(occurred_at, created_at) で評価する。
+--     既存行・webhook 経路は occurred_at=NULL → created_at fallback で従来と完全互換。
+--
+-- 設計:
+--   - NULLABLE (= 既存行は NULL、 webhook 経路も当面 NULL のまま = created_at fallback で後方互換)
+--   - backfill 経路のみ occurred_at = 実注文日 (ISO8601) を書き込む
+--   - 非破壊 (ALTER ADD COLUMN のみ、 既存データ・index 不変)
+--   - index は追加しない: 本番 member_purchase_events は friend 単位で高々数百行であり、
+--     friend_id index (= migration 059 idx_member_purchase_events_friend) で十分絞り込めるため、
+--     COALESCE 式 index は現スケールで不要。 必要になれば別 migration で追加。
+--
+-- NOTE (schema.sql / regen):
+--   regenerate-schema.mjs は auto-appended table (= 059 由来の member_purchase_events) への
+--   ALTER ADD COLUMN を schema.sql に inline しない (= email_templates 047 / subscription_reminders 040
+--   等と同じ既知挙動。 CI drift check は regen 冪等性を見るので green のまま)。
+--   → occurred_at の source of truth は本 migration。 本番/ローカルとも migration を個別適用すること
+--     (`db:migrate` の schema.sql 一括は fresh bootstrap 用で、 別途 migration 適用が前提)。
+--
+-- 適用方法 (= cwd: apps/worker):
+--   npx wrangler d1 execute naturism-line-crm --remote --file ..\..\packages\db\migrations\063_member_purchase_events_occurred_at.sql
+
+ALTER TABLE member_purchase_events ADD COLUMN occurred_at TEXT;

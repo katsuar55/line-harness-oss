@@ -31,6 +31,7 @@
  */
 import { getShopifyAccessToken } from './shopify-token.js';
 import { auditSystem } from './audit-logger.js';
+import { backfillCustomerOrders } from './member-purchase-backfill.js';
 import {
   listUnlinkedFriends,
   getFriendByShopifyCustomerId,
@@ -68,6 +69,11 @@ export interface FriendLinkEnv {
   FRIEND_LINK_METAFIELD_KEY?: string;
   /** 'true' で JST 02:00-02:04 gating window を bypass (= テスト/手動)。 */
   FRIEND_LINK_CRON_FORCE?: string;
+  /**
+   * 'true' で link 成立後に過去注文 backfill を実行 (= money path)。 linking (FRIEND_LINK_ENABLED) とは
+   * 別 gate。 未設定なら backfill は no-op (= linking のみ実行)。 backfill 側でも判定する二重ガード。
+   */
+  MEMBER_BACKFILL_ENABLED?: string;
 }
 
 export interface FriendLinkResult {
@@ -78,6 +84,8 @@ export interface FriendLinkResult {
   readonly ambiguous: number;
   readonly notFound: number;
   readonly errors: number;
+  /** link 成立に伴い backfill した過去注文の合計件数 (= MEMBER_BACKFILL_ENABLED off なら常に 0)。 */
+  readonly backfilled: number;
 }
 
 export interface ProcessFriendLinkOptions {
@@ -87,6 +95,8 @@ export interface ProcessFriendLinkOptions {
   fetchImpl?: typeof fetch;
   /** 1 回の scan 件数 (default 25)。 Shopify rate limit / Worker CPU 対策。 */
   limit?: number;
+  /** test 用 backfill 注入 (default: backfillCustomerOrders)。 */
+  backfillImpl?: typeof backfillCustomerOrders;
 }
 
 export interface FoundCustomer {
@@ -208,7 +218,7 @@ export async function findShopifyCustomerByLineId(
 // ============================================================
 
 function skip(reason: string): FriendLinkResult {
-  return { skipped: true, reason, scanned: 0, linked: 0, ambiguous: 0, notFound: 0, errors: 0 };
+  return { skipped: true, reason, scanned: 0, linked: 0, ambiguous: 0, notFound: 0, errors: 0, backfilled: 0 };
 }
 
 /**
@@ -242,6 +252,7 @@ export async function processFriendCustomerLink(
   if (!inWindow && env.FRIEND_LINK_CRON_FORCE !== 'true') return skip('outside_window');
 
   const fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
+  const backfillImpl = options.backfillImpl ?? backfillCustomerOrders;
 
   // 3. access token (= 1 回だけ取得して使い回す)
   let accessToken: string;
@@ -256,7 +267,7 @@ export async function processFriendCustomerLink(
       errorMessage: errMsg,
       metadata: { stage: 'access_token' },
     });
-    return { skipped: false, reason: 'token_unavailable', scanned: 0, linked: 0, ambiguous: 0, notFound: 0, errors: 1 };
+    return { skipped: false, reason: 'token_unavailable', scanned: 0, linked: 0, ambiguous: 0, notFound: 0, errors: 1, backfilled: 0 };
   }
 
   // 4. 未 link friend を scan して metafield 逆引き → link
@@ -266,6 +277,7 @@ export async function processFriendCustomerLink(
   let ambiguous = 0;
   let notFound = 0;
   let errors = 0;
+  let backfilled = 0;
 
   for (const f of friends) {
     try {
@@ -305,6 +317,24 @@ export async function processFriendCustomerLink(
           // PII 最小化: 顧客 email は append-only audit に残さない (= shopifyCustomerId で識別十分)。
           metadata: { shopifyCustomerId: found.customerId, matchedBy: 'metafield' },
         });
+        // link 成立 → 過去注文 backfill (= money path、 MEMBER_BACKFILL_ENABLED gate は backfill 側で判定)。
+        // accessToken/fetchImpl を再利用。 backfill 失敗は link を壊さない (= try/catch、 under-count は安全方向)。
+        try {
+          const bf = await backfillImpl(env.DB, env, {
+            customerId: found.customerId,
+            friendId: f.id,
+            accessToken,
+            fetchImpl,
+          });
+          backfilled += bf.backfilled;
+        } catch (err) {
+          console.error(
+            '[friend-customer-linker] backfill failed friend',
+            f.id,
+            ':',
+            err instanceof Error ? err.message : 'unknown',
+          );
+        }
       }
       // didLink=false (= 別 worker が先に link した等の競合) は no-op
     } catch (err) {
@@ -322,10 +352,10 @@ export async function processFriendCustomerLink(
   await auditSystem(env.DB, {
     action: 'loyalty_customer_link.scan_completed',
     result: 'success',
-    metadata: { scanned: friends.length, linked, ambiguous, notFound, errors, batchLimit: limit },
+    metadata: { scanned: friends.length, linked, ambiguous, notFound, errors, backfilled, batchLimit: limit },
   });
 
-  return { skipped: false, scanned: friends.length, linked, ambiguous, notFound, errors };
+  return { skipped: false, scanned: friends.length, linked, ambiguous, notFound, errors, backfilled };
 }
 
 // ============================================================

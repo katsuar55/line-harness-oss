@@ -332,6 +332,8 @@ export interface MemberPurchaseEventRow {
   phone: string | null;
   applied_at: string | null;
   source: string;
+  /** 実際の注文日 (= PR3-B backfill が設定。 NULL は created_at fallback)。 migration 063。 */
+  occurred_at: string | null;
   metadata: string | null;
   created_at: string;
   updated_at: string;
@@ -346,6 +348,12 @@ export interface AddPurchaseEventInput {
   email?: string | null;
   phone?: string | null;
   source?: 'webhook' | 'backfill' | 'manual';
+  /**
+   * 実際の注文日 (ISO8601)。 過去注文 backfill (= PR3-B) で trailing-12mo rank window を
+   * 正しく評価するために実注文日を保持する。 未指定 (= webhook 経路) は NULL となり、
+   * computeTrailing12moJpyForFriend は COALESCE で created_at に fallback する (= 後方互換)。
+   */
+  occurredAt?: string | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -403,8 +411,8 @@ export async function addPurchaseEvent(
       .prepare(
         `INSERT INTO member_purchase_events (
            id, shopify_order_id, friend_id, amount_jpy, currency,
-           order_number, email, phone, source, metadata, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           order_number, email, phone, source, occurred_at, metadata, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         eventId,
@@ -416,6 +424,7 @@ export async function addPurchaseEvent(
         input.email ?? null,
         input.phone ?? null,
         input.source ?? 'webhook',
+        input.occurredAt ?? null,
         input.metadata ? JSON.stringify(input.metadata) : null,
         now,
         now,

@@ -19,6 +19,7 @@ import {
   addPurchaseEvent,
   determineEligibleTier,
   getMemberByFriendId,
+  getPurchaseEventByOrderId,
   type MembershipTier,
 } from '@line-crm/db';
 
@@ -37,6 +38,7 @@ interface EventRow {
   phone: string | null;
   applied_at: string | null;
   source: string;
+  occurred_at: string | null;
   metadata: string | null;
   created_at: string;
   updated_at: string;
@@ -84,6 +86,9 @@ function makeDb() {
         // INSERT event
         if (sql.includes('INSERT INTO member_purchase_events')) {
           const [id, orderId, friendId, amount] = params as [string, string, string | null, number];
+          // bind 順: id,order,friend,amount,currency,order_number,email,phone,source,occurred_at,metadata,...
+          const source = (params[8] as string) ?? 'webhook';
+          const occurredAt = (params[9] as string | null) ?? null;
           const row: EventRow = {
             id,
             shopify_order_id: orderId,
@@ -94,7 +99,8 @@ function makeDb() {
             email: null,
             phone: null,
             applied_at: null,
-            source: 'webhook',
+            source,
+            occurred_at: occurredAt,
             metadata: null,
             created_at: '',
             updated_at: '',
@@ -260,6 +266,28 @@ describe('addPurchaseEvent', () => {
     expect(r.applied).toBe(true);
     expect(r.inserted).toBe(false); // 既存 event を再利用
     expect((await getMemberByFriendId(db, 'f-late'))?.totalPurchaseJpy).toBe(2500);
+  });
+
+  it('occurredAt を渡すと occurred_at 列に保存される (= PR3-B backfill 経路、 実注文日)', async () => {
+    const db = makeDb();
+    await addPurchaseEvent(db, {
+      shopifyOrderId: 'o-bf',
+      friendId: 'f-bf',
+      amountJpy: 5000,
+      source: 'backfill',
+      occurredAt: '2025-08-01T00:00:00.000+09:00',
+    });
+    const row = await getPurchaseEventByOrderId(db, 'o-bf');
+    expect(row?.occurred_at).toBe('2025-08-01T00:00:00.000+09:00');
+    expect(row?.source).toBe('backfill');
+  });
+
+  it('occurredAt 未指定なら occurred_at は NULL (= webhook 後方互換 / created_at fallback)', async () => {
+    const db = makeDb();
+    await addPurchaseEvent(db, { shopifyOrderId: 'o-wh', friendId: 'f-wh', amountJpy: 1980 });
+    const row = await getPurchaseEventByOrderId(db, 'o-wh');
+    expect(row?.occurred_at ?? null).toBeNull();
+    expect(row?.source).toBe('webhook');
   });
 });
 

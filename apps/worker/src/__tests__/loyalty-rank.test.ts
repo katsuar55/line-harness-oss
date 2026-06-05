@@ -164,6 +164,8 @@ interface EvtSeed {
   amount_jpy: number;
   applied_at: string | null;
   created_at: string;
+  /** 実注文日 (= PR3-B backfill)。 省略/NULL は created_at に fallback。 */
+  occurred_at?: string | null;
 }
 
 function makeRankDb(events: EvtSeed[]): D1Database {
@@ -178,12 +180,13 @@ function makeRankDb(events: EvtSeed[]): D1Database {
         async first<T>(): Promise<T | null> {
           if (sql.includes('SUM(amount_jpy)') && sql.includes('member_purchase_events')) {
             const [friendId, since] = params as [string, string];
+            // 本番 SQL の COALESCE(occurred_at, created_at) >= ? を再現
             const total = events
               .filter(
                 (e) =>
                   e.friend_id === friendId &&
                   e.applied_at != null &&
-                  e.created_at >= since,
+                  (e.occurred_at ?? e.created_at) >= since,
               )
               .reduce((s, e) => s + e.amount_jpy, 0);
             return { total } as unknown as T;
@@ -219,6 +222,48 @@ describe('computeTrailing12moJpyForFriend', () => {
   it('event 無し → 0', async () => {
     const db = makeRankDb([]);
     expect(await computeTrailing12moJpyForFriend(db, 'f1', asOf)).toBe(0);
+  });
+
+  // ── PR3-B: occurred_at 優先 (= 過去注文 backfill の rank 膨張防止、 money path) ──
+  it('occurred_at 窓外なら除外 (created_at 窓内でも occurred_at 優先) = 旧 created_at 基準なら誤計上していた', async () => {
+    const db = makeRankDb([
+      // 実注文日 (occurred_at) は ~14ヶ月前 = 窓外。 created_at (= backfill 記録時刻) は窓内。
+      // 旧実装 (created_at 基準) なら 99999 を誤算入 → rank 膨張。 新実装は除外。
+      {
+        friend_id: 'f1',
+        amount_jpy: 99999,
+        applied_at: asOf,
+        created_at: '2026-05-01T00:00:00.000+09:00',
+        occurred_at: '2025-04-01T00:00:00.000+09:00',
+      },
+    ]);
+    expect(await computeTrailing12moJpyForFriend(db, 'f1', asOf)).toBe(0);
+  });
+
+  it('occurred_at 窓内なら算入 (created_at 窓外でも occurred_at 優先)', async () => {
+    const db = makeRankDb([
+      {
+        friend_id: 'f1',
+        amount_jpy: 7000,
+        applied_at: asOf,
+        created_at: '2024-01-01T00:00:00.000+09:00',
+        occurred_at: '2026-03-01T00:00:00.000+09:00',
+      },
+    ]);
+    expect(await computeTrailing12moJpyForFriend(db, 'f1', asOf)).toBe(7000);
+  });
+
+  it('occurred_at NULL は created_at に fallback (= webhook 後方互換)', async () => {
+    const db = makeRankDb([
+      {
+        friend_id: 'f1',
+        amount_jpy: 3000,
+        applied_at: asOf,
+        created_at: '2026-05-01T00:00:00.000+09:00',
+        occurred_at: null,
+      },
+    ]);
+    expect(await computeTrailing12moJpyForFriend(db, 'f1', asOf)).toBe(3000);
   });
 });
 
