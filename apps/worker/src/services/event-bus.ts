@@ -199,8 +199,8 @@ async function processScoring(
   }
 }
 
-/** 自動化ルール(IF-THEN)実行 */
-async function processAutomations(
+/** 自動化ルール(IF-THEN)実行 (= export は test 用) */
+export async function processAutomations(
   db: D1Database,
   eventType: string,
   payload: EventPayload,
@@ -216,34 +216,57 @@ async function processAutomations(
     );
 
     for (const automation of automations) {
-      const conditions = JSON.parse(automation.conditions) as Record<string, unknown>;
-      const actions = JSON.parse(automation.actions) as Array<{ type: string; params: Record<string, string> }>;
+      // per-row guard: 1 行の corrupt JSON (conditions/actions parse) や予期せぬ失敗が、
+      // 同 event の **以降の automation を止めない** よう各行を隔離する (= 旧実装は parse が
+      // loop 外 catch に飛び loop 全体が中断していた)。
+      try {
+        const conditions = JSON.parse(automation.conditions) as Record<string, unknown>;
+        const actions = JSON.parse(automation.actions) as Array<{ type: string; params: Record<string, string> }>;
 
-      // 条件チェック（簡易版: 条件が空なら常にマッチ）
-      if (!matchConditions(conditions, payload)) continue;
+        // 条件チェック（簡易版: 条件が空なら常にマッチ）
+        if (!matchConditions(conditions, payload)) continue;
 
-      const results: Array<{ action: string; success: boolean; error?: string }> = [];
+        const results: Array<{ action: string; success: boolean; error?: string }> = [];
 
-      for (const action of actions) {
+        for (const action of actions) {
+          try {
+            await executeAction(db, action, payload, lineAccessToken, emailConfig);
+            results.push({ action: action.type, success: true });
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            results.push({ action: action.type, success: false, error: errorMsg });
+          }
+        }
+
+        const allSuccess = results.every((r) => r.success);
+        const anySuccess = results.some((r) => r.success);
+
+        await createAutomationLog(db, {
+          automationId: automation.id,
+          friendId: payload.friendId,
+          eventData: JSON.stringify(payload.eventData ?? {}),
+          actionsResult: JSON.stringify(results),
+          status: allSuccess ? 'success' : anySuccess ? 'partial' : 'failed',
+        });
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error(`processAutomations: automation ${automation.id} failed:`, errorMsg);
+        // 可観測性: 壊れた行も failed log を best-effort で残す (= silent skip しない)。
         try {
-          await executeAction(db, action, payload, lineAccessToken, emailConfig);
-          results.push({ action: action.type, success: true });
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          results.push({ action: action.type, success: false, error: errorMsg });
+          await createAutomationLog(db, {
+            automationId: automation.id,
+            friendId: payload.friendId,
+            eventData: JSON.stringify(payload.eventData ?? {}),
+            actionsResult: JSON.stringify([{ action: 'parse', success: false, error: errorMsg }]),
+            status: 'failed',
+          });
+        } catch (logErr) {
+          console.error(
+            `processAutomations: failed to log automation ${automation.id} failure:`,
+            logErr instanceof Error ? logErr.message : String(logErr),
+          );
         }
       }
-
-      const allSuccess = results.every((r) => r.success);
-      const anySuccess = results.some((r) => r.success);
-
-      await createAutomationLog(db, {
-        automationId: automation.id,
-        friendId: payload.friendId,
-        eventData: JSON.stringify(payload.eventData ?? {}),
-        actionsResult: JSON.stringify(results),
-        status: allSuccess ? 'success' : anySuccess ? 'partial' : 'failed',
-      });
     }
   } catch (err) {
     console.error('processAutomations error:', err);
