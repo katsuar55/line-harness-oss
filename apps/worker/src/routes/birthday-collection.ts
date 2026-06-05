@@ -30,15 +30,18 @@ birthdayCollection.get('/api/birthday-collection/stats', async (c) => {
     const accountFilter = lineAccountId ? ' AND line_account_id = ?' : '';
     const params: unknown[] = lineAccountId ? [lineAccountId] : [];
 
+    // ブラックリスト除外 (consent/景表法): 送信対象 (/send) と母数を揃え、 予測件数を実送信と一致させる。
     const totalRow = await c.env.DB
-      .prepare(`SELECT COUNT(*) AS c FROM friends WHERE is_following = 1${accountFilter}`)
+      .prepare(
+        `SELECT COUNT(*) AS c FROM friends WHERE is_following = 1 AND COALESCE(is_blacklisted, 0) = 0${accountFilter}`,
+      )
       .bind(...params)
       .first<{ c: number }>();
 
     const registeredRow = await c.env.DB
       .prepare(
         `SELECT COUNT(*) AS c FROM friends
-         WHERE is_following = 1${accountFilter}
+         WHERE is_following = 1 AND COALESCE(is_blacklisted, 0) = 0${accountFilter}
            AND json_extract(metadata, ?) IS NOT NULL`,
       )
       .bind(...params, METADATA_PATH)
@@ -96,10 +99,11 @@ birthdayCollection.post('/api/birthday-collection/send', async (c) => {
     const accountFilter = body.lineAccountId ? ' AND line_account_id = ?' : '';
     const params: unknown[] = body.lineAccountId ? [body.lineAccountId] : [];
 
+    // ブラックリスト除外 (consent/景表法): do-not-contact の友だちには一斉 multicast しない。
     const result = await c.env.DB
       .prepare(
         `SELECT line_user_id FROM friends
-         WHERE is_following = 1${accountFilter}
+         WHERE is_following = 1 AND COALESCE(is_blacklisted, 0) = 0${accountFilter}
            AND json_extract(metadata, ?) IS NULL`,
       )
       .bind(...params, METADATA_PATH)

@@ -36,9 +36,11 @@ export async function processWeeklyReports(
 
   const { results: friends } = await db
     .prepare(
+      // ブラックリスト除外 (consent/景表法): segment-query.ts と同じ規約で全 mass 配信に適用。
       `SELECT id, line_user_id, display_name
        FROM friends
        WHERE is_following = 1
+         AND COALESCE(is_blacklisted, 0) = 0
        ORDER BY created_at ASC
        LIMIT 5000`,
     )

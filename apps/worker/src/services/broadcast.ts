@@ -116,6 +116,9 @@ async function sendBroadcastLine(
 
   if (broadcast.target_type === 'all') {
     // Use LINE broadcast API (sends to all followers).
+    // ⚠️ blacklist 適用不可: LINE 側が全 follower に直接配信するため friend を列挙せず、
+    //    is_blacklisted での除外ができない (= 構造的制約)。 厳密な blacklist 遵守が要る場合は
+    //    target_type='tag' / email 経路 (= friend 選択を経るため除外が効く) を使う。
     // Capture X-Line-Request-Id so we can later query open/click stats
     // from LINE Insight API (/v2/bot/insight/message/event).
     const { requestId } = await lineClient.broadcastWithRequestId([message]);
@@ -220,6 +223,7 @@ async function resolveFollowingFriends(
   }
 
   // target_type='all' — all following friends (optionally scoped by line_account_id)
+  // ブラックリスト除外 (consent/景表法): segment-query.ts と同じ規約で全配信に適用。
   const lineAccountId = (broadcast as unknown as Record<string, unknown>).line_account_id as
     | string
     | null
@@ -227,14 +231,14 @@ async function resolveFollowingFriends(
   if (lineAccountId) {
     const result = await db
       .prepare(
-        `SELECT * FROM friends WHERE is_following = 1 AND line_account_id = ?`,
+        `SELECT * FROM friends WHERE is_following = 1 AND COALESCE(is_blacklisted, 0) = 0 AND line_account_id = ?`,
       )
       .bind(lineAccountId)
       .all<Friend>();
     return result.results ?? [];
   }
   const result = await db
-    .prepare(`SELECT * FROM friends WHERE is_following = 1`)
+    .prepare(`SELECT * FROM friends WHERE is_following = 1 AND COALESCE(is_blacklisted, 0) = 0`)
     .all<Friend>();
   return result.results ?? [];
 }

@@ -103,10 +103,14 @@ export async function getFriendsByTag(
 ): Promise<Friend[]> {
   const result = await db
     .prepare(
+      // ブラックリスト除外 (全配信で自動適用 = consent/景表法)。
+      // segment-query.ts と同じ規約。 broadcast / A/B test の tag 対象選択が
+      // 本関数を共有するため、 ここで除外すると両経路を一括でカバーできる。
       `SELECT f.*
        FROM friends f
        INNER JOIN friend_tags ft ON ft.friend_id = f.id
        WHERE ft.tag_id = ?
+         AND COALESCE(f.is_blacklisted, 0) = 0
        ORDER BY f.created_at DESC`,
     )
     .bind(tagId)

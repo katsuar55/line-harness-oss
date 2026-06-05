@@ -298,6 +298,35 @@ describe('processStepDeliveries — channel dispatcher routing', () => {
     expect(mockCompleteFriendScenario).not.toHaveBeenCalled();
   });
 
+  it('blacklisted friend (following) → 配信せず scenario complete (consent/景表法)', async () => {
+    // is_following=1 だが is_blacklisted=1 → 既存の未follow guard と同様に terminal 扱い。
+    // completeFriendScenario が claim lease を最終値で上書きするため #103 不変条件を保持。
+    // guard は friend 読込直後 = step 取得より前なので getScenarioSteps には到達しない。
+    mockGetFriendById.mockResolvedValue(makeFriend({ is_blacklisted: 1 }));
+    const lineClient = makeLineClient();
+    const db = makeMockDb();
+
+    await processStepDeliveries(db, lineClient, undefined, null);
+
+    expect(lineClient.pushMessage).not.toHaveBeenCalled();
+    expect(mockDispatch).not.toHaveBeenCalled();
+    expect(mockGetScenarioSteps).not.toHaveBeenCalled();
+    expect(mockCompleteFriendScenario).toHaveBeenCalledTimes(1);
+    expect(mockAdvanceFriendScenario).not.toHaveBeenCalled();
+  });
+
+  it('is_blacklisted=0 の通常 friend は従来どおり配信される (回帰防止)', async () => {
+    mockGetScenarioSteps.mockResolvedValue([makeStep({ channel: 'line' })]);
+    mockGetFriendById.mockResolvedValue(makeFriend({ is_blacklisted: 0 }));
+    const lineClient = makeLineClient();
+    const db = makeMockDb();
+
+    await processStepDeliveries(db, lineClient, 'https://worker.test', fakeEmailConfig);
+
+    expect(lineClient.pushMessage).toHaveBeenCalledTimes(1);
+    expect(mockCompleteFriendScenario).toHaveBeenCalledTimes(1);
+  });
+
   it('channel undefined (legacy rows): treated as line, dispatcher NOT called', async () => {
     // Drop channel/email_template_id to simulate pre-migration row shape
     const legacyStep = {
