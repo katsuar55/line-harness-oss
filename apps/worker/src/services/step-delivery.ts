@@ -4,6 +4,7 @@ import {
   getScenarioSteps,
   advanceFriendScenario,
   completeFriendScenario,
+  claimFriendScenarioForDelivery,
   getFriendById,
   getEmailTemplateById,
   jstNow,
@@ -82,6 +83,13 @@ export function expandVariables(
 const DEFAULT_START_HOUR = 9;
 const DEFAULT_END_HOUR = 23;
 
+/**
+ * atomic claim の lease 長 (分)。 claim 後の送信処理を上回る十分な余裕。
+ * claim 直後に worker が crash した場合、 lease 失効後 (= この時間後) に再 due となり retry される。
+ * 通常は送信完了後に advance/complete が即上書きするので lease は transient。
+ */
+const CLAIM_LEASE_MINUTES = 10;
+
 function enforceDeliveryWindow(date: Date, preferredHour?: number): Date {
   // date is already shifted to JST epoch (+9h)
   const hours = date.getUTCHours();
@@ -141,6 +149,22 @@ async function processSingleDelivery(
   workerUrl?: string,
   emailConfig?: EmailDispatchConfig | null,
 ): Promise<void> {
+  // atomic claim: 重複 cron 実行による二重配信を防ぐ。 観測した next_delivery_at で CAS し、
+  // claim できた実行 (changes===1) のみ送信に進む。 別 worker が先に掴んでいれば skip。
+  // 単一 worker (通常) では happy-path 不変: claim 後の全 return 経路 (友だち未follow/step無し/
+  // currentStep無し/condition jump/condition false/通常送信) が必ず advance か complete を呼び、
+  // lease (= 一時的な将来値) を最終値で上書きする → lease が残留しない。
+  // 注: fs.next_delivery_at は getFriendScenariosDueForDelivery が NOT NULL 行のみ返す契約のため
+  //     ここでは常に非 null。 guard は string|null → string narrowing 用 (= claim は string を要求)。
+  if (fs.next_delivery_at) {
+    const leaseUntil =
+      new Date(Date.now() + 9 * 60 * 60_000 + CLAIM_LEASE_MINUTES * 60_000)
+        .toISOString()
+        .slice(0, -1) + '+09:00';
+    const claimed = await claimFriendScenarioForDelivery(db, fs.id, fs.next_delivery_at, leaseUntil);
+    if (!claimed) return;
+  }
+
   // Get friend first to read preferred delivery hour from metadata
   const friend = await getFriendById(db, fs.friend_id);
   if (!friend || !friend.is_following) {

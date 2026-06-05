@@ -30,6 +30,7 @@ const mockGetScenarioSteps = vi.fn<() => Promise<ScenarioStep[]>>();
 const mockGetFriendById = vi.fn<() => Promise<Friend | null>>();
 const mockAdvanceFriendScenario = vi.fn<() => Promise<void>>();
 const mockCompleteFriendScenario = vi.fn<() => Promise<void>>();
+const mockClaimFriendScenarioForDelivery = vi.fn(async (..._a: unknown[]): Promise<boolean> => true);
 const mockGetEmailTemplateById = vi.fn<() => Promise<EmailTemplate | null>>();
 
 vi.mock('@line-crm/db', async (importOriginal) => {
@@ -41,6 +42,7 @@ vi.mock('@line-crm/db', async (importOriginal) => {
     getFriendById: () => mockGetFriendById(),
     advanceFriendScenario: () => mockAdvanceFriendScenario(),
     completeFriendScenario: () => mockCompleteFriendScenario(),
+    claimFriendScenarioForDelivery: (...a: unknown[]) => mockClaimFriendScenarioForDelivery(...a),
     getEmailTemplateById: () => mockGetEmailTemplateById(),
   };
 });
@@ -243,6 +245,7 @@ describe('processStepDeliveries — channel dispatcher routing', () => {
     mockGetFriendById.mockResolvedValue(makeFriend());
     mockAdvanceFriendScenario.mockResolvedValue(undefined);
     mockCompleteFriendScenario.mockResolvedValue(undefined);
+    mockClaimFriendScenarioForDelivery.mockResolvedValue(true); // default: claim 成功
     mockDispatch.mockResolvedValue({
       results: [{ channel: 'email', status: 'sent', providerMessageId: 'pm-1', subscriberId: 'sub-1' }],
     } as never);
@@ -265,6 +268,34 @@ describe('processStepDeliveries — channel dispatcher routing', () => {
     expect(mockDispatch).not.toHaveBeenCalled();
     // Last step → completeFriendScenario, not advance
     expect(mockCompleteFriendScenario).toHaveBeenCalledTimes(1);
+  });
+
+  it('atomic claim 成功 → 配信進行 + claim を (id, 観測 next_delivery_at) で呼ぶ', async () => {
+    mockGetScenarioSteps.mockResolvedValue([makeStep({ channel: 'line' })]);
+    const lineClient = makeLineClient();
+    const db = makeMockDb();
+
+    await processStepDeliveries(db, lineClient, undefined, null);
+
+    expect(mockClaimFriendScenarioForDelivery).toHaveBeenCalledTimes(1);
+    const args = mockClaimFriendScenarioForDelivery.mock.calls[0];
+    expect(args[1]).toBe('fs-1'); // friend_scenario id
+    expect(args[2]).toBe('2026-04-30T13:59:00+09:00'); // 観測した next_delivery_at で CAS
+    expect(lineClient.pushMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('atomic claim 失敗 (= 別 worker が処理中) → 一切配信せず friend 読込にも進まない (= 二重配信防止)', async () => {
+    mockClaimFriendScenarioForDelivery.mockResolvedValue(false);
+    mockGetScenarioSteps.mockResolvedValue([makeStep({ channel: 'line' })]);
+    const lineClient = makeLineClient();
+    const db = makeMockDb();
+
+    await processStepDeliveries(db, lineClient, undefined, null);
+
+    expect(lineClient.pushMessage).not.toHaveBeenCalled();
+    expect(mockGetFriendById).not.toHaveBeenCalled();
+    expect(mockAdvanceFriendScenario).not.toHaveBeenCalled();
+    expect(mockCompleteFriendScenario).not.toHaveBeenCalled();
   });
 
   it('channel undefined (legacy rows): treated as line, dispatcher NOT called', async () => {

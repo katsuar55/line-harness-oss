@@ -415,6 +415,35 @@ export async function advanceFriendScenario(
     .run();
 }
 
+/**
+ * 配信前の atomic claim (= 重複 cron 実行による二重配信を防ぐ、 2026-06-05)。
+ *
+ * 観測した `expectedNextDeliveryAt` で CAS UPDATE し、 changes===1 (= 自分が掴んだ) のときだけ true。
+ * next_delivery_at を `leaseUntil` (将来) にずらすので処理中は再選択されず、 送信完了後に
+ * advanceFriendScenario / completeFriendScenario が最終値で上書きする。 worker が claim 後に
+ * crash しても lease 失効後 (= leaseUntil 到来後) に再 due となり retry される (= 二重配信より安全)。
+ *
+ * status='active' も条件に含め、 既に completed/paused の scenario を掴まない。
+ * migration 不要 (既存 next_delivery_at 列の CAS のみ)。
+ */
+export async function claimFriendScenarioForDelivery(
+  db: D1Database,
+  id: string,
+  expectedNextDeliveryAt: string,
+  leaseUntil: string,
+): Promise<boolean> {
+  const now = jstNow();
+  const res = await db
+    .prepare(
+      `UPDATE friend_scenarios
+         SET next_delivery_at = ?, updated_at = ?
+       WHERE id = ? AND status = 'active' AND next_delivery_at = ?`,
+    )
+    .bind(leaseUntil, now, id, expectedNextDeliveryAt)
+    .run();
+  return (res.meta?.changes ?? 0) === 1;
+}
+
 export async function completeFriendScenario(
   db: D1Database,
   id: string,
