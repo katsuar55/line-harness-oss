@@ -23,6 +23,7 @@ import type { EmailDispatchConfig } from '../services/email-dispatch-config.js';
 
 const mockGetBroadcastById = vi.fn<(db: unknown, id: string) => Promise<Broadcast | null>>();
 const mockUpdateBroadcastStatus = vi.fn<(...args: unknown[]) => Promise<void>>();
+const mockClaimBroadcastForSending = vi.fn<(db: unknown, id: string) => Promise<boolean>>();
 const mockGetFriendsByTag = vi.fn<(db: unknown, tagId: string) => Promise<Friend[]>>();
 const mockGetEmailTemplateById = vi.fn<(db: unknown, id: string) => Promise<EmailTemplate | null>>();
 const mockGetBroadcasts = vi.fn<(db: unknown) => Promise<Broadcast[]>>();
@@ -31,6 +32,7 @@ vi.mock('@line-crm/db', () => ({
   getBroadcastById: (db: unknown, id: string) => mockGetBroadcastById(db, id),
   getBroadcasts: (db: unknown) => mockGetBroadcasts(db),
   updateBroadcastStatus: (...args: unknown[]) => mockUpdateBroadcastStatus(...args),
+  claimBroadcastForSending: (db: unknown, id: string) => mockClaimBroadcastForSending(db, id),
   getFriendsByTag: (db: unknown, tagId: string) => mockGetFriendsByTag(db, tagId),
   getEmailTemplateById: (db: unknown, id: string) => mockGetEmailTemplateById(db, id),
   jstNow: () => '2026-04-30T10:00:00.000+09:00',
@@ -230,6 +232,8 @@ function makeFakeLineClient(): FakeLineClient {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // default: claim 成功 (= 既存の happy-path テストを従来どおり進める)
+  mockClaimBroadcastForSending.mockResolvedValue(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -293,6 +297,59 @@ describe("processBroadcastSend channel='line' (default)", () => {
 
     expect(lineClient.broadcastWithRequestId).toHaveBeenCalledTimes(1);
     expect(dispatchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// atomic claim (E) — 二重送信防止
+// ---------------------------------------------------------------------------
+
+describe('processBroadcastSend atomic claim (E)', () => {
+  it('claim 失敗 (= 別 cron/手動が先に送信中) → 一切送信せず status も触らずスキップ', async () => {
+    const broadcast = makeBroadcast({ channel: 'line', target_type: 'all' });
+    mockGetBroadcastById.mockResolvedValue(broadcast);
+    mockClaimBroadcastForSending.mockResolvedValue(false);
+
+    const lineClient = makeFakeLineClient();
+    const db = makeFakeDb();
+
+    const result = await processBroadcastSend(
+      db,
+      lineClient as unknown as LineClient,
+      broadcast.id,
+      undefined,
+      null,
+    );
+
+    // 送信系は一切呼ばれない
+    expect(lineClient.broadcastWithRequestId).not.toHaveBeenCalled();
+    expect(lineClient.multicast).not.toHaveBeenCalled();
+    expect(dispatchMock).not.toHaveBeenCalled();
+    // status 遷移もしない (= 別実行に委ねる)
+    expect(mockUpdateBroadcastStatus).not.toHaveBeenCalled();
+    // claimed=false + 現状の broadcast を返す
+    expect(result.claimed).toBe(false);
+    expect(result.broadcast.id).toBe(broadcast.id);
+  });
+
+  it('claim 成功 → 通常どおり送信して sent に遷移する (回帰)', async () => {
+    const broadcast = makeBroadcast({ channel: 'line', target_type: 'all' });
+    mockGetBroadcastById.mockResolvedValue(broadcast);
+    mockClaimBroadcastForSending.mockResolvedValue(true);
+
+    const lineClient = makeFakeLineClient();
+    const db = makeFakeDb();
+
+    await processBroadcastSend(db, lineClient as unknown as LineClient, broadcast.id, undefined, null);
+
+    expect(mockClaimBroadcastForSending).toHaveBeenCalledTimes(1);
+    expect(lineClient.broadcastWithRequestId).toHaveBeenCalledTimes(1);
+    expect(mockUpdateBroadcastStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      broadcast.id,
+      'sent',
+      expect.objectContaining({ totalCount: 0, successCount: 0 }),
+    );
   });
 });
 

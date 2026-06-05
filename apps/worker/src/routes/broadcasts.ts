@@ -336,7 +336,13 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
 
     const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
     const emailConfig = buildEmailDispatchConfig(c.env);
-    await processBroadcastSend(c.env.DB, lineClient, id, c.env.WORKER_URL, emailConfig);
+    const sendResult = await processBroadcastSend(c.env.DB, lineClient, id, c.env.WORKER_URL, emailConfig);
+
+    if (!sendResult.claimed) {
+      // 別 cron / 手動送信が先に claim 済で送信中 (= 競合に敗北)。 二重送信せず、
+      // 自分の送信としては audit もしない (誤った監査記録を防ぐ)。 409 Conflict を返す。
+      return c.json({ success: false, error: 'Broadcast is already being sent' }, 409);
+    }
 
     const result = await getBroadcastById(c.env.DB, id);
     // Phase 5α-3 audit hook: broadcast 送信は重要操作 (CLAUDE.md 1万件以上は要承認)

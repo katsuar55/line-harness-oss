@@ -16,7 +16,8 @@ LP launch 前の data-integrity / reliability 予防 hardening の優先ロー�
 
 | PR | 内容 | 状態 |
 |---|---|---|
-| H | blacklist を全 mass 配信に適用（broadcast tag/all + A/B test tag/all + step-delivery guard + getFriendsByTag）。並列 security review で発見した weekly-report cron + birthday-collection route の同種 gap も folded。consent/景表法。migration なし・live-safe・gated 不要（recipient を狭めるのみ） | 本PR |
+| H | blacklist を全 mass 配信に適用（broadcast tag/all + A/B test tag/all + step-delivery guard + getFriendsByTag）。並列 security review で発見した weekly-report cron + birthday-collection route の同種 gap も folded。consent/景表法。migration なし・live-safe・gated 不要（recipient を狭めるのみ） | #105 merged + deploy（`3dc4bfd1`） |
+| E | broadcast atomic claim（CAS `status IN ('scheduled','draft') → 'sending'`）で重複 cron / 手動送信の二重送信を防止。`processBroadcastSend` を discriminated return `{claimed,broadcast}` 化し、手動 race 敗北時は 409（誤 audit 回避）。correctness review Finding 1(HIGH)/3/5 反映。migration なし・live-safe | 本PR(E) |
 
 > H 実装メモ: 共有 `getFriendsByTag`（db 層）に `COALESCE(is_blacklisted,0)=0` を入れて broadcast/A-B の tag 経路を一括カバー。inline 'all' SELECT（broadcast 2本 scoped/unscoped・ab-test 1本・weekly-report・birthday-collection /send + /stats×2）にも同節を追加。step-delivery は既存 `!is_following` terminal guard に `|| is_blacklisted` を追加し #103 の claim-lease 不変条件を保持。Friend 型に optional `is_blacklisted?:number` を追加（blast radius 最小）。
 
@@ -37,8 +38,9 @@ LP launch 前の data-integrity / reliability 予防 hardening の優先ロー�
   - `services/shopify-customer-sync.ts:116-117` の total_spent/total_price/orders_count を `toFiniteNumber()`。currency!=='JPY' は credit skip。
 
 ### 配信整合性（残り、live-safe）
-- **E. broadcast の atomic claim + retry**（survey #7, value high, risk med, M, live-safe）
-  - `broadcast.ts:33-41,67-81,508-526`。`UPDATE broadcasts SET status='sending' WHERE id=? AND status='scheduled'` CAS + bounded retry（現状 fail で 'draft' dead-end）。#103 の step claim と同設計。
+- ~~**E. broadcast の atomic claim**~~ → ✅ **2026-06-06 shipped（本PR E）**。CAS `status IN ('scheduled','draft') → 'sending'` で cron/手動の二重送信防止。手動 race 敗北は 409。
+- **E2. broadcast stuck-'sending' sweep cron + bounded retry**（correctness review Finding 3, value med, risk low, S）
+  - claim 後（status='sending'）に worker crash すると 'sending' のまま永続 stuck（cron/手動とも再 pick せず）。N 分以上 'sending' の broadcast を 'draft' に戻す sweep cron（or admin endpoint）。⚠️ bounded retry は LINE 'all' が再送で全 follower へ二重 multicast になるため、email の dedup（loadSentSubscriberIdsForBroadcast）流用 or 慎重な scheduled 戻しが必要 = 要設計。
 - ~~**H. blacklist を broadcast/step に適用**~~ → ✅ **2026-06-06 shipped（本PR）**。broadcast/A-B/step に加え weekly-report・birthday-collection も folded。
 - **H2. blacklist を残りの opt-in/per-friend 配信に適用**（security review Finding 4, value med, risk low, S, live-safe）
   - `liff-portal.ts getActiveIntakeReminders`（JOIN friends）+ `intake-reminder.ts` の friend guard / `reminders.ts getDueReminderDeliveries` + `reminder-delivery.ts` の friend guard。opt-in リマインダー（transactional 寄り）のため H 本体から分離したが、do-not-contact 厳守の観点では追加すべき。step-delivery と同じ `|| friend.is_blacklisted` guard パターン。
