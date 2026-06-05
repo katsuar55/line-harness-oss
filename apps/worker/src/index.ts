@@ -164,6 +164,10 @@ export type Env = {
     FRIEND_LINK_METAFIELD_NAMESPACE?: string; // CRM PLUS「LINE ID」customer metafield の namespace
     FRIEND_LINK_METAFIELD_KEY?: string;       // 同 key (= 実機 Admin で確認後に設定)
     FRIEND_LINK_CRON_FORCE?: string;          // 'true' で JST 02:00-02:04 gating を bypass (テスト/手動)
+    // PR3-B (2026-06-05): link 成立後の過去注文 backfill (= money path、 linking とは別 gate)
+    //   'true' で有効化 (= 未設定なら backfill は no-op、 本番 member_purchase_events 未書込)。
+    //   ⚠️ read_all_orders scope 未付与だと直近60日のみ取得 (= 完全 backfill には scope 追加が必要)。
+    MEMBER_BACKFILL_ENABLED?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -562,7 +566,7 @@ async function scheduled(
   jobs.push(
     withHeartbeat(env.DB, 'friend-customer-link', () =>
       processFriendCustomerLink(env as unknown as Parameters<typeof processFriendCustomerLink>[0]),
-      (r) => ({ scanned: r.scanned, linked: r.linked, ambiguous: r.ambiguous, notFound: r.notFound, errors: r.errors, skippedGating: r.skipped }),
+      (r) => ({ scanned: r.scanned, linked: r.linked, ambiguous: r.ambiguous, notFound: r.notFound, errors: r.errors, backfilled: r.backfilled, skippedGating: r.skipped }),
     ).then((r) => {
       if (r.linked > 0 || r.ambiguous > 0) {
         console.info(`friend-customer-link: scanned=${r.scanned} linked=${r.linked} ambiguous=${r.ambiguous} notFound=${r.notFound} errors=${r.errors}`);

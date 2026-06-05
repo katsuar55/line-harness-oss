@@ -163,8 +163,12 @@ export function computeRankProgress(
  * friend の trailing-12ヶ月 購入額を member_purchase_events から集計 (= applied のみ)。
  * 窓は asOf - 12ヶ月。asOf 省略時は現在 (JST)。
  *
- * NOTE: created_at を時間基準とする (= live webhook では注文時刻 ≈ 記録時刻)。
- *   backfill した過去 order の正確な注文日付対応は PR3 (link + occurred_at) で精緻化。
+ * 時間基準 = COALESCE(occurred_at, created_at) (= PR3-B、 2026-06-05):
+ *   - occurred_at = 実際の注文日 (Shopify order.createdAt)。 過去注文 backfill が設定する。
+ *   - occurred_at NULL (= live webhook / 既存行) は created_at に fallback
+ *     (= 注文時刻 ≈ 記録時刻、 完全な後方互換)。
+ *   これにより過去注文を now で backfill しても「古い注文が直近12ヶ月に誤計上 → rank 膨張」
+ *   を防ぐ (= money path の核心)。occurred_at 列は migration 063 で追加。
  */
 export async function computeTrailing12moJpyForFriend(
   db: D1Database,
@@ -179,7 +183,7 @@ export async function computeTrailing12moJpyForFriend(
          FROM member_purchase_events
         WHERE friend_id = ?
           AND applied_at IS NOT NULL
-          AND created_at >= ?`,
+          AND COALESCE(occurred_at, created_at) >= ?`,
     )
     .bind(friendId, since)
     .first<{ total: number }>();

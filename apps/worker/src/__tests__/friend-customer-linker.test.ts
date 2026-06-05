@@ -18,6 +18,7 @@ import {
   processFriendCustomerLink,
   normalizeShopifyCustomerId,
 } from '../services/friend-customer-linker.js';
+import { backfillCustomerOrders } from '../services/member-purchase-backfill.js';
 
 // ─── stateful fake D1 (friends のみ。 audit_logs INSERT は best-effort で no-op) ───
 interface FFriend {
@@ -344,5 +345,101 @@ describe('processFriendCustomerLink — linking', () => {
     expect(r.linked).toBe(0);
     expect(r.notFound).toBe(0);
     expect(db.friends[0].shopify_customer_id).toBeNull();
+  });
+});
+
+describe('processFriendCustomerLink — backfill hook (PR3-B)', () => {
+  const okBackfill = (backfilled: number) =>
+    vi.fn(async () => ({
+      skipped: false,
+      scanned: backfilled,
+      backfilled,
+      alreadyApplied: 0,
+      errors: 0,
+      totalJpy: backfilled * 1000,
+      capped: false,
+    }));
+
+  it('link 成功時 backfillImpl を customerId/friendId/accessToken で呼ぶ + backfilled 集計', async () => {
+    const db = makeDb([{ id: 'f1', line_user_id: 'U_alice', shopify_customer_id: null, created_at: '2026-01-01' }]);
+    const fetchImpl = mockCustomerFound('U_alice', 'gid://shopify/Customer/777');
+    const backfillImpl = okBackfill(3);
+    const r = await processFriendCustomerLink(
+      { ...ENV_ON, DB: db },
+      {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        backfillImpl: backfillImpl as unknown as typeof backfillCustomerOrders,
+      },
+    );
+    expect(r.linked).toBe(1);
+    expect(r.backfilled).toBe(3);
+    expect(backfillImpl).toHaveBeenCalledTimes(1);
+    const opts = (backfillImpl.mock.calls[0] as unknown[])[2] as { customerId: string; friendId: string; accessToken: string };
+    expect(opts.customerId).toBe('777'); // 数値正規化済 (= idempotency key と一致)
+    expect(opts.friendId).toBe('f1');
+    expect(opts.accessToken).toBe(TOKEN); // linker が取得済 token を再利用
+  });
+
+  it('backfillImpl が throw しても link は成立 (= backfill 失敗は link を壊さない)', async () => {
+    const db = makeDb([{ id: 'f1', line_user_id: 'U_alice', shopify_customer_id: null, created_at: '2026-01-01' }]);
+    const fetchImpl = mockCustomerFound('U_alice', 'gid://shopify/Customer/777');
+    const backfillImpl = vi.fn(async () => {
+      throw new Error('shopify down');
+    });
+    const r = await processFriendCustomerLink(
+      { ...ENV_ON, DB: db },
+      {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        backfillImpl: backfillImpl as unknown as typeof backfillCustomerOrders,
+      },
+    );
+    expect(r.linked).toBe(1);
+    expect(r.backfilled).toBe(0);
+    expect(db.friends[0].shopify_customer_id).toBe('777');
+  });
+
+  it('customer 見つからない (notFound) → backfillImpl 呼ばれない', async () => {
+    const db = makeDb([{ id: 'f1', line_user_id: 'U_ghost', shopify_customer_id: null, created_at: '2026-01-01' }]);
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: { customers: { edges: [] } } }), { status: 200 }));
+    const backfillImpl = okBackfill(0);
+    const r = await processFriendCustomerLink(
+      { ...ENV_ON, DB: db },
+      {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        backfillImpl: backfillImpl as unknown as typeof backfillCustomerOrders,
+      },
+    );
+    expect(r.notFound).toBe(1);
+    expect(backfillImpl).not.toHaveBeenCalled();
+  });
+
+  it('ambiguous (別 friend に既 link) → backfillImpl 呼ばれない', async () => {
+    const db = makeDb([
+      { id: 'fA', line_user_id: 'U_alice', shopify_customer_id: null, created_at: '2026-01-02' },
+      { id: 'fB', line_user_id: 'U_bob', shopify_customer_id: '999', created_at: '2026-01-01' },
+    ]);
+    const fetchImpl = mockCustomerFound('U_alice', 'gid://shopify/Customer/999');
+    const backfillImpl = okBackfill(0);
+    const r = await processFriendCustomerLink(
+      { ...ENV_ON, DB: db },
+      {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        backfillImpl: backfillImpl as unknown as typeof backfillCustomerOrders,
+      },
+    );
+    expect(r.ambiguous).toBe(1);
+    expect(r.linked).toBe(0);
+    expect(backfillImpl).not.toHaveBeenCalled();
+  });
+
+  it('backfillImpl 未注入 (default) でも MEMBER_BACKFILL_ENABLED 無しなら link は成功し fetch は customer 検索のみ', async () => {
+    // 実 backfillCustomerOrders は MEMBER_BACKFILL_ENABLED!=true で即 gated_off (= orders fetch しない)。
+    const db = makeDb([{ id: 'f1', line_user_id: 'U_alice', shopify_customer_id: null, created_at: '2026-01-01' }]);
+    const fetchImpl = mockCustomerFound('U_alice', 'gid://shopify/Customer/777');
+    const r = await processFriendCustomerLink({ ...ENV_ON, DB: db }, { fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(r.linked).toBe(1);
+    expect(r.backfilled).toBe(0);
+    // customer 検索の 1 回のみ (= backfill は gated で orders 取得せず)
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });
