@@ -3,6 +3,7 @@ import {
   getBroadcastById,
   getBroadcasts,
   updateBroadcastStatus,
+  claimBroadcastForSending,
   getFriendsByTag,
   getEmailTemplateById,
   jstNow,
@@ -21,6 +22,15 @@ import {
 const MULTICAST_BATCH_SIZE = 500;
 
 /**
+ * processBroadcastSend の結果。 `claimed=false` は別 cron/手動が先に claim 済で本実行は
+ * 何も送らずスキップしたことを表す (= caller は二重 audit / 二重応答を避けられる)。
+ */
+export interface ProcessBroadcastSendResult {
+  claimed: boolean;
+  broadcast: Broadcast;
+}
+
+/**
  * Round 4 PR-6 段階 2: broadcast を channel='line' / 'email' / 'both' で振り分け配信。
  *
  * - channel='line' (default): 既存挙動 (multicast / broadcast API)
@@ -36,9 +46,19 @@ export async function processBroadcastSend(
   broadcastId: string,
   workerUrl?: string,
   emailConfig?: EmailDispatchConfig | null,
-): Promise<Broadcast> {
-  // Mark as sending
-  await updateBroadcastStatus(db, broadcastId, 'sending');
+): Promise<ProcessBroadcastSendResult> {
+  // Atomic claim (CAS): 重複 cron / 手動送信による二重送信を防ぐ。
+  // status を scheduled|draft → 'sending' に遷移できた (changes===1) 実行のみ送信に進む。
+  // 別実行が先に claim 済 (= 既に sending/sent) なら claimed=false を返して skip
+  // (= caller が「自分は送っていない」 を判別でき、 二重 audit を避けられる)。
+  const claimed = await claimBroadcastForSending(db, broadcastId);
+  if (!claimed) {
+    const current = await getBroadcastById(db, broadcastId);
+    if (!current) {
+      throw new Error(`Broadcast ${broadcastId} not found`);
+    }
+    return { claimed: false, broadcast: current };
+  }
 
   const broadcast = await getBroadcastById(db, broadcastId);
   if (!broadcast) {
@@ -80,7 +100,7 @@ export async function processBroadcastSend(
     throw err;
   }
 
-  return (await getBroadcastById(db, broadcastId))!;
+  return { claimed: true, broadcast: (await getBroadcastById(db, broadcastId))! };
 }
 
 interface DispatchCounts {

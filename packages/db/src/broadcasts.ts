@@ -200,3 +200,30 @@ export async function updateBroadcastStatus(
     .bind(...values)
     .run();
 }
+
+/**
+ * 送信前 atomic claim (CAS)。 status を scheduled|draft → 'sending' に遷移できた実行だけ
+ * `changes===1` で true を返す。 重複 cron / 手動送信が同じ broadcast を二重送信するのを防ぐ
+ * (= scenarios.ts claimFriendScenarioForDelivery と同設計、 #103)。
+ * 既に sending/sent の場合は WHERE に一致せず changes===0 → false (= 別実行に委ねて skip)。
+ *
+ * WHERE に 'draft' を含むのは手動送信 route (= draft を即送信) を許可するため。
+ * cron 経路は scheduled のみ enqueue する。
+ *
+ * ⚠️ 復旧注意: claim 後 (status='sending') に worker が crash すると 'sending' のまま残り、
+ * cron も手動も再 pick しない (= 永続 stuck)。 復旧は手動 D1 UPDATE で 'draft' へ戻すか、
+ * 将来 stuck-sending sweep cron を用意する (backlog E2)。
+ */
+export async function claimBroadcastForSending(
+  db: D1Database,
+  id: string,
+): Promise<boolean> {
+  const res = await db
+    .prepare(
+      `UPDATE broadcasts SET status = 'sending'
+       WHERE id = ? AND status IN ('scheduled', 'draft')`,
+    )
+    .bind(id)
+    .run();
+  return (res.meta?.changes ?? 0) === 1;
+}

@@ -26,6 +26,8 @@ vi.mock('@line-crm/db', () => ({
   getBroadcastById: (db: unknown, id: string) => mockGetBroadcastById(db, id),
   getBroadcasts: () => mockGetBroadcasts(),
   updateBroadcastStatus: (...args: unknown[]) => mockUpdateBroadcastStatus(...args),
+  // E: atomic claim — blacklist テストでは常に claim 成功で送信経路を exercise する
+  claimBroadcastForSending: async () => true,
   getFriendsByTag: () => mockGetFriendsByTag(),
   getEmailTemplateById: (db: unknown, id: string) => mockGetEmailTemplateById(db, id),
   jstNow: () => '2026-06-06T10:00:00.000+09:00',

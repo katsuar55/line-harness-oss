@@ -62,7 +62,8 @@ const mockGetBroadcastById = vi.fn<(db: unknown, id: string) => Promise<Broadcas
 const mockCreateBroadcast = vi.fn<(db: unknown, input: unknown) => Promise<Broadcast>>();
 const mockUpdateBroadcast = vi.fn<(db: unknown, id: string, updates: unknown) => Promise<Broadcast | null>>();
 const mockDeleteBroadcast = vi.fn<(db: unknown, id: string) => Promise<void>>();
-const mockProcessBroadcastSend = vi.fn<() => Promise<void>>();
+const mockProcessBroadcastSend =
+  vi.fn<() => Promise<{ claimed: boolean; broadcast: Broadcast }>>();
 const mockProcessSegmentSend = vi.fn<() => Promise<void>>();
 
 // ---------------------------------------------------------------------------
@@ -793,7 +794,7 @@ describe('Broadcasts API', () => {
       mockGetBroadcastById
         .mockResolvedValueOnce(mockBroadcast)
         .mockResolvedValueOnce(sentResult);
-      mockProcessBroadcastSend.mockResolvedValue(undefined);
+      mockProcessBroadcastSend.mockResolvedValue({ claimed: true, broadcast: sentResult });
 
       const res = await app.request(
         '/api/broadcasts/bc-001/send',
@@ -804,6 +805,23 @@ describe('Broadcasts API', () => {
       expect(res.status).toBe(200);
       const json = await res.json() as { success: boolean };
       expect(json.success).toBe(true);
+    });
+
+    it('returns 409 when the send was not claimed (= 別実行が先に送信中, no double-send/audit)', async () => {
+      const sendingResult: Broadcast = { ...mockBroadcast, status: 'sending' };
+      mockGetBroadcastById.mockResolvedValue(mockBroadcast); // status check 通過 (draft)
+      // 競合に敗北: claimed=false で返る
+      mockProcessBroadcastSend.mockResolvedValue({ claimed: false, broadcast: sendingResult });
+
+      const res = await app.request(
+        '/api/broadcasts/bc-001/send',
+        { method: 'POST', headers: authHeaders },
+        env,
+      );
+
+      expect(res.status).toBe(409);
+      const json = (await res.json()) as { success: boolean };
+      expect(json.success).toBe(false);
     });
   });
 
