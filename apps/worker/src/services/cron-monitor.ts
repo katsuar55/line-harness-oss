@@ -102,6 +102,9 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
   // Phase 7 (2026-05-01): cron_run_logs auto cleanup (1 日 1 回 03:00 JST)。
   // deploy 直後の取りこぼし (1 日のみ skip) を許容する余裕を含む。
   { jobName: 'cron-cleanup', maxSilentHours: 30 },
+  // 自前 friend↔Shopify customer 連携 (2026-06-06, Phase 3): account_link_codes 期限切れ OTP cleanup
+  // (1 日 1 回 03:10 JST)。 機能 gate off でも空テーブルに対し毎日 heartbeat を記録するため監視可。
+  { jobName: 'account-link-cleanup', maxSilentHours: 30 },
   // 自動 update 戦略 #1 (2026-05-26): Cloudflare AI models catalog sync
   // 1 日 1 回 04:00 JST。 secret 未設定なら skipped status で記録される (= status='skipped'
   // は getLastSuccessfulRun の対象外なので、 silent と判定される。 ただしそれは「設計と
