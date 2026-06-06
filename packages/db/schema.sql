@@ -1874,6 +1874,18 @@ CREATE TABLE IF NOT EXISTS loyalty_rank_discounts (
   created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+-- from 064_account_link_codes.sql
+CREATE TABLE IF NOT EXISTS account_link_codes (
+  id TEXT PRIMARY KEY,
+  friend_id TEXT NOT NULL,
+  email TEXT NOT NULL,                 -- lowercased 受信者 email (= 本人入力)
+  code_hash TEXT NOT NULL,             -- HMAC-SHA256(pepper, "friend_id:email:code") hex
+  expires_at TEXT NOT NULL,            -- ISO8601 (= now + TTL)
+  attempts INTEGER NOT NULL DEFAULT 0, -- verify 試行回数 (= MAX 到達で lock)
+  consumed_at TEXT,                    -- single-use: 成功 / lock / 旧 code 無効化 で埋まる
+  created_at TEXT NOT NULL
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -2108,3 +2120,7 @@ CREATE INDEX IF NOT EXISTS idx_loyalty_rank_discounts_friend_status
   ON loyalty_rank_discounts(friend_id, status);
 CREATE INDEX IF NOT EXISTS idx_loyalty_rank_discounts_code
   ON loyalty_rank_discounts(code);
+CREATE INDEX IF NOT EXISTS idx_account_link_codes_friend_created
+  ON account_link_codes(friend_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_account_link_codes_lookup
+  ON account_link_codes(friend_id, email);

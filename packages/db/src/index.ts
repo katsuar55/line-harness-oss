@@ -48,6 +48,7 @@ export * from './membership';
 export * from './loyalty-rank';
 export * from './loyalty-rank-snapshots';
 export * from './loyalty-rank-discount';
+export * from './account-link';
 
 /**
  * Thin wrapper around D1Database.
