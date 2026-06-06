@@ -7,6 +7,7 @@ import {
   getCouponAssignmentsByFriend,
   getActiveRankDiscountCode,
   getShopifyProducts,
+  getFriendById,
 } from '@line-crm/db';
 import { buildCartPermalink, buildDiscountApplyUrl } from '../services/cart-permalink.js';
 
@@ -40,6 +41,13 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
 
   const resolved = await resolveFriendRank(c.env.DB, liffUser.friendId, NATURISM_RANK_DEFS);
   const snapshot = await getLatestRankSnapshot(c.env.DB, liffUser.friendId);
+
+  // ─── 自前アカウント連携 (Phase 2): UI が連携 CTA を出し分けるための 2 フラグ ───
+  //   linked = 既に Shopify customer に紐付け済か (= 紐付くと過去注文が rank に反映される)
+  //   accountLinkEnabled = 連携機能が有効化されているか (= ACCOUNT_LINK_ENABLED 未設定なら UI は出さない)
+  const friend = await getFriendById(c.env.DB, liffUser.friendId).catch(() => null);
+  const linked = !!friend?.shopify_customer_id;
+  const accountLinkEnabled = c.env.ACCOUNT_LINK_ENABLED === 'true';
   // 保有クーポン (= 未使用のみ)。失敗しても会員証本体は表示するため握りつぶす。
   let coupons: Array<Record<string, unknown>> = [];
   try {
@@ -119,6 +127,9 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
       rankDiscount: rankDiscount ? { discountPercent: rankDiscount.discountPercent } : null,
       discountApplyUrl,
       quickBuy,
+      // 自前アカウント連携 (Phase 2、 gated)
+      linked,
+      accountLinkEnabled,
     },
   });
 });
@@ -206,6 +217,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
     </section>
     <section id="rank-card" style="display:none;"></section>
     <section id="progress-card" style="display:none;"></section>
+    <section id="link-card" style="display:none;"></section>
     <section id="shop-card" style="display:none;"></section>
     <section id="coupons-card" style="display:none;"></section>
     <section id="about-card" style="display:none;"></section>
@@ -230,6 +242,9 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
 const LIFF_ID = '${escapeHtml(liffId)}';
 const API_BASE = '${escapeHtml(apiBase)}';
 let idToken = null;
+// 一度でも会員証を描画したら、 以降の refresh 失敗で error card を出さない
+// (= 連携成功 → loadRank() 再取得が transient 失敗しても、 成功表示と既存の会員証を維持する)。
+var hasRendered = false;
 // ?demo=1 でサンプル会員証を表示 (= LINE 文脈外でも UI 確認用、 認証/実データ不要)。
 var DEMO_DATA = {
   rank: { id: 'silver', name: 'シルバー', discountPercent: 4, badgeColor: '#C0C0C0', badgeImageUrl: '/images/rank-silver-v2.png', badgeEmoji: null },
@@ -253,7 +268,9 @@ var DEMO_DATA = {
   quickBuy: [
     { title: 'KOSO in naturism ToGo (Pink) 180粒 (30日分)', price: '2830', imageUrl: null, url: 'https://naturism-diet.com/cart/42884926636285:1?discount=NLR-SILVER-DEMO2345' },
     { title: 'KOSO in naturism (Pink) 18粒 (3日分)', price: '430', imageUrl: null, url: 'https://naturism-diet.com/cart/42885035819261:1?discount=NLR-SILVER-DEMO2345' }
-  ]
+  ],
+  linked: false,
+  accountLinkEnabled: true
 };
 
 function esc(s){ if(s===null||s===undefined) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -347,6 +364,102 @@ function renderProgress(d){
     '<p class="text-xs text-gray-500 mt-2 text-center">あと <span class="font-bold" style="color:#0ABAB5">'+esc(yen(d.next.remainingJpy))+'</span> で '+esc(d.next.name)+'にランクアップ</p>' +
     evalLine;
   setTimeout(function(){ var b=document.getElementById('bar'); if(b) b.style.width = pctW + '%'; }, 80);
+}
+
+// ─── 自前アカウント連携 (= Phase 2: email OTP で Shopify customer を紐付け、 gated) ───
+function linkHeaders(){ var h={'Content-Type':'application/json'}; if(idToken) h['Authorization']='Bearer '+idToken; return h; }
+function linkMsg(msg, isErr){ var m=document.getElementById('link-msg'); if(!m) return; m.textContent=msg||''; m.style.display=msg?'block':'none'; m.style.color=isErr?'#dc2626':'#64748b'; }
+function setLinkBusy(id, busy, busyLabel){
+  var b=document.getElementById(id); if(!b) return;
+  // busy 中はラベルを「送信中…」等に差し替え (= 低速回線で tap が効いた合図)。 解除時に原文へ復元。
+  if(busy){ if(b.getAttribute('data-label')===null) b.setAttribute('data-label', b.textContent); if(busyLabel) b.textContent=busyLabel; }
+  else { var orig=b.getAttribute('data-label'); if(orig!==null){ b.textContent=orig; b.removeAttribute('data-label'); } }
+  b.disabled=busy; b.style.opacity=busy?'0.6':'1'; b.style.pointerEvents=busy?'none':'auto';
+}
+function linkStep(step){
+  var e=document.getElementById('link-step-email'), c=document.getElementById('link-step-code');
+  if(e) e.style.display=(step==='email')?'block':'none';
+  if(c) c.style.display=(step==='code')?'block':'none';
+}
+async function linkRequest(){
+  var emailEl=document.getElementById('link-email');
+  var email=((emailEl && emailEl.value) || '').trim();
+  if(!email){ linkMsg('メールアドレスを入力してください', true); return; }
+  linkMsg('', false); setLinkBusy('link-send-btn', true, '送信中…');
+  try{
+    var res=await fetch(API_BASE+'/api/liff/link/request-code', { method:'POST', headers:linkHeaders(), body:JSON.stringify({ email:email }) });
+    var body=await res.json().catch(function(){ return null; });
+    if(res.status===200 && body && body.success){
+      var to=document.getElementById('link-sent-to'); if(to) to.textContent=email;
+      linkStep('code');
+      var ce=document.getElementById('link-code'); if(ce){ ce.value=''; ce.focus(); }
+      linkMsg('', false);
+    } else if(body && body.error==='already_linked'){
+      showToast('すでに連携済みです'); loadRank();
+    } else {
+      linkMsg((body && body.message) || '送信に失敗しました。時間をおいてお試しください。', true);
+    }
+  }catch(e){ linkMsg('通信エラーが発生しました', true); }
+  finally{ setLinkBusy('link-send-btn', false); }
+}
+async function linkVerify(){
+  var emailEl=document.getElementById('link-email'), codeEl=document.getElementById('link-code');
+  var email=((emailEl && emailEl.value) || '').trim();
+  var code=((codeEl && codeEl.value) || '').trim();
+  if(!/^[0-9]{6}$/.test(code)){ linkMsg('6桁の確認コードを入力してください', true); return; }
+  linkMsg('', false); setLinkBusy('link-verify-btn', true, '確認中…');
+  try{
+    var res=await fetch(API_BASE+'/api/liff/link/verify-code', { method:'POST', headers:linkHeaders(), body:JSON.stringify({ email:email, code:code }) });
+    var body=await res.json().catch(function(){ return null; });
+    if(res.status===200 && body && body.success){
+      showToast('アカウント連携が完了しました');
+      var card=document.getElementById('link-card'); if(card) card.style.display='none';
+      loadRank();
+      return;
+    }
+    var err=body && body.error;
+    if(err==='already_linked'){ showToast('すでに連携済みです'); loadRank(); return; }
+    var msg=(body && body.message) || '確認に失敗しました';
+    if(err==='invalid_code' && body && typeof body.attemptsRemaining==='number'){ msg += '（残り'+body.attemptsRemaining+'回）'; }
+    if(err==='locked' || err==='no_code'){ linkStep('email'); } // コード無効/期限切れ → 再送へ
+    linkMsg(msg, true);
+  }catch(e){ linkMsg('通信エラーが発生しました', true); }
+  finally{ setLinkBusy('link-verify-btn', false); }
+}
+function renderLink(d){
+  var card=document.getElementById('link-card');
+  if(!card) return;
+  // gated: 機能が有効 かつ 未連携 のときのみ表示 (= ACCOUNT_LINK_ENABLED 未設定なら常に非表示)
+  if(!(d && d.accountLinkEnabled && !d.linked)){ card.style.display='none'; return; }
+  card.className='card p-5 rise';
+  card.style.display='block';
+  // a11y: 各 input に aria-label (placeholder だけだと入力開始で消える + SR が名前として読まない)。
+  //       #link-msg は role=status aria-live=polite で検証/送信エラーを SR に通知。
+  card.innerHTML =
+    '<div class="flex items-center gap-2 mb-1.5"><span class="text-base">&#x1F517;</span>' +
+      '<p class="text-sm font-bold text-gray-700">Shopifyアカウントと連携</p></div>' +
+    '<p class="text-xs text-gray-500 leading-relaxed mb-3">ご購入時のメールアドレスで連携すると、これまでのお買い物が会員ランクに反映されます。</p>' +
+    '<div id="link-step-email">' +
+      '<input id="link-email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" aria-label="メールアドレス" placeholder="メールアドレス" ' +
+        'class="w-full px-3.5 py-2.5 rounded-xl text-sm mb-2" style="border:1px solid #e2e8f0;outline:none">' +
+      '<button type="button" id="link-send-btn" class="tap w-full text-white text-sm font-bold py-2.5 rounded-xl shadow" ' +
+        'style="background:linear-gradient(135deg,#0ABAB5,#22d3ee)">確認コードを送信</button>' +
+    '</div>' +
+    '<div id="link-step-code" style="display:none">' +
+      '<p class="text-xs text-gray-500 mb-2"><span id="link-sent-to" class="font-bold text-gray-700"></span> に確認コードを送信しました（5分間有効）。</p>' +
+      '<input id="link-code" type="text" inputmode="numeric" autocomplete="one-time-code" enterkeyhint="done" aria-label="6桁の確認コード" maxlength="6" placeholder="6桁の確認コード" ' +
+        'class="w-full px-3.5 py-2.5 rounded-xl text-sm mb-2 text-center font-bold" style="border:1px solid #e2e8f0;outline:none;letter-spacing:.4em">' +
+      '<button type="button" id="link-verify-btn" class="tap w-full text-white text-sm font-bold py-2.5 rounded-xl shadow" ' +
+        'style="background:linear-gradient(135deg,#0ABAB5,#22d3ee)">連携する</button>' +
+      '<button type="button" id="link-restart" class="tap w-full text-xs text-gray-400 mt-2 py-2.5">別のメールアドレスで送り直す</button>' +
+    '</div>' +
+    '<p id="link-msg" role="status" aria-live="polite" style="display:none;font-size:12px;margin-top:8px;text-align:center"></p>';
+  var sb=document.getElementById('link-send-btn'); if(sb) sb.addEventListener('click', linkRequest);
+  var vb=document.getElementById('link-verify-btn'); if(vb) vb.addEventListener('click', linkVerify);
+  var rs=document.getElementById('link-restart'); if(rs) rs.addEventListener('click', function(){ linkStep('email'); linkMsg('', false); });
+  // Enter/Go/Done キーで送信 (= 片手モバイルでキーボードを閉じずに進める)
+  var ee=document.getElementById('link-email'); if(ee) ee.addEventListener('keydown', function(ev){ if(ev.key==='Enter'){ ev.preventDefault(); linkRequest(); } });
+  var ce2=document.getElementById('link-code'); if(ce2) ce2.addEventListener('keydown', function(ev){ if(ev.key==='Enter'){ ev.preventDefault(); linkVerify(); } });
 }
 
 // ─── おトクにお買い物 (= 3タップ購入: 割引適用リンク + cart permalink) ───
@@ -452,9 +565,11 @@ function renderAbout(d){
 }
 
 function renderAll(d){
+  hasRendered = true;
   document.getElementById('card-skeleton').style.display='none';
   renderRank(d);
   renderProgress(d);
+  renderLink(d);
   renderShop(d);
   renderCoupons(d);
   renderAbout(d);
@@ -462,6 +577,9 @@ function renderAll(d){
 }
 
 function showError(msg){
+  // 既に会員証を描画済なら error card で上書きしない (= 連携成功後の refresh 失敗を無害化)。
+  // 初回ロード失敗 (hasRendered=false) では従来どおりエラー表示する。
+  if (hasRendered) return;
   document.getElementById('card-skeleton').style.display='none';
   var e=document.getElementById('error-card');
   e.style.display='block';
