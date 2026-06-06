@@ -74,6 +74,7 @@ import { emailUnsubscribe } from './routes/email-unsubscribe.js';
 import { emailOptIn } from './routes/email-opt-in.js';
 import { liffOptIn } from './routes/liff-opt-in.js';
 import { liffOptInPage } from './routes/liff-opt-in-page.js';
+import { liffAccountLink } from './routes/liff-account-link.js';
 import { integrationsResend } from './routes/integrations-resend.js';
 import { birthdayCollection } from './routes/birthday-collection.js';
 import { coachAdmin } from './routes/coach-admin.js';
@@ -168,6 +169,12 @@ export type Env = {
     //   'true' で有効化 (= 未設定なら backfill は no-op、 本番 member_purchase_events 未書込)。
     //   ⚠️ read_all_orders scope 未付与だと直近60日のみ取得 (= 完全 backfill には scope 追加が必要)。
     MEMBER_BACKFILL_ENABLED?: string;
+    // 自前 friend↔Shopify customer 連携 Option B (2026-06-06): LIFF + email OTP 本人確認
+    //   CRM PLUS / Social PLUS 非依存。 'true' で有効化 (= 未設定なら全 endpoint が disabled、 本番未稼働)。
+    ACCOUNT_LINK_ENABLED?: string;
+    ACCOUNT_LINK_HMAC_KEY?: string;            // OTP hash の pepper (= server secret、 有効化時 必須)
+    ACCOUNT_LINK_METAFIELD_NAMESPACE?: string; // 自己所有 customer metafield の namespace (default 'naturism')
+    ACCOUNT_LINK_METAFIELD_KEY?: string;       // 同 key (default 'line_user_id')
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -262,6 +269,7 @@ app.route('/', emailUnsubscribe);
 app.route('/', emailOptIn);
 app.route('/', liffOptIn);
 app.route('/', liffOptInPage);
+app.route('/', liffAccountLink);
 app.route('/', integrationsResend);
 // liffCart route 削除 (2026-04-29): /api/liff/cart endpoints は dead code
 // (どのクライアントも未使用)。liff_carts table は本番に残置 (DROP は不可逆のため避ける)。
