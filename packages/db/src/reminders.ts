@@ -122,10 +122,14 @@ export async function cancelFriendReminder(db: D1Database, id: string): Promise<
 /** リマインダ配信処理用: 配信が必要な友だちリマインダを取得 */
 export async function getDueReminderDeliveries(db: D1Database, now: string): Promise<Array<FriendReminderRow & { steps: ReminderStepRow[] }>> {
   // activeなリマインダ登録を取得
+  // ブラックリスト除外 (consent/景表法): do-not-contact の友だちには本人設定の
+  // リマインダーも配信しない (H2、 一斉配信/シナリオと統一)。 解除で自動再開。
   const activeReminders = await db
     .prepare(`SELECT fr.* FROM friend_reminders fr
               INNER JOIN reminders r ON r.id = fr.reminder_id
-              WHERE fr.status = 'active' AND r.is_active = 1`)
+              INNER JOIN friends f ON f.id = fr.friend_id
+              WHERE fr.status = 'active' AND r.is_active = 1
+                AND COALESCE(f.is_blacklisted, 0) = 0`)
     .all<FriendReminderRow>();
 
   const results: Array<FriendReminderRow & { steps: ReminderStepRow[] }> = [];

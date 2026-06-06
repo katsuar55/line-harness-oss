@@ -437,11 +437,14 @@ export async function getActiveIntakeReminders(
 
   const { results } = await db
     .prepare(
+      // ブラックリスト除外 (consent/景表法): do-not-contact の友だちには本人設定の
+      // リマインダーも配信しない (H2、 一斉配信/シナリオと統一)。 解除で自動再開。
       `SELECT ir.id, ir.friend_id, ir.reminder_time, ir.reminder_type, ir.last_sent_at, ir.snooze_until
        FROM intake_reminders ir
        JOIN friends f ON f.id = ir.friend_id
        WHERE ir.is_active = 1
          AND f.is_following = 1
+         AND COALESCE(f.is_blacklisted, 0) = 0
          AND ir.reminder_time <= ?
          AND (ir.last_sent_at IS NULL OR ir.last_sent_at < ?)
        LIMIT 100`,
