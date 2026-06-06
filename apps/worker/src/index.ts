@@ -100,6 +100,7 @@ import { syncAiModelsCatalog } from './services/ai-models-catalog.js';
 import { syncCloudflareChangelog } from './services/cloudflare-changelog-sync.js';
 import { processEmailFailureMonitor } from './services/email-failure-monitor.js';
 import { processCronCleanup } from './services/cron-cleanup.js';
+import { processAccountLinkCleanup } from './services/account-link-cleanup.js';
 import { withHeartbeat } from './services/cron-heartbeat.js';
 import { createLogger } from './services/logger.js';
 import { buildEmailDispatchConfig } from './services/email-dispatch-config.js';
@@ -175,6 +176,7 @@ export type Env = {
     ACCOUNT_LINK_HMAC_KEY?: string;            // OTP hash の pepper (= server secret、 有効化時 必須)
     ACCOUNT_LINK_METAFIELD_NAMESPACE?: string; // 自己所有 customer metafield の namespace (default 'naturism')
     ACCOUNT_LINK_METAFIELD_KEY?: string;       // 同 key (default 'line_user_id')
+    ACCOUNT_LINK_CLEANUP_FORCE?: string;       // 'true' で account_link_codes cleanup の JST 03:10 gating を bypass
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -513,6 +515,18 @@ async function scheduled(
   jobs.push(
     processCronCleanup(env).catch((err) =>
       console.error('cron-cleanup failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // 自前 friend↔Shopify customer 連携 (2026-06-06, Phase 3): 期限切れ OTP (account_link_codes) cleanup
+  //   JST 03:10-03:14 のみ trigger (= cron-cleanup 03:00 とずらす)、 1 日保持。
+  //   PII (email) を長期保持しないための hygiene。 機能 gate off の間はテーブル空で no-op。
+  //   ACCOUNT_LINK_CLEANUP_FORCE='true' で gating bypass。
+  jobs.push(
+    processAccountLinkCleanup(env).then((r) => {
+      if (r.deletedRows > 0) console.info(`account-link-cleanup: deleted=${r.deletedRows}`);
+    }).catch((err) =>
+      console.error('account-link-cleanup failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 
