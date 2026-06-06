@@ -35,6 +35,18 @@ export function parseNextUrl(linkHeader: string | null): string | null {
   return match ? match[1] : null;
 }
 
+/**
+ * 値を有限数 (finite) に正規化する。 null/undefined/空文字/非数値文字列/NaN/±Infinity は
+ * `undefined` を返す。 Shopify の total_spent / orders_count が想定外値でも DB に NaN を
+ * 書き込まないための guard (= 既存の `x ? Number(x) : undefined` は "abc" 等の truthy 非数値で
+ * NaN を通してしまう穴があった)。
+ */
+export function toFiniteNumber(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === '') return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 export async function syncShopifyCustomers(
   db: D1Database,
   env: Record<string, string | undefined>,
@@ -113,8 +125,8 @@ export async function syncShopifyCustomers(
           phone: (cust.phone as string) ?? undefined,
           firstName: (cust.first_name as string) ?? undefined,
           lastName: (cust.last_name as string) ?? undefined,
-          ordersCount: cust.orders_count ? Number(cust.orders_count) : undefined,
-          totalSpent: cust.total_spent ? Number(cust.total_spent) : undefined,
+          ordersCount: toFiniteNumber(cust.orders_count),
+          totalSpent: toFiniteNumber(cust.total_spent),
           tags: (cust.tags as string) ?? undefined,
           metadata: JSON.stringify(enrichedMetadata),
         });

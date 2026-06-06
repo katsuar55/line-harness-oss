@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   syncShopifyCustomers,
   parseNextUrl,
+  toFiniteNumber,
 } from '../services/shopify-customer-sync.js';
 
 vi.mock('@line-crm/db', () => ({
@@ -48,6 +49,29 @@ describe('parseNextUrl', () => {
     const link =
       '<https://example.com/customers?page=1>; rel="previous", <https://example.com/customers?page=3>; rel="next"';
     expect(parseNextUrl(link)).toBe('https://example.com/customers?page=3');
+  });
+});
+
+describe('toFiniteNumber', () => {
+  it('有限な数値はそのまま返す (数値 / 数値文字列)', () => {
+    expect(toFiniteNumber(0)).toBe(0);
+    expect(toFiniteNumber(123)).toBe(123);
+    expect(toFiniteNumber('0')).toBe(0);
+    expect(toFiniteNumber('1234.5')).toBe(1234.5);
+  });
+
+  it('null / undefined / 空文字 は undefined', () => {
+    expect(toFiniteNumber(null)).toBeUndefined();
+    expect(toFiniteNumber(undefined)).toBeUndefined();
+    expect(toFiniteNumber('')).toBeUndefined();
+  });
+
+  it('非数値文字列 / NaN / Infinity は undefined (= DB に NaN を書かない)', () => {
+    expect(toFiniteNumber('abc')).toBeUndefined();
+    expect(toFiniteNumber('12abc')).toBeUndefined();
+    expect(toFiniteNumber(Number.NaN)).toBeUndefined();
+    expect(toFiniteNumber(Infinity)).toBeUndefined();
+    expect(toFiniteNumber(-Infinity)).toBeUndefined();
   });
 });
 
@@ -205,5 +229,29 @@ describe('syncShopifyCustomers', () => {
     expect(meta.accepts_marketing).toBe(true);
     expect(meta.marketing_opt_in_level).toBe('single_opt_in');
     expect(meta.sync_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('非数値の total_spent / orders_count は undefined で upsert (DB に NaN を書かない)', async () => {
+    const dbModule = await import('@line-crm/db');
+    const upsertMock = dbModule.upsertShopifyCustomer as ReturnType<typeof vi.fn>;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            customers: [
+              { id: 200, email: 'g@x', total_spent: 'not-a-number', orders_count: '3' },
+            ],
+          }),
+          { status: 200, headers: new Headers() },
+        ),
+      ),
+    );
+
+    await syncShopifyCustomers(fakeDb, baseEnv);
+    expect(upsertMock).toHaveBeenCalledTimes(1);
+    const arg = upsertMock.mock.calls[0]![1] as { totalSpent?: number; ordersCount?: number };
+    expect(arg.totalSpent).toBeUndefined(); // 'not-a-number' → NaN → undefined (= 書かない)
+    expect(arg.ordersCount).toBe(3); // '3' → 3 (有効値は維持)
   });
 });
