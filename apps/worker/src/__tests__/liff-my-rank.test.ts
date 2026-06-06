@@ -56,6 +56,7 @@ function makeDb(
   coupons: CouponRowLike[] = [],
   rankDiscount: RankDiscountRowLike | null = null,
   products: ProductRowLike[] = [],
+  shopifyCustomerId: string | null = null,
 ): D1Database {
   return {
     prepare(sql: string) {
@@ -64,6 +65,10 @@ function makeDb(
           return stmt;
         },
         async first<T>(): Promise<T | null> {
+          // getFriendById (= Phase 2 linked フラグ用)
+          if (sql.includes('FROM friends')) {
+            return { id: 'f1', line_user_id: 'U1', shopify_customer_id: shopifyCustomerId } as unknown as T;
+          }
           if (sql.includes('SUM(amount_jpy)')) {
             return { total: trailingTotal } as unknown as T;
           }
@@ -109,8 +114,12 @@ function makeApp(liffUser: { lineUserId: string; friendId: string } | null) {
 
 const USER = { lineUserId: 'U1', friendId: 'f1' };
 
-async function callApi(app: ReturnType<typeof makeApp>, db: D1Database) {
-  const res = await app.request('/api/liff/my-rank', undefined, { DB: db } as unknown as Env['Bindings']);
+async function callApi(
+  app: ReturnType<typeof makeApp>,
+  db: D1Database,
+  envExtra: Partial<Env['Bindings']> = {},
+) {
+  const res = await app.request('/api/liff/my-rank', undefined, { DB: db, ...envExtra } as unknown as Env['Bindings']);
   return { status: res.status, body: (await res.json()) as { success: boolean; error?: string; data?: any } };
 }
 
@@ -254,6 +263,27 @@ describe('GET /api/liff/my-rank', () => {
     expect(status).toBe(401);
     expect(body.success).toBe(false);
   });
+
+  // ─── 自前アカウント連携フラグ (Phase 2) ───
+  it('linked: shopify_customer_id があれば true', async () => {
+    const { body } = await callApi(makeApp(USER), makeDb(15000, null, [], null, [], '6458785661181'));
+    expect(body.data.linked).toBe(true);
+  });
+
+  it('linked: 未連携なら false', async () => {
+    const { body } = await callApi(makeApp(USER), makeDb(15000));
+    expect(body.data.linked).toBe(false);
+  });
+
+  it('accountLinkEnabled: ACCOUNT_LINK_ENABLED=true で true', async () => {
+    const { body } = await callApi(makeApp(USER), makeDb(15000), { ACCOUNT_LINK_ENABLED: 'true' });
+    expect(body.data.accountLinkEnabled).toBe(true);
+  });
+
+  it('accountLinkEnabled: 未設定なら false (= 本番 inert)', async () => {
+    const { body } = await callApi(makeApp(USER), makeDb(15000));
+    expect(body.data.accountLinkEnabled).toBe(false);
+  });
 });
 
 describe('GET /liff/my-rank (会員証ページ HTML)', () => {
@@ -313,6 +343,28 @@ describe('GET /liff/my-rank (会員証ページ HTML)', () => {
     const r = await fetchPage();
     expect(r.body).toContain('https://naturism-diet.com');
     expect(r.body).not.toContain('myshopify.com');
+  });
+
+  it('アカウント連携 UI (gated 2段フォーム) を含む', async () => {
+    const r = await fetchPage();
+    expect(r.body).toContain('id="link-card"');
+    expect(r.body).toContain('function renderLink');
+    expect(r.body).toContain('Shopifyアカウントと連携');
+    expect(r.body).toContain('/api/liff/link/request-code');
+    expect(r.body).toContain('/api/liff/link/verify-code');
+    // gated: accountLinkEnabled && !linked のときのみ表示する条件分岐
+    expect(r.body).toContain('d.accountLinkEnabled && !d.linked');
+  });
+
+  it('アカウント連携 UI の a11y 対応 (aria-label / aria-live / enterkeyhint) を含む', async () => {
+    const r = await fetchPage();
+    expect(r.body).toContain('aria-label="メールアドレス"');
+    expect(r.body).toContain('aria-label="6桁の確認コード"');
+    expect(r.body).toContain('role="status" aria-live="polite"'); // #link-msg を SR に通知
+    expect(r.body).toContain('enterkeyhint="send"');
+    expect(r.body).toContain('enterkeyhint="done"');
+    // refresh 失敗を無害化する hasRendered ガード
+    expect(r.body).toContain('if (hasRendered) return;');
   });
 
   it('テンプレートリテラル汚染なし (未展開の ${ が body に残らない)', async () => {
