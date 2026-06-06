@@ -17,7 +17,8 @@ LP launch 前の data-integrity / reliability 予防 hardening の優先ロー�
 | PR | 内容 | 状態 |
 |---|---|---|
 | H | blacklist を全 mass 配信に適用（broadcast tag/all + A/B test tag/all + step-delivery guard + getFriendsByTag）。並列 security review で発見した weekly-report cron + birthday-collection route の同種 gap も folded。consent/景表法。migration なし・live-safe・gated 不要（recipient を狭めるのみ） | #105 merged + deploy（`3dc4bfd1`） |
-| E | broadcast atomic claim（CAS `status IN ('scheduled','draft') → 'sending'`）で重複 cron / 手動送信の二重送信を防止。`processBroadcastSend` を discriminated return `{claimed,broadcast}` 化し、手動 race 敗北時は 409（誤 audit 回避）。correctness review Finding 1(HIGH)/3/5 反映。migration なし・live-safe | 本PR(E) |
+| E | broadcast atomic claim（CAS `status IN ('scheduled','draft') → 'sending'`）で重複 cron / 手動送信の二重送信を防止。`processBroadcastSend` を discriminated return `{claimed,broadcast}` 化し、手動 race 敗北時は 409（誤 audit 回避）。correctness review Finding 1(HIGH)/3/5 反映。migration なし・live-safe | #106 merged + deploy（`9d8a2d98`） |
+| M | shopify-customer-sync の ordersCount/totalSpent を `toFiniteNumber()` 化（非数値→NaN を DB に書かない guard）。`x ? Number(x) : undefined` は "abc" 等 truthy 非数値で NaN を通す穴があった。migration なし・live-safe | 本PR(M) |
 
 > H 実装メモ: 共有 `getFriendsByTag`（db 層）に `COALESCE(is_blacklisted,0)=0` を入れて broadcast/A-B の tag 経路を一括カバー。inline 'all' SELECT（broadcast 2本 scoped/unscoped・ab-test 1本・weekly-report・birthday-collection /send + /stats×2）にも同節を追加。step-delivery は既存 `!is_following` terminal guard に `|| is_blacklisted` を追加し #103 の claim-lease 不変条件を保持。Friend 型に optional `is_blacklisted?:number` を追加（blast radius 最小）。
 
@@ -34,8 +35,7 @@ LP launch 前の data-integrity / reliability 予防 hardening の優先ロー�
 - **B. refund webhook → 負の member_purchase_event**（survey #3, value high, risk low, M, **要 gate `REFUND_SYNC_ENABLED`**）
   - `refunds/create` webhook 登録 → 返金分を負で記録し total_purchase_jpy 過大計上を解消。
   - **⚠️ 落とし穴**: 既存 `addPurchaseEvent` は `Math.max(0, ...)` で負を 0 に丸める。負の event を許す別経路（新 fn or 専用 column）が必要 = 設計を要検討（fresh context 推奨）。
-- **M. NaN/通貨ガード**（survey #13, value low, risk low, S, live-safe）
-  - `services/shopify-customer-sync.ts:116-117` の total_spent/total_price/orders_count を `toFiniteNumber()`。currency!=='JPY' は credit skip。
+- ~~**M. NaN ガード**~~ → ✅ **2026-06-06 shipped（本PR M）**。`shopify-customer-sync.ts` の ordersCount/totalSpent を `toFiniteNumber()` 化。注: backlog 当初の「currency!=='JPY' credit skip」は本 file（単一通貨 JPY ストアの total_spent 表示値、credit 操作なし）に非該当。通貨/NaN credit guard は order→member credit 経路（PR #89 で `Number.isFinite` 済）の話で別。
 
 ### 配信整合性（残り、live-safe）
 - ~~**E. broadcast の atomic claim**~~ → ✅ **2026-06-06 shipped（本PR E）**。CAS `status IN ('scheduled','draft') → 'sending'` で cron/手動の二重送信防止。手動 race 敗北は 409。
