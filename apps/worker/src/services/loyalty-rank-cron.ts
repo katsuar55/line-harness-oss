@@ -161,7 +161,7 @@ export async function processLoyaltyRankReeval(
       //   issuer は RANK_DISCOUNT_ENABLED!=='true' で即 null を返す (= 承認前は本番未書込)。
       //   既存同値は isExisting=true で Shopify write なし (= 冪等)。
       //   best-effort: 失敗しても snapshot は確定済 (= rank 判定を壊さない)。
-      if (resolved.rank.discountPercent > 0) {
+      if (resolved.rank.discountPercent > 0 && env.RANK_DISCOUNT_ENABLED === 'true') {
         try {
           const issued = await issueRankDiscountForFriend(env.DB, env, {
             friendId: row.friend_id,

@@ -65,7 +65,7 @@ const NOW = new Date('2026-06-08T00:00:00.000Z');
 const RECENT = '2026-05-15T00:00:00.000+09:00';
 
 function makeEnv(db: D1Database): LoyaltyRankCronEnv {
-  return { DB: db, LOYALTY_RANK_CRON_FORCE: 'true' } as LoyaltyRankCronEnv;
+  return { DB: db, LOYALTY_RANK_CRON_FORCE: 'true', RANK_DISCOUNT_ENABLED: 'true' } as LoyaltyRankCronEnv;
 }
 
 describe('loyalty-rank cron — rank discount issuance wiring', () => {

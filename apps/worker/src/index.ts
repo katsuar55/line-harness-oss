@@ -177,6 +177,11 @@ export type Env = {
     ACCOUNT_LINK_METAFIELD_NAMESPACE?: string; // 自己所有 customer metafield の namespace (default 'naturism')
     ACCOUNT_LINK_METAFIELD_KEY?: string;       // 同 key (default 'line_user_id')
     ACCOUNT_LINK_CLEANUP_FORCE?: string;       // 'true' で account_link_codes cleanup の JST 03:10 gating を bypass
+    // 自社内製ロイヤリティ PR5 (2026-06-04): ランク割引コードの本番発行 gate
+    //   'true' で issueRankDiscountForFriend が本番 Shopify に書込 (= 未設定なら no-op、 本番未書込)。
+    RANK_DISCOUNT_ENABLED?: string;
+    SHOPIFY_TOKEN_ENCRYPTION_KEY?: string;     // Shopify access token 暗号化鍵 (= token cache、 getShopifyAccessToken)
+    LOYALTY_RANK_CRON_FORCE?: string;          // 'true' で月次 rank 再判定 cron の JST 1日 09:05 gating を bypass
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };

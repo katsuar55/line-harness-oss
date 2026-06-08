@@ -78,7 +78,7 @@ async function callApi(db: D1Database) {
   const res = await makeApp().request(
     '/api/liff/my-rank',
     undefined,
-    { DB: db } as unknown as Env['Bindings'],
+    { DB: db, RANK_DISCOUNT_ENABLED: 'true' } as unknown as Env['Bindings'],
   );
   return { status: res.status, body: (await res.json()) as { success: boolean; data?: any } };
 }
