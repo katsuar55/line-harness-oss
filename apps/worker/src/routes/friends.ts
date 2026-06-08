@@ -2,7 +2,9 @@ import { Hono } from 'hono';
 import {
   getFriends,
   getFriendById,
+  getFriendByLineUserId,
   getFriendCount,
+  upsertFriend,
   addTagToFriend,
   removeTagFromFriend,
   getFriendTags,
@@ -598,6 +600,210 @@ friends.post('/api/friends/:id/messages', async (c) => {
     return c.json({ success: true, data: { messageId: logId } });
   } catch (err) {
     console.error('POST /api/friends/:id/messages error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/friends/import-followers
+// 移行core (DMM 移行): LINE OA から友だちを直接投入する (getFollowerIds + getProfile)。
+// CSV import と異なり LINE プラットフォームから直接取得するため userId が常に正確。
+// ⚠️ getFollowerIds は「認証済 / プレミアム」 OA 限定 — 未認証 OA は LINE 403 を返す
+//    (その場合は友だちが再アクションした時に webhook follow handler が逐次登録する)。
+// 冪等: upsertFriend で再実行安全。 env default account 運用のため line_account_id は設定しない
+//    (= follow handler の matchedAccountId=null 時と同じ挙動)。
+// body: { start?, maxPages?, fetchProfiles?, maxProfiles?, dryRun? }
+//   大量フォロワーは maxPages で 1 リクエストを区切り、 返却 nextCursor を次回 start に渡して再開
+//   (Worker の CPU 時間制限と getProfile レート制限への配慮)。
+friends.post('/api/friends/import-followers', async (c) => {
+  const LINE_USER_ID_RE = /^U[0-9a-f]{32}$/;
+  const PAGE_SIZE = 1000;
+  // ⚠️ Worker の CPU/wall-clock (~30s) と subrequest 上限への配慮で 1 リクエストの作業量を小さく保つ。
+  //    大量フォロワーは nextCursor を次回 start に渡して複数回に分けて取り込む (resumable)。
+  const DEFAULT_MAX_PAGES = 2; // = 最大 2,000 id/リクエスト
+  const MAX_PAGES_CAP = 5; // = 最大 5,000 id/リクエスト (backstop)
+  const DEFAULT_MAX_PROFILES = 50;
+  const MAX_PROFILES_CAP = 200;
+  const MAX_START_LEN = 512; // LINE cursor は短い base64url。 異常に長い入力を弾く
+
+  const toInt = (v: unknown, fallback: number): number =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.floor(v) : fallback;
+  const clamp = (v: number, lo: number, hi: number): number =>
+    Math.max(lo, Math.min(hi, v));
+
+  try {
+    const body = (await c.req
+      .json<{
+        start?: unknown;
+        maxPages?: unknown;
+        fetchProfiles?: unknown;
+        maxProfiles?: unknown;
+        dryRun?: unknown;
+      }>()
+      .catch(() => ({}))) as {
+      start?: unknown;
+      maxPages?: unknown;
+      fetchProfiles?: unknown;
+      maxProfiles?: unknown;
+      dryRun?: unknown;
+    };
+
+    const start =
+      typeof body.start === 'string' &&
+      body.start.length > 0 &&
+      body.start.length <= MAX_START_LEN
+        ? body.start
+        : undefined;
+    const dryRun = body.dryRun === true;
+    const fetchProfiles = body.fetchProfiles !== false; // default: true
+    const maxPages = clamp(toInt(body.maxPages, DEFAULT_MAX_PAGES), 1, MAX_PAGES_CAP);
+    const maxProfiles = clamp(
+      toInt(body.maxProfiles, DEFAULT_MAX_PROFILES),
+      0,
+      MAX_PROFILES_CAP,
+    );
+
+    const accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+    if (!accessToken) {
+      return c.json(
+        { success: false, error: 'LINE_CHANNEL_ACCESS_TOKEN not configured' },
+        500,
+      );
+    }
+
+    const { LineClient } = await import('@line-crm/line-sdk');
+    const lineClient = new LineClient(accessToken);
+
+    let cursor = start;
+    let pages = 0;
+    let scanned = 0; // LINE から返った id 総数
+    let matched = 0; // 形式が valid な id (= 取り込み候補。 dryRun でもカウント)
+    let upserted = 0; // 実際に DB へ書き込んだ件数 (dryRun では 0)
+    let profilesFetched = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+    let nextCursor: string | null = null;
+    let hasMore = false;
+
+    try {
+      do {
+        const page = await lineClient.getFollowerIds(cursor, PAGE_SIZE);
+        pages++;
+        const ids = Array.isArray(page.userIds) ? page.userIds : [];
+        for (const userId of ids) {
+          scanned++;
+          if (typeof userId !== 'string' || !LINE_USER_ID_RE.test(userId)) {
+            skipped++;
+            continue;
+          }
+          matched++;
+          let profile:
+            | { displayName?: string; pictureUrl?: string; statusMessage?: string }
+            | undefined;
+          if (fetchProfiles && !dryRun && profilesFetched < maxProfiles) {
+            try {
+              const existing = await getFriendByLineUserId(c.env.DB, userId);
+              // 新規友だちのみ profile 取得 (既存は upsertFriend が ?? で維持)
+              if (!existing) {
+                profile = await lineClient.getProfile(userId);
+                profilesFetched++;
+              }
+            } catch (err) {
+              // best-effort: profile 取得失敗でも id は登録する。 PII 最小化で userId は記録せず ordinal のみ
+              const m = err instanceof Error ? err.message : String(err);
+              if (errors.length < 50) errors.push(`profile (record ${scanned}): ${m.slice(0, 100)}`);
+            }
+          }
+          if (!dryRun) {
+            try {
+              await upsertFriend(c.env.DB, {
+                lineUserId: userId,
+                displayName: profile?.displayName ?? null,
+                pictureUrl: profile?.pictureUrl ?? null,
+                statusMessage: profile?.statusMessage ?? null,
+              });
+              upserted++;
+            } catch (err) {
+              const m = err instanceof Error ? err.message : String(err);
+              if (errors.length < 50) errors.push(`upsert (record ${scanned}): ${m.slice(0, 100)}`);
+            }
+          }
+        }
+        cursor = page.next;
+        // 通常終了 (cursor 無し) + 空ページが cursor 付きで続く異常時の暴走防止 (= maxPages backstop で必ず止まる)
+        if (!cursor) break;
+        if (pages >= maxPages) {
+          nextCursor = cursor;
+          hasMore = true;
+          break;
+        }
+      } while (cursor);
+    } catch (err) {
+      // getFollowerIds 自体の失敗 (例: 未認証 OA = 403)。 部分結果 + 明確な理由を返す。
+      // 生の LINE API body は client に返さない (= 情報漏洩防止)。 詳細は audit に内部記録。
+      const status = (err as { status?: number })?.status;
+      const m = err instanceof Error ? err.message : String(err);
+      const unverified = status === 403 || /LINE API error: 403\b/.test(m);
+      await auditAdmin(c, {
+        action: 'friends.import_followers.error',
+        targetType: 'friends',
+        result: 'failure',
+        metadata: {
+          scanned,
+          matched,
+          upserted,
+          profilesFetched,
+          pages,
+          status: status ?? null,
+          error: m.slice(0, 300),
+        },
+      });
+      return c.json(
+        {
+          success: false,
+          error: unverified
+            ? 'LINE getFollowerIds は認証済/プレミアム公式アカウント限定です (HTTP 403)。 友だちは再アクション時に自動登録されます。'
+            : `LINE API error${status ? ` (HTTP ${status})` : ''}`,
+          data: { scanned, matched, upserted, profilesFetched, pages },
+        },
+        unverified ? 422 : 502,
+      );
+    }
+
+    await auditAdmin(c, {
+      action: dryRun
+        ? 'friends.import_followers.dry_run'
+        : 'friends.import_followers.run',
+      targetType: 'friends',
+      result: 'success',
+      metadata: {
+        scanned,
+        matched,
+        upserted,
+        profilesFetched,
+        skipped,
+        pages,
+        errorCount: errors.length,
+        hasMore,
+        dryRun,
+      },
+    });
+
+    return c.json({
+      success: true,
+      data: {
+        scanned,
+        matched,
+        upserted,
+        profilesFetched,
+        skipped,
+        pages,
+        errors: errors.slice(0, 50),
+        nextCursor,
+        hasMore,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/friends/import-followers error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
