@@ -10,6 +10,7 @@ import {
   getFriendById,
 } from '@line-crm/db';
 import { buildCartPermalink, buildDiscountApplyUrl } from '../services/cart-permalink.js';
+import { issueRankDiscountForFriend } from '../services/rank-discount-issuer.js';
 
 // 顧客向けストアフロント (= 公式ドメイン)。SHOPIFY_STORE_DOMAIN は Admin/API 用なので使わない。
 const STORE_DOMAIN = 'naturism-diet.com';
@@ -60,6 +61,39 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
   // ─── 3タップ購入 (= PR5-5b): ランク割引コード + cart permalink ───
   // ランク割引は RANK_DISCOUNT_ENABLED 有効化 (= 5c 承認後) で発行される。未発行なら null → コード無し cart に graceful。
   const rankDiscount = await getActiveRankDiscountCode(c.env.DB, liffUser.friendId).catch(() => null);
+  // 死んだbackend修正 (Task#2): 適格 (非regular) なのに未発行なら発行をトリガー。
+  //   ① RANK_DISCOUNT_ENABLED 有効時のみ呼ぶ (= gated off では呼出ゼロ・log noise なし)
+  //   ② waitUntil で fire-and-forget (= Shopify 発行の最大 8s を GET hot path に乗せない)。
+  //      コードは次回表示で反映 (月次 cron も proactive に発行)。 best-effort (失敗しても会員証は表示)。
+  //   注: 同一会員の同時 GET で稀に orphan Shopify node が生じ得る (narrow window・UNIQUE backstop・
+  //       gated 前提)。 PR3 完成後に customerSelection を顧客限定化する際に reconcile 予定。
+  if (
+    !rankDiscount &&
+    resolved.rank.discountPercent > 0 &&
+    c.env.RANK_DISCOUNT_ENABLED === 'true'
+  ) {
+    const friendId = liffUser.friendId;
+    const issuePromise = (async () => {
+      try {
+        await issueRankDiscountForFriend(c.env.DB, c.env, {
+          friendId,
+          rankId: resolved.rank.id,
+          discountPercent: resolved.rank.discountPercent,
+          lineAccountId: friend?.line_account_id ?? null,
+        });
+      } catch (err) {
+        console.error(
+          '[liff-my-rank] lazy rank discount issue failed:',
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    })();
+    try {
+      c.executionCtx.waitUntil(issuePromise);
+    } catch {
+      /* tests: 実行コンテキスト無し — issuePromise は上で既に開始済 */
+    }
+  }
   const discountCode = rankDiscount?.code ?? null;
   const discountApplyUrl = discountCode ? buildDiscountApplyUrl(STORE_DOMAIN, discountCode) : null;
 
