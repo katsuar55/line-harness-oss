@@ -811,6 +811,53 @@ export const api = {
         body: JSON.stringify(data),
       }),
   },
+  tagElapsedDeliveries: {
+    list: () =>
+      fetchApi<ApiResponse<Array<{
+        id: string
+        name: string
+        trigger_tag_id: string
+        tag_name: string | null
+        elapsed_days: number
+        message_type: string
+        message_content: string
+        send_hour: number
+        is_active: number
+        sent_count: number
+        created_at: string
+        updated_at: string
+      }>>>('/api/tag-elapsed-deliveries'),
+    create: (data: {
+      name: string
+      triggerTagId: string
+      elapsedDays: number
+      messageType?: string
+      messageContent: string
+      sendHour?: number
+    }) =>
+      fetchApi<ApiResponse<Record<string, unknown>>>('/api/tag-elapsed-deliveries', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (
+      id: string,
+      data: Partial<{
+        name: string
+        triggerTagId: string
+        elapsedDays: number
+        messageType: string
+        messageContent: string
+        sendHour: number
+        isActive: boolean
+      }>,
+    ) =>
+      fetchApi<ApiResponse<Record<string, unknown>>>(`/api/tag-elapsed-deliveries/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/tag-elapsed-deliveries/${id}`, { method: 'DELETE' }),
+  },
   conductor: {
     scenario: (prompt: string) =>
       fetchApi<ApiResponse<ConductorScenarioResult>>('/api/conductor/scenario', {
