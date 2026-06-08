@@ -858,6 +858,33 @@ export const api = {
     delete: (id: string) =>
       fetchApi<ApiResponse<null>>(`/api/tag-elapsed-deliveries/${id}`, { method: 'DELETE' }),
   },
+  abTests: {
+    list: () => fetchApi<ApiResponse<AbTest[]>>('/api/ab-tests'),
+    create: (data: {
+      title: string
+      variantA: { messageType: string; messageContent: string; altText?: string | null }
+      variantB: { messageType: string; messageContent: string; altText?: string | null }
+      targetType: 'all' | 'tag'
+      targetTagId?: string | null
+      splitRatio?: number
+      scheduledAt?: string | null
+    }) =>
+      fetchApi<ApiResponse<AbTest>>('/api/ab-tests', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    send: (id: string) =>
+      fetchApi<ApiResponse<AbTest | null>>(`/api/ab-tests/${id}/send`, { method: 'POST' }),
+    stats: (id: string) =>
+      fetchApi<ApiResponse<unknown>>(`/api/ab-tests/${id}/stats`, { method: 'POST' }),
+    sendWinner: (id: string, winner: 'A' | 'B') =>
+      fetchApi<ApiResponse<AbTest | null>>(`/api/ab-tests/${id}/send-winner`, {
+        method: 'POST',
+        body: JSON.stringify({ winner }),
+      }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/ab-tests/${id}`, { method: 'DELETE' }),
+  },
   conductor: {
     scenario: (prompt: string) =>
       fetchApi<ApiResponse<ConductorScenarioResult>>('/api/conductor/scenario', {
@@ -880,6 +907,29 @@ export const api = {
         body: JSON.stringify({ prompt }),
       }),
   },
+}
+
+// ─── A/B Test Types ───
+
+export interface AbTest {
+  id: string
+  title: string
+  variantA: { messageType: string; messageContent: string; altText: string | null }
+  variantB: { messageType: string; messageContent: string; altText: string | null }
+  targetType: 'all' | 'tag'
+  targetTagId: string | null
+  splitRatio: number
+  status: 'draft' | 'scheduled' | 'sending' | 'test_sent' | 'winner_sent'
+  scheduledAt: string | null
+  variantATotal: number
+  variantASuccess: number
+  variantBTotal: number
+  variantBSuccess: number
+  winner: 'A' | 'B' | null
+  winnerTotal: number | null
+  winnerSuccess: number | null
+  createdAt?: string
+  updatedAt?: string
 }
 
 // ─── AI Conductor Types (Phase 5γ-5b) ───
