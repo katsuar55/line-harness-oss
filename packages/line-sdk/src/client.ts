@@ -54,9 +54,11 @@ export class LineClient {
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(
+      const err = new Error(
         `LINE API error: ${res.status} ${res.statusText} — ${text}`,
-      );
+      ) as Error & { status?: number };
+      err.status = res.status;
+      throw err;
     }
 
     const contentType = res.headers.get('content-type') ?? '';
@@ -72,6 +74,34 @@ export class LineClient {
   async getProfile(userId: string): Promise<UserProfile> {
     return this.request<UserProfile>(
       `/profile/${encodeURIComponent(userId)}`,
+      {},
+      'GET',
+    );
+  }
+
+  // ─── Followers ────────────────────────────────────────────────────────────
+
+  /**
+   * Get a page of follower user IDs for this Official Account.
+   *
+   * ⚠️ This LINE API is available ONLY to verified or premium accounts.
+   * Unverified accounts receive HTTP 403 (the request() helper throws).
+   *
+   * @param start pagination cursor from a previous call's `next` (omit for the first page).
+   *              The cursor is valid for 24h.
+   * @param limit max IDs per page (1–1000, default 1000).
+   * @returns `{ userIds, next? }` — `next` is present only when more pages remain.
+   * See: https://developers.line.biz/en/reference/messaging-api/#get-follower-ids
+   */
+  async getFollowerIds(
+    start?: string,
+    limit = 1000,
+  ): Promise<{ userIds: string[]; next?: string }> {
+    const params = new URLSearchParams();
+    params.set('limit', String(limit));
+    if (start) params.set('start', start);
+    return this.request<{ userIds: string[]; next?: string }>(
+      `/followers/ids?${params.toString()}`,
       {},
       'GET',
     );
