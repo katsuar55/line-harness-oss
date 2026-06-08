@@ -10,6 +10,7 @@ import {
   getFriendById,
 } from '@line-crm/db';
 import { buildCartPermalink, buildDiscountApplyUrl } from '../services/cart-permalink.js';
+import { issueRankDiscountForFriend } from '../services/rank-discount-issuer.js';
 
 // 顧客向けストアフロント (= 公式ドメイン)。SHOPIFY_STORE_DOMAIN は Admin/API 用なので使わない。
 const STORE_DOMAIN = 'naturism-diet.com';
@@ -59,7 +60,28 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
 
   // ─── 3タップ購入 (= PR5-5b): ランク割引コード + cart permalink ───
   // ランク割引は RANK_DISCOUNT_ENABLED 有効化 (= 5c 承認後) で発行される。未発行なら null → コード無し cart に graceful。
-  const rankDiscount = await getActiveRankDiscountCode(c.env.DB, liffUser.friendId).catch(() => null);
+  let rankDiscount = await getActiveRankDiscountCode(c.env.DB, liffUser.friendId).catch(() => null);
+  // 死んだbackend修正 (Task#2): 適格 (非regular) なのに未発行なら lazy 発行 (= 会員証を開いた瞬間にコード生成)。
+  //   issuer は RANK_DISCOUNT_ENABLED!=='true' で即 null を返すため、 承認前は本番 Shopify 未書込・冪等。
+  //   発行は best-effort (失敗しても会員証本体は表示)。 成功後に canonical 形で再読込。
+  if (!rankDiscount && resolved.rank.discountPercent > 0) {
+    try {
+      const issued = await issueRankDiscountForFriend(c.env.DB, c.env, {
+        friendId: liffUser.friendId,
+        rankId: resolved.rank.id,
+        discountPercent: resolved.rank.discountPercent,
+        lineAccountId: friend?.line_account_id ?? null,
+      });
+      if (issued) {
+        rankDiscount = await getActiveRankDiscountCode(c.env.DB, liffUser.friendId).catch(() => null);
+      }
+    } catch (err) {
+      console.error(
+        '[liff-my-rank] lazy rank discount issue failed:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
   const discountCode = rankDiscount?.code ?? null;
   const discountApplyUrl = discountCode ? buildDiscountApplyUrl(STORE_DOMAIN, discountCode) : null;
 

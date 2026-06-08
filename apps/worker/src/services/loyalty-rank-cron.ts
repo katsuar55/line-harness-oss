@@ -35,8 +35,9 @@ import {
   type RankDirection,
 } from '@line-crm/db';
 import { auditSystem } from './audit-logger.js';
+import { issueRankDiscountForFriend, type RankDiscountEnv } from './rank-discount-issuer.js';
 
-export interface LoyaltyRankCronEnv {
+export interface LoyaltyRankCronEnv extends RankDiscountEnv {
   DB: D1Database;
   LOYALTY_RANK_CRON_FORCE?: string;
 }
@@ -49,6 +50,8 @@ export interface LoyaltyRankCronResult {
   readonly demoted: number;
   readonly unchanged: number;
   readonly errors: number;
+  /** 本ランで新規発行したランク割引コード数 (gated off / 既存は除く) */
+  readonly discountsIssued: number;
   readonly demotedFriendIds: string[];
   readonly promotedFriendIds: string[];
 }
@@ -100,6 +103,7 @@ export async function processLoyaltyRankReeval(
       demoted: 0,
       unchanged: 0,
       errors: 0,
+      discountsIssued: 0,
       demotedFriendIds: [],
       promotedFriendIds: [],
     };
@@ -115,6 +119,7 @@ export async function processLoyaltyRankReeval(
   let demoted = 0;
   let unchanged = 0;
   let errors = 0;
+  let discountsIssued = 0;
   const demotedFriendIds: string[] = [];
   const promotedFriendIds: string[] = [];
 
@@ -151,6 +156,26 @@ export async function processLoyaltyRankReeval(
         // 'same' と 'initial' (= 新規 baseline) は rank 変化イベント無しとして unchanged。
         unchanged += 1;
       }
+
+      // 死んだbackend修正 (Task#2): 非regular rank は割引コードを発行/維持 (proactive、 月次)。
+      //   issuer は RANK_DISCOUNT_ENABLED!=='true' で即 null を返す (= 承認前は本番未書込)。
+      //   既存同値は isExisting=true で Shopify write なし (= 冪等)。
+      //   best-effort: 失敗しても snapshot は確定済 (= rank 判定を壊さない)。
+      if (resolved.rank.discountPercent > 0) {
+        try {
+          const issued = await issueRankDiscountForFriend(env.DB, env, {
+            friendId: row.friend_id,
+            rankId: resolved.rankId,
+            discountPercent: resolved.rank.discountPercent,
+          });
+          if (issued && !issued.isExisting) discountsIssued += 1;
+        } catch (discErr) {
+          console.error(
+            `[loyalty-rank-cron] rank discount issue failed for ${row.friend_id}:`,
+            discErr instanceof Error ? discErr.message : 'unknown',
+          );
+        }
+      }
     } catch (err) {
       errors += 1;
       console.error(
@@ -172,6 +197,7 @@ export async function processLoyaltyRankReeval(
         demoted,
         unchanged,
         errors,
+        discountsIssued,
         demotedFriendIds,
         promotedFriendIds,
         forceRun,
@@ -192,6 +218,7 @@ export async function processLoyaltyRankReeval(
     demoted,
     unchanged,
     errors,
+    discountsIssued,
     demotedFriendIds,
     promotedFriendIds,
   };
