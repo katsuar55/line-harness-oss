@@ -41,6 +41,11 @@ import {
   generateAutoReplyFromPrompt,
   AutoReplyConductorError,
 } from '../services/auto-reply-conductor.js';
+import {
+  generateSegmentFromPrompt,
+  SegmentConductorError,
+} from '../services/segment-conductor.js';
+import { getTags } from '@line-crm/db';
 
 const conductor = new Hono<Env>();
 
@@ -55,6 +60,7 @@ function mapErrorCodeToStatus(
     | 'timeout'
     | 'invalid_response'
     | 'schema_validation_failed'
+    | 'unknown_reference'
     | 'api_error',
 ): 400 | 502 | 503 | 504 | 500 {
   switch (code) {
@@ -67,6 +73,7 @@ function mapErrorCodeToStatus(
       return 504;
     case 'invalid_response':
     case 'schema_validation_failed':
+    case 'unknown_reference': // AI がカタログ外 id を生成 (= 再生成でリトライ可能)
       return 502;
     case 'api_error':
     default:
@@ -278,6 +285,56 @@ conductor.post('/api/conductor/auto-reply', async (c) => {
       );
     }
     console.error('POST /api/conductor/auto-reply error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/conductor/segment (AIネイティブ A案)
+ * body: { prompt: string }
+ * 200: { success: true, data: { condition, humanReadable, warnings, provider, model } }
+ * 400/502/503/504/500: error code mapping (502 には unknown_reference = AI の id 捏造検出を含む)
+ */
+conductor.post('/api/conductor/segment', async (c) => {
+  let body: { prompt?: unknown };
+  try {
+    body = await c.req.json<{ prompt?: unknown }>();
+  } catch {
+    return c.json({ success: false, error: 'invalid JSON body' }, 400);
+  }
+
+  if (typeof body.prompt !== 'string' || body.prompt.length === 0) {
+    return c.json(
+      { success: false, error: 'prompt is required (non-empty string)' },
+      400,
+    );
+  }
+
+  try {
+    // カタログ注入: AI はこの中の id だけ使える (name→id 解決を AI に任せ、出力後に実在検証)
+    const tags = await getTags(c.env.DB);
+    const groupRows = await c.env.DB.prepare('SELECT id, name FROM groups ORDER BY created_at DESC LIMIT 200')
+      .all<{ id: string; name: string }>();
+    const catalog = {
+      tags: tags.map((t) => ({ id: t.id, name: t.name })),
+      groups: groupRows.results ?? [],
+    };
+
+    const router = createAIRouterFromEnv(c.env);
+    const result = await generateSegmentFromPrompt({
+      prompt: body.prompt,
+      router,
+      catalog,
+    });
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    if (err instanceof SegmentConductorError) {
+      return c.json(
+        { success: false, error: err.message, code: err.code },
+        mapErrorCodeToStatus(err.code),
+      );
+    }
+    console.error('POST /api/conductor/segment error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
