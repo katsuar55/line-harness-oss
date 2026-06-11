@@ -37,6 +37,10 @@ import {
   generateMessageFromPrompt,
   MessageConductorError,
 } from '../services/message-conductor.js';
+import {
+  generateAutoReplyFromPrompt,
+  AutoReplyConductorError,
+} from '../services/auto-reply-conductor.js';
 
 const conductor = new Hono<Env>();
 
@@ -235,6 +239,46 @@ conductor.post('/api/conductor/message', async (c) => {
       { success: false, error: 'Internal server error' },
       500,
     );
+  }
+});
+
+/**
+ * POST /api/conductor/auto-reply (AIネイティブ A案)
+ * body: { prompt: string }
+ * 200: { success: true, data: { autoReply, warnings, provider, model } }
+ * 400/502/503/504/500: error code mapping
+ */
+conductor.post('/api/conductor/auto-reply', async (c) => {
+  let body: { prompt?: unknown };
+  try {
+    body = await c.req.json<{ prompt?: unknown }>();
+  } catch {
+    return c.json({ success: false, error: 'invalid JSON body' }, 400);
+  }
+
+  if (typeof body.prompt !== 'string' || body.prompt.length === 0) {
+    return c.json(
+      { success: false, error: 'prompt is required (non-empty string)' },
+      400,
+    );
+  }
+
+  try {
+    const router = createAIRouterFromEnv(c.env);
+    const result = await generateAutoReplyFromPrompt({
+      prompt: body.prompt,
+      router,
+    });
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    if (err instanceof AutoReplyConductorError) {
+      return c.json(
+        { success: false, error: err.message, code: err.code },
+        mapErrorCodeToStatus(err.code),
+      );
+    }
+    console.error('POST /api/conductor/auto-reply error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 
