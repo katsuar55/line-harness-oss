@@ -68,25 +68,24 @@
 
 ## 2. フェーズ別タスク (最短距離)
 
-### Phase 0 — スコープ確定 (Katsu 確認待ち)
-- [ ] DMM で**実際に使っている機能**を確定 → UI 構築の範囲を right-size (使わない機能の UI は作らない)
-- [ ] 友だちデータ移行方針: DMM CSV(userID付き)書き出し可否 / 本番 OA が認証済(verified)か
-- [ ] 本番 OA の Messaging API ch + LINE Login ch の準備状況・同一 provider か
+### Phase 0 — スコープ確定 ✅ (2026-06-08〜12 Katsu 確定)
+- [x] 使用機能確定: 回答フォーム/アンケート・A/Bテスト・再入荷通知・会員ランク(購入額)・販促配信(タグN日後)。キーワード自動応答/タグ手動管理は **AIネイティブ上位互換**で作る (A案 Conductor拡張、Katsu 選択)
+- [x] 本番 OA = **認証済(緑バッジ)** → getFollowerIds 一括投入可 (2026-06-12 確認)
+- [x] 本番 Messaging API ch + LINE Login ch **準備済** (Katsu 確認)
+- [x] 上流OSS = Shudesu/line-harness-oss と確定 (共通祖先 b08f643)。隔週同期ルーチン `biweekly-upstream-sync-check` 稼働。全体 merge 永久禁止・選別 cherry-pick のみ
 
-### Phase 1 — オペレーター運用 UI ギャップ解消 (自律・コード)
-DMM パリティで必要かつ UI 欠落のもの。Phase 0 の使用機能に応じて取捨選択。
-- [ ] **P1: キーワード自動応答 管理 UI** (`auto_replies` CRUD) ← DMM 中核・最優先
-- [ ] **P1: タグ管理 UI** (作成/改名/削除/色 + 友だち数表示)
-- [ ] P2: セグメント絞り込み UI (ビジュアルルールビルダー or 実用フォーム)
-- [ ] P2: 回答フォーム builder UI + 一覧
-- [ ] P2: A/Bテスト 管理 UI
-- [ ] P2: 販促配信(タグ時限) UI
-- [ ] P3: グループ UI / アンケート UI / カード・リッチメッセージ composer
+### Phase 1 — オペレーター運用 UI ギャップ解消
+- [x] **A/Bテスト 管理 UI** (PR #115 merged) — ※LINE公式のA/Bは2025-03完全廃止と判明、空白を埋める実装
+- [x] **販促配信(タグ時限) UI** (PR #114 merged)
+- [x] **AIネイティブ 自動応答** (A案): auto-reply conductor + 初の auto_replies 管理CRUD + 管理ページ (feat/ai-native-conductor)
+- [x] **AIネイティブ セグメント** (A案): segment conductor (13ルール束縛+ID実在検証) + /api/segments/count + チップUI (同上)
+- [x] 回答フォーム: AI Conductor 作成 + LIFF ?page=form 導線 + 回答閲覧で **end-to-end 稼働済と確認** → builder 不要
+- [ ] (launch後) タグ管理 UI 拡張 / グループ UI / カード composer — AIネイティブ路線で吸収予定
 
-### Phase 2 — 移行データ投入経路 (自律・コード)
-- [ ] 友だち投入: `getFollowerIds` importer(認証済OA時) + getProfile backfill
-- [ ] タグ import: DMM CSV(userId+タグ)→ friends-import 拡張 or 新 tag-import
-- [ ] Shopify 再導出: order-email-match(稼働中) + 必要なら friend-customer-link/backfill/rank を有効化
+### Phase 2 — 移行データ投入経路
+- [x] 友だち投入: `getFollowerIds` importer (PR #112 merged、resumable、認証済OA確定で経路確定)
+- [ ] Shopify 再導出: order-email-match(稼働中)。必要なら friend-customer-link/backfill/rank 有効化 (Katsu 承認)
+- [ ] (任意) DMM 内の再導出不可な手動メモ/タグの有無確認 → 少なければ DMM からの移行ゼロ
 
 ### Phase 3 — 「エラーなく」堅牢化 (自律)
 - [ ] 全 worker test green + preflight green を維持
@@ -95,13 +94,15 @@ DMM パリティで必要かつ UI 欠落のもの。Phase 0 の使用機能に�
 - [ ] 未使用 placeholder(ad-conversion OAuth, shopify sync stub)は使用しないなら touch しない
 
 ### Phase 4 — 本番カットオーバー (Katsu ゲート・一部手動)
-- [ ] 本番 OA の Messaging API ch + LINE Login ch を同一 provider に用意
+- [x] 本番 OA の Messaging API ch + LINE Login ch を同一 provider に用意 (準備済・Katsu確認)
+- [ ] **Business Manager 連携状態の確認** (2026-03 から日本の全OAで必須化済み — 本番OAが連携済みか OA Manager で確認)
 - [ ] secret 差し替え: `wrangler secret bulk`(JSON, `\r` trap 回避) で LINE_CHANNEL_SECRET/ACCESS_TOKEN, LINE_LOGIN_CHANNEL_ID/SECRET, LIFF_URL
 - [ ] `VITE_LIFF_ID` を local `.env` + GitHub repo vars 両方更新 → rebuild (preflight は missing は弾くが **stale-but-valid は弾かない**ので要注意)
 - [ ] LINE コンソール: Webhook URL → `/webhook` + Use webhook ON / LIFF endpoint → worker URL / Login callback → `/auth/callback`
-- [ ] OA Manager: 応答モード=Bot / Webhook ON / あいさつ・自動応答 OFF (二重返信防止)
+- [ ] OA Manager 応答設定 (2026-06 公式仕様で確定): **チャットON(手動のみ) + Webhook ON + 応答メッセージOFF + あいさつメッセージOFF + AIチャットボット不使用** — 二重返信はプラットフォームで防がれないため必須。有人対応は OA Manager チャット併用可 (2022-11以降 排他撤廃)
 - [ ] harness から `Set default rich menu` で旧 DMM メニュー上書き
 - [ ] 本番ブランド用 seed: welcome scenario / tags / automations / templates / monthly broadcast
+- [ ] 友だち一括投入: `POST /api/friends/import-followers` (dryRun→本番、resumable cursor、認証済OAなので全件取得可)
 
 ### Phase 5 — 検証 + 監視 + DMM 解約 (PDCA)
 - [ ] テスト友だち(自分)で e2e: follow→welcome / キーワード返信 / AI返信 / リッチメニュータップ / LIFF会員証 / broadcast / scenario / form / CV計測
