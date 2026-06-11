@@ -858,6 +858,42 @@ export const api = {
     delete: (id: string) =>
       fetchApi<ApiResponse<null>>(`/api/tag-elapsed-deliveries/${id}`, { method: 'DELETE' }),
   },
+  autoReplies: {
+    list: () =>
+      fetchApi<ApiResponse<AutoReply[]>>('/api/auto-replies'),
+    create: (data: {
+      keyword: string
+      matchType: 'exact' | 'contains'
+      responseContent: string
+      isActive?: boolean
+    }) =>
+      fetchApi<ApiResponse<AutoReply>>('/api/auto-replies', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (
+      id: string,
+      data: Partial<{
+        keyword: string
+        matchType: 'exact' | 'contains'
+        responseContent: string
+        isActive: boolean
+      }>,
+    ) =>
+      fetchApi<ApiResponse<AutoReply>>(`/api/auto-replies/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/auto-replies/${id}`, { method: 'DELETE' }),
+  },
+  segments: {
+    count: (condition: SegmentConditionDto) =>
+      fetchApi<ApiResponse<{ count: number }>>('/api/segments/count', {
+        method: 'POST',
+        body: JSON.stringify({ condition }),
+      }),
+  },
   abTests: {
     list: () => fetchApi<ApiResponse<AbTest[]>>('/api/ab-tests'),
     create: (data: {
@@ -903,6 +939,16 @@ export const api = {
       }),
     message: (prompt: string) =>
       fetchApi<ApiResponse<ConductorMessageResult>>('/api/conductor/message', {
+        method: 'POST',
+        body: JSON.stringify({ prompt }),
+      }),
+    autoReply: (prompt: string) =>
+      fetchApi<ApiResponse<ConductorAutoReplyResult>>('/api/conductor/auto-reply', {
+        method: 'POST',
+        body: JSON.stringify({ prompt }),
+      }),
+    segment: (prompt: string) =>
+      fetchApi<ApiResponse<ConductorSegmentResult>>('/api/conductor/segment', {
         method: 'POST',
         body: JSON.stringify({ prompt }),
       }),
@@ -1006,6 +1052,46 @@ export interface ConductorMessageResult {
   warnings: string[]
   provider: string
   model: string
+}
+
+// ─── AI Conductor Types (AIネイティブ A案 MVP) ───
+
+export interface ConductorAutoReplyResult {
+  autoReply: {
+    keyword: string
+    alternateKeywords?: string[]
+    matchType: 'exact' | 'contains'
+    responseContent: string
+  }
+  warnings: string[]
+  provider: string
+  model: string
+}
+
+export interface SegmentConditionDto {
+  operator: 'AND' | 'OR'
+  rules: Array<{ type: string; value: unknown }>
+}
+
+export interface ConductorSegmentResult {
+  condition: SegmentConditionDto
+  humanReadable: string
+  warnings: string[]
+  provider: string
+  model: string
+}
+
+// ─── Auto-Reply Types (AIネイティブ A案 MVP) ───
+
+/** auto_replies 行 (worker は snake_case で返す) */
+export interface AutoReply {
+  id: string
+  keyword: string
+  match_type: 'exact' | 'contains'
+  response_type: string
+  response_content: string
+  is_active: 0 | 1
+  created_at: string
 }
 
 // ─── Ban Recovery Types (Phase 5α-7) ───
