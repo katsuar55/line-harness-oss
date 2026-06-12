@@ -66,6 +66,25 @@ function buildAutoReplyDraft(autoReply: ConductorAutoReplyResult['autoReply']): 
   }
 }
 
+/** auto-reply keyword の最大長 (worker 側バリデーションと揃える) */
+const AUTO_REPLY_KEYWORD_MAX = 40
+/** auto-reply 返信文の最大長 (worker 側バリデーションと揃える) */
+const AUTO_REPLY_RESPONSE_MAX = 2000
+/** POST /api/auto-replies/batch の 1 リクエスト上限 */
+const AUTO_REPLY_BATCH_MAX = 6
+
+/**
+ * draft から保存対象キーワードを収集 (trim + 空除去 + Set dedupe)。
+ * 保存 path と footer の「保存時に N 件…」件数表示で同一ロジックを共有する。
+ */
+function collectAutoReplyKeywords(draft: AutoReplyDraft): string[] {
+  const keywords = [
+    draft.keyword.trim(),
+    ...draft.alternates.filter((a) => a.checked).map((a) => a.keyword.trim()),
+  ].filter((k) => k.length > 0)
+  return Array.from(new Set(keywords))
+}
+
 interface ConductorError {
   message: string
   code?: string
@@ -81,10 +100,21 @@ interface ChatTurn {
   error?: ConductorError
 }
 
+/** saveResult の成功時戻り値 (SaveStatus success にそのまま展開) */
+interface SaveOutcome {
+  /** 代表 ID (auto-reply 全件 skip 時など、 新規作成なしなら null) */
+  id: string | null
+  viewPath: string
+  /** kind 固有の成功メッセージ (auto-reply batch の件数報告等) */
+  message?: string
+  /** server 側警告 (薬機 redact 等) */
+  warnings?: string[]
+}
+
 type SaveStatus =
   | { kind: 'idle' }
   | { kind: 'saving' }
-  | { kind: 'success'; id: string; viewPath: string }
+  | ({ kind: 'success' } & SaveOutcome)
   | { kind: 'error'; message: string }
 
 const HISTORY_STORAGE_KEY = 'lh_conductor_history_v1'
@@ -194,7 +224,7 @@ const SEGMENT_RULE_LABEL: Record<string, string> = {
   metadata_equals: '属性一致',
   metadata_not_equals: '属性不一致',
   ref_code: '流入経路',
-  is_following: 'フォロー中',
+  is_following: 'フォロー状態',
   friend_status: 'ステータス',
   assigned_staff: '担当者',
   shopify_tag_exists: 'Shopifyタグあり',
@@ -203,7 +233,41 @@ const SEGMENT_RULE_LABEL: Record<string, string> = {
   shopify_orders_count_gte: '注文回数≥',
 }
 
-function formatSegmentRuleValue(value: unknown): string {
+// friend_status 値 → 日本語表示
+const FRIEND_STATUS_LABEL: Record<string, string> = {
+  none: '未設定',
+  prospect: '見込み',
+  active: 'アクティブ',
+  vip: 'VIP',
+  dormant: '休眠',
+  churned: '離脱',
+}
+
+function formatSegmentRuleValue(
+  rule: { type: string; value: unknown },
+  references?: ConductorSegmentResult['references'],
+): string {
+  const { type, value } = rule
+
+  // tag / group 系は references の id → 名前 map で表示 (map に無ければ raw id fallback)
+  if (type === 'tag_exists' || type === 'tag_not_exists') {
+    return references?.tagNames?.[String(value)] ?? String(value)
+  }
+  if (type === 'group_exists' || type === 'group_not_exists') {
+    return references?.groupNames?.[String(value)] ?? String(value)
+  }
+
+  // is_following は boolean — 'true'/'false' を出さず日本語表示
+  if (type === 'is_following') {
+    const following = value === true || value === 'true' || value === 1
+    return following ? 'フォロー中' : '非フォロー'
+  }
+
+  // friend_status 値は日本語に map
+  if (type === 'friend_status') {
+    return FRIEND_STATUS_LABEL[String(value)] ?? String(value)
+  }
+
   // metadata 系は { key, value } object — key=value 形式で表示
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const obj = value as Record<string, unknown>
@@ -267,41 +331,51 @@ function trimHistory(history: ChatTurn[]): ChatTurn[] {
 async function saveResult(
   result: ConductorResult,
   autoReplyDraft?: AutoReplyDraft | null,
-): Promise<{ id: string; viewPath: string }> {
+): Promise<SaveOutcome> {
   switch (result.kind) {
     case 'auto-reply': {
       // operator が編集した draft を優先 (未編集なら AI 出力そのまま)
       const draft = autoReplyDraft ?? buildAutoReplyDraft(result.data.autoReply)
-      const keywords = [
-        draft.keyword.trim(),
-        ...draft.alternates.filter((a) => a.checked).map((a) => a.keyword.trim()),
-      ].filter((k) => k.length > 0)
-      const unique = Array.from(new Set(keywords))
+      const unique = collectAutoReplyKeywords(draft)
       if (unique.length === 0) {
         throw new Error('キーワードを 1 つ以上入力してください')
+      }
+      if (unique.length > AUTO_REPLY_BATCH_MAX) {
+        throw new Error(
+          `一括保存できるキーワードは ${AUTO_REPLY_BATCH_MAX} 件までです。チェックを減らしてください`,
+        )
       }
       const responseContent = draft.responseContent.trim()
       if (responseContent.length === 0) {
         throw new Error('返信文を入力してください')
       }
-      // 採用キーワードごとに 1 行 (auto_replies は 1 行 = 1 keyword)
-      const ids: string[] = []
-      for (const keyword of unique) {
-        const resp = await api.autoReplies.create({
+      // 1 回の atomic batch で一括作成 (1 キーワード = 1 ルール)。
+      // 既存 (keyword, matchType) は server 側で skip され重複しない (retry-safe)。
+      // isActive: false — 保存時は必ず無効状態。 /auto-replies で operator が確認のうえ有効化する。
+      const resp = await api.autoReplies.batch(
+        unique.map((keyword) => ({
           keyword,
           matchType: draft.matchType,
           responseContent,
-        })
-        if (!resp.success) {
-          throw new Error(
-            ids.length > 0
-              ? `${ids.length} 件保存後、 キーワード「${keyword}」の保存に失敗: ${resp.error}`
-              : (resp.error ?? '自動応答の保存に失敗しました'),
-          )
-        }
-        ids.push(resp.data.id)
+          isActive: false,
+        })),
+      )
+      if (!resp.success) {
+        throw new Error(resp.error ?? '自動応答の保存に失敗しました')
       }
-      return { id: ids[0], viewPath: '/auto-replies' }
+      const { created, skipped } = resp.data
+      const message =
+        created.length === 0
+          ? 'すべて既存ルールのためスキップしました'
+          : skipped.length > 0
+            ? `✓ ${created.length}件を無効状態で保存しました（${skipped.length}件は既存のためスキップ）。/auto-replies で内容確認のうえ有効化してください。`
+            : `✓ ${created.length}件を無効状態で保存しました。/auto-replies で内容確認のうえ有効化してください。`
+      return {
+        id: created[0]?.id ?? null,
+        viewPath: '/auto-replies',
+        message,
+        warnings: resp.warnings,
+      }
     }
 
     case 'segment': {
@@ -769,8 +843,8 @@ function ResultView({
   const handleSave = useCallback(async () => {
     setSaveStatus({ kind: 'saving' })
     try {
-      const { id, viewPath } = await saveResult(result, autoReplyDraft)
-      setSaveStatus({ kind: 'success', id, viewPath })
+      const outcome = await saveResult(result, autoReplyDraft)
+      setSaveStatus({ kind: 'success', ...outcome })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setSaveStatus({ kind: 'error', message })
@@ -860,7 +934,9 @@ function SaveSection({
     <div className="border-t border-gray-200 pt-3 space-y-2">
       <div className="flex items-center justify-between gap-3">
         <div className="text-xs text-gray-600">
-          プレビュー OK なら DB に直接保存 (確認しないと適用されません)
+          {result.kind === 'auto-reply'
+            ? '保存時は無効状態で作成され、 /auto-replies で有効化するまで本番には適用されません'
+            : 'プレビュー OK なら DB に直接保存 (確認しないと適用されません)'}
         </div>
         <button
           onClick={onSave}
@@ -877,13 +953,27 @@ function SaveSection({
 
       {saveStatus.kind === 'success' && (
         <div className="bg-green-50 border border-green-200 rounded p-3 text-sm">
-          <div className="font-medium text-green-900">✓ 保存しました</div>
-          <div className="text-xs text-green-700 mt-1">
-            ID:{' '}
-            <code className="font-mono px-1.5 py-0.5 bg-green-100 rounded">
-              {saveStatus.id}
-            </code>
+          <div className="font-medium text-green-900">
+            {saveStatus.message ?? '✓ 保存しました'}
           </div>
+          {saveStatus.id && (
+            <div className="text-xs text-green-700 mt-1">
+              ID:{' '}
+              <code className="font-mono px-1.5 py-0.5 bg-green-100 rounded">
+                {saveStatus.id}
+              </code>
+            </div>
+          )}
+          {saveStatus.warnings && saveStatus.warnings.length > 0 && (
+            <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded">
+              <div className="text-xs font-medium text-yellow-900 mb-1">⚠️ サーバー警告</div>
+              {saveStatus.warnings.map((w, i) => (
+                <div key={i} className="text-xs text-yellow-800 break-words">
+                  {w}
+                </div>
+              ))}
+            </div>
+          )}
           <a
             href={saveStatus.viewPath}
             className="inline-block mt-2 text-xs text-green-700 hover:text-green-900 underline"
@@ -1166,9 +1256,8 @@ function AutoReplyPreview({
   draft: AutoReplyDraft
   onDraftChange: (draft: AutoReplyDraft) => void
 }) {
-  const checkedCount =
-    (draft.keyword.trim().length > 0 ? 1 : 0) +
-    draft.alternates.filter((a) => a.checked).length
+  // 保存 path (saveResult) と同一の trim + Set dedupe ロジックで件数を算出
+  const saveCount = collectAutoReplyKeywords(draft).length
 
   const toggleAlternate = (index: number) => {
     onDraftChange({
@@ -1187,9 +1276,13 @@ function AutoReplyPreview({
           type="text"
           value={draft.keyword}
           onChange={(e) => onDraftChange({ ...draft, keyword: e.target.value })}
+          maxLength={AUTO_REPLY_KEYWORD_MAX}
           className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
           placeholder="例: 営業時間"
         />
+        <div className="text-xs text-gray-400 mt-0.5 text-right">
+          {draft.keyword.length} / {AUTO_REPLY_KEYWORD_MAX}
+        </div>
       </div>
 
       {draft.alternates.length > 0 && (
@@ -1233,13 +1326,17 @@ function AutoReplyPreview({
           value={draft.responseContent}
           onChange={(e) => onDraftChange({ ...draft, responseContent: e.target.value })}
           rows={4}
+          maxLength={AUTO_REPLY_RESPONSE_MAX}
           className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
           placeholder="返信メッセージ本文"
         />
+        <div className="text-xs text-gray-400 mt-0.5 text-right">
+          {draft.responseContent.length} / {AUTO_REPLY_RESPONSE_MAX}
+        </div>
       </div>
 
       <div className="text-xs text-gray-500">
-        保存時に {checkedCount} 件の自動応答ルールを作成します (1 キーワード = 1 ルール)
+        保存時に {saveCount} 件の自動応答ルールを無効状態で作成します (1 キーワード = 1 ルール)
       </div>
     </div>
   )
@@ -1254,6 +1351,9 @@ type SegmentCountState =
 function SegmentPreview({ data }: { data: ConductorSegmentResult }) {
   const [countState, setCountState] = useState<SegmentCountState>({ kind: 'idle' })
   const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState(false)
+
+  const conditionJson = JSON.stringify(data.condition)
 
   const handleCount = async () => {
     setCountState({ kind: 'loading' })
@@ -1272,11 +1372,18 @@ function SegmentPreview({ data }: { data: ConductorSegmentResult }) {
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(JSON.stringify(data.condition))
+      // clipboard 不可環境 (非 https 等) では undefined — throw して fallback へ
+      if (!navigator.clipboard) {
+        throw new Error('clipboard unavailable')
+      }
+      await navigator.clipboard.writeText(conditionJson)
       setCopied(true)
+      setCopyError(false)
       setTimeout(() => setCopied(false), 2000)
     } catch {
-      // clipboard 不可環境 (非 https 等) では黙って無視
+      // 黙って失敗しない — 手動コピー用の fallback JSON を表示する
+      setCopied(false)
+      setCopyError(true)
     }
   }
 
@@ -1299,7 +1406,7 @@ function SegmentPreview({ data }: { data: ConductorSegmentResult }) {
               className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 border border-blue-200 text-blue-800 rounded-full text-xs"
             >
               <span className="font-medium">{SEGMENT_RULE_LABEL[rule.type] ?? rule.type}</span>
-              <span className="text-blue-600">{formatSegmentRuleValue(rule.value)}</span>
+              <span className="text-blue-600">{formatSegmentRuleValue(rule, data.references)}</span>
             </span>
           ))}
         </div>
@@ -1328,6 +1435,22 @@ function SegmentPreview({ data }: { data: ConductorSegmentResult }) {
           <span className="text-xs text-red-600 break-words">{countState.message}</span>
         )}
       </div>
+
+      {copyError && (
+        <div className="space-y-1">
+          <div className="text-xs text-red-600">
+            コピーできませんでした — 下のJSONを手動で選択してください
+          </div>
+          <textarea
+            readOnly
+            value={conditionJson}
+            rows={4}
+            onFocus={(e) => e.currentTarget.select()}
+            className="w-full px-3 py-2 text-xs font-mono border border-gray-300 rounded-md bg-gray-50 resize-y"
+            aria-label="セグメント条件 JSON (手動コピー用)"
+          />
+        </div>
+      )}
     </div>
   )
 }

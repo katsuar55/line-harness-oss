@@ -30,6 +30,11 @@ const matchTypeBadgeColor: Record<MatchType, string> = {
   contains: 'bg-blue-100 text-blue-700',
 }
 
+/** キーワードの最大長 (worker 側バリデーションと揃える) */
+const KEYWORD_MAX = 40
+/** 返信文の最大長 (worker 側バリデーションと揃える) */
+const RESPONSE_MAX = 2000
+
 interface CreateFormState {
   keyword: string
   matchType: MatchType
@@ -50,6 +55,8 @@ export default function AutoRepliesPage() {
   const [form, setForm] = useState<CreateFormState>({ ...initialForm })
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
+  // 作成 response の server 警告 (薬機 redact 等) — フォームは閉じるためページレベルで表示
+  const [createWarnings, setCreateWarnings] = useState<string[]>([])
 
   const loadAutoReplies = useCallback(async () => {
     setLoading(true)
@@ -93,6 +100,7 @@ export default function AutoRepliesPage() {
       if (res.success) {
         setShowCreate(false)
         setForm({ ...initialForm })
+        setCreateWarnings(res.warnings ?? [])
         loadAutoReplies()
       } else {
         setFormError(res.error)
@@ -148,13 +156,33 @@ export default function AutoRepliesPage() {
 
       {/* 運用上の注記 */}
       <p className="mb-4 text-xs text-gray-500">
-        キーワード一致しないメッセージは AI自動応答 (3層) が引き続き対応します。薬機法に配慮し効能効果の断定は避けてください。
+        キーワード一致しないメッセージは AI自動応答 (3層) が引き続き対応します。薬機法に配慮し効能効果の断定は避けてください。現在は全LINEアカウント共通ルールとして保存されます。
       </p>
 
       {/* Error */}
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
           {error}
+        </div>
+      )}
+
+      {/* 作成時の server 警告 (薬機 redact 等) */}
+      {createWarnings.length > 0 && (
+        <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-yellow-900">⚠️ サーバー警告</p>
+              {createWarnings.map((w, i) => (
+                <p key={i} className="text-xs text-yellow-800 break-words">{w}</p>
+              ))}
+            </div>
+            <button
+              onClick={() => setCreateWarnings([])}
+              className="text-xs text-yellow-700 hover:text-yellow-900 underline flex-shrink-0"
+            >
+              閉じる
+            </button>
+          </div>
         </div>
       )}
 
@@ -170,8 +198,10 @@ export default function AutoRepliesPage() {
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                 placeholder="例: 営業時間"
                 value={form.keyword}
+                maxLength={KEYWORD_MAX}
                 onChange={(e) => setForm({ ...form, keyword: e.target.value })}
               />
+              <p className="text-xs text-gray-400 mt-0.5 text-right">{form.keyword.length} / {KEYWORD_MAX}</p>
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">マッチ方式</label>
@@ -192,8 +222,10 @@ export default function AutoRepliesPage() {
                 rows={4}
                 placeholder="例: お問い合わせありがとうございます。サポート対応は平日10時〜18時です。"
                 value={form.responseContent}
+                maxLength={RESPONSE_MAX}
                 onChange={(e) => setForm({ ...form, responseContent: e.target.value })}
               />
+              <p className="text-xs text-gray-400 mt-0.5 text-right">{form.responseContent.length} / {RESPONSE_MAX}</p>
             </div>
 
             {formError && <p className="text-xs text-red-600">{formError}</p>}
