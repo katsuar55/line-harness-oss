@@ -28,6 +28,7 @@ const {
   mockCreateRestockRequest,
   mockGetRestockRequestsByFriend,
   mockGetRestockRequestsByVariant,
+  mockGetRestockRequestsByInventoryItem,
   mockCancelRestockRequest,
   mockUpdateRestockRequestStatus,
   mockGetShopifyCoupons,
@@ -53,6 +54,7 @@ const {
   mockCreateRestockRequest: vi.fn(),
   mockGetRestockRequestsByFriend: vi.fn(),
   mockGetRestockRequestsByVariant: vi.fn(),
+  mockGetRestockRequestsByInventoryItem: vi.fn(),
   mockCancelRestockRequest: vi.fn(),
   mockUpdateRestockRequestStatus: vi.fn(),
   mockGetShopifyCoupons: vi.fn(),
@@ -91,6 +93,7 @@ vi.mock('@line-crm/db', async (importOriginal) => {
     createRestockRequest: mockCreateRestockRequest,
     getRestockRequestsByFriend: mockGetRestockRequestsByFriend,
     getRestockRequestsByVariant: mockGetRestockRequestsByVariant,
+    getRestockRequestsByInventoryItem: mockGetRestockRequestsByInventoryItem,
     cancelRestockRequest: mockCancelRestockRequest,
     updateRestockRequestStatus: mockUpdateRestockRequestStatus,
     getShopifyCoupons: mockGetShopifyCoupons,
@@ -485,53 +488,59 @@ describe('Shopify Phase 2A Routes', () => {
   // =========================================================================
 
   describe('POST /api/integrations/shopify/webhook/inventory', () => {
-    it('updates waiting restock_requests to notified when stock available', async () => {
-      mockGetRestockRequestsByVariant.mockResolvedValueOnce([
+    // Task#3 完動化後の挙動: inventory_item_id 照合 + gated 温存 + 通知有効時のみ消費
+    const enabledEnv = () =>
+      createMockEnv({ SHOPIFY_WEBHOOK_SECRET: SHOPIFY_SECRET, SHOPIFY_LINE_NOTIFY_ENABLED: 'true' });
+
+    async function postInventory(targetEnv: Env['Bindings'], overrides: Record<string, unknown> = {}) {
+      const rawBody = JSON.stringify(makeInventoryBody(overrides));
+      const hmac = await generateShopifyHmac(SHOPIFY_SECRET, rawBody);
+      return app.request(
+        '/api/integrations/shopify/webhook/inventory',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Shopify-Hmac-Sha256': hmac,
+          },
+          body: rawBody,
+        },
+        targetEnv,
+      );
+    }
+
+    it('queues notifications matched by inventory_item_id when enabled', async () => {
+      mockGetRestockRequestsByInventoryItem.mockResolvedValueOnce([
         { id: 'rr-1', friend_id: 'f-1', product_title: 'naturism サプリ' },
         { id: 'rr-2', friend_id: 'f-2', product_title: 'naturism サプリ' },
       ]);
 
-      const rawBody = JSON.stringify(makeInventoryBody({ available: 5 }));
-      const hmac = await generateShopifyHmac(SHOPIFY_SECRET, rawBody);
-
-      const res = await app.request(
-        '/api/integrations/shopify/webhook/inventory',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Shopify-Hmac-Sha256': hmac,
-          },
-          body: rawBody,
-        },
-        env,
-      );
+      const res = await postInventory(enabledEnv(), { available: 5 });
 
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { success: boolean; data: { message: string; variantId: string } };
+      const body = (await res.json()) as { success: boolean; data: { message: string; inventoryItemId: string } };
       expect(body.success).toBe(true);
       expect(body.data.message).toContain('2 restock notification(s) queued');
-      expect(body.data.variantId).toBe('variant_001');
+      expect(body.data.inventoryItemId).toBe('variant_001');
+      // 照合は inventory_item_id (旧 variant_id 照合バグの再発防止)
+      expect(mockGetRestockRequestsByInventoryItem).toHaveBeenCalledWith(expect.anything(), 'variant_001', 'waiting');
+    });
+
+    it('preserves waiting requests (no consumption, no lookup) when gated off', async () => {
+      // env に SHOPIFY_LINE_NOTIFY_ENABLED なし = gated。旧実装は未送信でも notified に消費していた
+      const res = await postInventory(env, { available: 5 });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { success: boolean; data: { message: string } };
+      expect(body.data.message).toContain('requests preserved');
+      expect(mockGetRestockRequestsByInventoryItem).not.toHaveBeenCalled();
+      expect(mockUpdateRestockRequestStatus).not.toHaveBeenCalled();
     });
 
     it('returns success with no-op when no waiting restock_requests', async () => {
-      mockGetRestockRequestsByVariant.mockResolvedValueOnce([]);
+      mockGetRestockRequestsByInventoryItem.mockResolvedValueOnce([]);
 
-      const rawBody = JSON.stringify(makeInventoryBody({ available: 5 }));
-      const hmac = await generateShopifyHmac(SHOPIFY_SECRET, rawBody);
-
-      const res = await app.request(
-        '/api/integrations/shopify/webhook/inventory',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Shopify-Hmac-Sha256': hmac,
-          },
-          body: rawBody,
-        },
-        env,
-      );
+      const res = await postInventory(enabledEnv(), { available: 5 });
 
       expect(res.status).toBe(200);
       const body = (await res.json()) as { success: boolean; data: { message: string } };
@@ -539,26 +548,12 @@ describe('Shopify Phase 2A Routes', () => {
     });
 
     it('returns success with no notifications when available is 0', async () => {
-      const rawBody = JSON.stringify(makeInventoryBody({ available: 0 }));
-      const hmac = await generateShopifyHmac(SHOPIFY_SECRET, rawBody);
-
-      const res = await app.request(
-        '/api/integrations/shopify/webhook/inventory',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Shopify-Hmac-Sha256': hmac,
-          },
-          body: rawBody,
-        },
-        env,
-      );
+      const res = await postInventory(enabledEnv(), { available: 0 });
 
       expect(res.status).toBe(200);
       const body = (await res.json()) as { success: boolean; data: { message: string } };
       expect(body.data.message).toContain('Stock not available');
-      expect(mockGetRestockRequestsByVariant).not.toHaveBeenCalled();
+      expect(mockGetRestockRequestsByInventoryItem).not.toHaveBeenCalled();
     });
   });
 

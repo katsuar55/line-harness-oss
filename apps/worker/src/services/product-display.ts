@@ -11,6 +11,7 @@ import {
   flexCarousel,
   productCard,
 } from '@line-crm/line-sdk';
+import { isOutOfStock, buildRestockPostbackData } from './restock.js';
 
 // ---------- Webhook: Sync product from Shopify ----------
 
@@ -94,6 +95,10 @@ export function buildProductCarousel(
       price: p.price ? `¥${Number(p.price).toLocaleString()}` : '価格未設定',
       description: p.description?.slice(0, 60) || undefined,
       actionUrl: p.store_url || `https://example.com/products/${p.handle || p.shopify_product_id}`,
+      // 在庫切れ商品は「🔔 再入荷したらお知らせ」postback を主ボタン化 (Task#3 顧客導線)
+      restockPostbackData: isOutOfStock(p.variants_json)
+        ? buildRestockPostbackData(p.shopify_product_id)
+        : undefined,
     }),
   );
 
