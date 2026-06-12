@@ -732,6 +732,8 @@ shopify.post('/api/integrations/shopify/webhooks/register', async (c) => {
       { topic: 'products/delete', address: `${workerUrl}/api/integrations/shopify/webhook/product` },
       { topic: 'fulfillments/create', address: `${workerUrl}/api/integrations/shopify/webhook/fulfillment` },
       { topic: 'fulfillments/update', address: `${workerUrl}/api/integrations/shopify/webhook/fulfillment` },
+      // Task#3 (2026-06-12): 再入荷通知の駆動 webhook。旧実装は購読自体が漏れており通知が永遠に発火しなかった
+      { topic: 'inventory_levels/update', address: `${workerUrl}/api/integrations/shopify/webhook/inventory` },
     ];
 
     const results: Array<{ topic: string; status: string; id?: string }> = [];

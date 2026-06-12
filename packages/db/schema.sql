@@ -2124,3 +2124,5 @@ CREATE INDEX IF NOT EXISTS idx_account_link_codes_friend_created
   ON account_link_codes(friend_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_account_link_codes_lookup
   ON account_link_codes(friend_id, email);
+CREATE INDEX IF NOT EXISTS idx_restock_requests_inventory_item
+  ON restock_requests (inventory_item_id, status);

@@ -323,7 +323,32 @@ export function productCard(opts: {
   price: string;
   description?: string;
   actionUrl: string;
+  /** 在庫切れ時: 「🔔 再入荷したらお知らせ」postback を主ボタンにする (詳細リンクは secondary で残す) */
+  restockPostbackData?: string;
 }): FlexBubble {
+  const footerButtons = opts.restockPostbackData
+    ? [
+        flexButton(
+          {
+            type: 'postback',
+            label: '🔔 再入荷したらお知らせ',
+            data: opts.restockPostbackData,
+            displayText: '再入荷したらお知らせください',
+          },
+          { style: 'primary', color: '#06C755' },
+        ),
+        flexButton(
+          { type: 'uri', label: '詳細を見る', uri: opts.actionUrl },
+          { style: 'secondary' },
+        ),
+      ]
+    : [
+        flexButton(
+          { type: 'uri', label: '詳細を見る', uri: opts.actionUrl },
+          { style: 'primary', color: '#06C755' },
+        ),
+      ];
+
   return flexBubble({
     hero: flexImage(opts.imageUrl, {
       size: 'full',
@@ -333,14 +358,12 @@ export function productCard(opts: {
     body: flexBox('vertical', [
       flexText(opts.name, { weight: 'bold', size: 'lg' }),
       ...(opts.description ? [flexText(opts.description, { size: 'sm', color: '#999999', wrap: true, margin: 'md' })] : []),
+      ...(opts.restockPostbackData
+        ? [flexText('現在在庫切れ', { size: 'sm', color: '#ef4444', weight: 'bold', margin: 'md' })]
+        : []),
       flexText(opts.price, { size: 'xl', weight: 'bold', color: '#06C755', margin: 'md' }),
     ]),
-    footer: flexBox('vertical', [
-      flexButton(
-        { type: 'uri', label: '詳細を見る', uri: opts.actionUrl },
-        { style: 'primary', color: '#06C755' },
-      ),
-    ]),
+    footer: flexBox('vertical', footerButtons),
   });
 }
 

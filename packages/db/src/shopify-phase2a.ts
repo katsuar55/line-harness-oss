@@ -158,6 +158,8 @@ export async function createRestockRequest(
     shopifyVariantId: string;
     productTitle?: string;
     variantTitle?: string;
+    /** inventory_levels/update webhook 照合用 (migration 065)。登録時に variants_json から解決して渡す */
+    inventoryItemId?: string | null;
   },
 ): Promise<{ id: string; [key: string]: unknown }> {
   const id = crypto.randomUUID();
@@ -165,7 +167,7 @@ export async function createRestockRequest(
 
   await db
     .prepare(
-      `INSERT INTO restock_requests (id, friend_id, shopify_product_id, shopify_variant_id, product_title, variant_title, status, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'waiting', '{}', ?, ?)`,
+      `INSERT INTO restock_requests (id, friend_id, shopify_product_id, shopify_variant_id, product_title, variant_title, inventory_item_id, status, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', '{}', ?, ?)`,
     )
     .bind(
       id,
@@ -174,6 +176,7 @@ export async function createRestockRequest(
       request.shopifyVariantId,
       request.productTitle ?? null,
       request.variantTitle ?? null,
+      request.inventoryItemId ?? null,
       now,
       now,
     )
@@ -183,6 +186,38 @@ export async function createRestockRequest(
     .prepare(`SELECT * FROM restock_requests WHERE id = ?`)
     .bind(id)
     .first<{ id: string; [key: string]: unknown }>())!;
+}
+
+/**
+ * inventory_levels/update webhook の照合 (migration 065 の本命経路)。
+ * 旧実装は inventory_item_id を variant_id とみなして照合しており永遠に不一致だった。
+ */
+export async function getRestockRequestsByInventoryItem(
+  db: D1Database,
+  inventoryItemId: string,
+  status: string = 'waiting',
+): Promise<Array<Record<string, unknown>>> {
+  const result = await db
+    .prepare(
+      `SELECT * FROM restock_requests WHERE inventory_item_id = ? AND status = ? ORDER BY created_at ASC`,
+    )
+    .bind(inventoryItemId, status)
+    .all<Record<string, unknown>>();
+  return result.results;
+}
+
+/** 同一 friend × variant の waiting 重複登録チェック (postback 連打/再タップの冪等化) */
+export async function getWaitingRestockRequest(
+  db: D1Database,
+  friendId: string,
+  shopifyVariantId: string,
+): Promise<Record<string, unknown> | null> {
+  return db
+    .prepare(
+      `SELECT * FROM restock_requests WHERE friend_id = ? AND shopify_variant_id = ? AND status = 'waiting' LIMIT 1`,
+    )
+    .bind(friendId, shopifyVariantId)
+    .first<Record<string, unknown>>();
 }
 
 export async function getRestockRequestsByVariant(

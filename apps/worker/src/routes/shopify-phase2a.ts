@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { LineClient } from '@line-crm/line-sdk';
 import { notifyAbandonedCart } from '../services/abandoned-cart-notify.js';
 import { syncOrderToMember } from '../services/shopify-order-member-sync.js';
+import { resolveVariant } from '../services/restock.js';
 import {
   upsertAbandonedCart,
   getAbandonedCartByCheckoutId,
@@ -10,7 +11,7 @@ import {
   createPaymentNotification,
   createRestockRequest,
   getRestockRequestsByFriend,
-  getRestockRequestsByVariant,
+  getRestockRequestsByInventoryItem,
   cancelRestockRequest,
   updateRestockRequestStatus,
   getShopifyCoupons,
@@ -362,51 +363,65 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/inventory', async (c) => 
       return c.json({ success: true, data: { message: 'Stock not available, no notifications sent' } });
     }
 
-    // inventory_item_id から variant_id を検索
-    // Shopify の inventory_item_id は variant の inventory_item_id と同じ
-    // restock_requests には shopify_variant_id で保存されている
-    // inventory_item_id を variant_id として扱う（Shopify webhook の仕様上）
-    const variantId = inventoryItemId;
-
-    const waitingRequests = await getRestockRequestsByVariant(db, variantId, 'waiting');
-
-    if (waitingRequests.length === 0) {
-      return c.json({ success: true, data: { message: 'No waiting restock requests', variantId } });
+    // Task#3 修正①: gated 時は waiting を消費せず温存 (旧実装は未送信でも notified に書き換えていた)
+    const restockNotifyEnabled =
+      (c.env as unknown as Record<string, string | undefined>).SHOPIFY_LINE_NOTIFY_ENABLED === 'true';
+    if (!restockNotifyEnabled) {
+      return c.json({
+        success: true,
+        data: {
+          message: 'Notifications gated off (SHOPIFY_LINE_NOTIFY_ENABLED) — requests preserved',
+          inventoryItemId,
+        },
+      });
     }
 
-    // 非同期: 再入荷通知送信
+    // Task#3 修正②: inventory_levels/update は inventory_item_id を運ぶ。
+    //   旧実装はこれを variant_id とみなして照合しており永遠に不一致だった (migration 065 で専用列追加)。
+    const waitingRequests = await getRestockRequestsByInventoryItem(db, inventoryItemId, 'waiting');
+
+    if (waitingRequests.length === 0) {
+      return c.json({ success: true, data: { message: 'No waiting restock requests', inventoryItemId } });
+    }
+
+    // 非同期: 再入荷通知送信。Task#3 修正③: 送信成功した request のみ notified 化
+    //   (送信失敗/blacklist は waiting 温存 → 次の inventory webhook で再試行)
     const asyncWork = (async () => {
-      try {
-        for (const request of waitingRequests) {
+      for (const request of waitingRequests) {
+        try {
           const friendId = request.friend_id as string | null;
           if (!friendId) continue;
 
           const friend = await db
-            .prepare(`SELECT line_user_id FROM friends WHERE id = ?`)
+            .prepare(
+              `SELECT line_user_id, COALESCE(is_blacklisted, 0) as is_blacklisted FROM friends WHERE id = ?`,
+            )
             .bind(friendId)
-            .first<{ line_user_id: string | null }>();
+            .first<{ line_user_id: string | null; is_blacklisted: number }>();
 
-          if (friend?.line_user_id) {
-            const restockNotifyEnabled = (c.env as unknown as Record<string, string | undefined>).SHOPIFY_LINE_NOTIFY_ENABLED === 'true';
-            if (restockNotifyEnabled) {
-              const productTitle = (request.product_title as string) ?? '商品';
-              const message = `お待たせしました！「${productTitle}」が再入荷しました。お早めにお求めください。`;
-              await sendLineMessage(c.env.LINE_CHANNEL_ACCESS_TOKEN, friend.line_user_id, message);
-            }
-          }
+          // blacklist は opt-in 通知にも適用 (Option A 全停止、PR#108 方針)。waiting 温存 = 解除で自動再開
+          if (!friend?.line_user_id || friend.is_blacklisted === 1) continue;
 
-          // status を notified に更新
+          const productTitle = (request.product_title as string) ?? '商品';
+          const message = `お待たせしました！「${productTitle}」が再入荷しました。お早めにお求めください。`;
+          await sendLineMessage(c.env.LINE_CHANNEL_ACCESS_TOKEN, friend.line_user_id, message);
+
+          // 送信成功時のみ消費
           await updateRestockRequestStatus(db, request.id as string, 'notified', jstNow());
+        } catch (err) {
+          console.error(
+            `Shopify inventory webhook: notify failed for request ${String(request.id)}:`,
+            err,
+          );
+          // waiting のまま → 次回 webhook で再試行
         }
-      } catch (err) {
-        console.error('Shopify inventory webhook async error:', err);
       }
     })();
     try { c.executionCtx.waitUntil(asyncWork); } catch { /* no exec ctx in tests */ }
 
     return c.json({
       success: true,
-      data: { message: `${waitingRequests.length} restock notification(s) queued`, variantId },
+      data: { message: `${waitingRequests.length} restock notification(s) queued`, inventoryItemId },
     });
   } catch (err) {
     console.error('POST /api/integrations/shopify/webhook/inventory error:', err);
@@ -568,12 +583,18 @@ shopifyPhase2a.post('/api/integrations/shopify/restock-requests', async (c) => {
       return c.json({ success: false, error: 'friendId, shopifyProductId, shopifyVariantId are required' }, 400);
     }
 
+    // Task#3: inventory webhook 照合用に inventory_item_id を variants_json から解決して保存
+    const resolved = await resolveVariant(c.env.DB, body.shopifyProductId, body.shopifyVariantId).catch(
+      () => null,
+    );
+
     const request = await createRestockRequest(c.env.DB, {
       friendId: body.friendId,
       shopifyProductId: body.shopifyProductId,
       shopifyVariantId: body.shopifyVariantId,
-      productTitle: body.productTitle,
-      variantTitle: body.variantTitle,
+      productTitle: body.productTitle ?? resolved?.productTitle,
+      variantTitle: body.variantTitle ?? resolved?.variantTitle ?? undefined,
+      inventoryItemId: resolved?.inventoryItemId ?? null,
     });
 
     return c.json({ success: true, data: request }, 201);

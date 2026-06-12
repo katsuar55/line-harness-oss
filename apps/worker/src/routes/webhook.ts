@@ -45,6 +45,7 @@ import {
   isMonthlyBroadcastPostback,
   handleMonthlyDetail,
 } from '../services/monthly-broadcast-postback.js';
+import { handleRestockPostback } from '../services/restock.js';
 import {
   isQuickQuizPostback,
   isQuickQuizStartPostback,
@@ -468,6 +469,43 @@ async function handleEvent(
         ]);
       } catch (err) {
         console.error('Birthday month postback error:', err);
+      }
+      return;
+    }
+
+    // 再入荷お知らせ登録 (Task#3): 商品カードの「🔔 再入荷したらお知らせ」postback
+    if (action === 'restock_request') {
+      const friend = await getFriendByLineUserId(db, userId);
+      if (!friend) return;
+      try {
+        const result = await handleRestockPostback(
+          db,
+          lineClient,
+          { id: friend.id, display_name: friend.display_name },
+          event.replyToken,
+          params,
+        );
+        await auditSystem(db, {
+          action: 'restock_request.postback',
+          actorType: 'webhook',
+          targetType: 'friend',
+          targetId: friend.id,
+          lineAccountId,
+          result: 'success',
+          metadata: { outcome: result.outcome, postbackData: data.slice(0, 200) },
+        });
+      } catch (err) {
+        console.error('[webhook] restock postback failed:', err);
+        await auditSystem(db, {
+          action: 'restock_request.handler_threw',
+          actorType: 'webhook',
+          targetType: 'friend',
+          targetId: friend.id,
+          lineAccountId,
+          result: 'failure',
+          errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown',
+          metadata: { postbackData: data.slice(0, 200) },
+        });
       }
       return;
     }
