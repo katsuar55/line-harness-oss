@@ -52,6 +52,8 @@ export interface TemplateAction {
   uri?: string;
   text?: string;
   data?: string;
+  /** postback action のみ: タップ時にトーク欄へ表示するテキスト (LINE 仕様) */
+  displayText?: string;
 }
 
 export interface ButtonsTemplate {
