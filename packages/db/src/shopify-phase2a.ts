@@ -220,6 +220,18 @@ export async function getWaitingRestockRequest(
     .first<Record<string, unknown>>();
 }
 
+/** friend あたりの waiting 登録数 (review LOW: postback ループによる無制限登録の abuse ガード用) */
+export async function getWaitingRestockCountByFriend(
+  db: D1Database,
+  friendId: string,
+): Promise<number> {
+  const row = await db
+    .prepare(`SELECT COUNT(*) as cnt FROM restock_requests WHERE friend_id = ? AND status = 'waiting'`)
+    .bind(friendId)
+    .first<{ cnt: number }>();
+  return row?.cnt ?? 0;
+}
+
 export async function getRestockRequestsByVariant(
   db: D1Database,
   shopifyVariantId: string,

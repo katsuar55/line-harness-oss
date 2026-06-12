@@ -104,14 +104,16 @@ async function findFriendByEmailOrPhone(
 // ========== ヘルパー: LINE メッセージ送信 ==========
 
 /**
- * LINE Messaging API でテキストメッセージを送信
+ * LINE Messaging API でテキストメッセージを送信。
+ * 送信可否を boolean で返す (review HIGH: 旧実装は !ok でも void を返し、
+ *   呼び出し側が「送信成功」とみなして status を消費していた)。
+ *   共有関数のため throw でなく boolean 返却にして他 caller (payment/fulfillment) を壊さない。
  */
 async function sendLineMessage(
   lineChannelAccessToken: string,
   lineUserId: string,
   message: string,
-): Promise<void> {
-  // LINE Messaging API で送信
+): Promise<boolean> {
   const res = await fetch('https://api.line.me/v2/bot/message/push', {
     method: 'POST',
     headers: {
@@ -127,7 +129,9 @@ async function sendLineMessage(
   if (!res.ok) {
     const body = await res.text();
     console.error(`LINE push message failed (${res.status}): ${body}`);
+    return false;
   }
+  return true;
 }
 
 // ========== ヘルパー: Webhook ボディ解析 + HMAC 検証 ==========
@@ -363,6 +367,11 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/inventory', async (c) => 
       return c.json({ success: true, data: { message: 'Stock not available, no notifications sent' } });
     }
 
+    // review LOW: 不正 payload で inventory_item_id 欠落時は早期 return (空文字での無駄 query 回避)
+    if (!inventoryItemId) {
+      return c.json({ success: true, data: { message: 'inventory_item_id missing in payload' } });
+    }
+
     // Task#3 修正①: gated 時は waiting を消費せず温存 (旧実装は未送信でも notified に書き換えていた)
     const restockNotifyEnabled =
       (c.env as unknown as Record<string, string | undefined>).SHOPIFY_LINE_NOTIFY_ENABLED === 'true';
@@ -404,10 +413,12 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/inventory', async (c) => 
 
           const productTitle = (request.product_title as string) ?? '商品';
           const message = `お待たせしました！「${productTitle}」が再入荷しました。お早めにお求めください。`;
-          await sendLineMessage(c.env.LINE_CHANNEL_ACCESS_TOKEN, friend.line_user_id, message);
+          const sent = await sendLineMessage(c.env.LINE_CHANNEL_ACCESS_TOKEN, friend.line_user_id, message);
 
-          // 送信成功時のみ消費
-          await updateRestockRequestStatus(db, request.id as string, 'notified', jstNow());
+          // review HIGH: 送信成功時のみ消費。LINE 429/4xx/5xx は false → waiting 温存で次回再試行
+          if (sent) {
+            await updateRestockRequestStatus(db, request.id as string, 'notified', jstNow());
+          }
         } catch (err) {
           console.error(
             `Shopify inventory webhook: notify failed for request ${String(request.id)}:`,

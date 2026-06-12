@@ -16,9 +16,13 @@
 import {
   createRestockRequest,
   getWaitingRestockRequest,
+  getWaitingRestockCountByFriend,
   getShopifyProductByShopifyId,
 } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
+
+/** friend あたりの waiting 登録上限 (abuse ガード) */
+const MAX_WAITING_PER_FRIEND = 20;
 
 // Shopify product webhook 生 payload の variants 要素 (variants_json に保存される形)。
 // TS interface は最小限だが、実体は webhook payload そのままなので inventory_item_id を含む。
@@ -88,7 +92,7 @@ export async function handleRestockPostback(
   friend: { id: string; display_name: string | null },
   replyToken: string,
   params: URLSearchParams,
-): Promise<{ outcome: 'registered' | 'duplicate' | 'product_not_found' }> {
+): Promise<{ outcome: 'registered' | 'duplicate' | 'product_not_found' | 'limit_reached' }> {
   const pid = params.get('pid') ?? '';
   const vid = params.get('vid');
 
@@ -114,6 +118,18 @@ export async function handleRestockPostback(
     return { outcome: 'duplicate' };
   }
 
+  // review LOW: postback ループによる無制限登録の abuse ガード
+  const waitingCount = await getWaitingRestockCountByFriend(db, friend.id);
+  if (waitingCount >= MAX_WAITING_PER_FRIEND) {
+    await lineClient.replyMessage(replyToken, [
+      {
+        type: 'text',
+        text: `再入荷お知らせの登録上限（${MAX_WAITING_PER_FRIEND}件）に達しています。入荷後にお知らせした商品から自動的に枠が空きます。`,
+      },
+    ]);
+    return { outcome: 'limit_reached' };
+  }
+
   await createRestockRequest(db, {
     friendId: friend.id,
     shopifyProductId: pid,
@@ -132,13 +148,17 @@ export async function handleRestockPostback(
   return { outcome: 'registered' };
 }
 
-/** 商品カード用: 在庫切れ判定 (先頭 variant 基準、在庫数が取れない場合は在庫ありとみなす) */
+/**
+ * 商品カード用: 在庫切れ判定 (先頭 variant 基準)。
+ * - 在庫数が無い (在庫追跡なし) → 在庫ありとみなす (false)
+ * - 厳密に 0 のみ在庫切れ (review MED: 負数は inventory_policy='continue' で購入可能なため在庫扱い)
+ */
 export function isOutOfStock(variantsJson: string | null): boolean {
   if (!variantsJson) return false;
   try {
     const variants = JSON.parse(variantsJson) as StoredVariant[];
     const v = Array.isArray(variants) ? variants[0] : null;
-    return typeof v?.inventory_quantity === 'number' && v.inventory_quantity <= 0;
+    return typeof v?.inventory_quantity === 'number' && v.inventory_quantity === 0;
   } catch {
     return false;
   }

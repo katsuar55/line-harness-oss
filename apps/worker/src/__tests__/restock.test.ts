@@ -12,6 +12,7 @@ vi.mock('@line-crm/db', async (importOriginal) => {
     ...original,
     getShopifyProductByShopifyId: vi.fn(),
     getWaitingRestockRequest: vi.fn(),
+    getWaitingRestockCountByFriend: vi.fn(async () => 0),
     createRestockRequest: vi.fn(),
   };
 });
@@ -25,12 +26,14 @@ import {
 import {
   getShopifyProductByShopifyId,
   getWaitingRestockRequest,
+  getWaitingRestockCountByFriend,
   createRestockRequest,
 } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 
 const mockGetProduct = getShopifyProductByShopifyId as ReturnType<typeof vi.fn>;
 const mockGetWaiting = getWaitingRestockRequest as ReturnType<typeof vi.fn>;
+const mockGetWaitingCount = getWaitingRestockCountByFriend as ReturnType<typeof vi.fn>;
 const mockCreate = createRestockRequest as ReturnType<typeof vi.fn>;
 
 const VARIANTS = [
@@ -91,6 +94,7 @@ describe('handleRestockPostback', () => {
     vi.clearAllMocks();
     mockGetProduct.mockResolvedValue(PRODUCT);
     mockGetWaiting.mockResolvedValue(null);
+    mockGetWaitingCount.mockResolvedValue(0);
     mockCreate.mockResolvedValue({ id: 'rr-1' });
   });
 
@@ -129,6 +133,19 @@ describe('handleRestockPostback', () => {
     expect(messages[0].text).toContain('登録済み');
   });
 
+  it('rejects with limit_reached when the friend hits the waiting cap', async () => {
+    mockGetWaitingCount.mockResolvedValue(20);
+    const { client, replyMessage } = fakeLineClient();
+    const params = new URLSearchParams('action=restock_request&pid=777&vid=222');
+
+    const result = await handleRestockPostback(DB, client, FRIEND, 'reply-token', params);
+
+    expect(result.outcome).toBe('limit_reached');
+    expect(mockCreate).not.toHaveBeenCalled();
+    const messages = replyMessage.mock.calls[0][1] as Array<{ text: string }>;
+    expect(messages[0].text).toContain('上限');
+  });
+
   it('replies gracefully when the product is not found', async () => {
     mockGetProduct.mockResolvedValue(null);
     const { client, replyMessage } = fakeLineClient();
@@ -150,6 +167,8 @@ describe('isOutOfStock / buildRestockPostbackData', () => {
     expect(isOutOfStock('broken')).toBe(false);
     // 在庫数が無い (在庫追跡なし) は在庫ありとみなす
     expect(isOutOfStock(JSON.stringify([{ id: 1 }]))).toBe(false);
+    // 負数 (inventory_policy='continue' で購入可能) は在庫扱い (=ボタン出さない)
+    expect(isOutOfStock(JSON.stringify([{ id: 1, inventory_quantity: -3 }]))).toBe(false);
   });
 
   it('builds the postback data in action= format', () => {
