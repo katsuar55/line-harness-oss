@@ -123,12 +123,18 @@ export class SegmentConductorError extends Error {
 // プロンプト
 // ----------------------------------------------------------------
 
+/** カタログ名の prompt injection 防御 (review security LOW): 改行/制御文字を潰して補間 */
+function safeCatalogName(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/[\r\n\t\x00-\x1f\x7f]/g, ' ').slice(0, 100);
+}
+
 function buildSystemPrompt(catalog: SegmentCatalog): string {
   const tagLines = catalog.tags.length
-    ? catalog.tags.map((t) => `  - id="${t.id}" name="${t.name}"`).join('\n')
+    ? catalog.tags.map((t) => `  - id="${t.id}" name="${safeCatalogName(t.name)}"`).join('\n')
     : '  (タグ未登録)';
   const groupLines = catalog.groups.length
-    ? catalog.groups.map((g) => `  - id="${g.id}" name="${g.name}"`).join('\n')
+    ? catalog.groups.map((g) => `  - id="${g.id}" name="${safeCatalogName(g.name)}"`).join('\n')
     : '  (グループ未登録)';
 
   return `あなたは LINE 公式アカウントの CRM 担当者向けに、
@@ -189,12 +195,43 @@ export interface GenerateSegmentInput {
   maxTokens?: number;
 }
 
+export interface SegmentReferences {
+  /** condition 内で使われた tag id → name (UI チップの可読表示用) */
+  tagNames: Record<string, string>;
+  /** condition 内で使われた group id → name */
+  groupNames: Record<string, string>;
+}
+
 export interface GenerateSegmentResult {
   condition: SegmentCondition;
   humanReadable: string;
+  /** UUID チップを人間可読にするための解決済み名前マップ (review ux-domain MED) */
+  references: SegmentReferences;
   warnings: string[];
   provider: string;
   model: string;
+}
+
+/** condition で実際に参照された tag/group の id→name マップを作る (検証済 id のみ来る前提) */
+export function buildReferences(
+  condition: SegmentCondition,
+  catalog: SegmentCatalog,
+): SegmentReferences {
+  const tagMap = new Map(catalog.tags.map((t) => [t.id, t.name]));
+  const groupMap = new Map(catalog.groups.map((g) => [g.id, g.name]));
+  const tagNames: Record<string, string> = {};
+  const groupNames: Record<string, string> = {};
+  for (const rule of condition.rules) {
+    if ((rule.type === 'tag_exists' || rule.type === 'tag_not_exists') && typeof rule.value === 'string') {
+      const name = tagMap.get(rule.value);
+      if (name) tagNames[rule.value] = name;
+    }
+    if ((rule.type === 'group_exists' || rule.type === 'group_not_exists') && typeof rule.value === 'string') {
+      const name = groupMap.get(rule.value);
+      if (name) groupNames[rule.value] = name;
+    }
+  }
+  return { tagNames, groupNames };
 }
 
 // ----------------------------------------------------------------
@@ -286,9 +323,11 @@ export async function generateSegmentFromPrompt(
     );
   }
 
+  const condition = validated.data.condition as SegmentCondition;
   return {
-    condition: validated.data.condition as SegmentCondition,
+    condition,
     humanReadable,
+    references: buildReferences(condition, input.catalog),
     warnings,
     provider: response.provider,
     model: response.model,
@@ -346,6 +385,8 @@ export const __test__ = {
   conductorSegmentOutputSchema,
   segmentConditionSchema,
   buildSystemPrompt,
+  buildReferences,
+  safeCatalogName,
   validateCatalogReferences,
   sanitizeUserPrompt,
   PROMPT_MIN_LEN,

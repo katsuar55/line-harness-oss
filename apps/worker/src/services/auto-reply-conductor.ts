@@ -215,26 +215,36 @@ function sanitizeAutoReplyOutput(data: AutoReplyConductorOutput): {
   sanitized: AutoReplyConductorOutput;
   warnings: string[];
 } {
-  const detected = new Set<string>();
-  const redact = (s: string): string => {
-    const r = redactProhibitedPhrases(s);
-    r.detectedPhrases.forEach((p) => detected.add(p));
-    return r.text;
-  };
+  // 薬機 redact は **responseContent (ブランドが言う側) のみ**。
+  // keyword は顧客が送る側 (例: 「効きますか?」) なので redact すると永遠にマッチしない
+  // 死にルールになる — 検出して警告だけ出し、文字列は書き換えない (review ux-domain MED)。
+  const responseRedacted = redactProhibitedPhrases(data.responseContent);
+
+  const keywordDetected = new Set<string>();
+  for (const kw of [data.keyword, ...(data.alternateKeywords ?? [])]) {
+    redactProhibitedPhrases(kw).detectedPhrases.forEach((p) => keywordDetected.add(p));
+  }
 
   const sanitized: AutoReplyConductorOutput = {
-    keyword: redact(data.keyword),
-    alternateKeywords: data.alternateKeywords?.map(redact),
+    keyword: data.keyword,
+    alternateKeywords: data.alternateKeywords,
     matchType: data.matchType,
-    responseContent: redact(data.responseContent),
+    responseContent: responseRedacted.text,
   };
 
   const warnings: string[] = [];
-  if (detected.size > 0) {
+  if (responseRedacted.detectedPhrases.length > 0) {
     warnings.push(
-      `Detected ${detected.size} prohibited phrase(s): ${Array.from(detected)
+      `返信文に薬機注意語 ${responseRedacted.detectedPhrases
         .map((p) => `"${p}"`)
-        .join(', ')} — replaced with ${REDACTION_TOKEN}.`,
+        .join(', ')} を検出 — ${REDACTION_TOKEN} に置換しました。`,
+    );
+  }
+  if (keywordDetected.size > 0) {
+    warnings.push(
+      `キーワードに薬機注意語 ${Array.from(keywordDetected)
+        .map((p) => `"${p}"`)
+        .join(', ')} が含まれます (顧客が送る側のためそのまま使用可) — 返信文側の表現にご注意ください。`,
     );
   }
   return { sanitized, warnings };

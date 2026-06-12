@@ -77,7 +77,7 @@ describe('generateAutoReplyFromPrompt', () => {
     ).rejects.toMatchObject({ code: 'schema_validation_failed' });
   });
 
-  it('redacts 薬機 prohibited phrases and surfaces a warning', async () => {
+  it('redacts 薬機 prohibited phrases in responseContent and surfaces a warning', async () => {
     const banned = __test__.PROHIBITED_PHRASES[0];
     const text = JSON.stringify({
       keyword: '効果',
@@ -91,6 +91,25 @@ describe('generateAutoReplyFromPrompt', () => {
     expect(res.warnings.length).toBeGreaterThan(0);
     expect(res.autoReply.responseContent).toContain(__test__.REDACTION_TOKEN);
     expect(res.autoReply.responseContent).not.toContain(banned);
+  });
+
+  it('does NOT redact keywords (customer-side words) — warns only, keeps match string intact', async () => {
+    // 「効きますか?」のような顧客が送る語を redact すると永遠にマッチしない死にルールになる。
+    const banned = __test__.PROHIBITED_PHRASES[0];
+    const text = JSON.stringify({
+      keyword: banned,
+      alternateKeywords: [`${banned}ますか`],
+      matchType: 'contains',
+      responseContent: '個人差があるため、詳しくは公式サイトをご覧ください。',
+    });
+    const res = await generateAutoReplyFromPrompt({
+      prompt: `${banned}と聞かれたら答えて`,
+      router: fakeRouter({ text }),
+    });
+    expect(res.autoReply.keyword).toBe(banned); // 書き換えない
+    expect(res.autoReply.alternateKeywords?.[0]).toContain(banned);
+    expect(res.warnings.some((w) => w.includes('キーワード'))).toBe(true); // 警告は出す
+    expect(res.autoReply.responseContent).not.toContain(__test__.REDACTION_TOKEN);
   });
 
   it('maps timeout (AbortError) to code timeout', async () => {
