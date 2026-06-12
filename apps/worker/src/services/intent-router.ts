@@ -7,7 +7,8 @@
  *
  *   - Plan A-3 (quick_quiz invite) AI prefix → keyword routing に格上げ
  *   - Plan A-6 (price_table) AI prefix → keyword routing に格上げ
- *   - Plan A-1 (会員ランク等 未実装機能) AI 応答禁止 → keyword routing で即固定応答
+ *   - Plan A-1 (ポイント等 未実装機能) AI 応答禁止 → keyword routing で即固定応答
+ *   - #10-1 (2026-06-12): 会員ランクは未実装扱いをやめ my_rank intent でマイランク LIFF へ誘導
  *
  * 優先順位 (= webhook.ts text path):
  *   1. auto_replies keyword match (= 既存)
@@ -36,6 +37,7 @@ export type Intent =
   | { readonly type: 'price_table'; readonly reason: string }
   | { readonly type: 'product_compare'; readonly reason: string }
   | { readonly type: 'my_coupon'; readonly reason: string }
+  | { readonly type: 'my_rank'; readonly reason: string }
   | { readonly type: 'feature_unavailable'; readonly feature: string; readonly reason: string };
 
 export interface IntentRouteResult {
@@ -44,10 +46,12 @@ export interface IntentRouteResult {
   readonly matchedKeyword: string;
 }
 
-/** async build 用の context (= my_coupon の D1 SELECT 等で利用) */
+/** async build 用の context (= my_coupon の D1 SELECT / my_rank の LIFF URL 等で利用) */
 export interface IntentBuildContext {
   readonly db: D1Database;
   readonly friendId: string;
+  /** マイランク LIFF への誘導 URL base (= webhook caller が env.LIFF_URL を渡す。 未設定なら rich menu 誘導に fallback) */
+  readonly liffUrl?: string;
 }
 
 interface PatternRule {
@@ -108,12 +112,15 @@ const PATTERNS: ReadonlyArray<PatternRule> = [
     intent: { type: 'my_coupon', reason: 'user coupon query' },
   },
 
-  // ========= feature_unavailable (= 未実装機能、 固定応答) =========
-  // 会員ランク / マイランク / ステータス
+  // ========= my_rank (= マイランク LIFF 誘導、 #10-1 2026-06-12) =========
+  // 旧: feature_unavailable「近日リリース予定」 → マイランク LIFF (/liff/my-rank) は稼働中のため誤回答だった。
+  // rich-menus.ts の「マイランク」ボタンと同じ `${liffUrl}#rank` 規約で誘導 (async build で liffUrl 注入)。
   {
     keywords: ['会員ランク', 'マイランク', 'ランクは何', 'ランクなに', '私のランク', '私のステータス'],
-    intent: { type: 'feature_unavailable', feature: '会員ランク', reason: 'unimplemented' },
+    intent: { type: 'my_rank', reason: 'my rank LIFF is live' },
   },
+
+  // ========= feature_unavailable (= 未実装機能、 固定応答) =========
   // ポイント / マイル
   {
     keywords: ['ポイント残高', 'ポイント教えて', 'マイル教えて', '私のポイント', '私のマイル', 'ポイントいくつ', 'マイル何個'],
@@ -182,6 +189,14 @@ function buildMessagesForIntent(intent: Intent): ReadonlyArray<Message> {
           text: 'お持ちのクーポンを確認中です…少々お待ちください 🙏',
         },
       ];
+    case 'my_rank':
+      // sync build では liffUrl 不明 → rich menu 誘導 fallback、 実 reply は async 経由 (= liffUrl 付き) を期待
+      return [
+        {
+          type: 'text',
+          text: '🌿 現在の会員ランクは、トーク画面下のメニュー「マイランク」からご確認いただけます💝',
+        },
+      ];
     case 'feature_unavailable':
       return [
         {
@@ -224,7 +239,16 @@ export async function buildMessagesForIntentAsync(
       },
     ];
   }
-  // 他 intent は sync build をそのまま流用
+  if (intent.type === 'my_rank' && ctx.liffUrl) {
+    // rich-menus.ts「マイランク」ボタンと同じ `${liffUrl}#rank` 規約 (= /liff/portal → /liff/my-rank redirect)
+    return [
+      {
+        type: 'text',
+        text: `🌿 現在の会員ランクは「マイランク」ページでご確認いただけます💝\n\n↓ こちらをタップ\n${ctx.liffUrl}#rank`,
+      },
+    ];
+  }
+  // 他 intent (+ liffUrl なし my_rank) は sync build をそのまま流用
   return buildMessagesForIntent(intent);
 }
 

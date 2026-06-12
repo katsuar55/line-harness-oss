@@ -831,16 +831,19 @@ async function handleEvent(
     //   AI に prefix を任せると Llama が rule を無視するため、 重要 intent は keyword で確実に
     //   - quiz_invite: 「私におすすめ」 等 → buildQuickQuizInviteMessage flex
     //   - price_table: 「価格教えて」 等 → buildPriceTableMessage grid flex
-    //   - feature_unavailable: 「会員ランク」 「紹介プログラム」 等 → 「近日リリース」 固定 text
+    //   - my_rank: 「会員ランク」 「マイランク」 等 → マイランク LIFF (`${liffUrl}#rank`) 誘導 text
+    //   - feature_unavailable: 「紹介プログラム」 等 未実装機能 → 「近日リリース」 固定 text
     //   matched 後は Layer 2 (= AI) を skip
     if (!matched && !replyTokenConsumed) {
       const intentResult = detectIntent(incomingText);
       if (intentResult) {
         try {
           // PR 2 (2026-05-26): async build に切替 (= my_coupon の D1 SELECT 等で fact 取得可)
+          // #10-1 (2026-06-12): liffUrl 注入 (= my_rank がマイランク LIFF `${liffUrl}#rank` へ誘導)
           const messages = await buildMessagesForIntentAsync(intentResult.intent, {
             db,
             friendId: friend.id,
+            liffUrl: env?.LIFF_URL,
           });
           await lineClient.replyMessage(event.replyToken, [...messages]);
           replyTokenConsumed = true;

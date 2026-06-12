@@ -65,11 +65,45 @@ describe('intent-router — price_table', () => {
   });
 });
 
+// #10-1 (2026-06-12): 会員ランクは feature_unavailable でなく my_rank (= マイランク LIFF 稼働中)
+describe('intent-router — my_rank (= マイランク LIFF 誘導)', () => {
+  it.each([
+    '私の会員ランクは？',
+    'マイランク教えて',
+    '私のステータスは？',
+    '私のランクを確認したい',
+    '会員ランク',
+    'ランクは何',
+  ])('matches "%s" → my_rank', (text) => {
+    const r = detectIntent(text);
+    expect(r).not.toBeNull();
+    expect(r?.intent.type).toBe('my_rank');
+  });
+
+  it('sync build returns rich-menu guidance text (= liffUrl 不明の fallback、 URL を含まない)', () => {
+    const r = detectIntent('マイランク');
+    expect(r?.messages).toHaveLength(1);
+    expect(r?.messages[0]?.type).toBe('text');
+    if (r?.messages[0]?.type === 'text') {
+      expect(r.messages[0].text).toContain('マイランク');
+      expect(r.messages[0].text).not.toContain('undefined');
+      expect(r.messages[0].text).not.toMatch(/近日リリース/);
+    }
+  });
+
+  it('does NOT say 近日リリース (= 旧 feature_unavailable 誤回答の regression)', () => {
+    for (const text of ['会員ランク', 'マイランク', '私のランク', '私のステータス']) {
+      const r = detectIntent(text);
+      expect(r?.intent.type).toBe('my_rank');
+      if (r?.messages[0]?.type === 'text') {
+        expect(r.messages[0].text).not.toMatch(/近日リリース/);
+      }
+    }
+  });
+});
+
 describe('intent-router — feature_unavailable', () => {
   it.each<[string, string]>([
-    ['私の会員ランクは？', '会員ランク'],
-    ['マイランク教えて', '会員ランク'],
-    ['私のステータスは？', '会員ランク'],
     ['ポイント残高は？', 'ポイント / マイル'],
     ['マイル何個持ってる？', 'ポイント / マイル'],
     ['紹介プログラム教えて', '紹介プログラム'],
@@ -218,11 +252,47 @@ describe('intent-router — buildMessagesForIntentAsync (my_coupon)', () => {
   });
 });
 
+// #10-1 (2026-06-12): my_rank async build (= liffUrl 注入でマイランク LIFF へ誘導)
+describe('intent-router — buildMessagesForIntentAsync (my_rank)', () => {
+  const dbStub = {} as unknown as D1Database;
+
+  it('returns LIFF link text with ${liffUrl}#rank when liffUrl provided (= rich-menus.ts と同じ規約)', async () => {
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_rank', reason: 'test' },
+      { db: dbStub, friendId: 'test-friend', liffUrl: 'https://liff.line.me/1234-abcd' },
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0]?.type).toBe('text');
+    if (r[0]?.type === 'text') {
+      expect(r[0].text).toContain('https://liff.line.me/1234-abcd#rank');
+      expect(r[0].text).not.toMatch(/近日リリース/);
+      expect(r[0].text).not.toContain('undefined');
+    }
+  });
+
+  it('falls back to rich-menu guidance when liffUrl is missing/empty (= URL なし・undefined 混入なし)', async () => {
+    for (const liffUrl of [undefined, '']) {
+      const r = await buildMessagesForIntentAsync(
+        { type: 'my_rank', reason: 'test' },
+        { db: dbStub, friendId: 'test-friend', liffUrl },
+      );
+      expect(r).toHaveLength(1);
+      expect(r[0]?.type).toBe('text');
+      if (r[0]?.type === 'text') {
+        expect(r[0].text).toContain('マイランク');
+        expect(r[0].text).not.toContain('undefined');
+        expect(r[0].text).not.toContain('#rank');
+      }
+    }
+  });
+});
+
 describe('intent-router — constants', () => {
-  it('PATTERNS has all 3 intent types covered', () => {
+  it('PATTERNS has all intent types covered', () => {
     const types = new Set(__test__.PATTERNS.map((p) => p.intent.type));
     expect(types.has('quiz_invite')).toBe(true);
     expect(types.has('price_table')).toBe(true);
+    expect(types.has('my_rank')).toBe(true);
     expect(types.has('feature_unavailable')).toBe(true);
   });
 
