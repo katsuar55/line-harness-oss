@@ -158,26 +158,3 @@ export async function sendProductRecommendations(
 
   return { sent: filtered.length };
 }
-
-// ---------- Post-Purchase Recommendations ----------
-
-/**
- * After a purchase, recommend other products the customer hasn't bought.
- * Called from event bus on 'purchase_completed'.
- */
-export async function sendPostPurchaseRecommendations(
-  db: D1Database,
-  lineClient: LineClient,
-  friendId: string,
-  friendLineUserId: string,
-): Promise<void> {
-  try {
-    await sendProductRecommendations(db, lineClient, friendLineUserId, friendId, {
-      triggerType: 'purchase',
-      limit: 3,
-      altText: 'こちらの商品もおすすめです',
-    });
-  } catch (err) {
-    console.error(`Failed to send post-purchase recommendations to friend ${friendId}:`, err);
-  }
-}

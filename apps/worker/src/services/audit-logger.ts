@@ -146,13 +146,3 @@ export async function auditSystem(db: D1Database, input: AuditSystemInput): Prom
     );
   }
 }
-
-/**
- * api アクセス (外部 SDK / MCP server) 起点の操作を記録 (best-effort)。
- */
-export async function auditApi(
-  db: D1Database,
-  input: Omit<AuditSystemInput, 'actorType'>,
-): Promise<void> {
-  return auditSystem(db, { ...input, actorType: 'api' as const });
-}

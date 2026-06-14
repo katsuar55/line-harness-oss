@@ -64,23 +64,3 @@ export async function translateText(
     return text;
   }
 }
-
-/**
- * Batch translate multiple texts.
- */
-export async function batchTranslate(
-  db: D1Database,
-  router: AIRouter,
-  texts: string[],
-  sourceLang: string,
-  targetLang: string,
-  context?: string,
-): Promise<string[]> {
-  if (sourceLang === targetLang) return texts;
-
-  const results: string[] = [];
-  for (const text of texts) {
-    results.push(await translateText(db, router, text, sourceLang, targetLang, context));
-  }
-  return results;
-}
