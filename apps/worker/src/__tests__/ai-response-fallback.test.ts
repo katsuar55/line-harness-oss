@@ -84,4 +84,21 @@ describe('generateAiResponse — fallback logging', () => {
     expect(inserts.length).toBe(1);
     expect(inserts[0][4]).toBe('ai');
   });
+
+  // 2026-06-15 (Launch-readiness review B2): 薬機法 NG word が AI 応答に混入したら
+  // 顧客には送らず中立な定型文に差し替える (送信前の最終ゲート)。原文は監査ログに残す。
+  it('AI応答に薬機法NG語 → 顧客には送らずコンプラ定型文に差し替え (原文はlog保持)', async () => {
+    const { db, inserts } = makeDb();
+    const ngText = 'naturism Blueを飲めば痩せます。脂肪燃焼を促進します。';
+    const router = fakeRouter(async () => ({ text: ngText, model: 'qwen' }));
+    const r = await generateAiResponse(router, db, 'f4', 0, '2026-01-01', '痩せますか？');
+    // 顧客向け text は NG 文ではない
+    expect(r.text).not.toContain('痩せ');
+    expect(r.text).not.toContain('脂肪燃焼');
+    expect(r.text).toContain('カスタマーサポート');
+    expect(r.ngDetected && r.ngDetected.length).toBeGreaterThan(0);
+    // conversation_logs には原文 (NG文) が記録される (監査)
+    expect(inserts.length).toBe(1);
+    expect(inserts[0][3]).toBe(ngText);
+  });
 });

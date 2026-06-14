@@ -81,6 +81,12 @@ describe('ai-response prompt — 配送 (公式準拠)', () => {
   });
 });
 
+describe('ai-response prompt — 薬機法 (効能断定の排除)', () => {
+  it('Blue を「脂肪・糖質の吸収を抑える」と効能断定しない', () => {
+    expect(prompt).not.toContain('脂肪・糖質の吸収を抑える');
+  });
+});
+
 describe('ai-response prompt — 営業時間 (公式準拠)', () => {
   it('受付は平日10:00〜17:00、土日祝休み', () => {
     expect(prompt).toContain('平日10:00〜17:00');
