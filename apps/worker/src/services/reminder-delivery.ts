@@ -9,7 +9,7 @@ import { extractFlexAltText } from '../utils/flex-alt-text.js';
 
 import {
   getDueReminderDeliveries,
-  markReminderStepDelivered,
+  claimReminderStepDelivery,
   completeReminderIfDone,
   getFriendById,
   jstNow,
@@ -39,6 +39,11 @@ export async function processReminderDeliveries(
       }
 
       for (const step of fr.steps) {
+        // 送信前 atomic claim: 初めて claim できた実行だけ push する。
+        // 重複 cron が重なっても同じステップを二重 push しない (= claim を push の前に行う)。
+        const claimed = await claimReminderStepDelivery(db, fr.id, step.id);
+        if (!claimed) continue; // 別実行が既に配信済
+
         const message = buildMessage(step.message_type, step.message_content);
         await lineClient.pushMessage(friend.line_user_id, [message]);
 
@@ -51,9 +56,6 @@ export async function processReminderDeliveries(
           )
           .bind(logId, friend.id, step.message_type, step.message_content, jstNow())
           .run();
-
-        // 配信済みを記録
-        await markReminderStepDelivered(db, fr.id, step.id);
       }
 
       // 全ステップ配信済みかチェック

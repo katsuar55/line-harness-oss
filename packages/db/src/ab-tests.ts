@@ -184,6 +184,20 @@ export async function deleteAbTest(db: D1Database, id: string): Promise<void> {
   await db.prepare('DELETE FROM ab_tests WHERE id = ?').bind(id).run();
 }
 
+/**
+ * 送信前 atomic claim (CAS)。 status を draft|scheduled → 'sending' に遷移できた実行だけ
+ * `changes===1` で true を返す。 重複 cron / 手動送信が同じ A/B test を二重送信するのを防ぐ
+ * (= broadcasts.ts claimBroadcastForSending と同設計、 #106)。
+ * 既に sending/test_sent/winner_sent の場合は WHERE 不一致で changes===0 → false (= skip)。
+ */
+export async function claimAbTestForSending(db: D1Database, id: string): Promise<boolean> {
+  const res = await db
+    .prepare(`UPDATE ab_tests SET status = 'sending' WHERE id = ? AND status IN ('draft', 'scheduled')`)
+    .bind(id)
+    .run();
+  return (res.meta?.changes ?? 0) === 1;
+}
+
 export async function updateAbTestStatus(
   db: D1Database,
   id: string,

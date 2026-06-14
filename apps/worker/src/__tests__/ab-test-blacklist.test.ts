@@ -16,6 +16,7 @@ const mockUpdateAbTestStatus = vi.fn(async () => undefined);
 vi.mock('@line-crm/db', () => ({
   getAbTestById: () => mockGetAbTestById(),
   getAbTests: vi.fn(async () => []),
+  claimAbTestForSending: vi.fn(async () => true),
   updateAbTestStatus: () => mockUpdateAbTestStatus(),
   updateAbTestWinner: vi.fn(async () => undefined),
   updateAbTestTrackedLinks: vi.fn(async () => undefined),
