@@ -50,6 +50,22 @@ describe('redactProhibitedPhrases', () => {
     expect(out.text).not.toMatch(/cure/i);
     expect(out.detectedPhrases).toContain('cure');
   });
+
+  // 2026-06-15: ダイエット・体型 効能の断定を redact (Launch-readiness review B2)
+  it('ダイエット・体型 効能の断定語を redact する', () => {
+    for (const ng of ['飲めば痩せます', 'ダイエット効果があります', '脂肪燃焼を促進', '体重が減ります', '代謝アップします']) {
+      const out = redactProhibitedPhrases(ng);
+      expect(out.text).toContain(REDACTION_TOKEN);
+      expect(out.detectedPhrases.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('機能性表示食品の届出表示「BMIが高めの方の腹部の脂肪を減らす」は redact しない (誤検出なし)', () => {
+    const todoke = '届出表示に基づき、BMIが高めの方の腹部の脂肪を減らすのをサポートします';
+    const out = redactProhibitedPhrases(todoke);
+    expect(out.text).toBe(todoke);
+    expect(out.detectedPhrases).toEqual([]);
+  });
 });
 
 describe('hasProhibitedPhrases', () => {

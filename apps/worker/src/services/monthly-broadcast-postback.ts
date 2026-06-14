@@ -568,7 +568,7 @@ function build9SeptemberReorderFlex(): FlexContainer {
         { type: 'text', text: '7 月にお試しいただいた方は、 そろそろ次のサイクルを検討する頃かも🌿', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '🌱 続けると…', size: 'xs', weight: 'bold', color: '#15803d', margin: 'sm' },
-        { type: 'text', text: '・宴会後の翌朝がラク (個人差あります)', size: 'xs', color: '#334155' },
+        { type: 'text', text: '・脂っこい食事の日の習慣にしやすい', size: 'xs', color: '#334155' },
         { type: 'text', text: '・食事中に「飲んでおく」 が習慣化', size: 'xs', color: '#334155' },
         { type: 'text', text: '・1 日¥64〜 で長く続けやすい設計', size: 'xs', color: '#334155' },
       ],
@@ -795,7 +795,7 @@ function build11NovemberPartyTipFlex(): FlexContainer {
         { type: 'text', text: '枝豆 / 焼き鳥 / サラダから手をつけると糖質吸収もマイルドに。', size: 'xs', color: '#475569', wrap: true },
         { type: 'separator', margin: 'sm' },
         { type: 'text', text: '🌿 食べたら飲んでおく習慣', size: 'sm', weight: 'bold', color: '#1e293b' },
-        { type: 'text', text: '揚げ物・脂質が多いコースの時に Blue 6 粒。 「翌日が違う」 と言う実感の声も。', size: 'xs', color: '#475569', wrap: true },
+        { type: 'text', text: '揚げ物・脂質が多いコースの時に Blue 6 粒を食事と一緒に。', size: 'xs', color: '#475569', wrap: true },
       ],
     },
   } as unknown as FlexContainer;

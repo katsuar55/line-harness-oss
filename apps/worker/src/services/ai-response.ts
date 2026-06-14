@@ -36,6 +36,11 @@ export interface AiResponseFriendContext {
 
 const FALLBACK_MESSAGE = 'ただいま混み合っております。しばらくしてからもう一度お試しください🙏';
 
+// 薬機法 NG word が AI 応答に混入した場合の差し替えメッセージ (顧客には NG 文を送らない)。
+// 効能効果を断定しない中立な案内に倒し、 詳細はサポートへ誘導する。
+const COMPLIANCE_FALLBACK_MESSAGE =
+  'ご質問ありがとうございます🌿 お答えに確認が必要なため、 詳しくは公式サイト naturism-diet.com、 またはカスタマーサポート（info@kenkoex.com / 03-6411-5513・平日10:00〜17:00）へお問い合わせください。';
+
 /**
  * naturism ナレッジベース付きシステムプロンプト
  * Secret 不要 — コードに直接埋め込み
@@ -133,7 +138,7 @@ naturism（ナチュリズム）は株式会社ケンコーエクスプレスが
 
 ### 1. naturism Blue（🩵ブルー）― エントリーモデル
 **ターゲット**: 初めてインナーケアを試す方、シンプルに始めたい方
-2014年4月発売。脂肪・糖質の吸収を抑える基盤モデル。11年以上のロングセラー。
+2014年4月発売。食事の脂質・糖質が気になる方のための基盤モデル。11年以上のロングセラー。
 **8つのサポート成分**: ウーロン茶ポリフェノール144mg、アロエベラエキス、L-カルニチンL-酒石酸塩、サンザシエキス、ケイシエキス（桂枝/シナモン）、イヌリン（食物繊維）、アマチャヅルエキス、デキストリン
 **飲み方**: 1回2〜3粒、1日6〜9粒。食事中または食直後に水またはぬるま湯で噛まずに。軽い食事は−1粒、脂っこい食事は+1粒で調整可
 **単品価格**: 180粒個包装¥2,376 / 600粒VP¥6,415（1日約¥64）
@@ -295,9 +300,17 @@ export async function generateAiResponse(
         console.error('[ai-response] conversation_logs insert failed:', err instanceof Error ? err.message : String(err)),
       );
       if (ngResult.hasNg) {
+        // 薬機法 NG word が混入 → 顧客には送らず中立な定型文に差し替える (送信前の最終ゲート)。
+        // 原文は上の conversation_logs に ngWordsDetected 付きで記録済 → 監査可能。
         console.warn(
-          `[ai-response] 薬機法 NG word detected: ${ngResult.detected.join(', ')} (friend=${friendId})`,
+          `[ai-response] 薬機法 NG word detected (blocked): ${ngResult.detected.join(', ')} (friend=${friendId})`,
         );
+        return {
+          text: COMPLIANCE_FALLBACK_MESSAGE,
+          layer: 'fallback',
+          model: result.model,
+          ngDetected: ngResult.detected,
+        };
       }
       return {
         text: result.text,
