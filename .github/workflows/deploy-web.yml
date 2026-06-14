@@ -1,0 +1,56 @@
+name: Deploy Web (Admin)
+
+# main への push で管理画面 (apps/web → Cloudflare Pages: naturism-admin) を自動デプロイ。
+# CI workflow (typecheck + test) が通った場合のみ走る。deploy-worker.yml と同じパターン。
+#
+# 前提 (merge 前に確認):
+#   - Pages プロジェクト名 = naturism-admin (確認済: wrangler pages project list / Git Provider=No=direct upload)
+#   - CLOUDFLARE_API_TOKEN に **Cloudflare Pages: Edit** 権限があること
+#     (worker deploy 用の Workers 権限だけだと pages deploy は失敗する)
+#   - apps/web は output:'export' (静的) → out/ を直接アップロード
+#   - NEXT_PUBLIC_API_URL は .env.production が gitignore のため CI では明示注入
+#     (値は公開 worker URL。 GitHub repo variable で上書き可)
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      # apps/web は @line-crm/shared のみ依存 (transpilePackages)
+      - run: pnpm --filter @line-crm/shared build
+
+      - run: pnpm --filter web build
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || 'https://naturism-line-crm.katsu-7d5.workers.dev' }}
+
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy apps/web/out --project-name=naturism-admin --branch=main
+
+      - name: Notify deploy result
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "::notice title=Admin web deployed::Successfully deployed apps/web to Cloudflare Pages (naturism-admin)"
+          else
+            echo "::error title=Deploy failed::Admin web deployment failed — CLOUDFLARE_API_TOKEN に Pages:Edit 権限があるか確認"
+          fi
