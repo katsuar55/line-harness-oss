@@ -555,6 +555,14 @@ async function handleEvent(
         }
       } catch (err) {
         console.error('Daily tip postback error:', err);
+        // reply token 未消費なら定型文で応答 (= 無言で落とさない)。
+        try {
+          await lineClient.replyMessage(event.replyToken, [
+            buildMessage('text', 'すみません、今はヒントをお届けできませんでした。またあとでお試しください🙏'),
+          ]);
+        } catch {
+          // reply token が既に消費/失効 — これ以上はできることがないので諦める
+        }
       }
       return;
     }
@@ -837,6 +845,9 @@ async function handleEvent(
     if (!matched && !replyTokenConsumed) {
       const intentResult = detectIntent(incomingText);
       if (intentResult) {
+        // deterministic intent が確定した時点で matched=true (= reply 失敗でも Layer2 AI に
+        // 上書きさせない)。 auto_replies パス (matched を try 外で立てる) と対称にする。
+        matched = true;
         try {
           // PR 2 (2026-05-26): async build に切替 (= my_coupon の D1 SELECT 等で fact 取得可)
           // #10-1 (2026-06-12): liffUrl 注入 (= my_rank がマイランク LIFF `${liffUrl}#rank` へ誘導)
@@ -847,7 +858,6 @@ async function handleEvent(
           });
           await lineClient.replyMessage(event.replyToken, [...messages]);
           replyTokenConsumed = true;
-          matched = true;
           await auditSystem(db, {
             action: `intent_router.${intentResult.intent.type}`,
             actorType: 'webhook',
