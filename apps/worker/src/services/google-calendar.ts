@@ -42,6 +42,7 @@ export class GoogleCalendarClient {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (!res.ok) {
@@ -78,6 +79,7 @@ export class GoogleCalendarClient {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (!res.ok) {
@@ -104,6 +106,7 @@ export class GoogleCalendarClient {
       headers: {
         Authorization: `Bearer ${this.config.accessToken}`,
       },
+      signal: AbortSignal.timeout(10_000),
     });
 
     // 204 = success, 410 = already deleted — both are acceptable

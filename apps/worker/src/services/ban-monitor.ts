@@ -55,6 +55,7 @@ async function checkSingleAccount(
   try {
     const response = await fetch('https://api.line.me/v2/bot/info', {
       headers: { Authorization: `Bearer ${account.channel_access_token}` },
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (!response.ok) {

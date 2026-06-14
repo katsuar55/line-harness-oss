@@ -156,7 +156,7 @@ async function fireOutgoingWebhooks(
         if (!isSafeUrl(wh.url)) {
           console.warn(`Webhook ${wh.id} blocked: unsafe URL ${wh.url}`);
         } else {
-          await fetch(wh.url, { method: 'POST', headers, body });
+          await fetch(wh.url, { method: 'POST', headers, body, signal: AbortSignal.timeout(10_000) });
         }
       } catch (err) {
         console.error(`送信Webhook ${wh.id} への通知失敗:`, err);
@@ -377,6 +377,7 @@ async function executeAction(
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ friendId, ...payload.eventData }),
+          signal: AbortSignal.timeout(10_000),
         });
       } else if (url) {
         console.warn(`Automation send_webhook blocked: unsafe URL ${url}`);

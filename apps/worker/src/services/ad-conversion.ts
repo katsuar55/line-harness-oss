@@ -116,6 +116,7 @@ async function sendMetaConversion(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
   });
 
   if (!response.ok) {
@@ -145,6 +146,7 @@ async function sendXConversion(
 
   const response = await fetch(url, {
     method: 'POST',
+    signal: AbortSignal.timeout(10_000),
     headers: {
       'Content-Type': 'application/json',
       // OAuth 1.0a signature required — placeholder for production implementation
@@ -178,6 +180,7 @@ async function sendGoogleConversion(
 
   const response = await fetch(url, {
     method: 'POST',
+    signal: AbortSignal.timeout(10_000),
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${config.oauth_token}`,
@@ -217,6 +220,7 @@ async function sendTikTokConversion(
 
   const response = await fetch(url, {
     method: 'POST',
+    signal: AbortSignal.timeout(10_000),
     headers: {
       'Content-Type': 'application/json',
       'Access-Token': config.access_token || '',

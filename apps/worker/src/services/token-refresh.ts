@@ -45,6 +45,7 @@ async function issueNewToken(
       client_id: channelId,
       client_secret: channelSecret,
     }),
+    signal: AbortSignal.timeout(10_000),
   });
 
   if (!res.ok) {

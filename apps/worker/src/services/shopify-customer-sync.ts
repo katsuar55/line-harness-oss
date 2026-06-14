@@ -81,7 +81,7 @@ export async function syncShopifyCustomers(
       `https://${storeDomain}/admin/api/${apiVersion}/customers.json?limit=${PAGE_LIMIT}`;
 
     while (url && counts.pages < MAX_PAGES) {
-      const res = await fetch(url, { headers });
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
 
       if (!res.ok) {
         return {
