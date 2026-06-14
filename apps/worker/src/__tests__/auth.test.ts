@@ -206,6 +206,18 @@ describe('Auth Middleware', () => {
       expect(body).toEqual({ success: true, data: { count: 42 } });
     });
 
+    // 空 API_KEY ガード: API_KEY が空文字 (CRLF secret trap 等) でも
+    // `Bearer ` (空トークン) が owner 権限を得てはならない。
+    it('returns 401 when env API_KEY is empty and an empty Bearer token is sent', async () => {
+      const emptyKeyEnv = { ...env, API_KEY: '' };
+      const res = await app.request(
+        '/api/friends/count',
+        { headers: { Authorization: 'Bearer ' } },
+        emptyKeyEnv,
+      );
+      expect(res.status).toBe(401);
+    });
+
     it('returns 200 with valid staff API key', async () => {
       mockStaffDb.set(STAFF_API_KEY, {
         id: 'staff-1',

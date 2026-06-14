@@ -196,6 +196,9 @@ function createApp() {
   app.use('/api/liff/orders', testLiffAuth);
   app.use('/api/liff/orders/*', testLiffAuth);
   app.use('/api/liff/orders-summary', testLiffAuth);
+  // profile は本番では liffAuthMiddleware が idToken 検証 + liffUser set する。
+  // テストでは body.lineUserId を検証済み caller とみなす testLiffAuth を適用。
+  app.use('/api/liff/profile', testLiffAuth);
   app.route('/', liffRoutes);
   return app;
 }
@@ -352,6 +355,26 @@ describe('LIFF Routes', () => {
       expect(body.data.id).toBe('friend-1');
       expect(body.data.displayName).toBe('Test User');
       expect(body.data.isFollowing).toBe(true);
+    });
+
+    // IDOR regression: handler は body.lineUserId を無視し、認証済み caller のみ返す。
+    it('ignores body.lineUserId and returns only the authenticated caller (cross-user enumeration guard)', async () => {
+      const app2 = new Hono<Env>();
+      // 認証済み caller を固定 (U_EXISTING/friend-1) し、body には別人の userId を入れる
+      app2.use('/api/liff/profile', async (c, next) => {
+        (c as unknown as { set: (k: string, v: unknown) => void }).set('liffUser', { lineUserId: 'U_EXISTING', friendId: 'friend-1' });
+        return next();
+      });
+      app2.route('/', liffRoutes);
+      const res = await app2.request('/api/liff/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_SOMEONE_ELSE' }),
+      }, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { success: boolean; data: { id: string } };
+      // body の U_SOMEONE_ELSE ではなく、認証済み caller (friend-1) を返す
+      expect(body.data.id).toBe('friend-1');
     });
   });
 

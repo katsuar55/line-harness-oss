@@ -59,7 +59,9 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
   }
 
   // Fallback: env API_KEY acts as owner
-  if (token === c.env.API_KEY) {
+  // API_KEY が空/未設定のときに `Bearer ` (空トークン) が owner 権限を得るのを防ぐ
+  // (CRLF secret trap 等で API_KEY が空文字になる事故への防御)。
+  if (c.env.API_KEY && token === c.env.API_KEY) {
     c.set('staff', { id: 'env-owner', name: 'Owner', role: 'owner' as const });
     return next();
   }

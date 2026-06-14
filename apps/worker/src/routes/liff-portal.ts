@@ -283,7 +283,11 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
     if (orderId) {
       // Reorder from past order
       const order = await getShopifyOrderById(c.env.DB, orderId);
-      if (!order) return c.json({ success: false, error: 'Order not found' }, 404);
+      // 所有権チェック (IDOR 防止): 自分にリンクされた注文のみ再注文可。
+      // friend_id=NULL (未リンク注文) も `null !== friendId` で弾く。liff.ts:1144 と同パターン。
+      if (!order || order.friend_id !== user.friendId) {
+        return c.json({ success: false, error: 'Order not found' }, 404);
+      }
 
       const parsed = order.line_items ? JSON.parse(order.line_items as string) : [];
       lineItems = parsed
