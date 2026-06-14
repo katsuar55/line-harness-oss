@@ -87,6 +87,24 @@ describe('processAutomations — per-row 堅牢性', () => {
     expect(createAutomationLog).not.toHaveBeenCalled();
   });
 
+  // 2026-06-15 (review #10): score_threshold が設定された automation は、
+  // currentScore が取れないイベント (= score 無関係の purchase_completed 等) では
+  // 発火しない (fail-safe)。 従来は currentScore=undefined で素通りし誤発火していた。
+  it('score_threshold automation は currentScore 不明イベントでは発火しない (fail-safe)', async () => {
+    getActiveAutomationsByEvent.mockResolvedValue([
+      {
+        id: 'score-gated',
+        line_account_id: null,
+        conditions: JSON.stringify({ score_threshold: 50 }),
+        actions: JSON.stringify([{ type: 'add_tag', params: { tagId: 'vip' } }]),
+      },
+    ]);
+    // eventData に currentScore が無い (purchase_completed 等) → マッチさせない
+    await processAutomations(db, 'purchase_completed', { friendId: 'f1', eventData: { source: 'shopify' } });
+    expect(addTagToFriend).not.toHaveBeenCalled();
+    expect(createAutomationLog).not.toHaveBeenCalled();
+  });
+
   it('正常系: conditions マッチ時に action 実行 + success log', async () => {
     getActiveAutomationsByEvent.mockResolvedValue([
       {

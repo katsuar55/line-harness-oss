@@ -281,10 +281,12 @@ function matchConditions(
   // 条件が空 → 常にマッチ
   if (Object.keys(conditions).length === 0) return true;
 
-  // score_threshold チェック
-  if (conditions.score_threshold !== undefined && payload.eventData) {
-    const currentScore = payload.eventData.currentScore as number | undefined;
-    if (currentScore !== undefined && currentScore < (conditions.score_threshold as number)) {
+  // score_threshold チェック (fail-safe: score 不明なイベントでは閾値条件は不成立扱い)。
+  // 従来は currentScore=undefined で素通り→ score 無関係イベントでも score 条件付き
+  // automation が発火していた。 score が取れない限りマッチさせない。
+  if (conditions.score_threshold !== undefined) {
+    const currentScore = payload.eventData?.currentScore as number | undefined;
+    if (currentScore === undefined || currentScore < (conditions.score_threshold as number)) {
       return false;
     }
   }
@@ -481,26 +483,32 @@ async function processNotifications(
     );
 
     for (const rule of rules) {
-      let channels: string[] = JSON.parse(rule.channels);
-      // Guard against double-encoded JSON strings (e.g. "\"[\\\"webhook\\\"]\"")
-      if (typeof channels === 'string') channels = JSON.parse(channels);
+      // per-rule 隔離: 1 件の壊れた channels JSON で以降の rule が全 skip されるのを防ぐ
+      // (event-bus per-row 隔離 #102 と同方針)。
+      try {
+        let channels: string[] = JSON.parse(rule.channels);
+        // Guard against double-encoded JSON strings (e.g. "\"[\\\"webhook\\\"]\"")
+        if (typeof channels === 'string') channels = JSON.parse(channels);
 
-      for (const channel of channels) {
-        await createNotification(db, {
-          ruleId: rule.id,
-          eventType,
-          title: `${rule.name}: ${eventType}`,
-          body: JSON.stringify(payload),
-          channel,
-          metadata: JSON.stringify(payload.eventData ?? {}),
-        });
+        for (const channel of channels) {
+          await createNotification(db, {
+            ruleId: rule.id,
+            eventType,
+            title: `${rule.name}: ${eventType}`,
+            body: JSON.stringify(payload),
+            channel,
+            metadata: JSON.stringify(payload.eventData ?? {}),
+          });
 
-        // Webhook通知チャネルの場合は即時配信
-        if (channel === 'webhook') {
-          // 送信Webhookと統合（既にfireOutgoingWebhooksで処理済み）
+          // Webhook通知チャネルの場合は即時配信
+          if (channel === 'webhook') {
+            // 送信Webhookと統合（既にfireOutgoingWebhooksで処理済み）
+          }
+          // email チャネルの場合はSendGrid等で送信（将来実装）
+          // dashboard チャネルの場合はDB記録のみ（上記createNotificationで完了）
         }
-        // email チャネルの場合はSendGrid等で送信（将来実装）
-        // dashboard チャネルの場合はDB記録のみ（上記createNotificationで完了）
+      } catch (err) {
+        console.error(`processNotifications: rule ${rule.id} skipped:`, err instanceof Error ? err.message : String(err));
       }
     }
   } catch (err) {

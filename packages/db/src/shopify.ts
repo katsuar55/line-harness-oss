@@ -30,9 +30,12 @@ export async function upsertShopifyOrder(
   if (existing) {
     // 2026-05-10 fix: UPDATE に metadata 列が抜けていた (customers と同パターン bug)。
     // COALESCE で「指定があれば上書き、 無ければ既存維持」 にする。
+    // orders/updated で注文が編集された場合 (金額/商品/連絡先 変更) も反映できるよう、
+    // total_price / line_items / email / phone / order_number も COALESCE で
+    // 「指定があれば上書き、 無ければ既存維持」 にする (従来は UPDATE で一切触らず stale)。
     await db
       .prepare(
-        `UPDATE shopify_orders SET financial_status = ?, fulfillment_status = ?, friend_id = COALESCE(?, friend_id), tags = COALESCE(?, tags), metadata = COALESCE(?, metadata), updated_at = ? WHERE shopify_order_id = ?`,
+        `UPDATE shopify_orders SET financial_status = ?, fulfillment_status = ?, friend_id = COALESCE(?, friend_id), tags = COALESCE(?, tags), metadata = COALESCE(?, metadata), total_price = COALESCE(?, total_price), line_items = COALESCE(?, line_items), email = COALESCE(?, email), phone = COALESCE(?, phone), order_number = COALESCE(?, order_number), updated_at = ? WHERE shopify_order_id = ?`,
       )
       .bind(
         order.financialStatus ?? existing.financial_status ?? null,
@@ -40,6 +43,11 @@ export async function upsertShopifyOrder(
         order.friendId ?? null,
         order.tags ?? null,
         order.metadata ?? null,
+        order.totalPrice ?? null,
+        order.lineItems ?? null,
+        order.email ?? null,
+        order.phone ?? null,
+        order.orderNumber ?? null,
         now,
         order.shopifyOrderId,
       )

@@ -270,22 +270,27 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
                   .run();
               }
 
-              // イベントバスに発火（自動化ルール用）
-              const { fireEvent } = await import('../services/event-bus.js');
-              const { buildEmailDispatchConfig } = await import(
-                '../services/email-dispatch-config.js'
-              );
-              await fireEvent(
-                db,
-                'purchase_completed',
-                {
-                  friendId,
-                  eventData: { source: 'shopify', shopifyOrderId, amount: totalPrice },
-                },
-                undefined,
-                undefined,
-                buildEmailDispatchConfig(c.env),
-              );
+              // イベントバスに発火（自動化ルール用）。
+              // orders/updated は fulfillment/tag/refund 等の更新でも届くため、
+              // purchase_completed は orders/create のみで発火させ automation/scoring の
+              // 多重実行を防ぐ (subscription enroller と同じ topic ガード)。
+              if (topic === 'orders/create') {
+                const { fireEvent } = await import('../services/event-bus.js');
+                const { buildEmailDispatchConfig } = await import(
+                  '../services/email-dispatch-config.js'
+                );
+                await fireEvent(
+                  db,
+                  'purchase_completed',
+                  {
+                    friendId,
+                    eventData: { source: 'shopify', shopifyOrderId, amount: totalPrice },
+                  },
+                  undefined,
+                  undefined,
+                  buildEmailDispatchConfig(c.env),
+                );
+              }
 
               // Phase 6 PR-2: 再購入リマインダー自動 enroll (orders/create のみ)
               if (topic === 'orders/create' && lineItemsRaw && lineItemsRaw.length > 0) {
