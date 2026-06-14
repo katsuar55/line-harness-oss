@@ -281,3 +281,33 @@ main loop は触らない。Katsu の承認/操作が必要:
 - B40. [MEDIUM] test-gap fix=true `apps/worker/src/routes/webhook.ts:477` — webhook postback dispatch (restock #117) untested; postback.test.ts is a no-op
 - B41. [MEDIUM] test-gap fix=true `apps/worker/src/routes/shopify-phase2a.ts:398` — inventory webhook notify loop (consume-on-success + blacklist skip) untested in waitUntil
 - B42. [LOW] test-gap fix=true `apps/worker/src/middleware/auth.ts:16` — auth skip allowlist has no negative over-match 401 test
+
+---
+
+## 修正状況 (2026-06-15 自律ラン)
+
+レビュー後、 launch-blocker + 高優先 reliability を TDD + 並列 adversarial review + gated PR で修正・merge・本番 auto-deploy 済 (deploy-worker.yml)。
+
+| PR | 内容 | カバーした finding |
+|---|---|---|
+| #120 | security: reorder IDOR / CORS echo / liff profile列挙 / 空API_KEY | B1, B5, A2, A4, auth.ts:62 |
+| #121 | 薬機法: AI応答NG語ブロック + redact拡充 + 効能文言 | B2, A15, A16, B21, B22, B23 |
+| #122 | correctness: intent上書き防止 / purchase多重発火 / event-bus・upsert堅牢化 | B3, B4, A8, B10, B11, B20 |
+| #123 | reliability: 外部fetch全件 timeout + silent catch可観測化 | A17, A18, A19, B34-B39 |
+| #124 | cron atomic claim: ab-test / reminder-delivery / subscription-reminder | A12, A13, A14 (B6-B8) |
+| (本PR) | 死コード削除: StealthRateLimiter/batchTranslate/auditApi/sendPostPurchaseRecommendations | B27, B28, B29, B30 |
+
+**Launch 判定: 単一アカウント (naturism) は GO**。 上記で B1-B5 (CRITICAL×1 + HIGH×4) + timeout + cron claim を解消。
+
+### 残: Katsu 承認ゲート (autofixSafe=false)
+1. **admin web (Cloudflare Pages) の再deploy** — naturism-admin.pages.dev が #114-#119 前の stale ビルド (新オペレーターUIが未反映)。修正経路確定済 (`pnpm --filter web build` → `wrangler pages deploy out --project-name=naturism-admin`)。build は検証済 (全ページ static export 成功)。**publish行為のため要 Katsu 実行**。恒久対策= deploy-web.yml CI 追加 (要 project名確認)。
+2. **forms /submit 無認証** (B5/forms.ts:183) — 公開フォームを使うなら friendId 自称対策が要 (挙動変更のため要判断)。
+3. **/auth/callback uid 無検証** (A6/liff.ts:292) — 既存リンクデータ影響確認の上で existence check 追加。
+4. **amountJpy ¥0 記録** (B12/shopify-phase2a.ts:551) — money path のため early-return ガード or 再fetch を判断。
+5. **multi-account 重複 cron** (B16/index.ts:404) — 第2ブランド追加時に LINE非依存 cron をループ外へ。
+6. **gated 有効化**: SHOPIFY_LINE_NOTIFY_ENABLED (再入荷, カットオーバー当日) / RANK_DISCOUNT_ENABLED / MEMBER_BACKFILL_ENABLED。
+
+### 残: post-launch backlog (autofixSafe だが launch非ブロッカー)
+- cron unbounded SELECT に LIMIT (scenarios/reminders P2 + broadcasts/ab-tests/birthday/loyalty-rank/abandoned-carts) — launch スケール (数千friend) 前に。
+- 巨大ファイル分割 (liff-portal.ts 2407行ほか10ファイル) / コード重複統合 (hmacSha256Hex×3, escapeHtml×14, 互換性test先行) / ad-conversion の Promise.allSettled 化。
+- テスト追加: orders/paid member-sync wiring / restock postback / inventory notify loop。
