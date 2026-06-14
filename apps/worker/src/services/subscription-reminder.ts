@@ -152,7 +152,8 @@ export async function processSubscriptionReminders(
 
   for (const reminder of dueReminders) {
     try {
-      // 2. Get friend's LINE user ID
+      // 1. Friend lookup + 2. prefs を claim より前に判定し、 skip 対象は claim しない
+      //    (= 不要な lease を残して 10 分毎 churn させないため)。
       const friend = await db
         .prepare('SELECT line_user_id FROM friends WHERE id = ?')
         .bind(reminder.friend_id)
@@ -160,7 +161,6 @@ export async function processSubscriptionReminders(
 
       if (!friend?.line_user_id) continue;
 
-      // 3. Check notification preference
       const prefs = await db
         .prepare('SELECT reorder_reminder FROM friend_notification_preferences WHERE friend_id = ?')
         .bind(reminder.friend_id)
@@ -168,6 +168,18 @@ export async function processSubscriptionReminders(
 
       // Default ON if no prefs record
       if (prefs && !prefs.reorder_reminder) continue;
+
+      // 3. 送信前 atomic claim: next_reminder_at を lease(now+10min) に CAS で進められた実行だけ送信。
+      //    重複 cron が同じ reminder を二重送信するのを防ぐ (#103 step claim と同設計)。
+      //    送信成功は手順6で本来の next に上書き / dispatcher skip は次サイクルへ advance / 失敗は lease で10分後 retry。
+      const leaseUntil = new Date(Date.now() + 10 * 60_000).toISOString();
+      const claim = await db
+        .prepare(
+          'UPDATE subscription_reminders SET next_reminder_at = ? WHERE id = ? AND next_reminder_at = ? AND is_active = 1',
+        )
+        .bind(leaseUntil, reminder.id, reminder.next_reminder_at)
+        .run();
+      if ((claim.meta?.changes ?? 0) !== 1) continue; // 別実行が claim 済
 
       // 4. Cross-sell suggestions (best-effort)
       let crossSellEntries: CrossSellEntry[] = [];
@@ -258,14 +270,23 @@ export async function processSubscriptionReminders(
       const lineResult = dispatchResult.results.find((r) => r.channel === 'line');
       if (lineResult?.status === 'sent') {
         metrics.sentCount++;
-        // 6. Update next_reminder_at (送信成功時のみ)
+        // 6. Update next_reminder_at (送信成功時): lease を本来の次サイクルに上書き
         const nextAt = new Date(Date.now() + reminder.interval_days * 86400000).toISOString();
         await db
           .prepare('UPDATE subscription_reminders SET next_reminder_at = ?, last_sent_at = ?, updated_at = ? WHERE id = ?')
           .bind(nextAt, now, now, reminder.id)
           .run();
       } else if (lineResult?.status === 'failed') {
+        // 一時的な送信失敗: lease(now+10min) をそのまま残し 10 分後に retry させる。
         metrics.errorCount++;
+      } else {
+        // dispatcher skip (not_following / blacklisted 等): 本サイクルは送らず、 lease を
+        // 本来の次サイクルへ advance して 10 分毎の churn を防ぐ (last_sent_at は更新しない)。
+        const nextAt = new Date(Date.now() + reminder.interval_days * 86400000).toISOString();
+        await db
+          .prepare('UPDATE subscription_reminders SET next_reminder_at = ?, updated_at = ? WHERE id = ?')
+          .bind(nextAt, now, reminder.id)
+          .run();
       }
       // skipped (not_following / blacklisted / no_friend) は metrics に計上しない
       // (旧コードでは not_following でも push API error になり errorCount に計上されていたが、

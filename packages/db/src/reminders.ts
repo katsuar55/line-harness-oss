@@ -163,6 +163,19 @@ export async function markReminderStepDelivered(db: D1Database, friendReminderId
     .bind(id, friendReminderId, reminderStepId).run();
 }
 
+/**
+ * 送信前 atomic claim。 friend_reminder_deliveries の UNIQUE(friend_reminder_id, reminder_step_id) を
+ * 利用し、 INSERT OR IGNORE で「初めて行を入れられた実行」 だけ changes===1 で true を返す。
+ * 重複 cron が同じステップを二重 push するのを防ぐ (= push の前に claim する)。
+ * 既に配信済 (= 行あり) なら changes===0 → false (= skip)。
+ */
+export async function claimReminderStepDelivery(db: D1Database, friendReminderId: string, reminderStepId: string): Promise<boolean> {
+  const id = crypto.randomUUID();
+  const res = await db.prepare(`INSERT OR IGNORE INTO friend_reminder_deliveries (id, friend_reminder_id, reminder_step_id) VALUES (?, ?, ?)`)
+    .bind(id, friendReminderId, reminderStepId).run();
+  return (res.meta?.changes ?? 0) === 1;
+}
+
 /** 全ステップ配信済みならcompletedにする */
 export async function completeReminderIfDone(db: D1Database, friendReminderId: string, reminderId: string): Promise<void> {
   const totalSteps = await db.prepare(`SELECT COUNT(*) as count FROM reminder_steps WHERE reminder_id = ?`)

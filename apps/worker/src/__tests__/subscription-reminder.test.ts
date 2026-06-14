@@ -68,7 +68,8 @@ function makeFakeDb(store: FakeDbStore): D1Database {
           return { results: [] };
         },
         async run() {
-          return { success: true };
+          // claim UPDATE (next_reminder_at CAS) が changes===1 を要求するため meta を返す
+          return { success: true, meta: { changes: 1 } };
         },
       };
       return builder;
@@ -284,6 +285,13 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
     expect(result.sentCount).toBe(0); // skipped due to prefs
     expect(mockPushMessage).not.toHaveBeenCalled();
     expect(mockHeartbeats.length).toBe(1);
+
+    // 回帰 (review HIGH): prefs オフは claim より前に skip され、 lease UPDATE を発行しない
+    // (= next_reminder_at を now+10min に固定して 10 分毎 churn させない)。
+    const issuedClaim = store.captured.some(
+      (c) => /UPDATE subscription_reminders SET next_reminder_at = \?/.test(c.sql) && !/last_sent_at/.test(c.sql),
+    );
+    expect(issuedClaim).toBe(false);
   });
 
   it('cron_run_logs insert 失敗で cron 全体を止めない (fail-safe)', async () => {

@@ -2,6 +2,7 @@ import { extractFlexAltText } from '../utils/flex-alt-text.js';
 import {
   getAbTestById,
   getAbTests,
+  claimAbTestForSending,
   updateAbTestStatus,
   updateAbTestWinner,
   updateAbTestTrackedLinks,
@@ -159,7 +160,15 @@ export async function processAbTestSend(
   abTestId: string,
   workerUrl?: string,
 ): Promise<AbTest> {
-  await updateAbTestStatus(db, abTestId, 'sending');
+  // 送信前 atomic claim: draft|scheduled → 'sending' を取れた実行だけ送信する。
+  // 重複 cron / 手動送信の二重送信を防ぐ (#106 broadcast claim と同設計)。
+  const claimed = await claimAbTestForSending(db, abTestId);
+  if (!claimed) {
+    const current = await getAbTestById(db, abTestId);
+    if (!current) throw new Error(`AB test ${abTestId} not found`);
+    // 既に別実行が送信中/送信済 → 二重送信せず現状を返す。
+    return current;
+  }
 
   const abTest = await getAbTestById(db, abTestId);
   if (!abTest) {
