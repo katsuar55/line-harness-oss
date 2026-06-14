@@ -174,8 +174,9 @@ export async function processSubscriptionReminders(
       if (reminder.shopify_product_id) {
         try {
           crossSellEntries = await loadCrossSellEntries(db, reminder.shopify_product_id, 2);
-        } catch {
-          // ignore — message goes out without cross-sell
+        } catch (err) {
+          // cross-sell 取得失敗でも本文は送る。 但し silent にせず可観測化する。
+          console.warn('subscription-reminder: loadCrossSellEntries failed:', err instanceof Error ? err.message : String(err));
         }
       }
 

@@ -100,6 +100,7 @@ async function sendToAxiom(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify([payload]),
+      signal: AbortSignal.timeout(5_000),
     });
   } catch {
     // 監視先障害でアプリは止めない
@@ -130,6 +131,7 @@ async function sendToDiscord(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: truncate(content, 1900) }),
+      signal: AbortSignal.timeout(5_000),
     });
   } catch {
     // 監視先障害でアプリは止めない
