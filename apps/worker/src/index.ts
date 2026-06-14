@@ -194,19 +194,25 @@ export type Env = {
 const app = new Hono<Env>();
 
 // CORS — 許可オリジンを制限
-app.use('*', cors({
-  origin: (origin) => {
-    const allowed = [
-      'https://naturism-admin.pages.dev',
-      'https://liff.line.me',
-      'http://localhost:3001',
-      'http://localhost:3000',
-    ];
-    if (!origin || allowed.includes(origin)) return origin || '*';
-    // R2画像等の公開パスは全オリジン許可
-    return origin;
-  },
-}));
+const CORS_ALLOWED_ORIGINS = [
+  'https://naturism-admin.pages.dev',
+  'https://liff.line.me',
+  'http://localhost:3001',
+  'http://localhost:3000',
+];
+
+/**
+ * CORS origin リゾルバ。 許可オリジンはそのまま返し、 Origin ヘッダ無しは '*'、
+ * 未許可オリジンは null (= ACAO ヘッダを付けず、 ブラウザがレスポンスをブロック)。
+ * 以前は未許可 origin を verbatim echo しており allowlist が実質無効化されていた (CORS bypass)。
+ * R2 画像 (<img src>) はブラウザが CORS を要求しないため本挙動で壊れない。
+ */
+export function resolveCorsOrigin(origin: string | undefined | null): string | null {
+  if (!origin || CORS_ALLOWED_ORIGINS.includes(origin)) return origin || '*';
+  return null;
+}
+
+app.use('*', cors({ origin: (origin) => resolveCorsOrigin(origin) }));
 
 // Rate limiting — runs before auth to block abuse early
 app.use('*', rateLimitMiddleware);

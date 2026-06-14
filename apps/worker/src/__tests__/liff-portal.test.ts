@@ -60,11 +60,24 @@ vi.mock('@line-crm/db', async (importOriginal) => {
       if (id === 'o1') {
         return {
           id: 'o1',
+          friend_id: 'friend-1',
           order_number: 1001,
           total_price: 6415,
           email: 'test@example.com',
           line_items: '[{"name":"naturism Blue VP","variant_id":"44000001","quantity":1,"price":"6415"}]',
           created_at: '2026-03-01',
+          fulfillment_status: 'fulfilled',
+        };
+      }
+      // IDOR テスト用: 別 friend が所有する注文
+      if (id === 'o-other') {
+        return {
+          id: 'o-other',
+          friend_id: 'friend-OTHER',
+          order_number: 2002,
+          total_price: 9999,
+          line_items: '[{"name":"naturism Pink","variant_id":"44000002","quantity":1,"price":"9999"}]',
+          created_at: '2026-03-02',
           fulfillment_status: 'fulfilled',
         };
       }
@@ -331,6 +344,14 @@ describe('LIFF Portal Routes', () => {
     it('returns 401 for unauthorized user', async () => {
       const res = await post(app, '/api/liff/reorder/create', { lineUserId: 'U_UNKNOWN' });
       expect(res.status).toBe(404);
+    });
+
+    // IDOR regression: 他人の注文 (friend_id 不一致) を再注文しようとしても 404
+    it('returns 404 when reordering another friend\'s order (IDOR guard)', async () => {
+      const res = await post(app, '/api/liff/reorder/create', { lineUserId: 'U_EXISTING', orderId: 'o-other' });
+      expect(res.status).toBe(404);
+      const json = await res.json() as { success: boolean };
+      expect(json.success).toBe(false);
     });
   });
 

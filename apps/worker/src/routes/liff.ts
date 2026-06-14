@@ -504,15 +504,19 @@ liffRoutes.get('/auth/callback', async (c) => {
 
 // ─── Existing LIFF endpoints ────────────────────────────────────
 
-// POST /api/liff/profile - get friend by LINE userId (public, no auth)
+// POST /api/liff/profile - get the AUTHENTICATED caller's own friend record
+// (liffAuthMiddleware が idToken を LINE 検証し c.set('liffUser') 済み)。
+// 以前は body.lineUserId を無検証で引いており、任意の LINE userId で他人の
+// friend 内部ID/表示名を列挙できた (cross-user enumeration)。認証済み caller の
+// lineUserId のみ使用し body の lineUserId は無視する。
 liffRoutes.post('/api/liff/profile', async (c) => {
   try {
-    const body = await c.req.json<{ lineUserId: string }>();
-    if (!body.lineUserId) {
-      return c.json({ success: false, error: 'lineUserId is required' }, 400);
+    const liffUser = c.get('liffUser') as { lineUserId: string; friendId: string } | undefined;
+    if (!liffUser) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
     }
 
-    const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
+    const friend = await getFriendByLineUserId(c.env.DB, liffUser.lineUserId);
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
