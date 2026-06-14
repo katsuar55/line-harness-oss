@@ -84,39 +84,3 @@ export function jitterDeliveryTime(scheduledAt: Date): Date {
   result.setMinutes(result.getMinutes() + jitterMinutes);
   return result;
 }
-
-/**
- * Rate limiter for LINE API calls.
- * LINE rate limit is 100,000 messages/min, but we stay well under.
- */
-export class StealthRateLimiter {
-  private callCount = 0;
-  private windowStart = Date.now();
-  private readonly maxCallsPerWindow: number;
-  private readonly windowMs: number;
-
-  constructor(maxCallsPerWindow = 1000, windowMs = 60_000) {
-    this.maxCallsPerWindow = maxCallsPerWindow;
-    this.windowMs = windowMs;
-  }
-
-  async waitForSlot(): Promise<void> {
-    const now = Date.now();
-
-    // Reset window if expired
-    if (now - this.windowStart >= this.windowMs) {
-      this.callCount = 0;
-      this.windowStart = now;
-    }
-
-    // If we've hit the limit, wait for the window to reset
-    if (this.callCount >= this.maxCallsPerWindow) {
-      const waitTime = this.windowMs - (now - this.windowStart) + addJitter(100, 500);
-      await sleep(waitTime);
-      this.callCount = 0;
-      this.windowStart = Date.now();
-    }
-
-    this.callCount++;
-  }
-}
