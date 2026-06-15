@@ -181,7 +181,8 @@ const SAMPLE_FRIEND_REMINDER = {
   id: 'fr-1',
   friend_id: 'friend-1',
   reminder_id: 'rem-1',
-  target_date: '2026-03-01',
+  // 実 enroll は target_date を JST midnight (+09:00) に正規化して保存するので mock もその形に揃える
+  target_date: '2026-03-01T00:00:00+09:00',
   status: 'active',
   created_at: '2026-01-01T00:00:00+09:00',
   updated_at: '2026-01-01T00:00:00+09:00',
@@ -568,7 +569,8 @@ describe('Reminders Routes', () => {
       expect(json.data.id).toBe('fr-1');
       expect(json.data.friendId).toBe('friend-1');
       expect(json.data.reminderId).toBe('rem-1');
-      expect(json.data.targetDate).toBe('2026-03-01');
+      // route は正規化済みの target_date を echo back する
+      expect(json.data.targetDate).toBe('2026-03-01T00:00:00+09:00');
       expect(json.data.status).toBe('active');
     });
 
@@ -583,6 +585,38 @@ describe('Reminders Routes', () => {
       const json = (await res.json()) as { success: boolean; error: string };
       expect(json.success).toBe(false);
       expect(json.error).toBe('targetDate is required');
+    });
+
+    it('should return 400 when targetDate is not a valid date', async () => {
+      const res = await app.request('/api/reminders/rem-1/enroll/friend-1', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetDate: '2026/03/01' }),
+      }, env);
+      expect(res.status).toBe(400);
+
+      const json = (await res.json()) as { success: boolean; error: string };
+      expect(json.success).toBe(false);
+      expect(json.error).toMatch(/targetDate/);
+      // 不正入力時は enroll を呼ばない
+      expect(vi.mocked(enrollFriendInReminder)).not.toHaveBeenCalled();
+    });
+
+    it('should normalize a bare targetDate to JST midnight before enrolling', async () => {
+      vi.mocked(enrollFriendInReminder).mockResolvedValue(SAMPLE_FRIEND_REMINDER as never);
+
+      const res = await app.request('/api/reminders/rem-1/enroll/friend-1', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetDate: '2026-03-01' }),
+      }, env);
+      expect(res.status).toBe(201);
+
+      // route は正規化済み (+09:00) の値で enroll を呼ぶ
+      expect(vi.mocked(enrollFriendInReminder)).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ targetDate: '2026-03-01T00:00:00+09:00' }),
+      );
     });
 
     it('should return 500 on DB error', async () => {
