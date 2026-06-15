@@ -11,6 +11,7 @@ import {
   enrollFriendInReminder,
   getFriendReminders,
   cancelFriendReminder,
+  normalizeReminderTargetDate,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
 
@@ -160,7 +161,16 @@ reminders.post('/api/reminders/:id/enroll/:friendId', async (c) => {
     const friendId = c.req.param('friendId');
     const body = await c.req.json<{ targetDate: string }>();
     if (!body.targetDate) return c.json({ success: false, error: 'targetDate is required' }, 400);
-    const enrollment = await enrollFriendInReminder(c.env.DB, { friendId, reminderId, targetDate: body.targetDate });
+    // bare な YYYY-MM-DD は JST midnight (+09:00) として正規化し、 UTC midnight との 9h ずれを防ぐ。
+    // 不正な日付は 400 (= enroll の throw を 500 にせず明示的に弾く)。
+    const targetDate = normalizeReminderTargetDate(body.targetDate);
+    if (!targetDate) {
+      return c.json(
+        { success: false, error: 'targetDate must be a valid date (YYYY-MM-DD) or ISO 8601 datetime' },
+        400,
+      );
+    }
+    const enrollment = await enrollFriendInReminder(c.env.DB, { friendId, reminderId, targetDate });
     return c.json({
       success: true,
       data: { id: enrollment.id, friendId: enrollment.friend_id, reminderId: enrollment.reminder_id, targetDate: enrollment.target_date, status: enrollment.status },

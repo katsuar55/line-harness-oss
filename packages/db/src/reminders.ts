@@ -97,14 +97,65 @@ export async function deleteReminderStep(db: D1Database, id: string): Promise<vo
 
 // --- 友だちリマインダ ---
 
+/**
+ * リマインダの `target_date` を「明示 +09:00 offset 付き ISO8601」に正規化する (2026-06-15)。
+ *
+ * enroll は free-form な日付文字列を受け付ける。 bare な `YYYY-MM-DD` は SQLite `unixepoch()` /
+ * JS `new Date()` の双方で **UTC** midnight と解釈され、 JST midnight より 9 時間ずれる
+ * (当ブランドは JST 運用・ jstNow() は +09:00)。 そこで naive な日付/日時を JST と見なし、
+ * 保存値が必ず explicit offset を持つようにする (= unixepoch と Date が同一 instant に一致)。
+ *
+ * - `YYYY-MM-DD`                       → `YYYY-MM-DDT00:00:00+09:00` (JST midnight)
+ * - `YYYY-MM-DDTHH:mm[:ss[.sss]]`      → `+09:00` を付与し秒まで補完 (offset 無し = JST)
+ * - 既に `Z` / `±HH:MM` offset 付き     → そのまま保持 (冪等)
+ * - 形式不正 / 実在しない暦日 / 範囲外の時刻 (hour≥24・min/sec≥60) / 範囲外 offset → `null` (route で 400)
+ *
+ * 範囲検査は自前で行い JS Date の寛容な parse に依存しない (例: JS は 24:00:00 を翌日 00:00 として
+ * 受理してしまうが、 reminder 用途では曖昧なので明示的に拒否する)。
+ */
+export function normalizeReminderTargetDate(input: unknown): string | null {
+  if (typeof input !== 'string') return null;
+  const s = input.trim();
+
+  // date (必須) + 任意の time (HH:mm[:ss[.sss]]) + 任意の offset (Z | ±HH:MM)。
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/.exec(s);
+  if (!m) return null;
+  const [, yy, mo, dd, hh, mi, ss, frac, off] = m;
+
+  // 実在しない暦日を拒否 (JS Date は 2026-02-30 を 03-02 へ silent roll-over するため明示検査)。
+  const year = Number(yy), month = Number(mo), day = Number(dd);
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  if (probe.getUTCFullYear() !== year || probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) {
+    return null;
+  }
+  // 時刻成分の範囲検査 (24:00 等の曖昧/不正値を明示拒否)。
+  if (hh !== undefined) {
+    if (Number(hh) > 23 || Number(mi) > 59 || (ss !== undefined && Number(ss) > 59)) return null;
+  }
+  // offset の範囲検査 (±00:00..±23:59 のみ)。
+  if (off && off !== 'Z') {
+    if (Number(off.slice(1, 3)) > 23 || Number(off.slice(4, 6)) > 59) return null;
+  }
+
+  // 正規化して返す。 bare date → JST midnight、 naive 時刻 → +09:00 付与 (秒補完)、 明示 offset/Z → 保持。
+  if (hh === undefined) return `${yy}-${mo}-${dd}T00:00:00+09:00`;
+  const normalized = `${yy}-${mo}-${dd}T${hh}:${mi}:${ss ?? '00'}${frac ?? ''}${off ?? '+09:00'}`;
+  return Number.isNaN(new Date(normalized).getTime()) ? null : normalized;
+}
+
 export async function enrollFriendInReminder(
   db: D1Database,
   input: { friendId: string; reminderId: string; targetDate: string },
 ): Promise<FriendReminderRow> {
+  // 単一 chokepoint なので DB 層でも正規化する (route 以外の caller も保護)。 正規化は冪等。
+  const targetDate = normalizeReminderTargetDate(input.targetDate);
+  if (!targetDate) {
+    throw new Error(`enrollFriendInReminder: invalid targetDate "${input.targetDate}"`);
+  }
   const id = crypto.randomUUID();
   const now = jstNow();
   await db.prepare(`INSERT INTO friend_reminders (id, friend_id, reminder_id, target_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
-    .bind(id, input.friendId, input.reminderId, input.targetDate, now, now).run();
+    .bind(id, input.friendId, input.reminderId, targetDate, now, now).run();
   return (await db.prepare(`SELECT * FROM friend_reminders WHERE id = ?`).bind(id).first<FriendReminderRow>())!;
 }
 
