@@ -119,36 +119,104 @@ export async function cancelFriendReminder(db: D1Database, id: string): Promise<
     .bind(jstNow(), id).run();
 }
 
-/** リマインダ配信処理用: 配信が必要な友だちリマインダを取得 */
-export async function getDueReminderDeliveries(db: D1Database, now: string): Promise<Array<FriendReminderRow & { steps: ReminderStepRow[] }>> {
-  // activeなリマインダ登録を取得
-  // ブラックリスト除外 (consent/景表法): do-not-contact の友だちには本人設定の
-  // リマインダーも配信しない (H2、 一斉配信/シナリオと統一)。 解除で自動再開。
-  const activeReminders = await db
-    .prepare(`SELECT fr.* FROM friend_reminders fr
+/**
+ * 1 tick あたりに処理する due friend_reminder の上限 (launch-scale hardening, 2026-06-15)。
+ * 数千友だち規模で `.all()` の 10,000 行上限による silent truncation (= 配信欠落) と、
+ * cron の subrequest 枯渇を防ぐ。 超過分は次 tick で drain される (配信済 step は EXISTS
+ * 条件から外れ、 ORDER BY target_date ASC で最古から処理される)。
+ */
+export const DUE_REMINDER_BATCH_LIMIT = 100;
+
+/** リマインダ配信処理用: 配信が必要な友だちリマインダを取得 (bounded + N+1 解消) */
+export async function getDueReminderDeliveries(
+  db: D1Database,
+  now: string,
+  limit: number = DUE_REMINDER_BATCH_LIMIT,
+): Promise<Array<FriendReminderRow & { steps: ReminderStepRow[] }>> {
+  // 1) 「due かつ未配信の step を 1 つ以上持つ」 friend_reminder のみを bounded に取得する。
+  //    - ブラックリスト除外 (consent/景表法): do-not-contact の友だちには本人設定の
+  //      リマインダーも配信しない (H2、 一斉配信/シナリオと統一)。 解除で自動再開。
+  //    - due 判定は unixepoch() で TZ 混在 (Z/+09:00) を UTC epoch に正規化する (D1 実機検証済:
+  //      unixepoch('…+09:00') == unixepoch('…Z') == unixepoch('….000+09:00'))。 これは bounded
+  //      候補を絞る prefilter で、 最終 due 判定は下記 3 の JS が行う。 JS 側も同じ whole-second
+  //      精度 (Math.floor(ms/1000)) で比較するため、 SQL prefilter と JS authoritative は完全に
+  //      同一の due 判定になる (= 取りこぼしも空 slot 浪費もなく、 配信欠落しない)。
+  //    - 注: unixepoch(列) は関数包みのため idx_friend_reminders は range scan に使えず full scan
+  //      になるが、 active な未配信 reminder は少数 + ≤5,000 友だち上限 (本番実測 sub-ms) で許容。
+  //      大規模化時は target_date の epoch 式 index を別 migration で検討。
+  const candidates = await db
+    .prepare(
+      `SELECT fr.* FROM friend_reminders fr
               INNER JOIN reminders r ON r.id = fr.reminder_id
               INNER JOIN friends f ON f.id = fr.friend_id
               WHERE fr.status = 'active' AND r.is_active = 1
-                AND COALESCE(f.is_blacklisted, 0) = 0`)
+                AND COALESCE(f.is_blacklisted, 0) = 0
+                AND EXISTS (
+                  SELECT 1 FROM reminder_steps rs
+                  WHERE rs.reminder_id = fr.reminder_id
+                    AND unixepoch(fr.target_date) + rs.offset_minutes * 60 <= unixepoch(?)
+                    AND NOT EXISTS (
+                      SELECT 1 FROM friend_reminder_deliveries frd
+                      WHERE frd.friend_reminder_id = fr.id
+                        AND frd.reminder_step_id = rs.id
+                    )
+                )
+              ORDER BY unixepoch(fr.target_date) ASC
+              LIMIT ?`,
+    )
+    .bind(now, limit)
     .all<FriendReminderRow>();
 
-  const results: Array<FriendReminderRow & { steps: ReminderStepRow[] }> = [];
-  for (const fr of activeReminders.results) {
-    const steps = await getReminderSteps(db, fr.reminder_id);
-    // 配信済みステップを取得
-    const delivered = await db
-      .prepare(`SELECT reminder_step_id FROM friend_reminder_deliveries WHERE friend_reminder_id = ?`)
-      .bind(fr.id)
-      .all<{ reminder_step_id: string }>();
-    const deliveredIds = new Set(delivered.results.map((d) => d.reminder_step_id));
+  const reminders = candidates.results;
+  if (reminders.length === 0) return [];
 
-    // 未配信で配信時刻が到来しているステップをフィルタ
+  // 2) 候補の steps / deliveries を IN 句で一括取得し N+1 を解消する。
+  const reminderIds = [...new Set(reminders.map((fr) => fr.reminder_id))];
+  const frIds = reminders.map((fr) => fr.id);
+  const ph = (n: number) => Array.from({ length: n }, () => '?').join(', ');
+
+  const stepsRes = await db
+    .prepare(
+      `SELECT * FROM reminder_steps WHERE reminder_id IN (${ph(reminderIds.length)}) ORDER BY offset_minutes ASC`,
+    )
+    .bind(...reminderIds)
+    .all<ReminderStepRow>();
+  const stepsByReminder = new Map<string, ReminderStepRow[]>();
+  for (const s of stepsRes.results) {
+    const arr = stepsByReminder.get(s.reminder_id);
+    if (arr) arr.push(s);
+    else stepsByReminder.set(s.reminder_id, [s]);
+  }
+
+  const delRes = await db
+    .prepare(
+      `SELECT friend_reminder_id, reminder_step_id FROM friend_reminder_deliveries WHERE friend_reminder_id IN (${ph(frIds.length)})`,
+    )
+    .bind(...frIds)
+    .all<{ friend_reminder_id: string; reminder_step_id: string }>();
+  const deliveredByFr = new Map<string, Set<string>>();
+  for (const d of delRes.results) {
+    const set = deliveredByFr.get(d.friend_reminder_id);
+    if (set) set.add(d.reminder_step_id);
+    else deliveredByFr.set(d.friend_reminder_id, new Set([d.reminder_step_id]));
+  }
+
+  // 3) JS で due step を最終確定する (delivered 除外 + dueSteps 構築、 authoritative)。
+  //    due 比較は SQL prefilter (unixepoch = 秒精度) と完全一致させるため whole-second に揃える
+  //    (Math.floor(ms/1000))。 これで prefilter と authoritative が同一判定になり、 ミリ秒境界での
+  //    乖離 (= SQL が拾い JS が落とす空 slot) が原理的に発生しない。 5分 cron なので秒未満は無意味。
+  //    不正な target_date は getTime()=NaN → Math.floor(NaN)=NaN、 `NaN <= nowSec === false` で除外
+  //    (= SQL の unixepoch(invalid)=NULL 除外と同挙動)。
+  const nowSec = Math.floor(new Date(now).getTime() / 1000);
+  const results: Array<FriendReminderRow & { steps: ReminderStepRow[] }> = [];
+  for (const fr of reminders) {
+    const steps = stepsByReminder.get(fr.reminder_id) ?? [];
+    const deliveredIds = deliveredByFr.get(fr.id) ?? new Set<string>();
+    const targetSec = Math.floor(new Date(fr.target_date).getTime() / 1000);
     const dueSteps = steps.filter((step) => {
       if (deliveredIds.has(step.id)) return false;
-      const targetTime = new Date(fr.target_date).getTime() + step.offset_minutes * 60_000;
-      return targetTime <= new Date(now).getTime();
+      return targetSec + step.offset_minutes * 60 <= nowSec;
     });
-
     if (dueSteps.length > 0) {
       results.push({ ...fr, steps: dueSteps });
     }

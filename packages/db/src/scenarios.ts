@@ -377,23 +377,42 @@ export async function enrollFriendInScenario(
     .first<FriendScenario>())!;
 }
 
+/**
+ * 1 tick あたりに処理する due scenario の上限 (launch-scale hardening, 2026-06-15)。
+ * 数千友だち規模で `.all()` の 10,000 行上限による silent truncation (= 配信欠落) と、
+ * cron の CPU/subrequest 枯渇を防ぐ。 超過分は次 tick で drain される (各行は claim→
+ * advance/complete で due 集合から外れ、 ORDER BY ... ASC で最古 due から処理される)。
+ */
+export const DUE_SCENARIO_BATCH_LIMIT = 200;
+
 export async function getFriendScenariosDueForDelivery(
   db: D1Database,
   now: string,
+  limit: number = DUE_SCENARIO_BATCH_LIMIT,
 ): Promise<FriendScenario[]> {
-  // Fetch all active scenarios with a delivery time, then filter by epoch comparison
-  // to handle mixed timestamp formats (Z and +09:00) during migration
+  // due 判定・並べ替え・件数上限をすべて SQL 側で行う (= JS 全件 fetch を廃止)。
+  // unixepoch() は next_delivery_at / now の TZ offset (Z と +09:00 の混在) を UTC epoch に
+  // 正規化するため、 形式が混在しても従来の JS epoch 比較と (秒精度で) 一致する
+  // (D1 実機検証: unixepoch('…+09:00') == unixepoch('…Z') == unixepoch('….000+09:00'))。
+  // 秒精度のため境界では旧 JS(ms) より最大 1 秒早く due になり得るが、 SQL が due と返す行は
+  // 旧 JS でも必ず due (= 取りこぼしゼロ。 floor 単調性: 秒が後なら ms も後)、 かつ 5 分 cron では
+  // 秒未満差は無意味なので実質同一。 不正な timestamp は unixepoch()=NULL で除外される
+  // (= 旧 JS の `NaN <= nowMs === false` と同挙動)。
+  // 注: unixepoch(列) は関数包みのため idx_friend_scenarios_next_delivery_at を range scan に
+  // 使えず full scan + temp sort になるが、 active scenario は少数 + ≤5,000 友だち上限 (本番実測
+  // sub-ms) で許容。 大規模化時は epoch 式 index を別 migration で検討。
   const result = await db
     .prepare(
       `SELECT * FROM friend_scenarios
        WHERE status = 'active'
-         AND next_delivery_at IS NOT NULL`,
+         AND next_delivery_at IS NOT NULL
+         AND unixepoch(next_delivery_at) <= unixepoch(?)
+       ORDER BY unixepoch(next_delivery_at) ASC
+       LIMIT ?`,
     )
+    .bind(now, limit)
     .all<FriendScenario>();
-  const nowMs = new Date(now).getTime();
-  return result.results
-    .filter((fs) => new Date(fs.next_delivery_at!).getTime() <= nowMs)
-    .sort((a, b) => new Date(a.next_delivery_at!).getTime() - new Date(b.next_delivery_at!).getTime());
+  return result.results;
 }
 
 export async function advanceFriendScenario(
