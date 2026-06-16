@@ -9,6 +9,11 @@ DMM を解約し本番 OA を Harness に切り替える当日の作業手順書
 
 ## A. 事前準備（T−1日、ダウンタイムなし）
 
+> **🟢 自律分の現状（2026-06-16 実測・検証済）**: A-3 / A-4 の seed はほぼ投入済み（#117 再入荷 / #119 FAQ v3 等）。
+> 当日は **`node scripts/cutover-prep-A.mjs`**（read-only 監査ランナー）で go/no-go を一発確認すること。
+> `API_KEY=xxx node scripts/cutover-prep-A.mjs` で A-5 webhook 購読も検証（`--register` で不足分を登録）。
+> 実測サマリは [`docs/CUTOVER_PREP_A_STATUS.md`](CUTOVER_PREP_A_STATUS.md)。
+
 ### A-1. 🟢 コード確定 + テスト worker へ deploy
 - [ ] main が全 PR merge 済み・`pnpm preflight` All green
 - [ ] `pnpm --filter worker run deploy`（post-deploy-check で bundle 一致確認）
