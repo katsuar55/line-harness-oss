@@ -193,6 +193,8 @@ function makeTemplate(over: Partial<EmailTemplate> = {}): EmailTemplate {
  */
 interface MockDbOpts {
   subscriberEmail?: string | null;
+  /** true なら messages_log に当該 step が既配信として存在する想定 (二重配信ガード検証用) */
+  alreadyDelivered?: boolean;
 }
 
 function makeMockDb(opts: MockDbOpts = {}): D1Database {
@@ -203,6 +205,10 @@ function makeMockDb(opts: MockDbOpts = {}): D1Database {
         first: vi.fn(async () => {
           if (sql.includes('FROM email_subscribers')) {
             return subscriberEmail ? { email: subscriberEmail } : null;
+          }
+          // 二重配信ガード: messages_log に既配信があれば送信を skip させる
+          if (sql.includes('FROM messages_log')) {
+            return opts.alreadyDelivered ? { 1: 1 } : null;
           }
           return null;
         }),
@@ -267,6 +273,21 @@ describe('processStepDeliveries — channel dispatcher routing', () => {
     expect(lineClient.pushMessage).toHaveBeenCalledTimes(1);
     expect(mockDispatch).not.toHaveBeenCalled();
     // Last step → completeFriendScenario, not advance
+    expect(mockCompleteFriendScenario).toHaveBeenCalledTimes(1);
+  });
+
+  it('二重配信ガード: 同一 step が messages_log に既配信なら送信 skip・state は前進', async () => {
+    // friend_add 即時 reply 配信や advance 失敗後の cron 再処理を想定。
+    mockGetScenarioSteps.mockResolvedValue([makeStep({ channel: 'line' })]);
+    const lineClient = makeLineClient();
+    const db = makeMockDb({ alreadyDelivered: true });
+
+    await processStepDeliveries(db, lineClient, 'https://worker.test', fakeEmailConfig);
+
+    // 送信は skip (二重メッセージ防止)
+    expect(lineClient.pushMessage).not.toHaveBeenCalled();
+    expect(mockDispatch).not.toHaveBeenCalled();
+    // state は前進する (last step → complete) ので stuck しない
     expect(mockCompleteFriendScenario).toHaveBeenCalledTimes(1);
   });
 

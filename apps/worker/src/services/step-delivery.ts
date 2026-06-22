@@ -229,7 +229,20 @@ async function processSingleDelivery(
   // Default 'line' (or undefined for backward compat) keeps existing pushMessage path.
   const channel = currentStep.channel ?? 'line';
 
-  if (channel === 'line') {
+  // 二重配信ガード (cutover hardening 2026-06): friend_add の即時 reply 配信 (webhook.ts) や、
+  // 直前 tick で送信成功後に advance が失敗したケースで、 同一 step が既に messages_log に
+  // 記録済なら送信を skip し、 state だけ前進させる (= 重複メッセージ防止)。 scenario_step_id は
+  // 1 step = 1 配信の冪等 key。 happy-path (初回配信) は alreadyDelivered=false なので挙動不変。
+  const alreadyDelivered = await db
+    .prepare(`SELECT 1 FROM messages_log WHERE friend_id = ? AND scenario_step_id = ? LIMIT 1`)
+    .bind(fs.friend_id, currentStep.id)
+    .first();
+
+  if (alreadyDelivered) {
+    console.info(
+      `[step-delivery] step ${currentStep.id} already delivered to friend ${fs.friend_id}; skipping send (idempotent)`,
+    );
+  } else if (channel === 'line') {
     await sendLineStep(db, lineClient, friend, currentStep, workerUrl);
   } else if (channel === 'email') {
     await sendEmailStep(db, friend, currentStep, emailConfig);
