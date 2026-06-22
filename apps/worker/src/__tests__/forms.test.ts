@@ -124,6 +124,12 @@ vi.mock('@line-crm/line-sdk', () => ({
   },
 }));
 
+// Mock LIFF idToken 検証 (IDOR fix): forms submit は検証済 userId からのみ friend を特定する
+const mockVerifyLineIdToken = vi.fn<(idToken: string, channelId: string) => Promise<string | null>>();
+vi.mock('../middleware/liff-auth.js', () => ({
+  verifyLineIdToken: (idToken: string, channelId: string) => mockVerifyLineIdToken(idToken, channelId),
+}));
+
 // Mock step-delivery to avoid deep import chain
 vi.mock('../services/step-delivery.js', () => ({
   buildMessage: vi.fn((_type: string, content: string) => ({
@@ -664,11 +670,9 @@ describe('Forms routes', () => {
       expect(json.success).toBe(false);
     });
 
-    it('resolves friend by lineUserId', async () => {
-      mockGetFormById.mockResolvedValue({
-        ...MOCK_FORM,
-        fields: '[]', // no required fields
-      });
+    it('resolves friend ONLY from a verified idToken (client friendId/lineUserId は無視)', async () => {
+      mockGetFormById.mockResolvedValue({ ...MOCK_FORM, fields: '[]' });
+      mockVerifyLineIdToken.mockResolvedValue('U12345');
       mockGetFriendByLineUserId.mockResolvedValue({ id: 'friend-resolved', line_user_id: 'U12345' });
       mockGetFriendById.mockResolvedValue({
         id: 'friend-resolved',
@@ -689,57 +693,57 @@ describe('Forms routes', () => {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ lineUserId: 'U12345', data: {} }),
+          // 攻撃者が friendId/lineUserId を詐称しても、 idToken 検証結果のみが使われる
+          body: JSON.stringify({ idToken: 'tok-abc', friendId: 'attacker', lineUserId: 'attacker-uid', data: {} }),
         },
         env,
       );
 
       expect(res.status).toBe(201);
+      expect(mockVerifyLineIdToken).toHaveBeenCalledWith('tok-abc', 'test-login-channel-id');
       expect(mockGetFriendByLineUserId).toHaveBeenCalledWith(env.DB, 'U12345');
       expect(mockCreateFormSubmission).toHaveBeenCalledWith(env.DB, expect.objectContaining({
         friendId: 'friend-resolved',
       }));
     });
 
-    it('uses friendId directly when provided', async () => {
-      mockGetFormById.mockResolvedValue({
-        ...MOCK_FORM,
-        fields: '[]',
-      });
-      mockGetFriendById.mockResolvedValue({
-        id: 'friend-direct',
-        line_user_id: 'U99999',
-        display_name: 'Direct Friend',
-        metadata: '{}',
-      });
+    it('IDOR防止: idToken 無しで friendId/lineUserId を送っても友だち特定も副作用も起きない', async () => {
+      mockGetFormById.mockResolvedValue({ ...MOCK_FORM_WITH_EFFECTS, fields: '[]' });
       mockCreateFormSubmission.mockResolvedValue({
-        id: 'sub-direct',
-        form_id: 'form-1',
-        friend_id: 'friend-direct',
+        id: 'sub-x',
+        form_id: 'form-effects',
+        friend_id: null,
         data: '{}',
         created_at: NOW,
       });
 
       const res = await app.request(
-        '/api/forms/form-1/submit',
+        '/api/forms/form-effects/submit',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ friendId: 'friend-direct', data: {} }),
+          body: JSON.stringify({ friendId: 'victim-friend', lineUserId: 'victim-uid', data: { name: 'x' } }),
         },
         env,
       );
 
       expect(res.status).toBe(201);
-      // Should NOT call getFriendByLineUserId when friendId is provided
+      await new Promise((r) => setTimeout(r, 50));
+      // 友だち特定・metadata 改竄・タグ・シナリオ・送信 のいずれも起きない
+      expect(mockVerifyLineIdToken).not.toHaveBeenCalled();
       expect(mockGetFriendByLineUserId).not.toHaveBeenCalled();
+      expect(mockAddTagToFriend).not.toHaveBeenCalled();
+      expect(mockEnrollFriendInScenario).not.toHaveBeenCalled();
+      // 回答は friendId=null で保存される (= 匿名回答として記録のみ)
+      expect(mockCreateFormSubmission).toHaveBeenCalledWith(env.DB, expect.objectContaining({
+        friendId: null,
+      }));
     });
 
-    it('triggers side effects when form has tag, scenario, and metadata', async () => {
-      mockGetFormById.mockResolvedValue({
-        ...MOCK_FORM_WITH_EFFECTS,
-        fields: '[]',
-      });
+    it('triggers side effects when a verified idToken resolves a friend', async () => {
+      mockGetFormById.mockResolvedValue({ ...MOCK_FORM_WITH_EFFECTS, fields: '[]' });
+      mockVerifyLineIdToken.mockResolvedValue('U11111');
+      mockGetFriendByLineUserId.mockResolvedValue({ id: 'friend-1', line_user_id: 'U11111' });
       mockGetFriendById.mockResolvedValue({
         id: 'friend-1',
         line_user_id: 'U11111',
@@ -761,7 +765,7 @@ describe('Forms routes', () => {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ friendId: 'friend-1', data: { name: 'Test' } }),
+          body: JSON.stringify({ idToken: 'tok-1', data: { name: 'Test' } }),
         },
         env,
       );

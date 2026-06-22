@@ -12,6 +12,7 @@ import {
 import { getFriendByLineUserId, getFriendById } from '@line-crm/db';
 import { addTagToFriend, enrollFriendInScenario } from '@line-crm/db';
 import type { Form as DbForm, FormSubmission as DbFormSubmission } from '@line-crm/db';
+import { verifyLineIdToken } from '../middleware/liff-auth.js';
 import type { Env } from '../index.js';
 
 const forms = new Hono<Env>();
@@ -181,6 +182,9 @@ forms.post('/api/forms/:id/submit', async (c) => {
     }
 
     const body = await c.req.json<{
+      // IDOR fix (2026-06-23): friendId / lineUserId は client から受け取っても **信用しない**。
+      // 友だち特定は検証済 LIFF idToken からのみ行う (下記参照)。 型には残すが副作用には使わない。
+      idToken?: string;
       lineUserId?: string;
       friendId?: string;
       data?: Record<string, unknown>;
@@ -208,12 +212,22 @@ forms.post('/api/forms/:id/submit', async (c) => {
       }
     }
 
-    // Resolve friend by lineUserId or friendId
-    let friendId: string | null = body.friendId ?? null;
-    if (!friendId && body.lineUserId) {
-      const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
-      if (friend) {
-        friendId = friend.id;
+    // 友だち特定は **検証済 LIFF idToken** からのみ導出する (IDOR fix 2026-06-23)。
+    // client 供給の friendId / lineUserId は信用しない (= 任意 friend の metadata / タグ /
+    // シナリオ / LINE 送信を改竄する IDOR を防ぐ)。 idToken は body または Authorization Bearer から
+    // 受け取り LINE で検証。 検証できなければ friendId=null → 回答だけ保存し副作用は skip。
+    let friendId: string | null = null;
+    const authHeader = c.req.header('Authorization');
+    const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : undefined;
+    const idToken = body.idToken ?? headerToken;
+    const loginChannelId = c.env.LINE_LOGIN_CHANNEL_ID;
+    if (idToken && loginChannelId) {
+      const verifiedUserId = await verifyLineIdToken(idToken, loginChannelId);
+      if (verifiedUserId) {
+        const friend = await getFriendByLineUserId(c.env.DB, verifiedUserId);
+        if (friend) {
+          friendId = friend.id;
+        }
       }
     }
 

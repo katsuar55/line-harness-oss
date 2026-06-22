@@ -23,7 +23,7 @@ interface LiffTokenPayload {
   email?: string;
 }
 
-async function verifyLineIdToken(
+export async function verifyLineIdToken(
   idToken: string,
   channelId: string,
 ): Promise<string | null> {
