@@ -538,6 +538,33 @@ export async function processScheduledBroadcasts(
   const allBroadcasts = await getBroadcasts(db);
 
   const nowMs = Date.now();
+
+  // #6 (cutover hardening 2026-06): claim 後 (status='sending') に worker が crash すると
+  // 永久 stuck になる (cron は scheduled しか拾わない、 backlog E2)。 multicast バッチ途中の
+  // 二重送信を避けるため auto-reset せず、 30分超 stuck を検知して warn + audit に残し可視化する
+  // (= silent stuck の解消。 運用者が手動 reset を判断できる)。 scheduled_at 基準のため、 cutover
+  // scale で大半を占める scheduled 経由の月次 broadcast の stuck を捕捉する。
+  const STUCK_THRESHOLD_MS = 30 * 60_000;
+  const stuck = allBroadcasts.filter(
+    (b) =>
+      b.status === 'sending' &&
+      b.scheduled_at !== null &&
+      nowMs - new Date(b.scheduled_at).getTime() > STUCK_THRESHOLD_MS,
+  );
+  if (stuck.length > 0) {
+    console.warn(
+      `[broadcast] ${stuck.length} broadcast(s) stuck in 'sending' >30min (manual review needed): ${stuck.map((b) => b.id).join(', ')}`,
+    );
+    await auditSystem(db, {
+      action: 'broadcast.stuck_sending_detected',
+      actorType: 'cron',
+      targetType: 'broadcast',
+      targetId: stuck[0].id,
+      result: 'failure',
+      metadata: { count: stuck.length, ids: stuck.map((b) => b.id), thresholdMinutes: 30 },
+    });
+  }
+
   const scheduled = allBroadcasts.filter(
     (b) =>
       b.status === 'scheduled' &&

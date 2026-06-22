@@ -894,4 +894,27 @@ describe('processScheduledBroadcasts', () => {
     expect(mockUpdateBroadcastStatus).not.toHaveBeenCalled();
     expect(dispatchMock).not.toHaveBeenCalled();
   });
+
+  it("status='sending' で 30分超 stuck の broadcast を検知して warn する (auto-resend しない)", async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const stuck = makeBroadcast({
+      id: 'bc-stuck',
+      channel: 'line',
+      status: 'sending',
+      scheduled_at: '2020-01-01T00:00:00+09:00', // 30分どころか遥か過去
+      target_type: 'all',
+    });
+    mockGetBroadcasts.mockResolvedValue([stuck]);
+    const db = makeFakeDb();
+    const lineClient = makeFakeLineClient();
+
+    await processScheduledBroadcasts(db, lineClient as unknown as LineClient, undefined, makeConfig());
+
+    // silent stuck を可視化 (warn)
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("stuck in 'sending'"));
+    // auto-resend しない: 'sending' は scheduled filter に入らないので送信処理に進まない
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(mockClaimBroadcastForSending).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
 });
