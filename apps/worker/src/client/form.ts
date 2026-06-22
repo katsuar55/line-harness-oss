@@ -384,8 +384,10 @@ async function submitForm(): Promise<void> {
   try {
     const data = collectFormData();
     const body: Record<string, unknown> = { data };
-    if (state.profile?.userId) body.lineUserId = state.profile.userId;
-    // Note: state.friendId is users.id (UUID), not friends.id — don't send as friendId
+    // IDOR fix (2026-06-23): server は friendId/lineUserId を信用せず、 検証済 idToken からのみ
+    // 友だちを特定する。 そのため idToken を送る (lineUserId は送らない)。
+    const idToken = liff.getIDToken();
+    if (idToken) body.idToken = idToken;
 
     const res = await apiCall(`/api/forms/${state.formDef.id}/submit`, {
       method: 'POST',
