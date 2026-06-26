@@ -46,6 +46,7 @@ export async function processBroadcastSend(
   broadcastId: string,
   workerUrl?: string,
   emailConfig?: EmailDispatchConfig | null,
+  options?: { broadcastAllEnabled?: boolean },
 ): Promise<ProcessBroadcastSendResult> {
   // Atomic claim (CAS): 重複 cron / 手動送信による二重送信を防ぐ。
   // status を scheduled|draft → 'sending' に遷移できた (changes===1) 実行のみ送信に進む。
@@ -81,7 +82,14 @@ export async function processBroadcastSend(
       );
       await updateBroadcastStatus(db, broadcastId, 'sent', counts);
     } else {
-      const counts = await sendBroadcastLine(db, lineClient, broadcast, broadcastId, workerUrl);
+      const counts = await sendBroadcastLine(
+        db,
+        lineClient,
+        broadcast,
+        broadcastId,
+        workerUrl,
+        options?.broadcastAllEnabled ?? false,
+      );
       await updateBroadcastStatus(db, broadcastId, 'sent', counts);
     }
   } catch (err) {
@@ -118,6 +126,7 @@ async function sendBroadcastLine(
   broadcast: Broadcast,
   broadcastId: string,
   workerUrl?: string,
+  broadcastAllEnabled = false,
 ): Promise<DispatchCounts> {
   // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
   let finalType: string = broadcast.message_type;
@@ -139,6 +148,26 @@ async function sendBroadcastLine(
     // ⚠️ blacklist 適用不可: LINE 側が全 follower に直接配信するため friend を列挙せず、
     //    is_blacklisted での除外ができない (= 構造的制約)。 厳密な blacklist 遵守が要る場合は
     //    target_type='tag' / email 経路 (= friend 選択を経るため除外が効く) を使う。
+    //
+    // ② Codex review (2026-06-26): 上記の構造的 blacklist/consent bypass を本番で誤発火させないため、
+    //    BROADCAST_ALL_ENABLED='true' が明示設定されない限り送信を拒否する (= 既定 OFF・安全側)。
+    //    拒否は throw → caller の catch で status='draft' に戻る (= 再送 cron に拾われず止まる)。
+    //    同意撤回者/苦情対応済ユーザーへの再配信 (景表法/consent リスク) を構造的に防ぐ。
+    if (!broadcastAllEnabled) {
+      await auditSystem(db, {
+        action: 'broadcast.all_target_blocked',
+        actorType: 'system',
+        targetType: 'broadcast',
+        targetId: broadcastId,
+        result: 'failure',
+        errorMessage:
+          'BROADCAST_ALL_ENABLED 未設定のため LINE broadcast(target_type=all) を拒否 (blacklist 適用不可の構造的制約)',
+        metadata: { target_type: 'all', channel: 'line', reason: 'blacklist_bypass_prevention' },
+      });
+      throw new Error(
+        'LINE broadcast to "all" followers is disabled (BROADCAST_ALL_ENABLED not set): blacklist/consent cannot be applied. Use target_type="tag" or email targeting, or enable the flag after review.',
+      );
+    }
     // Capture X-Line-Request-Id so we can later query open/click stats
     // from LINE Insight API (/v2/bot/insight/message/event).
     const { requestId } = await lineClient.broadcastWithRequestId([message]);
@@ -534,6 +563,7 @@ export async function processScheduledBroadcasts(
   lineClient: LineClient,
   workerUrl?: string,
   emailConfig?: EmailDispatchConfig | null,
+  options?: { broadcastAllEnabled?: boolean },
 ): Promise<void> {
   const allBroadcasts = await getBroadcasts(db);
 
@@ -574,7 +604,7 @@ export async function processScheduledBroadcasts(
 
   for (const broadcast of scheduled) {
     try {
-      await processBroadcastSend(db, lineClient, broadcast.id, workerUrl, emailConfig ?? null);
+      await processBroadcastSend(db, lineClient, broadcast.id, workerUrl, emailConfig ?? null, options);
     } catch (err) {
       console.error(`Failed to send scheduled broadcast ${broadcast.id}:`, err);
       // H5 (2026-05-22): scheduled cron 失敗を audit_logs に永続化

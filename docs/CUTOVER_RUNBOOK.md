@@ -106,5 +106,31 @@ cd apps/worker && npx wrangler d1 execute <DB> --remote --file ../../packages/db
 
 ---
 
+## G. broadcast「sending」 stuck 復旧手順（Codex review #4、 2026-06-26）
+予約 broadcast は claim(status→`sending`) 後に worker が crash すると **永久 stuck**（cron は `scheduled` しか拾わない）。二重送信を避けるため **auto-reset しない**設計なので、検知時は手動復旧する。
+
+1. **検知**: worker log `[broadcast] N broadcast(s) stuck in 'sending' >30min` / audit `action='broadcast.stuck_sending_detected'`（cron-monitor でも可視化）。対象 ID は audit の `metadata.ids`。
+2. **実送信されたか確認**（dup 送信回避の要）:
+   - LINE(all): `SELECT line_request_id FROM broadcasts WHERE id='<id>'` → **NOT NULL なら送信済**。
+   - LINE(tag/multicast): `SELECT COUNT(*) FROM messages_log WHERE broadcast_id='<id>'` → **>0 なら一部以上送信済**。
+   - email: `SELECT status, COUNT(*) FROM email_messages_log WHERE broadcast_id='<id>' GROUP BY status` → sent/delivered があれば送信済。
+3. **復旧**:
+   - 未送信が確実（上記すべて 0）→ `UPDATE broadcasts SET status='draft' WHERE id='<id>' AND status='sending';`（次回手動送信で再実行）。
+   - 既に送信済 → `UPDATE broadcasts SET status='sent', sent_at=<JST ISO> WHERE id='<id>' AND status='sending';`（再送しない）。
+   - 不明なら触らず調査（Cloudflare ログで crash 時刻特定）。
+4. **⚠️ dup 送信警告**: multicast は per-batch dedup なし。一部送信済で `draft` に戻すと既送 friend へ再送される。**送信済が疑われるなら `sent` 化を優先**。
+
+## H. dedup テーブル確認（Codex review #5、 2026-06-26）
+- [ ] `webhook_deliveries` が本番 D1 に存在（migration 066）: `SELECT COUNT(*) FROM webhook_deliveries;`（=二重 fireEvent 防止が機能する前提。 未適用でも fail-open で動くが dedup は無効化される）
+
+## 既知の deferred 事項（Codex review 2026-06-26、 launch ブロッカーではない）
+- **multi-account 前提**（#1/#6）: 現状 `line_accounts`=0 の**単一アカウント**前提。**2nd LINE アカウント追加前**に broadcast の `line_account_id` scoping + destination 必須化が必要（未対応で 2nd を足すと token mismatch / 誤配信）。
+- **broadcast 全件ロード**（#3）: `getBroadcasts` が unbounded（現 14 行で軽微）。volume 増加前に `WHERE status='scheduled' AND scheduled_at<=? LIMIT` の bounded query へ。
+- **forms 公開前**（#7/#8）: `POST /api/forms/:id/submit` は public・rate-limit なし。**forms を実運用する前**に Turnstile / rate-limit + PII 再掲（確認 push）の方針確定。
+- **PII ログ運用**（#13/#14）: messages_log / conversation_logs に生テキスト（住所/電話/注文番号等）が残りうる。**保持期間・閲覧権限・外部ログ(Discord/Axiom)へ生 PII を出さない方針**を Katsu 判断で定義（CRM の本質機能のため write 時 redaction は非推奨）。
+- **`target_type='all'` 全員配信**（#2、 対処済の補足）: 既定で**無効**（`BROADCAST_ALL_ENABLED` 未設定）。正式な全員配信が必要なら friend 列挙 + `is_blacklisted` 除外の multicast 実装を post-launch で。
+
+---
+
 ## 付録: 当日 Katsu 承認チェックポイント（🔴 一覧）
 A-2 本番secret受領 / A-6 OA Manager設定 / B-1 Webhook切替(=DMM停止) / B-5 gated有効化(money) / E DMM解約

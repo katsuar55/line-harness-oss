@@ -336,7 +336,9 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
 
     const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
     const emailConfig = buildEmailDispatchConfig(c.env);
-    const sendResult = await processBroadcastSend(c.env.DB, lineClient, id, c.env.WORKER_URL, emailConfig);
+    const sendResult = await processBroadcastSend(c.env.DB, lineClient, id, c.env.WORKER_URL, emailConfig, {
+      broadcastAllEnabled: c.env.BROADCAST_ALL_ENABLED === 'true',
+    });
 
     if (!sendResult.claimed) {
       // 別 cron / 手動送信が先に claim 済で送信中 (= 競合に敗北)。 二重送信せず、

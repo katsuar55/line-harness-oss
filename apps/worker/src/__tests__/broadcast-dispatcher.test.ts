@@ -249,7 +249,9 @@ describe("processBroadcastSend channel='line' (default)", () => {
     const lineClient = makeFakeLineClient();
     const db = makeFakeDb();
 
-    await processBroadcastSend(db, lineClient as unknown as LineClient, broadcast.id, undefined, null);
+    await processBroadcastSend(db, lineClient as unknown as LineClient, broadcast.id, undefined, null, {
+      broadcastAllEnabled: true,
+    });
 
     expect(lineClient.broadcastWithRequestId).toHaveBeenCalledTimes(1);
     expect(dispatchMock).not.toHaveBeenCalled();
@@ -293,7 +295,9 @@ describe("processBroadcastSend channel='line' (default)", () => {
     const lineClient = makeFakeLineClient();
     const db = makeFakeDb();
 
-    await processBroadcastSend(db, lineClient as unknown as LineClient, broadcast.id);
+    await processBroadcastSend(db, lineClient as unknown as LineClient, broadcast.id, undefined, null, {
+      broadcastAllEnabled: true,
+    });
 
     expect(lineClient.broadcastWithRequestId).toHaveBeenCalledTimes(1);
     expect(dispatchMock).not.toHaveBeenCalled();
@@ -340,7 +344,9 @@ describe('processBroadcastSend atomic claim (E)', () => {
     const lineClient = makeFakeLineClient();
     const db = makeFakeDb();
 
-    await processBroadcastSend(db, lineClient as unknown as LineClient, broadcast.id, undefined, null);
+    await processBroadcastSend(db, lineClient as unknown as LineClient, broadcast.id, undefined, null, {
+      broadcastAllEnabled: true,
+    });
 
     expect(mockClaimBroadcastForSending).toHaveBeenCalledTimes(1);
     expect(lineClient.broadcastWithRequestId).toHaveBeenCalledTimes(1);
@@ -349,6 +355,99 @@ describe('processBroadcastSend atomic claim (E)', () => {
       broadcast.id,
       'sent',
       expect.objectContaining({ totalCount: 0, successCount: 0 }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ② Codex review (2026-06-26): target_type='all' blacklist-bypass guard
+//    (BROADCAST_ALL_ENABLED 既定OFF — LINE broadcast API は friend 列挙せず blacklist 不可)
+// ---------------------------------------------------------------------------
+
+describe("processBroadcastSend target_type='all' guard (BROADCAST_ALL_ENABLED)", () => {
+  it('flag OFF (options 省略) + channel=line/all → 送信拒否 (throw, broadcastWithRequestId 呼ばれない, status=draft)', async () => {
+    const broadcast = makeBroadcast({ channel: 'line', target_type: 'all' });
+    mockGetBroadcastById.mockResolvedValue(broadcast);
+    mockUpdateBroadcastStatus.mockResolvedValue(undefined);
+
+    const lineClient = makeFakeLineClient();
+    const db = makeFakeDb();
+
+    await expect(
+      processBroadcastSend(db, lineClient as unknown as LineClient, broadcast.id, undefined, null),
+    ).rejects.toThrow(/disabled/i);
+
+    // LINE broadcast API は呼ばれない (= blacklist bypass 配信が起きない)
+    expect(lineClient.broadcastWithRequestId).not.toHaveBeenCalled();
+    // claim 後 throw → catch で status='draft' に戻る (= 再送 cron に拾われない)
+    const calls = mockUpdateBroadcastStatus.mock.calls;
+    expect(calls[calls.length - 1]?.[2]).toBe('draft');
+  });
+
+  it('flag OFF (明示 false) + channel=line/all → 送信拒否', async () => {
+    const broadcast = makeBroadcast({ channel: 'line', target_type: 'all' });
+    mockGetBroadcastById.mockResolvedValue(broadcast);
+    mockUpdateBroadcastStatus.mockResolvedValue(undefined);
+
+    const lineClient = makeFakeLineClient();
+    const db = makeFakeDb();
+
+    await expect(
+      processBroadcastSend(db, lineClient as unknown as LineClient, broadcast.id, undefined, null, {
+        broadcastAllEnabled: false,
+      }),
+    ).rejects.toThrow(/disabled/i);
+    expect(lineClient.broadcastWithRequestId).not.toHaveBeenCalled();
+  });
+
+  it('flag ON + channel=line/all → 送信実行 (broadcastWithRequestId 呼ばれる)', async () => {
+    const broadcast = makeBroadcast({ channel: 'line', target_type: 'all' });
+    mockGetBroadcastById.mockResolvedValue(broadcast);
+    mockUpdateBroadcastStatus.mockResolvedValue(undefined);
+
+    const lineClient = makeFakeLineClient();
+    const db = makeFakeDb();
+
+    await processBroadcastSend(db, lineClient as unknown as LineClient, broadcast.id, undefined, null, {
+      broadcastAllEnabled: true,
+    });
+
+    expect(lineClient.broadcastWithRequestId).toHaveBeenCalledTimes(1);
+    expect(mockUpdateBroadcastStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      broadcast.id,
+      'sent',
+      expect.objectContaining({ totalCount: 0, successCount: 0 }),
+    );
+  });
+
+  it('channel=email/all + flag OFF → ガード対象外 (email は friend 列挙で is_blacklisted 除外できる)', async () => {
+    const broadcast = makeBroadcast({
+      channel: 'email',
+      target_type: 'all',
+      email_template_id: 'tpl-1',
+    });
+    mockGetBroadcastById.mockResolvedValue(broadcast);
+    mockUpdateBroadcastStatus.mockResolvedValue(undefined);
+    mockGetEmailTemplateById.mockResolvedValue(makeTemplate());
+    dispatchMock.mockResolvedValue({
+      results: [{ channel: 'email', status: 'sent', providerMessageId: 'pm', subscriberId: 'sub' }],
+    });
+
+    const subs = new Map<string, { id: string; email: string }>([['f-1', { id: 'sub-1', email: 'a@example.com' }]]);
+    const db = makeFakeDb({ subscribers: subs, allFollowingFriends: [makeFriend({ id: 'f-1' })] });
+    const lineClient = makeFakeLineClient();
+
+    // flag OFF でも email/all は throw せず送信される
+    await processBroadcastSend(db, lineClient as unknown as LineClient, broadcast.id, undefined, makeConfig());
+
+    expect(lineClient.broadcastWithRequestId).not.toHaveBeenCalled();
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    expect(mockUpdateBroadcastStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      broadcast.id,
+      'sent',
+      expect.objectContaining({ totalCount: 1, successCount: 1 }),
     );
   });
 });
