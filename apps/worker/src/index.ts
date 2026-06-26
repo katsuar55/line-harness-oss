@@ -103,6 +103,7 @@ import { syncCloudflareChangelog } from './services/cloudflare-changelog-sync.js
 import { processEmailFailureMonitor } from './services/email-failure-monitor.js';
 import { processCronCleanup } from './services/cron-cleanup.js';
 import { processAccountLinkCleanup } from './services/account-link-cleanup.js';
+import { processWebhookDeliveryCleanup } from './services/webhook-delivery-cleanup.js';
 import { withHeartbeat } from './services/cron-heartbeat.js';
 import { createLogger } from './services/logger.js';
 import { buildEmailDispatchConfig } from './services/email-dispatch-config.js';
@@ -179,6 +180,7 @@ export type Env = {
     ACCOUNT_LINK_METAFIELD_NAMESPACE?: string; // 自己所有 customer metafield の namespace (default 'naturism')
     ACCOUNT_LINK_METAFIELD_KEY?: string;       // 同 key (default 'line_user_id')
     ACCOUNT_LINK_CLEANUP_FORCE?: string;       // 'true' で account_link_codes cleanup の JST 03:10 gating を bypass
+    WEBHOOK_DELIVERY_CLEANUP_FORCE?: string;   // 'true' で webhook_deliveries cleanup の JST 03:20 gating を bypass
     // 自社内製ロイヤリティ PR5 (2026-06-04): ランク割引コードの本番発行 gate
     //   'true' で issueRankDiscountForFriend が本番 Shopify に書込 (= 未設定なら no-op、 本番未書込)。
     RANK_DISCOUNT_ENABLED?: string;
@@ -542,6 +544,18 @@ async function scheduled(
       if (r.deletedRows > 0) console.info(`account-link-cleanup: deleted=${r.deletedRows}`);
     }).catch((err) =>
       console.error('account-link-cleanup failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // ③ webhook 冪等テーブル (webhook_deliveries, migration 066) の TTL prune (2026-06-26)
+  //   JST 03:20-03:24 のみ trigger (= cron-cleanup 03:00 / account-link-cleanup 03:10 とずらす)、 72h 保持。
+  //   LINE 再送による二重 fireEvent を防ぐ dedup key の無限肥大を防止。 migration 未適用でも安全 (= prune が
+  //   throw しても triggered=true/deletedRows=0)。 WEBHOOK_DELIVERY_CLEANUP_FORCE='true' で gating bypass。
+  jobs.push(
+    processWebhookDeliveryCleanup(env).then((r) => {
+      if (r.deletedRows > 0) console.info(`webhook-delivery-cleanup: deleted=${r.deletedRows}`);
+    }).catch((err) =>
+      console.error('webhook-delivery-cleanup failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 

@@ -32,6 +32,19 @@ afterEach(() => {
 });
 
 // ============================================================
+// DEFAULT_RULES 登録 (= 監視対象から漏れると silent 失敗を検知できない)
+// ============================================================
+
+describe('DEFAULT_RULES registration', () => {
+  it('webhook-delivery-cleanup が登録済 (= 1 日 1 回 cron、 maxSilentHours=30)', async () => {
+    const { DEFAULT_RULES } = await import('../services/cron-monitor.js');
+    const rule = DEFAULT_RULES.find((r) => r.jobName === 'webhook-delivery-cleanup');
+    expect(rule).toBeDefined();
+    expect(rule?.maxSilentHours).toBe(30);
+  });
+});
+
+// ============================================================
 // 純粋関数
 // ============================================================
 
