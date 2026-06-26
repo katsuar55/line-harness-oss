@@ -20,6 +20,7 @@ import {
   updateFoodLogAnalysis,
   markFoodLogFailed,
   jstNow,
+  recordWebhookDelivery,
 } from '@line-crm/db';
 import {
   BIRTHDAY_METADATA_KEY,
@@ -161,6 +162,28 @@ async function handleEvent(
   /** ctx?: バックグラウンド処理 (画像解析等) を後続イベントのブロックなしに走らせるため */
   ctx?: { waitUntil: (p: Promise<unknown>) => void },
 ): Promise<void> {
+  // ③ webhook event dedup (2026-06-26): LINE の再送による二重 fireEvent
+  //   (automation 発火 / スコア加算 / クーポン発行 / welcome 配信) を防ぐ。
+  //   event.webhookEventId (= LINE が各 event に付与する一意 ID) を冪等 key に記録し、
+  //   初見の event だけ処理する。 全 event 種別の分岐より前に置くことで全 fireEvent 経路をカバー。
+  //   fail-open: webhookEventId 欠落 or DB エラー (= migration 066 未適用含む) 時は処理続行
+  //   (= 正当な event を dedup 障害で落とさない)。
+  const webhookEventId = event.webhookEventId;
+  if (webhookEventId) {
+    try {
+      const isNew = await recordWebhookDelivery(db, webhookEventId, new Date().toISOString());
+      if (!isNew) {
+        console.info('[webhook] duplicate event skipped:', webhookEventId);
+        return;
+      }
+    } catch (err) {
+      console.warn(
+        '[webhook] dedup check failed (continuing fail-open):',
+        err instanceof Error ? err.name : 'unknown',
+      );
+    }
+  }
+
   if (event.type === 'follow') {
     const userId =
       event.source.type === 'user' ? event.source.userId : undefined;

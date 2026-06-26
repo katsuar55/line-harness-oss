@@ -148,6 +148,7 @@ vi.mock('@line-crm/db', () => ({
   setLineAccountBotUserId: vi.fn(async () => {}),
   getStaffByApiKey: vi.fn(async () => null),
   getFriendTags: vi.fn(async () => []),
+  recordWebhookDelivery: vi.fn(async () => true),
 }));
 
 // Mock event-bus — just capture calls
@@ -253,6 +254,7 @@ beforeEach(async () => {
     setLineAccountBotUserId: vi.fn(async () => {}),
     getStaffByApiKey: vi.fn(async () => null),
     getFriendTags: vi.fn(async () => []),
+    recordWebhookDelivery: vi.fn(async () => true),
   }));
 
   vi.doMock('../services/event-bus.js', () => ({

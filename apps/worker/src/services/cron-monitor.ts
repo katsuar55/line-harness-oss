@@ -105,6 +105,9 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
   // 自前 friend↔Shopify customer 連携 (2026-06-06, Phase 3): account_link_codes 期限切れ OTP cleanup
   // (1 日 1 回 03:10 JST)。 機能 gate off でも空テーブルに対し毎日 heartbeat を記録するため監視可。
   { jobName: 'account-link-cleanup', maxSilentHours: 30 },
+  // ③ webhook 冪等テーブル TTL prune (2026-06-26): webhook_deliveries の 72h 超を削除
+  // (1 日 1 回 03:20 JST)。 毎日 heartbeat を記録するため、 停止すれば 30h で検知。
+  { jobName: 'webhook-delivery-cleanup', maxSilentHours: 30 },
   // 自動 update 戦略 #1 (2026-05-26): Cloudflare AI models catalog sync
   // 1 日 1 回 04:00 JST。 secret 未設定なら skipped status で記録される (= status='skipped'
   // は getLastSuccessfulRun の対象外なので、 silent と判定される。 ただしそれは「設計と

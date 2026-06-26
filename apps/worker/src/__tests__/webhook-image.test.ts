@@ -117,6 +117,7 @@ vi.mock('@line-crm/db', () => ({
   setFoodLogImageUrl: (...args: unknown[]) => setFoodLogImageUrlMock(...args),
   updateFoodLogAnalysis: (...args: unknown[]) => updateFoodLogAnalysisMock(...args),
   markFoodLogFailed: (...args: unknown[]) => markFoodLogFailedMock(...args),
+  recordWebhookDelivery: vi.fn(async () => true),
 }));
 
 vi.mock('../services/event-bus.js', () => ({

@@ -11,6 +11,13 @@ dist/
 *.toml.bak
 .env.production
 .env.staging
+# カットオーバー時の本番 secret 投入用 (wrangler secret bulk)。 投入後は即削除すること。
+secrets.json
+secrets-*.json
+*secrets*.json
+# カットオーバー B-3/B-4 用の worker API_KEY (一時)。 使用後は即削除すること。
+cutover-apikey.txt
+*apikey*.txt
 apps/web/out/
 apps/worker/dist/
 SESSION_HANDOFF.md

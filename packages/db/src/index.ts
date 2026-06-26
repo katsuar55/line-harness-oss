@@ -10,6 +10,7 @@ export * from './audit-logs';
 export * from './conversions';
 export * from './affiliates';
 export * from './webhooks';
+export * from './webhook-deliveries';
 export * from './calendar';
 export * from './reminders';
 export * from './scoring';

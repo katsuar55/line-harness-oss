@@ -1886,6 +1886,12 @@ CREATE TABLE IF NOT EXISTS account_link_codes (
   created_at TEXT NOT NULL
 );
 
+-- from 066_webhook_deliveries.sql
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  webhook_event_id TEXT PRIMARY KEY,  -- LINE event の一意 ID (= 冪等 key)
+  created_at TEXT NOT NULL             -- ISO8601 (UTC) 受信時刻 (= TTL prune 用)
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -2126,3 +2132,5 @@ CREATE INDEX IF NOT EXISTS idx_account_link_codes_lookup
   ON account_link_codes(friend_id, email);
 CREATE INDEX IF NOT EXISTS idx_restock_requests_inventory_item
   ON restock_requests (inventory_item_id, status);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_created_at
+  ON webhook_deliveries(created_at);
