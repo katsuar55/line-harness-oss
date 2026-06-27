@@ -52,6 +52,7 @@ describe('DEFAULT_RULES registration', () => {
     ['loyalty-rank-reeval', 2],
     ['friend-customer-link', 2],
     ['line-quota-monitor', 3],
+    ['conversation-log-cleanup', 30],
   ])('%s が登録済 (maxSilentHours=%i)', async (jobName, expected) => {
     const { DEFAULT_RULES } = await import('../services/cron-monitor.js');
     const rule = DEFAULT_RULES.find((r) => r.jobName === jobName);
