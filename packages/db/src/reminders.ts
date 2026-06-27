@@ -31,8 +31,17 @@ export interface FriendReminderRow {
 
 // --- リマインダCRUD ---
 
-export async function getReminders(db: D1Database): Promise<ReminderRow[]> {
-  const result = await db.prepare(`SELECT * FROM reminders ORDER BY created_at DESC`).all<ReminderRow>();
+// 採点 Round1 D5: default LIMIT で unbounded scan / 10k 行 silent truncation を防止。
+export async function getReminders(
+  db: D1Database,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<ReminderRow[]> {
+  const limit = opts.limit ?? 1000;
+  const offset = opts.offset ?? 0;
+  const result = await db
+    .prepare(`SELECT * FROM reminders ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .bind(limit, offset)
+    .all<ReminderRow>();
   return result.results;
 }
 

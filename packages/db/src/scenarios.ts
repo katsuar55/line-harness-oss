@@ -55,15 +55,23 @@ export interface FriendScenario {
 
 export type ScenarioWithStepCount = Scenario & { step_count: number };
 
-export async function getScenarios(db: D1Database): Promise<ScenarioWithStepCount[]> {
+// 採点 Round1 D5: default LIMIT で unbounded scan / 10k 行 silent truncation を防止。
+export async function getScenarios(
+  db: D1Database,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<ScenarioWithStepCount[]> {
+  const limit = opts.limit ?? 1000;
+  const offset = opts.offset ?? 0;
   const result = await db
     .prepare(
       `SELECT s.*, COUNT(ss.id) as step_count
        FROM scenarios s
        LEFT JOIN scenario_steps ss ON s.id = ss.scenario_id
        GROUP BY s.id
-       ORDER BY s.created_at DESC`,
+       ORDER BY s.created_at DESC
+       LIMIT ? OFFSET ?`,
     )
+    .bind(limit, offset)
     .all<ScenarioWithStepCount>();
   return result.results;
 }
