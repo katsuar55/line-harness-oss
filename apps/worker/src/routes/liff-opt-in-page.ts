@@ -61,7 +61,7 @@ function optInPage(liffId: string, apiBase: string): string {
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="robots" content="noindex,nofollow">
   <title>メール配信登録 — naturism</title>
   <script src="https://cdn.tailwindcss.com"></script>
