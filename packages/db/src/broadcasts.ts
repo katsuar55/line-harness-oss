@@ -26,6 +26,8 @@ export interface Broadcast {
   email_template_id?: string | null;
   /** migration 008 で追加。 multi-tenant 用 (NULL = legacy / system-wide) */
   line_account_id?: string | null;
+  /** migration 067 で追加。 claim('sending' 遷移) 時刻 (JST)。 stuck 検知/安全自動復旧用 */
+  sending_started_at?: string | null;
   created_at: string;
 }
 
@@ -226,12 +228,96 @@ export async function claimBroadcastForSending(
   db: D1Database,
   id: string,
 ): Promise<boolean> {
+  // migration 067: claim 時刻を記録し stuck 検知/安全自動復旧 (getStuckSendingBroadcasts) を可能にする。
   const res = await db
     .prepare(
-      `UPDATE broadcasts SET status = 'sending'
+      `UPDATE broadcasts SET status = 'sending', sending_started_at = ?
        WHERE id = ? AND status IN ('scheduled', 'draft')`,
     )
-    .bind(id)
+    .bind(jstNow(), id)
+    .run();
+  return (res.meta?.changes ?? 0) === 1;
+}
+
+/**
+ * 配信 cron 用の bounded due query (採点 Round1 D5/D1): status='scheduled' かつ
+ * scheduled_at <= now の broadcast を古い順に limit 件取得 (= getBroadcasts 全件 scan を置換)。
+ */
+export async function getDueScheduledBroadcasts(
+  db: D1Database,
+  nowIso: string,
+  limit = 100,
+): Promise<Broadcast[]> {
+  const result = await db
+    .prepare(
+      `SELECT * FROM broadcasts
+       WHERE status = 'scheduled' AND scheduled_at IS NOT NULL AND scheduled_at <= ?
+       ORDER BY scheduled_at ASC LIMIT ?`,
+    )
+    .bind(nowIso, limit)
+    .all<Broadcast>();
+  return result.results;
+}
+
+/**
+ * stuck-'sending' broadcast を sending_started_at 基準で取得 (採点 Round1 D1)。
+ * cutoffIso より前に claim されたまま 'sending' で残っているものを古い順に limit 件。
+ * 手動送信 (scheduled_at=NULL) も含めて検知できる (= 旧 scheduled_at 基準の穴を解消)。
+ */
+export async function getStuckSendingBroadcasts(
+  db: D1Database,
+  cutoffIso: string,
+  limit = 50,
+): Promise<Broadcast[]> {
+  const result = await db
+    .prepare(
+      `SELECT * FROM broadcasts
+       WHERE status = 'sending' AND sending_started_at IS NOT NULL AND sending_started_at < ?
+       ORDER BY sending_started_at ASC LIMIT ?`,
+    )
+    .bind(cutoffIso, limit)
+    .all<Broadcast>();
+  return result.results;
+}
+
+/**
+ * broadcast に「実際に送信された痕跡」があるか (採点 Round1 D1)。
+ * line_request_id (broadcast API) / messages_log (multicast) / email_messages_log (email) の
+ * いずれかが存在すれば true。 stuck の安全自動復旧で「未送信のみ再送」を判定するのに使う。
+ */
+export async function hasBroadcastSendEvidence(
+  db: D1Database,
+  broadcastId: string,
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT
+         (SELECT 1 FROM broadcasts WHERE id = ?1 AND line_request_id IS NOT NULL) AS has_req,
+         EXISTS(SELECT 1 FROM messages_log WHERE broadcast_id = ?1) AS has_msg,
+         EXISTS(SELECT 1 FROM email_messages_log WHERE broadcast_id = ?1) AS has_email`,
+    )
+    .bind(broadcastId)
+    .first<{ has_req: number | null; has_msg: number; has_email: number }>();
+  if (!row) return false;
+  return Boolean(row.has_req) || Boolean(row.has_msg) || Boolean(row.has_email);
+}
+
+/**
+ * 送信痕跡のない stuck broadcast を 'scheduled' に戻して安全に再送可能化する (採点 Round1 D1)。
+ * CAS (status='sending' のときのみ) で二重操作を防ぐ。 scheduled_at=now にして次 cron が即 pick。
+ * 痕跡のある stuck はこの関数を呼ばない (= 二重送信回避、 detect-only で手動 review)。
+ */
+export async function resetStuckBroadcastToScheduled(
+  db: D1Database,
+  broadcastId: string,
+  nowIso: string,
+): Promise<boolean> {
+  const res = await db
+    .prepare(
+      `UPDATE broadcasts SET status = 'scheduled', scheduled_at = ?, sending_started_at = NULL
+       WHERE id = ? AND status = 'sending'`,
+    )
+    .bind(nowIso, broadcastId)
     .run();
   return (res.meta?.changes ?? 0) === 1;
 }

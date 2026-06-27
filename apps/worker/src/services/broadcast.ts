@@ -1,12 +1,16 @@
 import { extractFlexAltText } from '../utils/flex-alt-text.js';
 import {
   getBroadcastById,
-  getBroadcasts,
+  getDueScheduledBroadcasts,
+  getStuckSendingBroadcasts,
+  hasBroadcastSendEvidence,
+  resetStuckBroadcastToScheduled,
   updateBroadcastStatus,
   claimBroadcastForSending,
   getFriendsByTag,
   getEmailTemplateById,
   jstNow,
+  toJstString,
 } from '@line-crm/db';
 import type { Broadcast, BroadcastChannel, Friend } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
@@ -565,42 +569,56 @@ export async function processScheduledBroadcasts(
   emailConfig?: EmailDispatchConfig | null,
   options?: { broadcastAllEnabled?: boolean },
 ): Promise<void> {
-  const allBroadcasts = await getBroadcasts(db);
-
-  const nowMs = Date.now();
-
-  // #6 (cutover hardening 2026-06): claim 後 (status='sending') に worker が crash すると
-  // 永久 stuck になる (cron は scheduled しか拾わない、 backlog E2)。 multicast バッチ途中の
-  // 二重送信を避けるため auto-reset せず、 30分超 stuck を検知して warn + audit に残し可視化する
-  // (= silent stuck の解消。 運用者が手動 reset を判断できる)。 scheduled_at 基準のため、 cutover
-  // scale で大半を占める scheduled 経由の月次 broadcast の stuck を捕捉する。
+  // 採点 Round1 D1: claim 後 (status='sending') に worker が crash すると 'sending' のまま
+  //   永続 stuck になる (cron は scheduled しか拾わない)。 sending_started_at (migration 067) 基準で
+  //   30分超 stuck を検知 (= 手動送信 scheduled_at=NULL も拾う、 旧 scheduled_at 基準の穴を解消)。
+  //   復旧方針 (二重送信回避が最優先):
+  //     - 送信痕跡なし (line_request_id NULL かつ messages_log/email_messages_log 0件) → 'scheduled'
+  //       に戻して安全に自動再送 (= 配信 SLA 回復)。 crash の大半は「送信前」 なのでこれで救済できる。
+  //     - 送信痕跡あり (一部送信済) → auto-reset せず detect-only (warn+audit, 手動 review) =
+  //       partial 再送による二重配信を防ぐ。
+  //   残リスク: tag multicast で「batch 送信成功〜messages_log INSERT 直前」 の crash は痕跡 0 件と
+  //     誤判定し当該 batch (≤500) を再送しうる極小窓 (target_type='all' は PR#133 で既定 OFF)。
   const STUCK_THRESHOLD_MS = 30 * 60_000;
-  const stuck = allBroadcasts.filter(
-    (b) =>
-      b.status === 'sending' &&
-      b.scheduled_at !== null &&
-      nowMs - new Date(b.scheduled_at).getTime() > STUCK_THRESHOLD_MS,
-  );
-  if (stuck.length > 0) {
-    console.warn(
-      `[broadcast] ${stuck.length} broadcast(s) stuck in 'sending' >30min (manual review needed): ${stuck.map((b) => b.id).join(', ')}`,
-    );
-    await auditSystem(db, {
-      action: 'broadcast.stuck_sending_detected',
-      actorType: 'cron',
-      targetType: 'broadcast',
-      targetId: stuck[0].id,
-      result: 'failure',
-      metadata: { count: stuck.length, ids: stuck.map((b) => b.id), thresholdMinutes: 30 },
-    });
+  const DUE_BATCH_LIMIT = 100;
+  const now = Date.now();
+  const nowIso = jstNow();
+  const stuckCutoffIso = toJstString(new Date(now - STUCK_THRESHOLD_MS));
+
+  const stuck = await getStuckSendingBroadcasts(db, stuckCutoffIso, 50);
+  for (const b of stuck) {
+    try {
+      if (await hasBroadcastSendEvidence(db, b.id)) {
+        console.warn(`[broadcast] stuck 'sending' >30min with send evidence (manual review): ${b.id}`);
+        await auditSystem(db, {
+          action: 'broadcast.stuck_sending_detected',
+          actorType: 'cron',
+          targetType: 'broadcast',
+          targetId: b.id,
+          result: 'failure',
+          metadata: { reason: 'has_send_evidence', thresholdMinutes: 30 },
+        });
+      } else if (await resetStuckBroadcastToScheduled(db, b.id, nowIso)) {
+        console.info(`[broadcast] stuck 'sending' auto-recovered → scheduled (no send evidence): ${b.id}`);
+        await auditSystem(db, {
+          action: 'broadcast.stuck_auto_recovered',
+          actorType: 'cron',
+          targetType: 'broadcast',
+          targetId: b.id,
+          result: 'success',
+          metadata: { reason: 'no_send_evidence', thresholdMinutes: 30 },
+        });
+      }
+    } catch (err) {
+      console.error(
+        `[broadcast] stuck recovery failed for ${b.id}:`,
+        err instanceof Error ? err.name : 'unknown',
+      );
+    }
   }
 
-  const scheduled = allBroadcasts.filter(
-    (b) =>
-      b.status === 'scheduled' &&
-      b.scheduled_at !== null &&
-      new Date(b.scheduled_at).getTime() <= nowMs,
-  );
+  // bounded due query (採点 Round1 D5): getBroadcasts 全件 scan を置換。
+  const scheduled = await getDueScheduledBroadcasts(db, nowIso, DUE_BATCH_LIMIT);
 
   for (const broadcast of scheduled) {
     try {
@@ -621,6 +639,13 @@ export async function processScheduledBroadcasts(
       });
       // Continue with next broadcast
     }
+  }
+
+  // per-tick dispatch cap に達したら次 tick で残りを処理 (= burst 時の取りこぼし可視化)
+  if (scheduled.length === DUE_BATCH_LIMIT) {
+    console.warn(
+      `[broadcast] due queue hit cap (${DUE_BATCH_LIMIT}); remainder will be picked up next cron tick`,
+    );
   }
 }
 

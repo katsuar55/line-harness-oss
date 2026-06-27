@@ -214,7 +214,8 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   alt_text             TEXT,
   -- Round 4 PR-6.2 (migration 043): dispatcher 経由の channel
   channel              TEXT NOT NULL DEFAULT 'line',
-  email_template_id    TEXT);
+  email_template_id    TEXT,
+  sending_started_at   TEXT);
 
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts (status);
 CREATE INDEX IF NOT EXISTS idx_broadcasts_line_request_id ON broadcasts (line_request_id);
@@ -2134,3 +2135,5 @@ CREATE INDEX IF NOT EXISTS idx_restock_requests_inventory_item
   ON restock_requests (inventory_item_id, status);
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_created_at
   ON webhook_deliveries(created_at);
+CREATE INDEX IF NOT EXISTS idx_broadcasts_status_sending_started
+  ON broadcasts (status, sending_started_at);

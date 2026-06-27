@@ -27,15 +27,30 @@ const mockClaimBroadcastForSending = vi.fn<(db: unknown, id: string) => Promise<
 const mockGetFriendsByTag = vi.fn<(db: unknown, tagId: string) => Promise<Friend[]>>();
 const mockGetEmailTemplateById = vi.fn<(db: unknown, id: string) => Promise<EmailTemplate | null>>();
 const mockGetBroadcasts = vi.fn<(db: unknown) => Promise<Broadcast[]>>();
+// 採点 Round1 D1/D5: cron は getBroadcasts 全件 scan を廃し、 bounded due query + stuck 安全復旧へ
+const mockGetDueScheduledBroadcasts =
+  vi.fn<(db: unknown, nowIso: string, limit?: number) => Promise<Broadcast[]>>();
+const mockGetStuckSendingBroadcasts =
+  vi.fn<(db: unknown, cutoffIso: string, limit?: number) => Promise<Broadcast[]>>();
+const mockHasBroadcastSendEvidence = vi.fn<(db: unknown, id: string) => Promise<boolean>>();
+const mockResetStuckBroadcastToScheduled = vi.fn<(db: unknown, id: string, nowIso: string) => Promise<boolean>>();
 
 vi.mock('@line-crm/db', () => ({
   getBroadcastById: (db: unknown, id: string) => mockGetBroadcastById(db, id),
   getBroadcasts: (db: unknown) => mockGetBroadcasts(db),
+  getDueScheduledBroadcasts: (db: unknown, nowIso: string, limit?: number) =>
+    mockGetDueScheduledBroadcasts(db, nowIso, limit),
+  getStuckSendingBroadcasts: (db: unknown, cutoffIso: string, limit?: number) =>
+    mockGetStuckSendingBroadcasts(db, cutoffIso, limit),
+  hasBroadcastSendEvidence: (db: unknown, id: string) => mockHasBroadcastSendEvidence(db, id),
+  resetStuckBroadcastToScheduled: (db: unknown, id: string, nowIso: string) =>
+    mockResetStuckBroadcastToScheduled(db, id, nowIso),
   updateBroadcastStatus: (...args: unknown[]) => mockUpdateBroadcastStatus(...args),
   claimBroadcastForSending: (db: unknown, id: string) => mockClaimBroadcastForSending(db, id),
   getFriendsByTag: (db: unknown, tagId: string) => mockGetFriendsByTag(db, tagId),
   getEmailTemplateById: (db: unknown, id: string) => mockGetEmailTemplateById(db, id),
   jstNow: () => '2026-04-30T10:00:00.000+09:00',
+  toJstString: () => '2026-04-30T09:30:00.000+09:00',
 }));
 
 // ---------------------------------------------------------------------------
@@ -234,6 +249,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   // default: claim 成功 (= 既存の happy-path テストを従来どおり進める)
   mockClaimBroadcastForSending.mockResolvedValue(true);
+  // 採点 Round1: cron query の default (= stuck なし / due なし)。 各テストで上書き。
+  mockGetStuckSendingBroadcasts.mockResolvedValue([]);
+  mockGetDueScheduledBroadcasts.mockResolvedValue([]);
+  mockHasBroadcastSendEvidence.mockResolvedValue(false);
+  mockResetStuckBroadcastToScheduled.mockResolvedValue(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -912,108 +932,81 @@ describe("processBroadcastSend channel='both'", () => {
 // processScheduledBroadcasts forwards emailConfig
 // ---------------------------------------------------------------------------
 
-describe('processScheduledBroadcasts', () => {
-  it('forwards emailConfig to processBroadcastSend for due scheduled broadcasts', async () => {
-    const past = '2020-01-01T00:00:00+09:00';
+describe('processScheduledBroadcasts (採点 Round1 D1/D5)', () => {
+  it('bounded due query で取得した scheduled broadcast を processBroadcastSend する (emailConfig forward)', async () => {
     const dueEmail = makeBroadcast({
       id: 'bc-due',
       channel: 'email',
       status: 'scheduled',
-      scheduled_at: past,
+      scheduled_at: '2020-01-01T00:00:00+09:00',
       target_type: 'all',
       email_template_id: 'tpl-1',
     });
-    const future = makeBroadcast({
-      id: 'bc-future',
-      channel: 'line',
-      status: 'scheduled',
-      scheduled_at: '2099-01-01T00:00:00+09:00',
-      target_type: 'all',
-    });
-    mockGetBroadcasts.mockResolvedValue([dueEmail, future]);
-    // processBroadcastSend (which we call internally) will:
-    //   1. updateBroadcastStatus(id, 'sending')
-    //   2. getBroadcastById(id) → return dueEmail
-    //   3. for email: getEmailTemplateById, query friends, dispatch
-    //   4. updateBroadcastStatus(id, 'sent')
-    mockGetBroadcastById.mockImplementation(async (_db, id) => {
-      if (id === 'bc-due') return dueEmail;
-      if (id === 'bc-future') return future;
-      return null;
-    });
+    mockGetDueScheduledBroadcasts.mockResolvedValue([dueEmail]); // DB 側で due のみ返す
+    mockGetBroadcastById.mockImplementation(async (_db, id) => (id === 'bc-due' ? dueEmail : null));
     mockUpdateBroadcastStatus.mockResolvedValue(undefined);
     mockGetEmailTemplateById.mockResolvedValue(makeTemplate());
-
     dispatchMock.mockResolvedValue({
       results: [{ channel: 'email', status: 'sent', providerMessageId: 'pm', subscriberId: 'sub' }],
     });
-
     const subs = new Map<string, { id: string; email: string }>([
       ['f-1', { id: 'sub-1', email: 'a@example.com' }],
     ]);
-    const allFollowing: Friend[] = [makeFriend({ id: 'f-1' })];
-    const db = makeFakeDb({ subscribers: subs, allFollowingFriends: allFollowing });
+    const db = makeFakeDb({ subscribers: subs, allFollowingFriends: [makeFriend({ id: 'f-1' })] });
     const lineClient = makeFakeLineClient();
 
-    await processScheduledBroadcasts(
-      db,
-      lineClient as unknown as LineClient,
-      undefined,
-      makeConfig(),
-    );
+    await processScheduledBroadcasts(db, lineClient as unknown as LineClient, undefined, makeConfig());
 
-    // due (email) was processed via dispatcher
     expect(dispatchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('skips future-scheduled broadcasts', async () => {
-    const future = makeBroadcast({
-      id: 'bc-future',
-      channel: 'email',
-      status: 'scheduled',
-      scheduled_at: '2099-01-01T00:00:00+09:00',
-      target_type: 'all',
-      email_template_id: 'tpl-1',
-    });
-    mockGetBroadcasts.mockResolvedValue([future]);
-    mockGetBroadcastById.mockResolvedValue(future);
-    mockUpdateBroadcastStatus.mockResolvedValue(undefined);
-
-    const db = makeFakeDb();
-    const lineClient = makeFakeLineClient();
-
-    await processScheduledBroadcasts(
-      db,
-      lineClient as unknown as LineClient,
-      undefined,
-      makeConfig(),
-    );
-
-    // future broadcast not processed → no status update calls
-    expect(mockUpdateBroadcastStatus).not.toHaveBeenCalled();
-    expect(dispatchMock).not.toHaveBeenCalled();
-  });
-
-  it("status='sending' で 30分超 stuck の broadcast を検知して warn する (auto-resend しない)", async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const stuck = makeBroadcast({
-      id: 'bc-stuck',
-      channel: 'line',
-      status: 'sending',
-      scheduled_at: '2020-01-01T00:00:00+09:00', // 30分どころか遥か過去
-      target_type: 'all',
-    });
-    mockGetBroadcasts.mockResolvedValue([stuck]);
+  it('due query が空なら何も送らない (future-scheduled は DB 側で除外)', async () => {
+    mockGetDueScheduledBroadcasts.mockResolvedValue([]);
     const db = makeFakeDb();
     const lineClient = makeFakeLineClient();
 
     await processScheduledBroadcasts(db, lineClient as unknown as LineClient, undefined, makeConfig());
 
-    // silent stuck を可視化 (warn)
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("stuck in 'sending'"));
-    // auto-resend しない: 'sending' は scheduled filter に入らないので送信処理に進まない
+    expect(mockUpdateBroadcastStatus).not.toHaveBeenCalled();
     expect(dispatchMock).not.toHaveBeenCalled();
-    expect(mockClaimBroadcastForSending).not.toHaveBeenCalled();
+  });
+
+  it("stuck 'sending' + 送信痕跡あり → detect-only (warn+audit、 auto-reset しない=二重送信回避)", async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const stuck = makeBroadcast({ id: 'bc-stuck', channel: 'line', status: 'sending', target_type: 'all' });
+    mockGetStuckSendingBroadcasts.mockResolvedValue([stuck]);
+    mockHasBroadcastSendEvidence.mockResolvedValue(true); // 送信痕跡あり
+    const db = makeFakeDb();
+    const lineClient = makeFakeLineClient();
+
+    await processScheduledBroadcasts(db, lineClient as unknown as LineClient, undefined, makeConfig());
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("stuck 'sending'"));
+    expect(mockResetStuckBroadcastToScheduled).not.toHaveBeenCalled();
+    expect(dispatchMock).not.toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+
+  it("stuck 'sending' + 送信痕跡なし → 安全に auto-recover (scheduled へ reset)", async () => {
+    const stuck = makeBroadcast({
+      id: 'bc-stuck2',
+      channel: 'line',
+      status: 'sending',
+      target_type: 'tag',
+      target_tag_id: 'tag-1',
+    });
+    mockGetStuckSendingBroadcasts.mockResolvedValue([stuck]);
+    mockHasBroadcastSendEvidence.mockResolvedValue(false); // 痕跡なし
+    mockResetStuckBroadcastToScheduled.mockResolvedValue(true);
+    const db = makeFakeDb();
+    const lineClient = makeFakeLineClient();
+
+    await processScheduledBroadcasts(db, lineClient as unknown as LineClient, undefined, makeConfig());
+
+    expect(mockResetStuckBroadcastToScheduled).toHaveBeenCalledWith(
+      expect.anything(),
+      'bc-stuck2',
+      expect.any(String),
+    );
   });
 });
