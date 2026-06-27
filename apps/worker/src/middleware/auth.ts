@@ -38,7 +38,9 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/api/integrations/shopify/webhook/product' ||
     path.match(/^\/api\/webhooks\/incoming\/[^/]+\/receive$/) ||
     path.match(/^\/api\/forms\/[^/]+\/submit$/) ||
-    path.match(/^\/api\/forms\/[^/]+$/) || // GET form definition (public for LIFF)
+    // GET のみ公開 (LIFF が form 定義を読む)。 PUT(編集)/DELETE(削除) は authMiddleware を
+    // 通す = method 非依存 skip だと無認証で他人の form を改竄/削除できる穴 (採点 D2)。
+    (c.req.method === 'GET' && path.match(/^\/api\/forms\/[^/]+$/)) ||
     path === '/api/rich-menus/image-guide' // Rich menu image template (static HTML)
   ) {
     return next();
