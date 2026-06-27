@@ -245,19 +245,19 @@ forms.post('/api/forms/:id/submit', async (c) => {
 
       const sideEffects: Promise<unknown>[] = [];
 
-      // Save response data to friend's metadata
+      // Save response data to friend's metadata.
+      // 採点ループ Round 1 (2026-06-28, D3): 旧実装は read-modify-write (getFriendById → JS merge → UPDATE)
+      //   で、同一 friend の同時 submission により lost-update (先の書込が消える) が起きた。
+      //   json_patch で DB 側 atomic merge に変更し race を解消する (D1 JSON1 サポート確認済)。
+      //   注: RFC7386 準拠のため値が null の key は metadata から削除される (form 回答に null はほぼ無く許容)。
       if (form.save_to_metadata) {
         sideEffects.push(
-          (async () => {
-            const friend = await getFriendById(db, friendId!);
-            if (!friend) return;
-            const existing = JSON.parse(friend.metadata || '{}') as Record<string, unknown>;
-            const merged = { ...existing, ...submissionData };
-            await db
-              .prepare(`UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?`)
-              .bind(JSON.stringify(merged), now, friendId)
-              .run();
-          })(),
+          db
+            .prepare(
+              `UPDATE friends SET metadata = json_patch(COALESCE(metadata, '{}'), ?), updated_at = ? WHERE id = ?`,
+            )
+            .bind(JSON.stringify(submissionData), now, friendId)
+            .run(),
         );
       }
 

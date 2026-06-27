@@ -42,6 +42,22 @@ describe('DEFAULT_RULES registration', () => {
     expect(rule).toBeDefined();
     expect(rule?.maxSilentHours).toBe(30);
   });
+
+  // 採点ループ Round 1 (D10): per-tick withHeartbeat 7 本の登録漏れ修正の回帰ガード
+  it.each([
+    ['broadcast-insights-fetch', 2],
+    ['audit-failure-monitor', 2],
+    ['birthday-greetings', 2],
+    ['membership-promotion-sanity', 2],
+    ['loyalty-rank-reeval', 2],
+    ['friend-customer-link', 2],
+    ['line-quota-monitor', 3],
+  ])('%s が登録済 (maxSilentHours=%i)', async (jobName, expected) => {
+    const { DEFAULT_RULES } = await import('../services/cron-monitor.js');
+    const rule = DEFAULT_RULES.find((r) => r.jobName === jobName);
+    expect(rule).toBeDefined();
+    expect(rule?.maxSilentHours).toBe(expected);
+  });
 });
 
 // ============================================================
