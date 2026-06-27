@@ -85,6 +85,33 @@ function getClientIp(c: Context): string {
   );
 }
 
+/**
+ * SHA-256 hex digest of an API token, used as the rate-limit bucket key.
+ *
+ * Hashing the *full* token (instead of storing a raw `token.slice(0, 16)`
+ * prefix) closes two problems with the previous approach:
+ *  - entropy leak: a 16-char slice of the secret bearer token was stored in
+ *    the in-memory Map key and forwarded verbatim to Cloudflare's rate-limit
+ *    binding (and thus its telemetry). 16 chars is a meaningful partial
+ *    disclosure of a secret; a one-way hash discloses nothing.
+ *  - collision: two distinct tokens sharing the same 16-char prefix shared a
+ *    single bucket, so one could exhaust the other's limit. Hashing the whole
+ *    token makes a shared bucket require a full SHA-256 collision (infeasible).
+ *
+ * crypto.subtle.digest is called directly on the object (never destructured)
+ * per the Workers `this`-binding rules in CLAUDE.md.
+ */
+export async function hashRateLimitToken(token: string): Promise<string> {
+  const data = new TextEncoder().encode(token);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  const bytes = new Uint8Array(digest);
+  let hex = '';
+  for (let i = 0; i < bytes.length; i++) {
+    hex += bytes[i].toString(16).padStart(2, '0');
+  }
+  return hex;
+}
+
 // ---------------------------------------------------------------------------
 // Hono middleware
 // ---------------------------------------------------------------------------
@@ -103,47 +130,50 @@ export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<
     return next();
   }
 
+  const unauthenticated = isUnauthenticatedPath(path);
+
+  // Resolve the bucket key + limits ONCE, shared by both the Cloudflare
+  // distributed limiter and the in-memory fallback. A single request therefore
+  // always lands in one logical bucket, and the secret token is hashed before
+  // it is ever used as (or forwarded as) a key.
   let key: string;
   let max: number;
   let windowMs: number;
 
-  if (isUnauthenticatedPath(path)) {
-    // Key by IP for unauthenticated endpoints
+  if (unauthenticated) {
+    // Key by IP for unauthenticated endpoints (IPs are not secrets).
     key = `ip:${getClientIp(c)}`;
     max = UNAUTHENTICATED_MAX;
     windowMs = UNAUTHENTICATED_WINDOW;
   } else {
-    // Key by API key for authenticated endpoints
+    // Key by a SHA-256 hash of the full API token for authenticated endpoints.
     const authHeader = c.req.header('Authorization');
     const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
     if (token) {
-      // Use first 16 chars of token as key to avoid storing full secrets
-      key = `key:${token.slice(0, 16)}`;
+      key = `key:${await hashRateLimitToken(token)}`;
       max = AUTHENTICATED_MAX;
       windowMs = AUTHENTICATED_WINDOW;
     } else {
-      // No auth header — key by IP with the lower limit
+      // No auth header — key by IP with the lower limit.
       key = `ip:${getClientIp(c)}`;
       max = UNAUTHENTICATED_MAX;
       windowMs = UNAUTHENTICATED_WINDOW;
     }
   }
 
-  // Cloudflare分散レート制限（全エッジロケーション共有）— in-memoryより先に評価
+  // Cloudflare分散レート制限（全エッジロケーション共有）— in-memoryより先に評価。
+  // 上で算出した hash/IP key を共有 (token prefix を CF binding/telemetry に渡さない)。
   const env = c.env;
-  if (isUnauthenticatedPath(path) && env.WEBHOOK_RATE_LIMITER) {
-    const ip = getClientIp(c);
-    const { success } = await env.WEBHOOK_RATE_LIMITER.limit({ key: ip });
+  if (unauthenticated && env.WEBHOOK_RATE_LIMITER) {
+    const { success } = await env.WEBHOOK_RATE_LIMITER.limit({ key });
     if (!success) {
       return c.json(
         { success: false, error: 'Too many requests. Please try again later.' },
         { status: 429, headers: { 'Retry-After': '10' } },
       );
     }
-  } else if (!isUnauthenticatedPath(path) && env.API_RATE_LIMITER) {
-    const authHeader = c.req.header('Authorization');
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7, 23) : getClientIp(c);
-    const { success } = await env.API_RATE_LIMITER.limit({ key: token });
+  } else if (!unauthenticated && env.API_RATE_LIMITER) {
+    const { success } = await env.API_RATE_LIMITER.limit({ key });
     if (!success) {
       return c.json(
         { success: false, error: 'Too many requests. Please try again later.' },
