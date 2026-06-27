@@ -29,9 +29,17 @@ export interface Broadcast {
   created_at: string;
 }
 
-export async function getBroadcasts(db: D1Database): Promise<Broadcast[]> {
+// 採点 Round1 D5: unbounded SELECT * は D1 の 10,000 行返却上限で silent truncation の
+// リスクがあり、 admin list scan も O(n)。 default LIMIT で bound + offset pagination 対応。
+export async function getBroadcasts(
+  db: D1Database,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<Broadcast[]> {
+  const limit = opts.limit ?? 1000;
+  const offset = opts.offset ?? 0;
   const result = await db
-    .prepare(`SELECT * FROM broadcasts ORDER BY created_at DESC`)
+    .prepare(`SELECT * FROM broadcasts ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .bind(limit, offset)
     .all<Broadcast>();
   return result.results;
 }

@@ -82,9 +82,16 @@ export interface AbTestStatusCounts {
 
 // ---------- CRUD ----------
 
-export async function getAbTests(db: D1Database): Promise<AbTest[]> {
+// 採点 Round1 D5: default LIMIT で unbounded scan / 10k 行 silent truncation を防止。
+export async function getAbTests(
+  db: D1Database,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<AbTest[]> {
+  const limit = opts.limit ?? 1000;
+  const offset = opts.offset ?? 0;
   const result = await db
-    .prepare('SELECT * FROM ab_tests ORDER BY created_at DESC')
+    .prepare('SELECT * FROM ab_tests ORDER BY created_at DESC LIMIT ? OFFSET ?')
+    .bind(limit, offset)
     .all<AbTest>();
   return result.results;
 }
