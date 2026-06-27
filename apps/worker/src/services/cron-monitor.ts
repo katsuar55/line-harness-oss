@@ -117,6 +117,18 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
   // 1 日 1 回 04:30 JST。 認証不要なので production で sync 失敗が継続的に発生したら
   // RSS feed の URL 変更 or 大規模障害の signal。
   { jobName: 'cloudflare-changelog-sync', maxSilentHours: 30 },
+  // 採点ループ Round 1 (2026-06-28, D10): withHeartbeat 済だが DEFAULT_RULES 未登録だった 7 本を追加。
+  // いずれも index.ts scheduled() で毎 tick (5分毎) jobs.push される (gating は service 内部の
+  // no-op success のため heartbeat は毎 tick 記録) → 2h silent で異常。
+  { jobName: 'broadcast-insights-fetch', maxSilentHours: 2 }, // 配信済 broadcast の Insight 集計 (per-tick)
+  { jobName: 'audit-failure-monitor', maxSilentHours: 2 },    // audit_logs failure spike 監視 (per-tick)
+  { jobName: 'birthday-greetings', maxSilentHours: 2 },       // 誕生月 push (per-tick, 内部 gating)
+  { jobName: 'membership-promotion-sanity', maxSilentHours: 2 }, // 月次 promotion safety net (per-tick, 内部 gating)
+  { jobName: 'loyalty-rank-reeval', maxSilentHours: 2 },      // 月次 rank 再判定 (per-tick, 内部 gating)
+  { jobName: 'friend-customer-link', maxSilentHours: 2 },     // friend↔customer 自動リンク (per-tick, 内部 gating)
+  // line-quota-monitor は JST 時刻境界 (毎時 0-4 分窓) のみ push = ~毎時 1 回 heartbeat。
+  // 単発の hourly 取りこぼし (deploy 等) で誤検知しないよう 3h 許容。
+  { jobName: 'line-quota-monitor', maxSilentHours: 3 },
 ];
 
 // ============================================================

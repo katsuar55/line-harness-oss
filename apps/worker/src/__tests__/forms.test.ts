@@ -779,6 +779,62 @@ describe('Forms routes', () => {
       expect(mockEnrollFriendInScenario).toHaveBeenCalledWith(env.DB, 'friend-1', 'scenario-1');
     });
 
+    it('save_to_metadata は json_patch で atomic merge する (read-modify-write race 回避, D3)', async () => {
+      mockGetFormById.mockResolvedValue({ ...MOCK_FORM_WITH_EFFECTS, fields: '[]' });
+      mockVerifyLineIdToken.mockResolvedValue('U11111');
+      mockGetFriendByLineUserId.mockResolvedValue({ id: 'friend-1', line_user_id: 'U11111' });
+      mockGetFriendById.mockResolvedValue({
+        id: 'friend-1',
+        line_user_id: 'U11111',
+        display_name: 'X',
+        metadata: '{}',
+      });
+      mockCreateFormSubmission.mockResolvedValue({
+        id: 'sub-x',
+        form_id: 'form-effects',
+        friend_id: 'friend-1',
+        data: '{}',
+        created_at: NOW,
+      });
+      mockAddTagToFriend.mockResolvedValue(undefined);
+      mockEnrollFriendInScenario.mockResolvedValue(undefined);
+
+      const capturedSql: string[] = [];
+      const capturingDb = {
+        prepare: vi.fn((sql: string) => {
+          capturedSql.push(sql);
+          const stmt = {
+            bind: vi.fn(() => stmt),
+            first: vi.fn(async () => null),
+            all: vi.fn(async () => ({ results: [] })),
+            run: vi.fn(async () => ({ success: true })),
+          };
+          return stmt;
+        }),
+        dump: vi.fn(),
+        batch: vi.fn(async () => []),
+        exec: vi.fn(async () => ({ count: 0, duration: 0 })),
+      } as unknown as D1Database;
+      const capturingEnv = { ...createMockEnv(), DB: capturingDb };
+
+      const res = await app.request(
+        '/api/forms/form-effects/submit',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken: 'tok-1', data: { addr: 'Tokyo' } }),
+        },
+        capturingEnv,
+      );
+      expect(res.status).toBe(201);
+      await new Promise((r) => setTimeout(r, 50));
+
+      const metaUpdate = capturedSql.find((s) => s.includes('UPDATE friends SET metadata'));
+      expect(metaUpdate).toBeDefined();
+      // DB 側 atomic merge (json_patch) であること = read-modify-write でないこと
+      expect(metaUpdate).toContain('json_patch');
+    });
+
     it('submits with no data defaults to empty object', async () => {
       mockGetFormById.mockResolvedValue({
         ...MOCK_FORM,
