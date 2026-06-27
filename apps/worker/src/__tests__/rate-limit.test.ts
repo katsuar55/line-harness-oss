@@ -43,7 +43,7 @@ describe('rateLimitMiddleware', () => {
     const over = await app.fetch(req('/webhook', { ip }), ENV);
     expect(over.status).toBe(429);
     expect(over.headers.get('Retry-After')).toBeTruthy();
-    expect((await over.json()).success).toBe(false);
+    expect(((await over.json()) as { success: boolean }).success).toBe(false);
   });
 
   it('認証 path は token prefix keyed で高い上限 (remaining 999)', async () => {

@@ -94,7 +94,10 @@ describe('liffAuthMiddleware', () => {
       ENV,
     );
     expect(res.status).toBe(200);
-    expect((await res.json()).liffUser).toEqual({ lineUserId: 'U1', friendId: 'friend-1' });
+    expect(((await res.json()) as { liffUser: unknown }).liffUser).toEqual({
+      lineUserId: 'U1',
+      friendId: 'friend-1',
+    });
   });
 
   it('idToken 無効 → 401', async () => {
