@@ -104,6 +104,7 @@ import { processEmailFailureMonitor } from './services/email-failure-monitor.js'
 import { processCronCleanup } from './services/cron-cleanup.js';
 import { processAccountLinkCleanup } from './services/account-link-cleanup.js';
 import { processWebhookDeliveryCleanup } from './services/webhook-delivery-cleanup.js';
+import { processConversationLogCleanup } from './services/conversation-log-cleanup.js';
 import { withHeartbeat } from './services/cron-heartbeat.js';
 import { createLogger } from './services/logger.js';
 import { buildEmailDispatchConfig } from './services/email-dispatch-config.js';
@@ -182,6 +183,7 @@ export type Env = {
     ACCOUNT_LINK_CLEANUP_FORCE?: string;       // 'true' で account_link_codes cleanup の JST 03:10 gating を bypass
     WEBHOOK_DELIVERY_CLEANUP_FORCE?: string;   // 'true' で webhook_deliveries cleanup の JST 03:20 gating を bypass
     BROADCAST_ALL_ENABLED?: string;            // 'true' で target_type='all' の LINE broadcast を許可 (既定OFF=blacklist bypass 防止、 ② Codex)
+    CONVERSATION_LOG_CLEANUP_FORCE?: string;   // 'true' で messages_log/conversation_logs 2年prune の JST 03:30 gating を bypass
     // 自社内製ロイヤリティ PR5 (2026-06-04): ランク割引コードの本番発行 gate
     //   'true' で issueRankDiscountForFriend が本番 Shopify に書込 (= 未設定なら no-op、 本番未書込)。
     RANK_DISCOUNT_ENABLED?: string;
@@ -559,6 +561,22 @@ async function scheduled(
       if (r.deletedRows > 0) console.info(`webhook-delivery-cleanup: deleted=${r.deletedRows}`);
     }).catch((err) =>
       console.error('webhook-delivery-cleanup failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // 会話ログ retention prune (採点 Round1 D6 + Katsu 判断, 2026-06-28): messages_log /
+  //   conversation_logs の 24ヶ月超 (PII) を JST 03:30-03:34 のみ自動削除。 migration 不要
+  //   (created_at + index 既存)。 prune 失敗でも triggered=true で cron 全体を止めない。
+  //   CONVERSATION_LOG_CLEANUP_FORCE='true' で gating bypass。
+  jobs.push(
+    processConversationLogCleanup(env).then((r) => {
+      if (r.deletedMessages > 0 || r.deletedConversations > 0) {
+        console.info(
+          `conversation-log-cleanup: messages=${r.deletedMessages} conversations=${r.deletedConversations}`,
+        );
+      }
+    }).catch((err) =>
+      console.error('conversation-log-cleanup failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 

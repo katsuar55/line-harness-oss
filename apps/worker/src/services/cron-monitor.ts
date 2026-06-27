@@ -108,6 +108,9 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
   // ③ webhook 冪等テーブル TTL prune (2026-06-26): webhook_deliveries の 72h 超を削除
   // (1 日 1 回 03:20 JST)。 毎日 heartbeat を記録するため、 停止すれば 30h で検知。
   { jobName: 'webhook-delivery-cleanup', maxSilentHours: 30 },
+  // 会話ログ retention prune (2026-06-28, D6): messages_log/conversation_logs の 24ヶ月超を削除
+  // (1 日 1 回 03:30 JST)。 毎日 heartbeat を記録するため、 停止すれば 30h で検知。
+  { jobName: 'conversation-log-cleanup', maxSilentHours: 30 },
   // 自動 update 戦略 #1 (2026-05-26): Cloudflare AI models catalog sync
   // 1 日 1 回 04:00 JST。 secret 未設定なら skipped status で記録される (= status='skipped'
   // は getLastSuccessfulRun の対象外なので、 silent と判定される。 ただしそれは「設計と
