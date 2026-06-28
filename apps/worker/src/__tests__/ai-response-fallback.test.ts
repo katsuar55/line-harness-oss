@@ -101,4 +101,22 @@ describe('generateAiResponse — fallback logging', () => {
     expect(inserts.length).toBe(1);
     expect(inserts[0][3]).toBe(ngText);
   });
+
+  // 2026-06-29 顧客導線監査 (rank 3): provider (workers-ai) が prohibited phrase を
+  // REDACTION_TOKEN '[省略]' に置換して返すと、detectNgWords は置換後を検査して NG を
+  // 取りこぼし、内部トークン [省略] が顧客に漏れていた。REDACTION_TOKEN 残存自体を block する。
+  it('AI応答に redact トークン [省略] → 顧客には漏らさずコンプラ定型文に差し替え (ログ保持)', async () => {
+    const { db, inserts } = makeDb();
+    const redactedText = 'naturism Blue は[省略]をサポートします🌿';
+    const router = fakeRouter(async () => ({ text: redactedText, model: 'llama-4-scout' }));
+    const r = await generateAiResponse(router, db, 'f5', 0, '2026-01-01', '脂肪燃焼に効きますか？');
+    // 顧客向け text に内部トークン [省略] が漏れない
+    expect(r.text).not.toContain('[省略]');
+    expect(r.layer).toBe('fallback');
+    expect(r.text).toContain('カスタマーサポート');
+    expect(r.ngDetected).toContain('[省略]');
+    // conversation_logs には原文 (redact 済) が ai_response として残る (監査)
+    expect(inserts.length).toBe(1);
+    expect(inserts[0][3]).toBe(redactedText);
+  });
 });
