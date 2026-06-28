@@ -134,6 +134,10 @@ function createMockEnv(): Env['Bindings'] {
     LINE_LOGIN_CHANNEL_ID: 'test-login-channel-id',
     LINE_LOGIN_CHANNEL_SECRET: 'test-login-secret',
     WORKER_URL: 'https://worker.example.com',
+    // R2 (リッチメニュー画像取得用): get() が arrayBuffer を持つオブジェクトを返す
+    IMAGES: {
+      get: async () => ({ arrayBuffer: async () => new ArrayBuffer(8) }),
+    } as unknown as R2Bucket,
   };
 }
 
@@ -484,6 +488,8 @@ describe('Rich Menus Routes', () => {
       expect(labels).toContain('ホームページ');
       expect(labels).toContain('Q&A お問い合わせ');
       expect(mockUploadRichMenuImage).toHaveBeenCalledTimes(1);
+      // R2 配信に切替: JPEG content-type で upload されること
+      expect(mockUploadRichMenuImage).toHaveBeenCalledWith('rm-naturism', expect.anything(), 'image/jpeg');
       expect(mockSetDefaultRichMenu).toHaveBeenCalledWith('rm-naturism');
     });
 
