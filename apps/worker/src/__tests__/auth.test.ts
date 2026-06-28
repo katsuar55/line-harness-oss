@@ -106,6 +106,13 @@ function createTestApp(): InstanceType<typeof Hono<Env>> {
   app.get('/liff/reorder', (c) => c.html('<html>reorder</html>'));
   app.get('/liff/cart', (c) => c.html('<html>cart</html>'));
 
+  // Forms: GET /:id は公開 (LIFF が form 定義を読む)、 /submit も公開 (handler 内で idToken 検証)。
+  // PUT(編集)/DELETE(削除) は authMiddleware を通す (採点 D2: method 非依存 skip の穴を塞ぐ)。
+  app.get('/api/forms/:id', (c) => c.json({ ok: true, method: 'GET' }));
+  app.put('/api/forms/:id', (c) => c.json({ ok: true, method: 'PUT' }));
+  app.delete('/api/forms/:id', (c) => c.json({ ok: true, method: 'DELETE' }));
+  app.post('/api/forms/:id/submit', (c) => c.json({ ok: true, method: 'submit' }));
+
   return app;
 }
 
@@ -325,6 +332,45 @@ describe('Auth Middleware', () => {
       '/liff/cart',
     ])('GET %s is accessible without auth (LIFF SPA)', async (path) => {
       const res = await app.request(path, {}, env);
+      expect(res.status).toBe(200);
+    });
+  });
+
+  // =========================================================================
+  // Forms route: method-aware auth skip (採点 D2)
+  //   GET /api/forms/:id   → 公開 (LIFF が form 定義を読む)
+  //   POST /api/forms/:id/submit → 公開 (handler 内で idToken 検証, #131)
+  //   PUT/DELETE /api/forms/:id → 認証必須 (旧コードは method 非依存 skip で
+  //     無認証の改竄/削除が可能だった)
+  // =========================================================================
+
+  describe('Forms route auth (method-aware skip)', () => {
+    it('GET /api/forms/:id is public (no auth required)', async () => {
+      const res = await app.request('/api/forms/form-123', {}, env);
+      expect(res.status).toBe(200);
+    });
+
+    it('POST /api/forms/:id/submit stays public (idToken auth inside handler)', async () => {
+      const res = await app.request('/api/forms/form-123/submit', { method: 'POST' }, env);
+      expect(res.status).toBe(200);
+    });
+
+    it('PUT /api/forms/:id returns 401 without auth (改竄防止)', async () => {
+      const res = await app.request('/api/forms/form-123', { method: 'PUT' }, env);
+      expect(res.status).toBe(401);
+    });
+
+    it('DELETE /api/forms/:id returns 401 without auth (削除防止)', async () => {
+      const res = await app.request('/api/forms/form-123', { method: 'DELETE' }, env);
+      expect(res.status).toBe(401);
+    });
+
+    it('PUT /api/forms/:id returns 200 with valid auth', async () => {
+      const res = await app.request(
+        '/api/forms/form-123',
+        { method: 'PUT', headers: { Authorization: `Bearer ${TEST_API_KEY}` } },
+        env,
+      );
       expect(res.status).toBe(200);
     });
   });
