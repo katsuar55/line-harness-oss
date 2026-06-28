@@ -221,7 +221,7 @@ function build7JulyTipFlex(): FlexContainer {
 }
 
 function build7JulyBlueFlex(): FlexContainer {
-  // Blue (= 脂質カット特化) を BBQ / 焼肉 文脈で推す
+  // Blue (= 脂っこい食事向け) を BBQ / 焼肉 文脈で推す
   return {
     type: 'bubble',
     header: {
@@ -239,7 +239,7 @@ function build7JulyBlueFlex(): FlexContainer {
       paddingAll: '16px',
       spacing: 'md',
       contents: [
-        { type: 'text', text: '夏の外食は脂質が高め。 Blue は脂質カットに特化した naturism のエントリーモデル。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '夏の外食は脂質が高め。 Blue は脂っこい食事が好きな方の naturism エントリーモデル。', size: 'sm', color: '#1e293b', wrap: true },
         { type: 'text', text: '8 成分配合 (= ウーロン茶ポリフェノール / アロエベラ / サンザシ 等)。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '1日¥64〜 / 7日分お試し ¥696', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
@@ -525,7 +525,7 @@ function build9SeptemberCompareFlex(): FlexContainer {
       paddingAll: '16px',
       spacing: 'md',
       contents: [
-        { type: 'text', text: '🩵 Blue は脂質カット 8 成分 — 焼肉 / 揚げ物 等の脂質高めの食事の時に', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '🩵 Blue は 8 成分配合 — 焼肉 / 揚げ物 等の脂っこい食事が好きな方に', size: 'sm', color: '#1e293b', wrap: true },
         { type: 'text', text: '💗 Pink は Blue + 酵素 — 美容も気になる方、 食事量が多い方に', size: 'sm', color: '#1e293b', wrap: true, margin: 'sm' },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '秋は外食 + 旬食材の食べ過ぎが増えるので、 二刀流で使い分けるユーザーも多数。', size: 'xs', color: '#475569', wrap: true },
@@ -820,7 +820,7 @@ function build11NovemberBlueBoostFlex(): FlexContainer {
       spacing: 'md',
       contents: [
         { type: 'text', text: '11 月-12 月は飲み会が連続しがち。 「いつでも 1 包」 をバッグに入れる習慣を🌿', size: 'sm', color: '#1e293b', wrap: true },
-        { type: 'text', text: '8 成分配合 (= ウーロン茶ポリフェノール / アロエベラ / サンザシ 等) で脂質カットに特化。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'text', text: '8 成分配合 (= ウーロン茶ポリフェノール / アロエベラ / サンザシ 等)。 脂っこい食事が好きな方に。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '💡 1 ヶ月分 (30 袋) でほぼ毎晩カバー可', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
         { type: 'text', text: '1日¥64〜 / 30日分 ¥1,980', size: 'xs', color: '#475569', align: 'center' },
