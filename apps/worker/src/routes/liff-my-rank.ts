@@ -610,6 +610,20 @@ function renderAll(d){
   var cta=document.getElementById('store-cta'); if(cta) cta.style.display='block';
 }
 
+// API の英語生エラーコードを顧客向け日本語に変換 (生の英語コードを顧客に出さない)。
+// 未知コードは友好的なデフォルト文言にフォールバック。2026-06-29 監査 rank 7。
+function localizeError(code){
+  if (!code) return null;
+  var map = {
+    'Friend not found': '友だち情報の同期中です。少し時間をおいて、もう一度お開きください🌿',
+    'Invalid or expired ID token': 'セッションの有効期限が切れました。お手数ですがLINEから開き直してください🌿',
+    'Authentication required': 'LINEアプリ内から開いてください🌿',
+    'LIFF auth not configured': '只今メンテナンス中です。しばらくしてからお試しください🌿',
+    'Unauthorized': 'お手数ですがLINEから開き直してください🌿'
+  };
+  for (var k in map){ if (String(code).indexOf(k) !== -1) return map[k]; }
+  return 'しばらくしてからもう一度お試しください🌿';
+}
 function showError(msg){
   // 既に会員証を描画済なら error card で上書きしない (= 連携成功後の refresh 失敗を無害化)。
   // 初回ロード失敗 (hasRendered=false) では従来どおりエラー表示する。
@@ -617,7 +631,8 @@ function showError(msg){
   document.getElementById('card-skeleton').style.display='none';
   var e=document.getElementById('error-card');
   e.style.display='block';
-  if (msg) document.getElementById('error-detail').textContent = msg;
+  var jp = localizeError(msg);
+  if (jp) document.getElementById('error-detail').textContent = jp;
 }
 
 async function loadRank(){
