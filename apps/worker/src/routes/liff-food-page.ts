@@ -256,7 +256,32 @@ async function apiDelete(path) {
 }
 
 // ─── LIFF init ───
+// ?demo=1 を明示指定した時だけサンプル表示する。本物の init/API 失敗を偽データで隠さないためのゲート。
+function isDemoRequested() {
+  try { return new URLSearchParams(location.search).get('demo') === '1'; } catch (e) { return false; }
+}
+
+// 致命的な初期化失敗 (idToken 取得不可 / liff.init 失敗 等) で偽データ・空状態に倒さず明示エラー+再読み込みを出す。
+function showFatalError(msg) {
+  var el = document.getElementById('loading');
+  if (!el) return;
+  el.style.display = 'flex';
+  el.innerHTML = '<div class="text-center px-8">' +
+    '<p class="text-3xl mb-3">🌿</p>' +
+    '<p class="text-sm text-gray-600 font-medium leading-relaxed mb-5">' + msg + '</p>' +
+    '<button onclick="location.reload()" class="btn-primary px-6 py-2.5 rounded-xl text-sm font-bold">再読み込み</button>' +
+    '</div>';
+}
+
 async function initLiff() {
+  // 明示 demo (?demo=1) のみサンプル表示。これ以外は実データ or エラー表示で、偽の 1240kcal を実ユーザに出さない。
+  if (isDemoRequested()) {
+    isDemo = true;
+    setDefaultDateTime();
+    renderDemo();
+    document.getElementById('loading').style.display = 'none';
+    return;
+  }
   try {
     if (!LIFF_ID) throw new Error('LIFF_ID not configured');
     await liff.init({ liffId: LIFF_ID });
@@ -265,15 +290,16 @@ async function initLiff() {
       return;
     }
     idToken = liff.getIDToken();
+    if (!idToken) {
+      showFatalError('セッションの有効期限が切れました。お手数ですが、トーク画面から開き直してください🌿');
+      return;
+    }
     setDefaultDateTime();
     await Promise.all([loadTodayStats(), loadHistory(true)]);
     document.getElementById('loading').style.display = 'none';
   } catch (err) {
     console.error('LIFF init error:', err);
-    isDemo = true;
-    setDefaultDateTime();
-    renderDemo();
-    document.getElementById('loading').style.display = 'none';
+    showFatalError('読み込みに失敗しました。通信環境をご確認のうえ、もう一度開き直してください🌿');
   }
 }
 
