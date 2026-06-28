@@ -1541,7 +1541,7 @@ async function loadReferralCard() {
       '<div class="flex gap-2">' +
       '<button onclick="shareRefLine()" class="flex-1 py-2 rounded-lg text-xs font-bold text-white" style="background:#06C755">LINEで送る</button>' +
       '</div>' +
-      (stats.totalReferrals > 0 ? '<p class="text-xs text-gray-500 mt-3">紹介実績: <span class="font-bold text-green-600">' + stats.totalReferrals + '人</span></p>' : '');
+      (stats.totalReferred > 0 ? '<p class="text-xs text-gray-500 mt-3">紹介実績: <span class="font-bold text-green-600">' + stats.totalReferred + '人</span></p>' : '');
   } catch { /* ignore */ }
 }
 
@@ -1899,7 +1899,7 @@ async function loadMoreData() {
 
 async function loadNotifPrefs() {
   try {
-    var res = await api('/api/liff/notification-prefs');
+    var res = await apiGet('/api/liff/notification-prefs');
     if (res.data) {
       notifPrefs = res.data;
       renderNotifPrefs();
@@ -1946,7 +1946,7 @@ async function toggleNotifPref(key, val) {
 
 async function loadSubscriptions() {
   try {
-    var res = await api('/api/liff/subscriptions');
+    var res = await apiGet('/api/liff/subscriptions');
     if (res.data) {
       subscriptionsList = res.data.subscriptions || [];
       renderSubscriptions();
@@ -2047,7 +2047,7 @@ async function createSubscription() {
 
 async function loadFAQ() {
   try {
-    var res = await api('/api/liff/faq');
+    var res = await apiGet('/api/liff/faq');
     var el = document.getElementById('faq-list');
     if (res.data && res.data.faqs && res.data.faqs.length > 0) {
       el.innerHTML = res.data.faqs.map(function(f, i) {

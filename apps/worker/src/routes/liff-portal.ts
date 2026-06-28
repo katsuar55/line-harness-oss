@@ -1507,18 +1507,17 @@ liffPortal.get('/api/liff/referral/ranking', async (c) => {
     const { results } = await c.env.DB
       .prepare(
         `SELECT
-           rr.referrer_id,
+           rr.referrer_friend_id,
            f.display_name,
            COUNT(*) as referral_count
          FROM referral_rewards rr
-         JOIN friends f ON f.id = rr.referrer_id
-         WHERE rr.reward_type = 'referrer'
-         GROUP BY rr.referrer_id
+         JOIN friends f ON f.id = rr.referrer_friend_id
+         GROUP BY rr.referrer_friend_id
          ORDER BY referral_count DESC
          LIMIT ?`,
       )
       .bind(limit)
-      .all<{ referrer_id: string; display_name: string | null; referral_count: number }>();
+      .all<{ referrer_friend_id: string; display_name: string | null; referral_count: number }>();
 
     const ranking = results.map((r, i) => ({
       rank: i + 1,
