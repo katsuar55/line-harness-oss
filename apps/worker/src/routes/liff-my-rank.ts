@@ -265,7 +265,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
     </section>
   </main>
 
-  <div id="toast" class="fixed left-1/2 bottom-8 z-50 text-white text-sm font-bold px-5 py-2.5 rounded-full shadow-xl" style="transform:translate(-50%,16px);opacity:0;background:#0f172a;pointer-events:none"></div>
+  <div id="toast" role="status" aria-live="polite" class="fixed left-1/2 bottom-8 z-50 text-white text-sm font-bold px-5 py-2.5 rounded-full shadow-xl" style="transform:translate(-50%,16px);opacity:0;background:#0f172a;pointer-events:none"></div>
 
   <div id="loading" class="fixed inset-0 z-50 flex flex-col items-center justify-center">
     <div class="spinner"></div>
