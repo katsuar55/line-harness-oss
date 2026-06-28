@@ -102,7 +102,7 @@ function reorderPage(liffId: string, apiBase: string): string {
 
   <!-- Edit modal -->
   <div id="modal" class="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style="display:none;background:rgba(15,23,42,.5)">
-    <div class="card p-5 w-full sm:max-w-md mx-2 mb-2 sm:mb-0" style="border-radius:20px 20px 0 0">
+    <div class="card p-5 w-full sm:max-w-md mx-2 mb-2 sm:mb-0" style="border-radius:20px 20px 0 0" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1">
       <p class="text-sm font-bold text-gray-800 mb-1" id="modal-title">間隔の変更</p>
       <p class="text-xs text-gray-500 mb-4" id="modal-product"></p>
       <div class="grid grid-cols-3 gap-2 mb-4" id="preset-grid"></div>
@@ -120,7 +120,7 @@ function reorderPage(liffId: string, apiBase: string): string {
   </div>
 
   <!-- Toast -->
-  <div id="toast" class="fixed bottom-24 left-1/2 -translate-x-1/2 text-white px-5 py-2.5 rounded-2xl text-sm shadow-xl opacity-0 transition-opacity pointer-events-none z-50"></div>
+  <div id="toast" role="status" aria-live="polite" class="fixed bottom-24 left-1/2 -translate-x-1/2 text-white px-5 py-2.5 rounded-2xl text-sm shadow-xl opacity-0 transition-opacity pointer-events-none z-50"></div>
 
 <script>
 const LIFF_ID = '${escapeHtml(liffId)}';
