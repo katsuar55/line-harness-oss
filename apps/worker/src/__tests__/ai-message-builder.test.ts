@@ -36,6 +36,48 @@ describe('ai-message-builder — buildAiMessage prefix hint', () => {
   });
 });
 
+describe('ai-message-builder — mangled/typo marker tolerance (2026-06-28 実測 [FMAT:text])', () => {
+  it('[FMAT:text] (LLM typo, 50字超) → marker を strip し本文のみ。 顧客に marker が漏れない', () => {
+    const raw = '[FMAT:text] ナチュリズムは毎食時にお飲みいただくのがおすすめです🌿 カロリーが気になるお食事の際に飲むと良いでしょう😊 詳しくはパッケージをご確認ください📝';
+    const msg = buildAiMessage(raw);
+    if (msg.type === 'text') {
+      expect(msg.text).not.toContain('FMAT');
+      expect(msg.text).not.toContain('[FMT');
+      expect(msg.text.startsWith('ナチュリズム')).toBe(true);
+    } else if (msg.type === 'flex') {
+      // flex に落ちても marker が altText/contents に漏れないこと
+      expect(JSON.stringify(msg)).not.toContain('FMAT');
+      expect(JSON.stringify(msg)).not.toContain('[FMT');
+    }
+  });
+
+  it('[FORMAT:text] 変形 prefix も strip', () => {
+    const msg = buildAiMessage('[FORMAT:text]こんにちは😊 ご質問ありがとうございます');
+    expect(msg.type).toBe('text');
+    if (msg.type === 'text') {
+      expect(msg.text).toBe('こんにちは😊 ご質問ありがとうございます');
+      expect(msg.text).not.toContain('FORMAT');
+    }
+  });
+
+  it('変形 marker でも keyword=price_table なら price table flex に route', () => {
+    const msg = buildAiMessage('[FMAT:price_table]3商品の価格です💰');
+    expect(msg.type).toBe('flex');
+  });
+
+  it('変形 marker でも keyword=quiz_invite なら quiz invite flex に route', () => {
+    const msg = buildAiMessage('[FMAT:quiz_invite]診断しますね💚');
+    expect(msg.type).toBe('flex');
+  });
+
+  it('日本語の隅付き括弧は ASCII marker regex に誤検出されず本文が保持される', () => {
+    // marker regex は [A-Za-z]{2,8}:[a-z_]{2,20} の ASCII のみ対象 → 【】 にマッチしない。
+    // (type は既存 structure heuristic で flex になりうるが、 本文が strip されないことを検証)
+    const msg = buildAiMessage('【お知らせ】本日のおすすめはこちらです😊');
+    expect(JSON.stringify(msg)).toContain('お知らせ');
+  });
+});
+
 describe('ai-message-builder — buildAiMessage heuristics', () => {
   it('short greeting (< 50 chars, no structure) → text', () => {
     const msg = buildAiMessage('こんにちは！naturism公式LINEです😊');

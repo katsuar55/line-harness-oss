@@ -58,6 +58,21 @@ export function buildAiMessage(text: string): Message {
     return { type: 'text', text: stripped || trimmedRaw };
   }
 
+  // 1b. tolerant cleanup: LLM は marker を typo/変形することがある
+  //     (実測 2026-06-28: llama-4-scout が [FMT:text] を [FMAT:text] と出力)。
+  //     素の exact-prefix check だけだと、 変形 marker は fallback flex に落ちて
+  //     `[FMAT:text]…` が顧客に**そのまま可視化**される。 内側 keyword で route し、
+  //     marker token を strip して marker 文字列が顧客に漏れないようにする。
+  //     keyword=英小文字+_ / prefix=英字2-8 のみを marker とみなす (日本語の [〜] や
+  //     【〜】 は ASCII でないため誤検出しない)。
+  const mangledMarker = trimmedRaw.match(/^\[[A-Za-z]{2,8}:([a-z_]{2,20})\]\s*/);
+  if (mangledMarker) {
+    if (mangledMarker[1] === 'quiz_invite') return buildQuickQuizInviteMessage();
+    if (mangledMarker[1] === 'price_table') return buildPriceTableMessage();
+    const cleaned = trimmedRaw.slice(mangledMarker[0].length).trim();
+    if (cleaned) return buildAiMessage(cleaned); // strip 後の本文を再評価 (先頭 marker は除去済)
+  }
+
   // 2. heuristics
   const hasStructure = MARKDOWN_STRUCTURE_REGEX.test(trimmedRaw);
   const length = trimmedRaw.length;
