@@ -728,10 +728,16 @@ async function initLiff() {
     document.getElementById('loading').style.display = 'none';
   } catch (err) {
     console.error('LIFF init error:', err);
-    // Demo mode: show UI with sample data for browser preview
-    isDemo = true;
-    loadDemoData();
-    document.getElementById('loading').style.display = 'none';
+    // ?demo=1 を明示指定した時だけサンプル表示 (ブラウザプレビュー用)。
+    // それ以外の本物の init/API 失敗では偽データ (偽クーポン/偽注文/偽紹介実績) を出さず、
+    // 明示エラー+再読み込みに倒す (Codex MEDIUM-2)。
+    if (isDemoRequested()) {
+      isDemo = true;
+      loadDemoData();
+      document.getElementById('loading').style.display = 'none';
+      return;
+    }
+    showFatalError('読み込みに失敗しました。お手数ですが、トーク画面から開き直してください🌿');
   }
 }
 
@@ -889,6 +895,11 @@ function showFatalError(msg){
     '<p class="text-sm text-gray-600 font-medium leading-relaxed mb-5">' + msg + '</p>' +
     '<button onclick="location.reload()" class="btn-primary px-6 py-2.5 rounded-xl text-sm font-bold">再読み込み</button>' +
     '</div>';
+}
+
+// ?demo=1 を明示指定した時だけサンプル表示する。本物の API 失敗を偽データ (偽クーポン/偽注文/偽紹介実績) で隠さない。
+function isDemoRequested(){
+  try { return new URLSearchParams(location.search).get('demo') === '1'; } catch (e) { return false; }
 }
 
 // ─── Deep Link (hash-based tab navigation from rich menu) ───

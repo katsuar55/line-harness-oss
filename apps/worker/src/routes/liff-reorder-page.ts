@@ -320,6 +320,18 @@ async function loadList() {
   render();
 }
 
+// 致命的な初期化失敗で「リマインダー0件」空状態に誤変換せず、明示エラー+再読み込みを出す。
+function showFatalError(msg) {
+  var el = document.getElementById('loading');
+  if (!el) return;
+  el.style.display = 'flex';
+  el.innerHTML = '<div class="text-center px-8">' +
+    '<p class="text-3xl mb-3">🌿</p>' +
+    '<p class="text-sm text-gray-600 font-medium leading-relaxed mb-5">' + msg + '</p>' +
+    '<button onclick="location.reload()" class="btn-primary px-6 py-2.5 rounded-xl text-sm font-bold">再読み込み</button>' +
+    '</div>';
+}
+
 async function initLiff() {
   try {
     if (!LIFF_ID) throw new Error('LIFF_ID not configured');
@@ -329,13 +341,15 @@ async function initLiff() {
       return;
     }
     idToken = liff.getIDToken();
+    if (!idToken) {
+      showFatalError('セッションの有効期限が切れました。お手数ですが、トーク画面から開き直してください🌿');
+      return;
+    }
     await loadList();
     document.getElementById('loading').style.display = 'none';
   } catch (err) {
     console.error('LIFF init error:', err);
-    subs = [];
-    render();
-    document.getElementById('loading').style.display = 'none';
+    showFatalError('読み込みに失敗しました。通信環境をご確認のうえ、もう一度開き直してください🌿');
   }
 }
 

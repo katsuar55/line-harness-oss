@@ -381,15 +381,27 @@ function graphPage(liffId: string, apiBase: string): string {
   }
 
   // ---- LIFF init ----
+  // 致命的な初期化失敗で空グラフ (401) を出さず、明示エラー+再読み込みを出す。
+  function showFatalError(msg) {
+    var el = document.getElementById('loading');
+    if (!el) return;
+    el.style.display = 'flex';
+    el.innerHTML = '<div class="text-center px-8">' +
+      '<p class="text-3xl mb-3">🌿</p>' +
+      '<p class="text-sm text-gray-600 font-medium leading-relaxed mb-5">' + msg + '</p>' +
+      '<button onclick="location.reload()" class="btn-primary px-6 py-2.5 rounded-xl text-sm font-bold">再読み込み</button>' +
+      '</div>';
+  }
+
   function initLiff() {
     if (!LIFF_ID) {
       console.error('LIFF_ID not configured');
-      finishInit();
+      showFatalError('読み込みに失敗しました。通信環境をご確認のうえ、もう一度開き直してください🌿');
       return;
     }
     if (typeof liff === 'undefined') {
       console.error('LIFF SDK not loaded');
-      finishInit();
+      showFatalError('読み込みに失敗しました。通信環境をご確認のうえ、もう一度開き直してください🌿');
       return;
     }
     liff.init({ liffId: LIFF_ID }).then(function() {
@@ -398,11 +410,14 @@ function graphPage(liffId: string, apiBase: string): string {
         return;
       }
       idToken = liff.getIDToken();
+      if (!idToken) {
+        showFatalError('セッションの有効期限が切れました。お手数ですが、トーク画面から開き直してください🌿');
+        return;
+      }
       finishInit();
     }).catch(function(err) {
       console.error('LIFF init error', err);
-      // demo / browser preview: idToken なしで API は 401 になる想定。プレースホルダ表示。
-      finishInit();
+      showFatalError('読み込みに失敗しました。通信環境をご確認のうえ、もう一度開き直してください🌿');
     });
   }
 
