@@ -125,8 +125,24 @@ const UNAUTHENTICATED_WINDOW = 60_000; // 1 min
 export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<Response | void> {
   const path = new URL(c.req.url).pathname;
 
-  // Skip rate limiting for docs / static assets
-  if (path === '/docs' || path === '/openapi.json' || path.startsWith('/r/')) {
+  // Skip rate limiting for docs / static assets / LIFF HTML page shells.
+  //
+  // LIFF page routes (`/liff/...`) are cheap, public HTML shells. The real work
+  // (and the only sensitive data) lives behind `/api/liff/*` data calls, which
+  // carry the LIFF idToken as a Bearer header and are therefore rate-limited
+  // PER USER below (= CGNAT-safe). The HTML shells carry no Authorization
+  // header, so WITHOUT this skip they fall into a shared per-IP bucket — and
+  // because mobile carriers place many customers behind a single CGNAT IP, and
+  // every rich-menu tap reloads `/liff/portal`, that shared bucket is exhausted
+  // by legitimate traffic and returns spurious 429s to real users (observed in
+  // the 2026-06-29 cutover: マイランク returned "Too many requests"). Exempt the
+  // shells; keep `/api/liff/*` (which starts with `/api/`, not `/liff/`) limited.
+  if (
+    path === '/docs' ||
+    path === '/openapi.json' ||
+    path.startsWith('/r/') ||
+    path.startsWith('/liff/')
+  ) {
     return next();
   }
 

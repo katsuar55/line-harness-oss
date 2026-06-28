@@ -1550,18 +1550,28 @@ function copyRefLink() {
   navigator.clipboard.writeText(url).then(function() { showToast('コピーしました!'); });
 }
 
-function shareRefLine() {
-  if (typeof liff !== 'undefined' && liff.isApiAvailable && liff.isApiAvailable('shareTargetPicker')) {
-    var url = document.getElementById('ref-url').textContent;
-    liff.shareTargetPicker([{
-      type: 'text',
-      text: 'naturismを一緒に始めませんか? 紹介リンクからお互い500円OFFクーポンがもらえます!\\n' + url,
-    }]).then(function(res) {
-      if (res) showToast('送信しました!');
-    }).catch(function() { showToast('送信できませんでした'); });
+function openLineShare(msg) {
+  // shareTargetPicker 未対応時のフォールバック: コピーで終わらせず LINE 公式の共有URLを開く。
+  // (https://line.me/R/share?text= は外部ブラウザでも LINE in-app でも共有シートを起動する)
+  var shareUrl = 'https://line.me/R/share?text=' + encodeURIComponent(msg);
+  if (typeof liff !== 'undefined' && liff.openWindow) {
+    liff.openWindow({ url: shareUrl, external: true });
   } else {
-    copyRefLink();
+    window.location.href = shareUrl;
   }
+}
+
+function shareRefLine() {
+  var url = document.getElementById('ref-url').textContent;
+  var msg = 'naturismを一緒に始めませんか? 紹介リンクからお互い500円OFFクーポンがもらえます!\\n' + url;
+  if (typeof liff !== 'undefined' && liff.isApiAvailable && liff.isApiAvailable('shareTargetPicker')) {
+    liff.shareTargetPicker([{ type: 'text', text: msg }]).then(function(res) {
+      if (res) showToast('送信しました!');
+    }).catch(function() { openLineShare(msg); });
+    return;
+  }
+  // shareTargetPicker 未対応 (LIFF console 未設定 / 外部ブラウザ) → LINE 共有シートを開く
+  openLineShare(msg);
 }
 
 // ─── Ranking ───

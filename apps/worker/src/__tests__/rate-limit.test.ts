@@ -34,6 +34,26 @@ describe('rateLimitMiddleware', () => {
     }
   });
 
+  it('/liff/* HTML ページは rate limit 対象外 (CGNAT 配下 = 同一 IP の大量 LIFF アクセスでも 429 にしない)', async () => {
+    // 2026-06-29 cutover 回帰: 同一 IP (mobile CGNAT) からの /liff/portal 150 連投でも 200。
+    const app = makeApp();
+    for (let i = 0; i < 150; i++) {
+      const res = await app.fetch(req('/liff/portal?liff.state=%23rank', { ip: '203.0.113.7' }), ENV);
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it('/api/liff/* データ endpoint は exempt されない (idToken Bearer keyed の per-user 制限を維持)', async () => {
+    // `/api/liff/...` は `/api/` 始まりなので `/liff/` skip に巻き込まれない。
+    // idToken を Bearer で持つので authed bucket (remaining 999) = per-user・CGNAT 安全。
+    const res = await makeApp().fetch(
+      req('/api/liff/my-rank', { auth: 'idtoken-per-user-abc', ip: '203.0.113.8' }),
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-RateLimit-Remaining')).toBe('999');
+  });
+
   it('未認証 path は IP keyed、 100 超で 429 + Retry-After', async () => {
     const app = makeApp();
     const ip = '1.2.3.4';
