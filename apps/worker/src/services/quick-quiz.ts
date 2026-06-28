@@ -296,7 +296,7 @@ function buildQuestionFlex(question: QuickQuizQuestion, answersSoFar: string): F
 /** 結果 flex (= 5 答え完了後、 推奨商品 + 公式ストア button) */
 function buildResultFlex(result: QuickQuizResult): FlexContainer {
   const productInfo: Record<RecommendedProduct, { emoji: string; name: string; price: string; tagline: string; color: string }> = {
-    Blue: { emoji: '🩵', name: 'naturism Blue', price: '¥64/日〜', tagline: 'まずはここから・脂質カットに特化', color: '#0ABAB5' },
+    Blue: { emoji: '🩵', name: 'naturism Blue', price: '¥64/日〜', tagline: 'まずはここから・脂っこい食事が好きな方に', color: '#0ABAB5' },
     Pink: { emoji: '💗', name: 'KOSO in naturism Pink', price: '¥75/日〜', tagline: '美容も気になる方に・活きた酵素配合', color: '#ec4899' },
     Premium: { emoji: '🩶', name: 'naturism Premium', price: '¥149/日〜', tagline: '本気の体型管理に・全 16 成分の最高峰', color: '#64748b' },
   };

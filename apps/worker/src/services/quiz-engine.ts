@@ -59,7 +59,7 @@ export const NATURISM_QUIZ_CONFIG: QuizConfig = {
       emoji: '🩵',
       price: '¥64/日〜',
       components: 8,
-      reason: '脂質カットに特化したエントリーモデル。11年以上のロングセラーで、シンプルに始めたい方に最適です。アレルギー成分を含まないので安心してお飲みいただけます。',
+      reason: '脂っこい食事が好きな方のエントリーモデル。11年以上のロングセラーで、シンプルに始めたい方に最適です。アレルギー成分を含まないので安心してお飲みいただけます。',
       storeUrl: 'https://naturism-diet.com',
     },
     {

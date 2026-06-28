@@ -11,6 +11,7 @@
 
 import { getFriendTags } from '@line-crm/db';
 import type { AIRouter } from '@line-crm/ai-provider';
+import { REDACTION_TOKEN } from '@line-crm/ai-provider';
 import { detectNgWords } from './ai-ng-filter.js';
 import { getActiveBroadcastsContext, getFriendCouponContext } from './ai-fact-context.js';
 
@@ -285,6 +286,18 @@ export async function generateAiResponse(
     if (result.text) {
       // Phase 3.1: 薬機法 NG word 検出 (= safety net、 既存 prompt 指示破りの monitoring)
       const ngResult = detectNgWords(result.text);
+      // 2026-06-29 監査 (rank 3): provider (workers-ai) は detectNgWords より「先に」
+      //   prohibited phrase を REDACTION_TOKEN ('[省略]') に置換して返すため、 detectNgWords は
+      //   置換後テキストを検査して NG を取りこぼす (特に ai-ng-filter に無い 脂肪燃焼/代謝アップ 等の
+      //   redact 専用語)。 結果 hasNg=false で fallback が発火せず、 内部トークン '[省略]' が
+      //   顧客にそのまま漏れていた。 → REDACTION_TOKEN の残存自体を「prohibited phrase 検出済」の
+      //   証跡とみなし block する (顧客には COMPLIANCE_FALLBACK、 ログにも残す)。
+      const hasRedaction = result.text.includes(REDACTION_TOKEN);
+      const blocked = ngResult.hasNg || hasRedaction;
+      const detectedForLog =
+        hasRedaction && !ngResult.detected.includes(REDACTION_TOKEN)
+          ? [...ngResult.detected, REDACTION_TOKEN]
+          : ngResult.detected;
       // Phase 3.1: conversation_logs INSERT (= best-effort、 失敗時も応答は壊さない)
       await insertConversationLog(db, {
         friendId,
@@ -292,24 +305,24 @@ export async function generateAiResponse(
         aiResponse: result.text,
         aiLayer: 'ai',
         aiModel: result.model,
-        ngWordsDetected: ngResult.hasNg ? ngResult.detected : null,
+        ngWordsDetected: blocked ? detectedForLog : null,
         friendContext,
         tagNames,
         friendScore,
       }).catch((err) =>
         console.error('[ai-response] conversation_logs insert failed:', err instanceof Error ? err.message : String(err)),
       );
-      if (ngResult.hasNg) {
-        // 薬機法 NG word が混入 → 顧客には送らず中立な定型文に差し替える (送信前の最終ゲート)。
+      if (blocked) {
+        // 薬機法 NG word / redact トークンが混入 → 顧客には送らず中立な定型文に差し替える (送信前の最終ゲート)。
         // 原文は上の conversation_logs に ngWordsDetected 付きで記録済 → 監査可能。
         console.warn(
-          `[ai-response] 薬機法 NG word detected (blocked): ${ngResult.detected.join(', ')} (friend=${friendId})`,
+          `[ai-response] 薬機法 NG/redaction detected (blocked): ${detectedForLog.join(', ')} (friend=${friendId})`,
         );
         return {
           text: COMPLIANCE_FALLBACK_MESSAGE,
           layer: 'fallback',
           model: result.model,
-          ngDetected: ngResult.detected,
+          ngDetected: detectedForLog,
         };
       }
       return {
