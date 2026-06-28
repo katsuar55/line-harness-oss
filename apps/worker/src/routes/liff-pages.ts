@@ -707,6 +707,13 @@ async function initLiff() {
       return;
     }
     idToken = liff.getIDToken();
+    if (!idToken) {
+      // ID token が取得できない (失効/openid scope 欠如)。LINE の ID token は自動 refresh されないため
+      // isLoggedIn()=true でも null になり得る。このまま進むと全 /api/liff/* が 401 になりホームの各カードが
+      // skeleton 固着するので、demo に倒さず明示的に再読み込みを促す (2026-06-29 監査 rank5 HIGH)。
+      showFatalError('セッションの有効期限が切れました。お手数ですが、トーク画面から開き直してください🌿');
+      return;
+    }
     const profile = await liff.getProfile();
     if (profile.pictureUrl) {
       document.getElementById('user-avatar').innerHTML =
@@ -821,7 +828,7 @@ function loadDemoData() {
     '<div class="flex items-center gap-3 py-3 border-b">' +
     '<div class="w-16 h-16 rounded-lg bg-blue-50 flex items-center justify-center text-2xl">B</div>' +
     '<div class="flex-1"><p class="text-sm font-bold text-gray-800">naturism Blue</p>' +
-    '<p class="text-xs text-gray-500">8\u6210\u5206\u30fb\u8102\u8cea\u30ab\u30c3\u30c8\u7279\u5316</p>' +
+    '<p class="text-xs text-gray-500">8\u6210\u5206\u30fb\u8102\u3063\u3053\u3044\u98df\u4e8b\u304c\u597d\u304d\u306a\u65b9\u306b</p>' +
     '<p class="text-sm text-green-600 font-bold">\xa52,376</p></div>' +
     '<span class="text-xs text-green-600 border border-green-600 px-3 py-1 rounded-full">\u8cfc\u5165</span></div>' +
     '<div class="flex items-center gap-3 py-3 border-b">' +
@@ -870,6 +877,18 @@ async function apiGet(path) {
   if (idToken) { headers['Authorization'] = 'Bearer ' + idToken; }
   const res = await fetch(API_BASE + path, { headers: headers });
   return res.json();
+}
+
+// 致命的な初期化失敗 (idToken 取得不可 等) で skeleton 固着でなく明示的なエラー + 再読み込みを出す。
+function showFatalError(msg){
+  var el = document.getElementById('loading');
+  if (!el) return;
+  el.style.display = 'flex';
+  el.innerHTML = '<div class="text-center px-8">' +
+    '<p class="text-3xl mb-3">🌿</p>' +
+    '<p class="text-sm text-gray-600 font-medium leading-relaxed mb-5">' + msg + '</p>' +
+    '<button onclick="location.reload()" class="btn-primary px-6 py-2.5 rounded-xl text-sm font-bold">再読み込み</button>' +
+    '</div>';
 }
 
 // ─── Deep Link (hash-based tab navigation from rich menu) ───
