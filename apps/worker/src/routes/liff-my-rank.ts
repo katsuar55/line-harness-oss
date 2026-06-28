@@ -358,8 +358,8 @@ function renderRank(d){
       '<div class="pt-6 px-6 text-center">' +
         '<div class="medal-wrap">'+medalInner+'</div>' +
         '<p class="en mt-1 text-[11px] tracking-[0.28em] font-semibold" style="color:'+color+'">YOUR RANK</p>' +
-        '<p class="en text-4xl font-extrabold mt-0.5" style="color:#1f2937;letter-spacing:.02em">'+esc(enName(rank.id))+'</p>' +
-        '<p class="text-xs text-gray-400 mt-0.5">'+esc(rank.name)+'会員</p>' +
+        '<p class="text-3xl font-extrabold mt-0.5" style="color:#1f2937">'+esc(rank.name)+'会員</p>' +
+        '<p class="en text-xs tracking-[0.22em] font-semibold text-gray-500 mt-0.5">'+esc(enName(rank.id))+'</p>' +
         (pct > 0
           ? '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-sm font-bold shadow" style="background:linear-gradient(135deg,'+color+','+color+'cc);color:'+txt+'">'+pct+'% OFF 常時割引</div>'
           : '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-gray-600 text-sm font-bold" style="background:#f1f5f9">まずは1回のお買い物でブロンズ会員に</div>') +
@@ -395,7 +395,9 @@ function renderProgress(d){
     '<div class="w-full h-3 rounded-full overflow-hidden" style="background:#e2e8f0">' +
       '<div class="bar-fill h-3 rounded-full" id="bar" style="width:0%;background:linear-gradient(90deg,#0ABAB5,#22d3ee)"></div>' +
     '</div>' +
-    '<p class="text-xs text-gray-500 mt-2 text-center">あと <span class="font-bold" style="color:#0ABAB5">'+esc(yen(d.next.remainingJpy))+'</span> で '+esc(d.next.name)+'にランクアップ</p>' +
+    (d.next.remainingJpy <= 1
+      ? '<p class="text-xs text-gray-500 mt-2 text-center">まずは1回のお買い物で '+esc(d.next.name)+'会員へ</p>'
+      : '<p class="text-xs text-gray-500 mt-2 text-center">あと <span class="font-bold" style="color:#0ABAB5">'+esc(yen(d.next.remainingJpy))+'</span> で '+esc(d.next.name)+'にランクアップ</p>') +
     evalLine;
   setTimeout(function(){ var b=document.getElementById('bar'); if(b) b.style.width = pctW + '%'; }, 80);
 }
