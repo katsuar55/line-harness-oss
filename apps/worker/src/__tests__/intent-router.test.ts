@@ -102,12 +102,45 @@ describe('intent-router — my_rank (= マイランク LIFF 誘導)', () => {
   });
 });
 
+// 2026-06-29 監査 rank 8: 友だち紹介は feature_unavailable でなく referral (= リッチメニュー+LIFF 稼働中)
+describe('intent-router — referral (= 友だち紹介 LIFF 誘導)', () => {
+  it.each([
+    '友だち紹介',
+    '友達紹介',
+    '紹介コード',
+    'リファラル',
+    '紹介プログラム教えて',
+    '友だち紹介で割引ある？',
+  ])('matches "%s" → referral (近日リリースと言わない)', (text) => {
+    const r = detectIntent(text);
+    expect(r).not.toBeNull();
+    expect(r?.intent.type).toBe('referral');
+    if (r?.messages[0]?.type === 'text') {
+      expect(r.messages[0].text).not.toMatch(/近日リリース/);
+    }
+  });
+
+  it('async build with liffUrl returns #referral tap link', async () => {
+    const r = detectIntent('友だち紹介');
+    expect(r?.intent.type).toBe('referral');
+    const msgs = await buildMessagesForIntentAsync(r!.intent, {
+      db: {} as unknown as D1Database,
+      friendId: 'f1',
+      liffUrl: 'https://liff.line.me/2009713578-NbdHyFZf',
+    });
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]?.type).toBe('text');
+    if (msgs[0]?.type === 'text') {
+      expect(msgs[0].text).toContain('#referral');
+      expect(msgs[0].text).not.toMatch(/近日リリース/);
+    }
+  });
+});
+
 describe('intent-router — feature_unavailable', () => {
   it.each<[string, string]>([
     ['ポイント残高は？', 'ポイント / マイル'],
     ['マイル何個持ってる？', 'ポイント / マイル'],
-    ['紹介プログラム教えて', '紹介プログラム'],
-    ['友だち紹介で割引ある？', '紹介プログラム'],
     ['アンバサダー制度は？', 'アンバサダープログラム'],
     ['専用バッジある？', '専用バッジ / 称号'],
   ])('matches "%s" → feature_unavailable (%s)', (text, expectedFeature) => {

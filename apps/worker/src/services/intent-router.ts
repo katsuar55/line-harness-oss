@@ -38,6 +38,7 @@ export type Intent =
   | { readonly type: 'product_compare'; readonly reason: string }
   | { readonly type: 'my_coupon'; readonly reason: string }
   | { readonly type: 'my_rank'; readonly reason: string }
+  | { readonly type: 'referral'; readonly reason: string }
   | { readonly type: 'feature_unavailable'; readonly feature: string; readonly reason: string };
 
 export interface IntentRouteResult {
@@ -126,10 +127,13 @@ const PATTERNS: ReadonlyArray<PatternRule> = [
     keywords: ['ポイント残高', 'ポイント教えて', 'マイル教えて', '私のポイント', '私のマイル', 'ポイントいくつ', 'マイル何個'],
     intent: { type: 'feature_unavailable', feature: 'ポイント / マイル', reason: 'unimplemented' },
   },
-  // 紹介プログラム
+  // ========= referral (= 友だち紹介 LIFF 誘導、 2026-06-29 監査 rank 8) =========
+  // 旧: feature_unavailable「近日リリース予定」 → 友だち紹介はリッチメニュー +
+  //   LIFF (/liff/portal#referral) で稼働中のため誤回答だった。my_rank と同じ live-LIFF 誘導に格上げ。
+  //   (割引「500円OFF」自体の開始時期は別途案内。 共有/リンク/ランキング機構は live)
   {
     keywords: ['紹介プログラム', '紹介制度', 'リファラル', '友だち紹介', '友達紹介', '紹介して', '紹介の', '紹介コード'],
-    intent: { type: 'feature_unavailable', feature: '紹介プログラム', reason: 'unimplemented' },
+    intent: { type: 'referral', reason: 'referral LIFF is live' },
   },
   // アンバサダー
   {
@@ -197,6 +201,14 @@ function buildMessagesForIntent(intent: Intent): ReadonlyArray<Message> {
           text: '🌿 現在の会員ランクは、トーク画面下のメニュー「マイランク」からご確認いただけます💝',
         },
       ];
+    case 'referral':
+      // sync build では liffUrl 不明 → rich menu 誘導 fallback、 実 reply は async 経由 (= liffUrl 付き)
+      return [
+        {
+          type: 'text',
+          text: '🌿 友だち紹介は、トーク画面下のメニュー「友達紹介」からリンクを送れます💝\nご紹介でお互いにおトクなクーポンをプレゼント🎁',
+        },
+      ];
     case 'feature_unavailable':
       return [
         {
@@ -248,7 +260,16 @@ export async function buildMessagesForIntentAsync(
       },
     ];
   }
-  // 他 intent (+ liffUrl なし my_rank) は sync build をそのまま流用
+  if (intent.type === 'referral' && ctx.liffUrl) {
+    // rich-menus.ts「友達紹介」ボタンと同じ `${liffUrl}#referral` 規約
+    return [
+      {
+        type: 'text',
+        text: `🌿 友だち紹介はこちらから💝\nご紹介でお互いにおトクなクーポンをプレゼント🎁\n\n↓ こちらをタップ\n${ctx.liffUrl}#referral`,
+      },
+    ];
+  }
+  // 他 intent (+ liffUrl なし my_rank / referral) は sync build をそのまま流用
   return buildMessagesForIntent(intent);
 }
 
