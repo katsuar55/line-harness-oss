@@ -44,7 +44,10 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/api/rich-menus/image-guide' || // Rich menu image template (static HTML)
     // 友だち限定クーポン 管理トグルページ (公開 HTML shell のみ skip。
     // 実操作 /api/admin/friend-coupon は API_KEY 保護のまま = 無認証で改変不可)。
-    path === '/admin/friend-coupon'
+    path === '/admin/friend-coupon' ||
+    // FAQ 管理ページ (公開 HTML shell のみ skip。/api/admin/faq* は API_KEY 保護のまま。
+    // exact-match なので /api/admin/faq を素通りさせない = 採点 D2 の method 非依存 skip 穴を作らない)。
+    path === '/admin/faq'
   ) {
     return next();
   }
