@@ -172,6 +172,23 @@ function portalPage(liffId: string, apiBase: string): string {
         <p class="text-xs text-gray-400 text-center mt-2">タップして記録 (1日1回ずつ、押し忘れOK)</p>
       </div>
 
+      <!-- Nutrition & Wellness discovery (PR-B: food/コーチ/グラフ を home に露出。従来は 0 導線で 4+タップ埋没していた) -->
+      <div class="card p-4">
+        <p class="text-sm font-bold text-gray-700 mb-1">🍽 栄養 & ウェルネス</p>
+        <p class="text-xs text-gray-400 mb-3">毎日の食事を記録 → AIコーチがあなたに合うサプリ・食生活をご提案</p>
+        <div class="grid grid-cols-3 gap-2">
+          <a href="javascript:void(0)" onclick="openFeaturePage('/liff/food')" class="flex flex-col items-center gap-1 p-3 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-bold hover:bg-emerald-100 transition-colors">
+            <span class="text-xl">🍽</span> 食事記録
+          </a>
+          <a href="javascript:void(0)" onclick="openFeaturePage('/liff/coach')" class="flex flex-col items-center gap-1 p-3 rounded-xl bg-green-50 text-green-700 text-xs font-bold hover:bg-green-100 transition-colors">
+            <span class="text-xl">🧠</span> AIコーチ
+          </a>
+          <a href="javascript:void(0)" onclick="openFeaturePage('/liff/food/graph')" class="flex flex-col items-center gap-1 p-3 rounded-xl bg-teal-50 text-teal-700 text-xs font-bold hover:bg-teal-100 transition-colors">
+            <span class="text-xl">📊</span> グラフ
+          </a>
+        </div>
+      </div>
+
       <!-- Today's Tip -->
       <div id="tip-card" class="card p-4">
         <div class="skeleton h-16 rounded-lg"></div>
@@ -656,6 +673,13 @@ function esc(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').repl
 function openLiffPage(page) {
   var liffUrl = 'https://liff.line.me/' + LIFF_ID;
   window.location.href = liffUrl + '?page=' + encodeURIComponent(page);
+}
+
+// 独立した LIFF ページ (食事記録 /liff/food, AIコーチ /liff/coach, グラフ /liff/food/graph 等) へ遷移する。
+// portal の openLiffPage が ?page= で portal 内タブへ deep-link するのに対し、こちらは worker 上の別ページへ
+// 直接遷移する (これらは別ルートで独自に liff.init する)。demo プレビュー中は ?demo=1 を引き継ぐ。
+function openFeaturePage(path) {
+  window.location.href = API_BASE + path + (isDemoRequested() ? '?demo=1' : '');
 }
 
 // ─── i18n ───
