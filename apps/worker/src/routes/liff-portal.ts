@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import { getShopifyAccessToken } from '../services/shopify-token.js';
+import { getFriendCouponConfig } from '../services/friend-coupon-config.js';
+import { buildDiscountApplyUrl } from '../services/cart-permalink.js';
 import {
   getFriendRank,
   getMemberRanks,
@@ -199,6 +201,40 @@ liffPortal.post('/api/liff/coupons', async (c) => {
     });
   } catch (err) {
     console.error('POST /api/liff/coupons error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// 顧客向けストアフロント (= 公式ドメイン)。割引適用リンクに使う。
+const FRIEND_COUPON_STORE_DOMAIN = 'naturism-diet.com';
+
+/**
+ * GET /api/liff/friend-coupon — LINE友だち限定クーポン (ランク不問の一律 % OFF)。
+ * 管理トグルが ON かつコード設定済みのときだけ code/applyUrl を返す。
+ * idToken 認証必須 (= LINE 友だちにのみコードを見せる「友だち限定」)。
+ */
+liffPortal.get('/api/liff/friend-coupon', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const cfg = await getFriendCouponConfig(c.env.DB);
+    if (!cfg.enabled || !cfg.code) {
+      return c.json({ success: true, data: { enabled: false } });
+    }
+    return c.json({
+      success: true,
+      data: {
+        enabled: true,
+        code: cfg.code,
+        percent: cfg.percent,
+        label: cfg.label,
+        note: cfg.note,
+        applyUrl: buildDiscountApplyUrl(FRIEND_COUPON_STORE_DOMAIN, cfg.code),
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/liff/friend-coupon error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

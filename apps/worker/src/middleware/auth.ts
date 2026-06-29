@@ -41,7 +41,10 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     // GET のみ公開 (LIFF が form 定義を読む)。 PUT(編集)/DELETE(削除) は authMiddleware を
     // 通す = method 非依存 skip だと無認証で他人の form を改竄/削除できる穴 (採点 D2)。
     (c.req.method === 'GET' && path.match(/^\/api\/forms\/[^/]+$/)) ||
-    path === '/api/rich-menus/image-guide' // Rich menu image template (static HTML)
+    path === '/api/rich-menus/image-guide' || // Rich menu image template (static HTML)
+    // 友だち限定クーポン 管理トグルページ (公開 HTML shell のみ skip。
+    // 実操作 /api/admin/friend-coupon は API_KEY 保護のまま = 無認証で改変不可)。
+    path === '/admin/friend-coupon'
   ) {
     return next();
   }

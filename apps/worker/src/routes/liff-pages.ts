@@ -120,6 +120,8 @@ function portalPage(liffId: string, apiBase: string): string {
 
     <!-- ===== HOME Section ===== -->
     <div id="section-home" class="section active space-y-4">
+      <!-- LINE友だち限定クーポン (管理トグル ON 時のみ表示) -->
+      <div id="friend-coupon-card" class="card p-4" style="display:none"></div>
       <!-- Rank Card -->
       <div id="rank-card" class="card p-4">
         <div class="skeleton h-24 rounded-lg"></div>
@@ -758,7 +760,7 @@ async function initLiff() {
       document.getElementById('user-avatar').innerHTML =
         '<img src="' + profile.pictureUrl + '" class="w-8 h-8 rounded-full">';
     }
-    await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake(), loadBadges()]);
+    await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadFriendCoupon(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake(), loadBadges()]);
     await loadRank();
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
@@ -1039,6 +1041,41 @@ async function loadTip() {
 }
 
 // ─── HOME: Coupons ───
+// LINE友だち限定クーポン (ランク不問の一律 % OFF)。管理トグル ON 時のみ表示。
+async function loadFriendCoupon() {
+  try {
+    const { data } = await apiGet('/api/liff/friend-coupon');
+    var el = document.getElementById('friend-coupon-card');
+    if (!el) return;
+    if (!data || !data.enabled || !data.code) { el.style.display = 'none'; return; }
+    el.style.display = 'block';
+    el.style.background = 'linear-gradient(135deg,#ecfdf5,#ffffff)';
+    el.style.border = '1.5px solid rgba(6,199,85,.35)';
+    el.innerHTML =
+      '<div class="flex items-center gap-2 mb-1">' +
+      '<span class="text-white bg-green-600 px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700">LINE友だち限定</span>' +
+      (data.label ? '<span class="text-xs text-gray-400">' + esc(data.label) + '</span>' : '') + '</div>' +
+      '<p class="text-2xl font-extrabold text-green-700 mb-1">' + Number(data.percent) + '%OFF クーポン 🎁</p>' +
+      (data.note ? '<p class="text-xs text-gray-500 mb-2">' + esc(data.note) + '</p>' : '') +
+      '<div class="flex items-center gap-2 mb-3">' +
+      '<code id="friend-coupon-code" class="flex-1 text-center text-sm font-bold tracking-widest bg-white border border-green-300 rounded-lg py-2">' + esc(data.code) + '</code>' +
+      '<button onclick="copyFriendCoupon()" class="text-xs font-bold text-green-700 border border-green-300 bg-green-50 rounded-lg px-3 py-2">コピー</button></div>' +
+      (data.applyUrl ? '<a href="' + esc(data.applyUrl) + '" target="_blank" class="block text-center btn-primary py-3 rounded-xl text-sm font-bold">このクーポンで買う →</a>' : '');
+  } catch {
+    var e = document.getElementById('friend-coupon-card');
+    if (e) e.style.display = 'none';
+  }
+}
+function copyFriendCoupon() {
+  var el = document.getElementById('friend-coupon-code');
+  if (!el) return;
+  var code = el.textContent || '';
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(code); }
+    showToast('クーポンコードをコピーしました');
+  } catch (e) { showToast('コピーできませんでした。コードを長押ししてください'); }
+}
+
 async function loadCoupons() {
   try {
     const { data } = await api('/api/liff/coupons');
