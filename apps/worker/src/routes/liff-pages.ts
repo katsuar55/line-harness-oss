@@ -30,7 +30,12 @@ function portalPage(liffId: string, apiBase: string): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#059669">
   <title>naturism マイページ</title>
+  <!-- 描画ブロッキングな外部 CDN への接続を前倒し (FCP 短縮) -->
+  <link rel="preconnect" href="https://static.line-scdn.net" crossorigin>
+  <link rel="dns-prefetch" href="https://cdn.tailwindcss.com">
+  <link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
@@ -39,7 +44,7 @@ function portalPage(liffId: string, apiBase: string): string {
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     *{-webkit-tap-highlight-color:transparent}
-    body{font-family:'Noto Sans JP',system-ui,sans-serif;background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%);min-height:100vh}
+    body{font-family:'Noto Sans JP',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%);min-height:100vh}
     .tab-active{color:#059669;border-bottom:2.5px solid #059669;font-weight:600}
     .tab-inactive{color:#94a3b8;border-bottom:2.5px solid transparent}
     nav button{transition:color .2s,border-color .2s}
@@ -85,7 +90,7 @@ function portalPage(liffId: string, apiBase: string): string {
       <h1 class="text-lg font-bold tracking-tight" style="background:linear-gradient(135deg,#059669,#06C755);-webkit-background-clip:text;-webkit-text-fill-color:transparent">naturism</h1>
       <div class="flex items-center gap-3">
         <div class="relative">
-          <button id="lang-btn" onclick="toggleLangMenu()" class="text-base w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition-colors" title="Language">&#x1F1EF;&#x1F1F5;</button>
+          <button id="lang-btn" onclick="toggleLangMenu()" class="text-base w-10 h-10 flex items-center justify-center rounded-full hover:bg-gray-100 transition-colors" title="Language">&#x1F1EF;&#x1F1F5;</button>
           <div id="lang-menu" style="display:none;" class="absolute right-0 top-10 bg-white border border-gray-100 rounded-2xl shadow-xl py-1.5 z-50 min-w-[130px] overflow-hidden">
             <button onclick="setLanguage('ja')" class="block w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors">&#x1F1EF;&#x1F1F5; 日本語</button>
             <button onclick="setLanguage('en')" class="block w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors">&#x1F1FA;&#x1F1F8; English</button>
