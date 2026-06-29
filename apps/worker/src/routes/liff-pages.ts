@@ -511,9 +511,11 @@ function portalPage(liffId: string, apiBase: string): string {
           <p class="text-sm text-green-600 font-bold mb-3" id="result-price"></p>
           <p class="text-xs text-gray-600 leading-relaxed mb-4" id="result-reason"></p>
           <div class="flex gap-2">
-            <a id="result-store-link" href="#" target="_blank" class="flex-1 btn-primary py-3 rounded-xl text-sm font-bold text-center block">商品を見る</a>
+            <a id="result-store-link" href="#" target="_blank" class="flex-1 btn-primary py-3 rounded-xl text-sm font-bold text-center block">ご購入はこちら ▶</a>
             <button onclick="retryQuiz()" class="flex-1 py-3 rounded-xl text-sm font-bold border border-gray-300 text-gray-600">もう一度</button>
           </div>
+          <!-- PR-A: クイズ結果から LINE会員特典 (マイランク) への in-CRM 導線。「LINEが一番お得」=一本化動機を結果画面で提示 -->
+          <a href="javascript:void(0)" onclick="openFeaturePage('/liff/my-rank')" class="block mt-2 text-center text-xs text-green-700 bg-green-50 rounded-xl py-2.5 font-bold hover:bg-green-100 transition-colors">🎁 マイランク会員特典・おトクな購入方法を見る →</a>
         </div>
         <!-- Score Breakdown -->
         <div class="card p-4 mt-4">
@@ -2215,9 +2217,9 @@ var QUIZ_QUESTIONS = [
 ];
 
 var QUIZ_PRODUCTS = {
-  blue: { name: 'naturism Blue', emoji: '\\u{1F499}', price: '\\u00a564/日〜', components: 8, reason: '脂っこい食事が好きな方のエントリーモデル。11年以上のロングセラーで、シンプルに始めたい方に最適です。', storeUrl: 'https://naturism-diet.com' },
-  pink: { name: 'KOSO in naturism Pink', emoji: '\\u{1F497}', price: '\\u00a575/日〜', components: 10, reason: 'Blueの8成分に加え、穀物麹由来の活きた酵素360mgを配合。食事ケアと美容を両立したい方のためにデザインされています。', storeUrl: 'https://naturism-diet.com' },
-  premium: { name: 'naturism Premium', emoji: '\\u{1FA76}', price: '\\u00a5149/日〜', components: 16, reason: '全16成分配合のフラッグシップ。白インゲン豆324mg・サラシア・ブラックジンジャーなど糖質対応成分を含む機能性表示食品です。', storeUrl: 'https://naturism-diet.com' },
+  blue: { name: 'naturism Blue', emoji: '\\u{1F499}', price: '\\u00a564/日〜', components: 8, reason: '脂っこい食事が好きな方のエントリーモデル。11年以上のロングセラーで、シンプルに始めたい方に最適です。', storeUrl: 'https://naturism-diet.com/products/naturism-blue-180-30days' },
+  pink: { name: 'KOSO in naturism Pink', emoji: '\\u{1F497}', price: '\\u00a575/日〜', components: 10, reason: 'Blueの8成分に加え、穀物麹由来の活きた酵素360mgを配合。食事ケアと美容を両立したい方のためにデザインされています。', storeUrl: 'https://naturism-diet.com/products/koso-in-naturism-pink-180-30days' },
+  premium: { name: 'naturism Premium', emoji: '\\u{1FA76}', price: '\\u00a5149/日〜', components: 16, reason: '全16成分配合のフラッグシップ。白インゲン豆324mg・サラシア・ブラックジンジャーなど糖質対応成分を含む機能性表示食品です。', storeUrl: 'https://naturism-diet.com/products/naturism-premium-180-20days' },
 };
 
 var quizCurrentStep = 0;
