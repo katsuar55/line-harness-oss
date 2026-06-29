@@ -43,6 +43,18 @@ const COMPLIANCE_FALLBACK_MESSAGE =
   'ご質問ありがとうございます🌿 お答えに確認が必要なため、 詳しくは公式サイト naturism-diet.com、 またはカスタマーサポート（info@kenkoex.com / 03-6411-5513・平日10:00〜17:00）へお問い合わせください。';
 
 /**
+ * 本日日付 (JST) のコンテキストセクションを生成する。
+ * AI prompt に注入し、クーポン有効期限の「あと◯日」や季節案内を current_date 基準で正確に表現させる。
+ * 注入しないと AI が日付を推測し、期限切れクーポンを「まだ有効」と誤案内するリスクがある。
+ * 純関数 (nowMs を引数化) なので JST 境界をユニットテスト可能。
+ */
+export function buildDateSection(nowMs: number): string {
+  const jst = new Date(nowMs + 9 * 60 * 60 * 1000);
+  const today = jst.toISOString().slice(0, 10);
+  return '\n\n## 本日の日付\n' + today + ' (JST)。日付・有効期限・「あと◯日」は必ずこの日付を基準に答えること。';
+}
+
+/**
  * naturism ナレッジベース付きシステムプロンプト
  * Secret 不要 — コードに直接埋め込み
  */
@@ -272,7 +284,7 @@ export async function generateAiResponse(
       getFriendCouponContext(db, friendId),
     ]);
 
-    const contextPrompt = basePrompt + profileLines.join('\n') + broadcastsContext + couponContext + '\n';
+    const contextPrompt = basePrompt + profileLines.join('\n') + buildDateSection(Date.now()) + broadcastsContext + couponContext + '\n';
 
     // プロンプトインジェクション対策: 入力を 500 文字に制限
     const sanitizedMessage = userMessage.slice(0, 500);
