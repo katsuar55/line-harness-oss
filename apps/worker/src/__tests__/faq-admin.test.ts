@@ -106,6 +106,14 @@ describe('faq-admin route — CRUD/seed 挙動', () => {
     expect(j.data.count).toBe(1);
   });
 
+  it('POST /api/admin/faq: category の引用符/山括弧を除去して保存 (chip断片化/attr injection防止)', async () => {
+    const { db } = makeFakeDb();
+    await faqAdmin.request('/api/admin/faq', jsonInit('POST', { question: 'q', answer: 'a', category: 'ship"<>ping' }), { DB: db });
+    const list = await faqAdmin.request('/api/admin/faq', {}, { DB: db });
+    const j = (await list.json()) as { data: { items: Array<{ category: string }> } };
+    expect(j.data.items[0].category).toBe('shipping');
+  });
+
   it('POST /api/admin/faq: answer 欠落は 400', async () => {
     const { db } = makeFakeDb();
     const res = await faqAdmin.request('/api/admin/faq', jsonInit('POST', { question: 'q' }), { DB: db });
@@ -187,6 +195,16 @@ describe('faq-admin 統合', () => {
     expect(adminRoute).toContain('listUnansweredQuestions');
     expect(adminRoute).toContain('未解決のよくある質問');
     expect(adminRoute).toContain('faqify');
+  });
+
+  it('PR5: カテゴリ別グルーピング + datalist (カテゴリキー表記揺れ防止)', () => {
+    // カテゴリ datalist (form 入力と紐付け、標準キー候補)
+    expect(adminRoute).toContain('id="faq-cat-options"');
+    expect(adminRoute).toContain('list="faq-cat-options"');
+    expect(adminRoute).toContain('STD_CATS');
+    // 一覧をカテゴリ見出しでグルーピング
+    expect(adminRoute).toContain('cat-head');
+    expect(adminRoute).toContain('function faqCatLabel');
   });
 
   it('auth skip は HTML ページのみ。/api/admin/faq は API_KEY 保護のまま', () => {
