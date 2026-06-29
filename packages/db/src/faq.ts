@@ -204,3 +204,65 @@ export async function bulkInsertFaqItems(
   }
   return inserted;
 }
+
+// ─── FAQ gap 分析 (PR2: 未解決質問の自動FAQ化ループ) ───
+//
+// AI が答えられなかった質問 (= conversation_logs.ai_layer='fallback') を頻度順に集計し、
+// 管理画面で「FAQ化すべき未登録の質問」 として提示する。 conversation_logs は migration 053
+// で本番に既存 (= 新規 migration 不要)。 本ファイルは read-only 集計のみで AI 応答経路は不変。
+
+export interface UnansweredQuestion {
+  question: string;
+  count: number;
+  lastAskedAt: string;
+}
+
+export interface UnansweredQuestionOptions {
+  /** この JST ISO 以降の質問のみ集計 (created_at と同形式・末尾 Z なし)。 未指定なら全期間。 */
+  sinceIso?: string;
+  /** 上位何件返すか (default 30、 1-200 に clamp)。 */
+  limit?: number;
+  /** 最低出現回数 (default 1)。 */
+  minCount?: number;
+}
+
+/**
+ * nowMs から days 日前の JST ISO (conversation_logs.created_at と同形式・末尾 Z なし) を返す。
+ * 純関数 (nowMs 引数化) なので期間境界をテスト可能。
+ */
+export function jstIsoDaysAgo(days: number, nowMs: number): string {
+  const d = Number.isFinite(days) ? Math.max(0, days) : 90;
+  return new Date(nowMs - d * 86400000 + 9 * 60 * 60 * 1000).toISOString().slice(0, 23);
+}
+
+/**
+ * AI が答えられなかった (ai_layer='fallback') 質問を出現回数の多い順に集計する。
+ * user_message は TRIM して同一視し、 空文字は除外する。 = FAQ化候補 (離脱を生む未解決質問)。
+ */
+export async function listUnansweredQuestions(
+  db: D1Database,
+  opts: UnansweredQuestionOptions = {},
+): Promise<UnansweredQuestion[]> {
+  const limit = Number.isFinite(opts.limit) ? Math.max(1, Math.min(200, Math.trunc(opts.limit as number))) : 30;
+  const minCount = Number.isFinite(opts.minCount) ? Math.max(1, Math.trunc(opts.minCount as number)) : 1;
+  const sinceIso = opts.sinceIso ?? '0000-00-00T00:00:00.000';
+  const res = await db
+    .prepare(
+      `SELECT TRIM(user_message) AS question, COUNT(*) AS count, MAX(created_at) AS lastAskedAt
+         FROM conversation_logs
+        WHERE ai_layer = 'fallback'
+          AND created_at >= ?
+          AND TRIM(user_message) != ''
+        GROUP BY TRIM(user_message)
+        HAVING COUNT(*) >= ?
+        ORDER BY COUNT(*) DESC, MAX(created_at) DESC
+        LIMIT ?`,
+    )
+    .bind(sinceIso, minCount, limit)
+    .all<{ question: string; count: number; lastAskedAt: string }>();
+  return (res.results ?? []).map((r) => ({
+    question: r.question,
+    count: r.count,
+    lastAskedAt: r.lastAskedAt,
+  }));
+}

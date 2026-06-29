@@ -21,7 +21,10 @@ interface FaqRow {
   updated_at: string;
 }
 
-function makeFakeDb(initial: FaqRow[] = []) {
+function makeFakeDb(
+  initial: FaqRow[] = [],
+  unanswered: Array<{ question: string; count: number; lastAskedAt: string }> = [],
+) {
   let rows: FaqRow[] = initial.map((r) => ({ ...r }));
   const prepare = (sql: string) => {
     let binds: unknown[] = [];
@@ -31,6 +34,7 @@ function makeFakeDb(initial: FaqRow[] = []) {
         return api;
       },
       async all<T>() {
+        if (/FROM conversation_logs/.test(sql)) return { results: unanswered as unknown as T[] };
         let res = rows.slice();
         if (/is_active = 1/.test(sql)) res = res.filter((r) => r.is_active === 1);
         res.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
@@ -145,6 +149,19 @@ describe('faq-admin route — CRUD/seed 挙動', () => {
     const html = await res.text();
     expect(html).toContain('FAQ 管理');
   });
+
+  it('GET /api/admin/faq/unanswered: fallback 質問を頻度順で返す (/:id と衝突しない)', async () => {
+    const { db } = makeFakeDb([], [
+      { question: '配合量は？', count: 4, lastAskedAt: '2026-06-30T10:00:00.000' },
+      { question: '海外発送は？', count: 2, lastAskedAt: '2026-06-29T10:00:00.000' },
+    ]);
+    const res = await faqAdmin.request('/api/admin/faq/unanswered?days=30&min=1&limit=10', {}, { DB: db });
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as { data: { questions: Array<{ question: string; count: number }> } };
+    expect(j.data.questions).toHaveLength(2);
+    expect(j.data.questions[0].question).toBe('配合量は？');
+    expect(j.data.questions[0].count).toBe(4);
+  });
 });
 
 // ─── 統合 静的ガード ───
@@ -163,6 +180,13 @@ describe('faq-admin 統合', () => {
     expect(adminRoute).toContain("'/api/admin/faq/:id'");
     expect(adminRoute).toContain("'/admin/faq'");
     expect(adminRoute).toContain('DEFAULT_FAQ_ENTRIES');
+  });
+
+  it('PR2: 未解決質問エンドポイント + 管理UI の FAQ化導線', () => {
+    expect(adminRoute).toContain("'/api/admin/faq/unanswered'");
+    expect(adminRoute).toContain('listUnansweredQuestions');
+    expect(adminRoute).toContain('未解決のよくある質問');
+    expect(adminRoute).toContain('faqify');
   });
 
   it('auth skip は HTML ページのみ。/api/admin/faq は API_KEY 保護のまま', () => {

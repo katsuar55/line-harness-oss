@@ -21,6 +21,8 @@ import {
   updateFaqItem,
   deleteFaqItem,
   bulkInsertFaqItems,
+  listUnansweredQuestions,
+  jstIsoDaysAgo,
   type UpdateFaqItemInput,
 } from '@line-crm/db';
 import { DEFAULT_FAQ_ENTRIES } from '../services/faq-context.js';
@@ -51,6 +53,17 @@ function validateContent(question: unknown, answer: unknown): ValidContent | { e
 faqAdmin.get('/api/admin/faq', async (c) => {
   const items = await listAllFaqItems(c.env.DB);
   return c.json({ success: true, data: { items, count: items.length } });
+});
+
+// PR2: AI が答えられなかった (fallback) 質問を頻度順に返す = FAQ化候補。
+// /:id (PUT/DELETE) と method/segment が異なるため衝突しない。
+faqAdmin.get('/api/admin/faq/unanswered', async (c) => {
+  const days = Number(c.req.query('days')) || 90;
+  const limit = Number(c.req.query('limit')) || 30;
+  const minCount = Number(c.req.query('min')) || 1;
+  const sinceIso = jstIsoDaysAgo(days, Date.now());
+  const questions = await listUnansweredQuestions(c.env.DB, { sinceIso, limit, minCount });
+  return c.json({ success: true, data: { questions, days, minCount } });
 });
 
 faqAdmin.post('/api/admin/faq', async (c) => {
@@ -173,6 +186,15 @@ const ADMIN_PAGE_HTML = `<!DOCTYPE html>
     </div>
 
     <div class="card">
+      <div class="row">
+        <span class="big" style="font-size:15px;font-weight:800">💬 未解決のよくある質問</span>
+        <button class="ghost" id="reloadUnanswered">更新</button>
+      </div>
+      <p class="hint">AIが答えられなかった質問を回数順に表示します。「FAQ化」で下のフォームに質問を流し込み、回答を書いて保存できます。</p>
+      <div id="unanswered"></div>
+    </div>
+
+    <div class="card">
       <div class="big" style="font-size:15px;font-weight:800" id="formTitle">新規追加</div>
       <input type="hidden" id="editId">
       <label>質問</label>
@@ -221,10 +243,35 @@ const ADMIN_PAGE_HTML = `<!DOCTYPE html>
       localStorage.setItem(KEY,key());
       fetch('/api/admin/faq',{ headers: headers() })
         .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
-        .then(function(j){ render((j.data&&j.data.items)||[]); setStatus('読み込みました', true); })
+        .then(function(j){ render((j.data&&j.data.items)||[]); setStatus('読み込みました', true); loadUnanswered(); })
         .catch(function(e){ setStatus('読み込み失敗: '+e.message+' (APIキーをご確認ください)', false); });
     }
+    function renderUnanswered(qs){
+      window.__unanswered = qs;
+      if(!qs.length){ $('unanswered').innerHTML = '<p class="hint">未解決の質問はまだありません。</p>'; return; }
+      $('unanswered').innerHTML = qs.map(function(q,i){
+        return '<div class="item"><div class="q">'+esc(q.question)+'</div>'
+          + '<div class="row"><span class="badge">'+esc(q.count)+'回</span>'
+          + '<button data-act="faqify" data-idx="'+i+'">これをFAQ化 ▶</button></div></div>';
+      }).join('');
+    }
+    function loadUnanswered(){
+      if(!key()) return;
+      fetch('/api/admin/faq/unanswered',{ headers: headers() })
+        .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+        .then(function(j){ renderUnanswered((j.data&&j.data.questions)||[]); })
+        .catch(function(){ $('unanswered').innerHTML = '<p class="hint">未解決質問の読み込みに失敗しました。</p>'; });
+    }
     $('reload').addEventListener('click', load);
+    $('reloadUnanswered').addEventListener('click', loadUnanswered);
+    $('unanswered').addEventListener('click', function(ev){
+      var btn = ev.target.closest('button'); if(!btn || btn.getAttribute('data-act')!=='faqify') return;
+      var q = (window.__unanswered||[])[Number(btn.getAttribute('data-idx'))];
+      if(!q) return;
+      resetForm(); $('question').value=q.question; $('formTitle').textContent='新規追加 (未解決質問から)';
+      $('answer').focus(); window.scrollTo(0,0);
+      setStatus('質問を読み込みました。回答を入力して保存してください。', true);
+    });
     $('apikey').addEventListener('change', load);
     if($('apikey').value) load();
 
