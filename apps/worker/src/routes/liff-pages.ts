@@ -325,6 +325,14 @@ function portalPage(liffId: string, apiBase: string): string {
         </div>
         <div id="reminders-list" class="space-y-2"></div>
       </div>
+      <!-- 回遊: 服用記録の dead-end を解消。記録 → ランク進捗 / 会員特典購入へ繋ぐ (続けるほどおトク) -->
+      <div class="card p-4">
+        <p class="text-xs text-gray-500 font-bold mb-2">続けるほど、おトク 🌿</p>
+        <div class="grid grid-cols-2 gap-2">
+          <button onclick="switchTab('home')" class="flex items-center justify-center gap-1 p-3 rounded-xl bg-green-50 text-green-700 text-xs font-bold hover:bg-green-100 transition-colors">🏆 ランク・バッジ</button>
+          <a href="javascript:void(0)" onclick="openFeaturePage('/liff/my-rank')" class="flex items-center justify-center gap-1 p-3 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-bold hover:bg-emerald-100 transition-colors">🛍 会員特典で購入</a>
+        </div>
+      </div>
       <!-- Confetti overlay -->
       <div id="confetti-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:9999;"></div>
     </div>
@@ -1001,7 +1009,9 @@ async function loadRank() {
         '<div><p class="text-sm font-bold text-gray-800">' + esc(data.currentRank.name) + badgeHtml + '</p>' +
         '<p class="text-xs text-gray-500">累計 ¥' + Number(data.totalSpent).toLocaleString() + '</p></div></div>' +
         '<div class="bg-gray-100 rounded-full h-2 overflow-hidden" style="position:relative;z-index:1"><div class="' + (isAmb ? 'h-2 progress-bar' : 'bg-green-500 h-2 progress-bar') + '" style="width:' + pct + '%;' + (isAmb ? 'background:linear-gradient(90deg,#fbbf24,#f59e0b)' : '') + '"></div></div>' +
-        (data.nextRank ? '<p class="text-xs text-gray-400 mt-1" style="position:relative;z-index:1">次のランク ' + esc(data.nextRank.name) + ' まであと ¥' + Number(data.nextRank.remaining).toLocaleString() + '</p>' : '<p class="text-xs text-green-600 mt-1" style="position:relative;z-index:1">最高ランク達成!</p>');
+        (data.nextRank ? '<p class="text-xs text-gray-400 mt-1" style="position:relative;z-index:1">次のランク ' + esc(data.nextRank.name) + ' まであと ¥' + Number(data.nextRank.remaining).toLocaleString() + '</p>' : '<p class="text-xs text-green-600 mt-1" style="position:relative;z-index:1">最高ランク達成!</p>') +
+        // 回遊: ランク表示で終わらせず、会員特典のおトクな購入へ繋ぐ (purchase motivation)
+        '<a href="' + API_BASE + '/liff/my-rank" class="block mt-3 text-center text-xs text-green-700 bg-green-50 rounded-xl py-2 font-bold" style="position:relative;z-index:1">🛍 会員特典・おトクに購入する →</a>';
     } else {
       el.innerHTML = '<p class="text-sm text-gray-500">まだ購入履歴がありません</p>';
     }
