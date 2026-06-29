@@ -66,3 +66,21 @@ describe('LIFF FAQ 検索 + カテゴリ (PR3)', () => {
     expect(pages).toContain('onclick="toggleFaq(');
   });
 });
+
+describe('FAQ→AI質問 CTA (PR4: 離脱ループ閉鎖)', () => {
+  it('0件の空状態に「AIに質問する」CTA がある', () => {
+    expect(pages).toContain('💬 AIに質問する');
+    expect(pages).toMatch(/id="faq-empty"[\s\S]{0,300}onclick="askAiFromFaq\(\)"/);
+  });
+
+  it('FAQカードに常設の「AIに質問する」導線がある', () => {
+    expect(pages).toContain('解決しませんか');
+  });
+
+  it('askAiFromFaq は liff.closeWindow をガードして呼ぶ (未定義時は toast fallback)', () => {
+    expect(pages).toContain('function askAiFromFaq');
+    expect(pages).toMatch(/typeof liff !== 'undefined' && liff\.closeWindow/);
+    expect(pages).toContain('liff.closeWindow()');
+    expect(pages).toMatch(/showToast\([^)]*トーク画面/);
+  });
+});

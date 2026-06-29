@@ -621,7 +621,11 @@ function portalPage(liffId: string, apiBase: string): string {
         <div id="faq-list">
           <div class="skeleton h-24 rounded-lg"></div>
         </div>
-        <p id="faq-empty" style="display:none" class="text-xs text-gray-400 py-4 text-center">該当するFAQが見つかりませんでした</p>
+        <div id="faq-empty" style="display:none" class="py-4 text-center">
+          <p class="text-xs text-gray-400 mb-2">該当するFAQが見つかりませんでした</p>
+          <button onclick="askAiFromFaq()" class="px-4 py-2 rounded-full bg-green-500 text-white text-xs font-bold">💬 AIに質問する</button>
+        </div>
+        <button onclick="askAiFromFaq()" class="w-full mt-3 py-2 text-xs text-green-600 font-bold">💬 解決しませんか？ AIに質問する</button>
       </div>
 
       <!-- Official Links -->
@@ -2238,6 +2242,16 @@ function onFaqCat(idx) {
   window.__faqState.cat = c;
   renderFaqCats();
   renderFaqList();
+}
+
+// FAQで解決しないとき → トーク画面に戻してAIに直接質問してもらう (= 離脱を AI 質問に転換)。
+// AI が答えられなければ conversation_logs に fallback 記録され、管理画面の「未解決の質問」→FAQ化に繋がる。
+function askAiFromFaq() {
+  if (typeof liff !== 'undefined' && liff.closeWindow) {
+    liff.closeWindow();
+  } else {
+    showToast('トーク画面に戻ってAIにメッセージを送ってください');
+  }
 }
 
 function toggleFaq(idx) {
