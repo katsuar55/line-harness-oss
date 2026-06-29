@@ -13,6 +13,8 @@ import {
   updateFaqItem,
   deleteFaqItem,
   bulkInsertFaqItems,
+  listUnansweredQuestions,
+  jstIsoDaysAgo,
 } from '@line-crm/db';
 
 interface FaqRow {
@@ -162,5 +164,57 @@ describe('faq CRUD', () => {
     const item = await createFaqItem(db, { question: 'q', answer: 'a' });
     expect((await getFaqItemById(db, item.id))?.question).toBe('q');
     expect(await getFaqItemById(db, 'x')).toBeNull();
+  });
+});
+
+// ─── PR2: 未解決質問の集計 (conversation_logs) ───
+
+function makeCaptureDb(rows: Array<{ question: string; count: number; lastAskedAt: string }>) {
+  const captured = { sql: '', binds: [] as unknown[] };
+  const prepare = (sql: string) => ({
+    bind: (...b: unknown[]) => ({
+      async all<T>() {
+        captured.sql = sql;
+        captured.binds = b;
+        return { results: rows as unknown as T[] };
+      },
+    }),
+  });
+  return { db: { prepare } as unknown as D1Database, captured: () => captured };
+}
+
+describe('jstIsoDaysAgo', () => {
+  it('days=0 → 当日 JST ISO (末尾 Z なし)', () => {
+    const s = jstIsoDaysAgo(0, Date.UTC(2026, 5, 30, 3, 0, 0)); // JST 12:00
+    expect(s).toBe('2026-06-30T12:00:00.000');
+  });
+  it('days=7 → 7日前へ巻き戻る', () => {
+    const s = jstIsoDaysAgo(7, Date.UTC(2026, 5, 30, 3, 0, 0));
+    expect(s.startsWith('2026-06-23T12:00:00')).toBe(true);
+  });
+  it('不正な days は default 90 扱い (= 過去日付)', () => {
+    const s = jstIsoDaysAgo(NaN, Date.UTC(2026, 5, 30, 3, 0, 0));
+    expect(s < '2026-06-30').toBe(true);
+  });
+});
+
+describe('listUnansweredQuestions', () => {
+  it('fallback 質問を集計する SQL を発行し、結果を map する', async () => {
+    const { db, captured } = makeCaptureDb([{ question: '返金は？', count: 5, lastAskedAt: '2026-06-30T10:00:00.000' }]);
+    const res = await listUnansweredQuestions(db, { sinceIso: '2026-01-01T00:00:00.000', limit: 10, minCount: 2 });
+    expect(captured().sql).toContain("ai_layer = 'fallback'");
+    expect(captured().sql).toContain('GROUP BY TRIM(user_message)');
+    expect(captured().sql).toMatch(/ORDER BY COUNT\(\*\) DESC/);
+    expect(captured().binds).toEqual(['2026-01-01T00:00:00.000', 2, 10]);
+    expect(res[0]).toEqual({ question: '返金は？', count: 5, lastAskedAt: '2026-06-30T10:00:00.000' });
+  });
+
+  it('limit は 1-200 に clamp、minCount/limit に default (1/30)', async () => {
+    const { db, captured } = makeCaptureDb([]);
+    await listUnansweredQuestions(db, { limit: 9999 });
+    expect(captured().binds[2]).toBe(200);
+    expect(captured().binds[1]).toBe(1);
+    await listUnansweredQuestions(db, {});
+    expect(captured().binds[2]).toBe(30);
   });
 });
