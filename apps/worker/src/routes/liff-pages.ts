@@ -616,9 +616,12 @@ function portalPage(liffId: string, apiBase: string): string {
       <!-- FAQ -->
       <div class="card p-4">
         <p class="text-xs text-gray-500 font-bold mb-3">よくあるご質問</p>
+        <input id="faq-search" type="text" inputmode="search" oninput="onFaqSearch(this.value)" placeholder="キーワードで検索（例: 送料、解約、飲み方）" class="w-full mb-3 px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-green-400" />
+        <div id="faq-cats" class="flex gap-2 overflow-x-auto pb-2 mb-1" style="display:none"></div>
         <div id="faq-list">
           <div class="skeleton h-24 rounded-lg"></div>
         </div>
+        <p id="faq-empty" style="display:none" class="text-xs text-gray-400 py-4 text-center">該当するFAQが見つかりませんでした</p>
       </div>
 
       <!-- Official Links -->
@@ -2156,35 +2159,85 @@ async function createSubscription() {
 async function loadFAQ() {
   try {
     var res = await apiGet('/api/liff/faq');
-    var el = document.getElementById('faq-list');
+    var items;
     if (res.data && res.data.faqs && res.data.faqs.length > 0) {
-      el.innerHTML = res.data.faqs.map(function(f, i) {
-        return '<div class="border-b last:border-0">' +
-          '<button onclick="toggleFaq(' + i + ')" class="w-full text-left py-3 flex items-center justify-between">' +
-          '<span class="text-sm text-gray-800 font-medium">' + esc(f.question) + '</span>' +
-          '<span class="text-gray-400 text-xs faq-arrow" id="faq-arrow-' + i + '">▼</span></button>' +
-          '<div id="faq-answer-' + i + '" style="display:none" class="pb-3 text-xs text-gray-600 leading-relaxed">' + esc(f.answer) + '</div></div>';
-      }).join('');
+      items = res.data.faqs.map(function(f) {
+        return { question: f.question, answer: f.answer, category: f.category || 'general' };
+      });
     } else {
-      // Default FAQ if no DB entries
-      var defaultFaq = [
-        { q: 'naturismはいつ飲むのがおすすめですか？', a: '毎日同じ時間に、食事と一緒にお飲みいただくと続けやすくなります。商品ごとの目安は商品ページをご確認ください。' },
-        { q: '定期購入はできますか？', a: 'この画面の「定期お届けリマインダー」で、お好みのサイクルでリマインドを設定できます。タイミングが来たらLINEでお知らせし、ワンタッチで再注文いただけます。マイページから24時間いつでも解約・スキップ・変更も可能です。' },
-        { q: '配送にどのくらいかかりますか？', a: '平日12時までのご注文は原則当日発送（在庫がある場合）。12時以降・土日祝・年末年始は翌営業日発送です。配送状況は「ストア」タブまたは「配送状況」ページでご確認いただけます。' },
-        { q: '返品・交換はできますか？', a: '食品のため原則お客様都合の返品はお受けしておりません。対象3商品の初回購入は到着後14日以内のご連絡で全額返金保証、不良品・配送破損は10日以内のご連絡で対応いたします。詳しくは公式サイトの返品・返金ポリシーをご確認ください。' },
-        { q: '問い合わせはどこからできますか？', a: 'このLINEアカウントにメッセージを送っていただくか、公式サイトのお問い合わせフォームからご連絡ください。' },
+      // DBが空のときの fallback (検索・カテゴリも同じ描画経路を通す)
+      items = [
+        { question: 'naturismはいつ飲むのがおすすめですか？', answer: '毎日同じ時間に、食事と一緒にお飲みいただくと続けやすくなります。商品ごとの目安は商品ページをご確認ください。', category: 'usage' },
+        { question: '定期購入はできますか？', answer: 'この画面の「定期お届けリマインダー」で、お好みのサイクルでリマインドを設定できます。タイミングが来たらLINEでお知らせし、ワンタッチで再注文いただけます。マイページから24時間いつでも解約・スキップ・変更も可能です。', category: 'subscription' },
+        { question: '配送にどのくらいかかりますか？', answer: '平日12時までのご注文は原則当日発送（在庫がある場合）。12時以降・土日祝・年末年始は翌営業日発送です。配送状況は「ストア」タブまたは「配送状況」ページでご確認いただけます。', category: 'shipping' },
+        { question: '返品・交換はできますか？', answer: '食品のため原則お客様都合の返品はお受けしておりません。対象3商品の初回購入は到着後14日以内のご連絡で全額返金保証、不良品・配送破損は10日以内のご連絡で対応いたします。詳しくは公式サイトの返品・返金ポリシーをご確認ください。', category: 'return' },
+        { question: '問い合わせはどこからできますか？', answer: 'このLINEアカウントにメッセージを送っていただくか、公式サイトのお問い合わせフォームからご連絡ください。', category: 'support' },
       ];
-      el.innerHTML = defaultFaq.map(function(f, i) {
-        return '<div class="border-b last:border-0">' +
-          '<button onclick="toggleFaq(' + i + ')" class="w-full text-left py-3 flex items-center justify-between">' +
-          '<span class="text-sm text-gray-800 font-medium">' + esc(f.q) + '</span>' +
-          '<span class="text-gray-400 text-xs faq-arrow" id="faq-arrow-' + i + '">▼</span></button>' +
-          '<div id="faq-answer-' + i + '" style="display:none" class="pb-3 text-xs text-gray-600 leading-relaxed">' + esc(f.a) + '</div></div>';
-      }).join('');
     }
+    window.__faqState = { items: items, cat: 'all', q: '' };
+    renderFaqCats();
+    renderFaqList();
   } catch {
     document.getElementById('faq-list').innerHTML = '<p class="text-xs text-gray-400">FAQの読み込みに失敗しました</p>';
   }
+}
+
+// カテゴリキー → 顧客向け日本語ラベル (faq_items.category と seed のキーに対応)
+function faqCategoryLabel(c) {
+  var map = { all: 'すべて', usage: '飲み方・使い方', allergy: '成分・アレルギー', product: '商品について', shipping: '配送・送料', return: '返品・返金', subscription: '定期便', support: 'お問い合わせ', general: 'その他' };
+  return map[c] || c;
+}
+
+// カテゴリ chip を描画 (実質1カテゴリしか無ければ非表示)
+function renderFaqCats() {
+  var st = window.__faqState || { items: [], cat: 'all' };
+  var cats = ['all'];
+  st.items.forEach(function(f) { var c = f.category || 'general'; if (cats.indexOf(c) < 0) cats.push(c); });
+  window.__faqCats = cats;
+  var box = document.getElementById('faq-cats');
+  if (!box) return;
+  if (cats.length <= 2) { box.innerHTML = ''; box.style.display = 'none'; return; }
+  box.style.display = 'flex';
+  box.innerHTML = cats.map(function(c, i) {
+    var cls = (st.cat === c) ? 'bg-green-500 text-white' : 'bg-gray-100 text-gray-600';
+    return '<button onclick="onFaqCat(' + i + ')" class="flex-shrink-0 px-3 py-1 rounded-full text-xs font-bold ' + cls + '">' + esc(faqCategoryLabel(c)) + '</button>';
+  }).join('');
+}
+
+// 検索語 + 選択カテゴリで絞り込み、アコーディオン描画。0件なら空状態を表示
+function renderFaqList() {
+  var st = window.__faqState || { items: [], cat: 'all', q: '' };
+  var q = (st.q || '').trim().toLowerCase();
+  var filtered = st.items.filter(function(f) {
+    if (st.cat !== 'all' && (f.category || 'general') !== st.cat) return false;
+    if (!q) return true;
+    return (f.question + ' ' + f.answer).toLowerCase().indexOf(q) >= 0;
+  });
+  var el = document.getElementById('faq-list');
+  var empty = document.getElementById('faq-empty');
+  if (filtered.length === 0) { el.innerHTML = ''; if (empty) empty.style.display = 'block'; return; }
+  if (empty) empty.style.display = 'none';
+  el.innerHTML = filtered.map(function(f, i) {
+    return '<div class="border-b last:border-0">' +
+      '<button onclick="toggleFaq(' + i + ')" class="w-full text-left py-3 flex items-center justify-between gap-2">' +
+      '<span class="text-sm text-gray-800 font-medium">' + esc(f.question) + '</span>' +
+      '<span class="text-gray-400 text-xs faq-arrow flex-shrink-0" id="faq-arrow-' + i + '">▼</span></button>' +
+      '<div id="faq-answer-' + i + '" style="display:none" class="pb-3 text-xs text-gray-600 leading-relaxed">' + esc(f.answer) + '</div></div>';
+  }).join('');
+}
+
+function onFaqSearch(v) {
+  if (!window.__faqState) return;
+  window.__faqState.q = v || '';
+  renderFaqList();
+}
+
+function onFaqCat(idx) {
+  var c = (window.__faqCats || [])[idx];
+  if (!c || !window.__faqState) return;
+  window.__faqState.cat = c;
+  renderFaqCats();
+  renderFaqList();
 }
 
 function toggleFaq(idx) {
