@@ -33,6 +33,7 @@ function graphPage(liffId: string, apiBase: string): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#059669">
   <title>📊 食事グラフ — naturism</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
@@ -74,9 +75,9 @@ function graphPage(liffId: string, apiBase: string): string {
 
     <!-- Range tabs -->
     <div class="card p-3 flex gap-2" role="tablist" aria-label="集計期間">
-      <button id="range-7"  class="range-btn flex-1 py-2 text-sm" data-range="7"  role="tab">7日</button>
-      <button id="range-30" class="range-btn flex-1 py-2 text-sm" data-range="30" role="tab">30日</button>
-      <button id="range-90" class="range-btn flex-1 py-2 text-sm" data-range="90" role="tab">90日</button>
+      <button id="range-7"  class="range-btn flex-1 py-3 text-sm" data-range="7"  role="tab">7日</button>
+      <button id="range-30" class="range-btn flex-1 py-3 text-sm" data-range="30" role="tab">30日</button>
+      <button id="range-90" class="range-btn flex-1 py-3 text-sm" data-range="90" role="tab">90日</button>
     </div>
 
     <!-- Calorie chart card -->
