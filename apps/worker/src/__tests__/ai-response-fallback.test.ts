@@ -10,7 +10,9 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
-vi.mock('@line-crm/db', () => ({ getFriendTags: vi.fn(async () => []) }));
+// listActiveFaqItems: FAQ動的化で generateAiResponse → getFaqSection が読む。
+// 空配列を返すと fail-safe が DEFAULT_FAQ_ENTRIES を使い、 error log なしで従来挙動を保つ。
+vi.mock('@line-crm/db', () => ({ getFriendTags: vi.fn(async () => []), listActiveFaqItems: vi.fn(async () => []) }));
 vi.mock('../services/ai-fact-context.js', () => ({
   getActiveBroadcastsContext: vi.fn(async () => ''),
   getFriendCouponContext: vi.fn(async () => ''),

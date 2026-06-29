@@ -14,6 +14,7 @@ import type { AIRouter } from '@line-crm/ai-provider';
 import { REDACTION_TOKEN } from '@line-crm/ai-provider';
 import { detectNgWords } from './ai-ng-filter.js';
 import { getActiveBroadcastsContext, getFriendCouponContext } from './ai-fact-context.js';
+import { getFaqSection, getDefaultFaqSection } from './faq-context.js';
 
 interface AiResponseResult {
   text: string;
@@ -58,8 +59,12 @@ export function buildDateSection(nowMs: number): string {
  * naturism ナレッジベース付きシステムプロンプト
  * Secret 不要 — コードに直接埋め込み
  */
-function buildSystemPrompt(overridePrompt?: string): string {
+function buildSystemPrompt(overridePrompt?: string, faqSection?: string): string {
   if (overridePrompt) return overridePrompt;
+
+  // FAQ は D1 (faq_items) から動的注入。 未指定なら DEFAULT_FAQ_ENTRIES の固定セクションで
+  // 従来挙動を完全に維持する (= 既存 caller・テスト後方互換 + 本番未 seed 時 fail-safe)。
+  const faq = faqSection ?? getDefaultFaqSection();
 
   return `あなたは naturism（ナチュリズム）公式LINEのAIアシスタントです。
 お客様からの質問に、正確・丁寧・親しみやすく回答してください。
@@ -216,28 +221,7 @@ Premium: 16成分、1日9粒、¥149/日〜、本格体型管理、機能性表�
 - 2024年: ブランド10周年。機能性表示食品取得。藤井夏恋TVCM
 - 2025年: Kep1er（ケプラー）公式ブランドミューズ。ドン・キホーテ全国販売開始
 
-## よくある質問（FAQ）
-Q.飲み方は？→ Blue/Pinkは食事中〜食直後に2〜3粒を水で。Premiumは食直前に3〜4粒を水で。噛まずにお飲みください
-Q.いつ飲むのが良い？→ 毎食時がおすすめ。特にカロリーが気になるお食事の際に
-Q.飲み忘れたら？→ 次の食事時に通常量をお飲みください。まとめ飲みはお控えください
-Q.保存方法は？→ 高温多湿・直射日光を避け涼しい場所で保管。開封後はチャックをしっかり閉じてください。賞味期限は製造から約30ヶ月
-Q.粒の色が違う？→ 天然由来素材のため収穫時期により色味が異なることがあります。品質に問題はありません
-Q.アレルギーは？→ Pink/Premiumにオレンジ、キウイ、バナナ、リンゴ、大豆、ゴマ、カシューナッツ含有。Blueは上記アレルゲンを含みません
-Q.妊娠中・授乳中は？→ かかりつけの医師にご相談のうえご判断ください
-Q.薬と併用できる？→ お薬を服用中の方は、かかりつけの医師・薬剤師にご相談ください
-Q.子どもが飲んでも良い？→ 大人向けに設計された商品です。お子様への使用は医師にご相談ください
-Q.お腹がゆるくなった→ 天然成分の作用で一時的にゆるくなる場合があります。粒数を減らしてお試しください。続く場合は使用を中止し医師へ
-Q.ヴィーガン対応？→ はい。天然由来成分のみ使用、動物性原料不使用です
-Q.国産？→ はい。すべて日本国内のGMP対応工場で製造しています
-Q.ドンキで買える？→ はい。全国のドン・キホーテで販売中です
-Q.定期便の解約は？→ 回数縛りなし。マイページから24時間いつでも解約・スキップ・変更できます（出荷準備完了後は次回お届け分から適用）
-Q.送料は？→ 5,500円(税込)以上で送料無料。メール便ゆうパケット220円、宅配便ヤマト運輸550円。7日分〜100日分は送料無料
-Q.返品できる？→ 食品のため原則お客様都合の返品はお受けできません。ただし対象3商品の初回購入は14日以内のご連絡で全額返金保証、不良品・配送破損は10日以内のご連絡で対応します
-Q.いつ届く？→ 平日12時までのご注文は原則当日発送（在庫がある場合）。12時以降・土日祝・年末年始は翌営業日発送
-Q.営業時間は？→ お問い合わせ受付は平日10:00〜17:00（土日祝・年末年始を除く）。電話 03-6411-5513
-Q.1日いくら？→ Blue約¥64/日、Pink約¥75/日、Premium約¥149/日
-Q.どのくらい続ければ？→ 個人差がありますが、毎日の習慣として3ヶ月程度の継続をおすすめしています
-Q.芸能人は？→ Kep1er（公式ミューズ）、ウィニー・ハーロウ、藤井夏恋、明日花キララ、田中里奈ほか
+${faq}
 
 ## お問い合わせ先
 - メール: info@kenkoex.com
@@ -265,7 +249,6 @@ export async function generateAiResponse(
     const tags = await getFriendTags(db, friendId);
     const tagNames = tags.map((t) => t.name);
 
-    const basePrompt = buildSystemPrompt(systemPromptOverride);
     // Phase 3.1: friend profile context を AI に注入 (= birth_month / age_group で個別化)
     const profileLines: string[] = [
       '\n\n## このユーザーの情報',
@@ -277,13 +260,15 @@ export async function generateAiResponse(
     if (friendContext?.birthMonth) profileLines.push(`誕生月: ${friendContext.birthMonth}月`);
     if (friendContext?.ageGroup) profileLines.push(`年代: ${friendContext.ageGroup}`);
 
-    // Plan A-2 (2026-05-24): D1 から fact context を取得して prompt に注入 (= ハルシネーション防止)
-    //   失敗しても空文字を返すので AI 応答は壊さない (fail-safe)
-    const [broadcastsContext, couponContext] = await Promise.all([
+    // Plan A-2 + FAQ動的化 (2026-06-30): D1 から fact context (broadcasts/coupon/faq) を取得し prompt に注入。
+    //   いずれも失敗時は空文字 / DEFAULT_FAQ_ENTRIES を返すので AI 応答は壊さない (fail-safe)。
+    const [broadcastsContext, couponContext, faqSection] = await Promise.all([
       getActiveBroadcastsContext(db, friendContext?.lineAccountId ?? null),
       getFriendCouponContext(db, friendId),
+      getFaqSection(db),
     ]);
 
+    const basePrompt = buildSystemPrompt(systemPromptOverride, faqSection);
     const contextPrompt = basePrompt + profileLines.join('\n') + buildDateSection(Date.now()) + broadcastsContext + couponContext + '\n';
 
     // プロンプトインジェクション対策: 入力を 500 文字に制限

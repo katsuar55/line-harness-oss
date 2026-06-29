@@ -6,6 +6,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  */
 
 vi.mock('@line-crm/db', () => ({
+  // FAQ動的化: generateAiResponse → getFaqSection が読む (空配列 = fallback noise 抑制)。
+  listActiveFaqItems: vi.fn(async () => []),
   upsertFriend: vi.fn(),
   updateFriendFollowStatus: vi.fn(),
   getFriendByLineUserId: vi.fn(),

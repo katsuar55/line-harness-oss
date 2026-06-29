@@ -104,6 +104,8 @@ let followStatusUpdates: Array<{ userId: string; isFollowing: boolean }> = [];
 let enrolledScenarios: Array<{ friendId: string; scenarioId: string }> = [];
 
 vi.mock('@line-crm/db', () => ({
+  // FAQ動的化: generateAiResponse → getFaqSection が読む (空配列 = fallback noise 抑制)。
+  listActiveFaqItems: vi.fn(async () => []),
   jstNow: () => '2026-03-31T12:00:00+09:00',
   upsertFriend: vi.fn(async (_db: unknown, data: { lineUserId: string; displayName?: string | null }) => {
     const existing = friendsDb.get(data.lineUserId);
