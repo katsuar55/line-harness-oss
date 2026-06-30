@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { getShopifyAccessToken } from '../services/shopify-token.js';
 import { getFriendCouponConfig } from '../services/friend-coupon-config.js';
 import { buildDiscountApplyUrl } from '../services/cart-permalink.js';
+import { getActiveWelcomeCoupon, formatCouponCountdown } from '../services/welcome-coupon.js';
 import {
   getFriendRank,
   getMemberRanks,
@@ -235,6 +236,38 @@ liffPortal.get('/api/liff/friend-coupon', async (c) => {
     });
   } catch (err) {
     console.error('GET /api/liff/friend-coupon error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/liff/welcome-coupon — 友だち追加時に発行済みの「あなた専用」welcomeクーポン。
+ * 発行済 (line_friend_coupons, status='issued', 未失効) があれば code/値引/残り時間/購入リンクを返す。
+ * idToken 認証必須 (= 本人の friendId に紐づくクーポンのみ)。 無ければ coupon:null。
+ */
+liffPortal.get('/api/liff/welcome-coupon', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    const coupon = await getActiveWelcomeCoupon(c.env.DB, user.friendId);
+    if (!coupon) return c.json({ success: true, data: { coupon: null } });
+
+    return c.json({
+      success: true,
+      data: {
+        coupon: {
+          code: coupon.code,
+          discountValue: coupon.discountValue,
+          currency: coupon.discountCurrency,
+          expiresAt: coupon.expiresAt,
+          remainingText: formatCouponCountdown(coupon.expiresAt, Date.now()),
+          applyUrl: buildDiscountApplyUrl(FRIEND_COUPON_STORE_DOMAIN, coupon.code),
+        },
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/liff/welcome-coupon error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
