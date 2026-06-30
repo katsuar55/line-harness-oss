@@ -3,7 +3,19 @@ import { getShopifyAccessToken } from '../services/shopify-token.js';
 import { getFriendCouponConfig } from '../services/friend-coupon-config.js';
 import { buildDiscountApplyUrl } from '../services/cart-permalink.js';
 import { getActiveWelcomeCoupon, formatCouponCountdown } from '../services/welcome-coupon.js';
+import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
+import { generateAiResponse } from '../services/ai-response.js';
+import { check } from '../middleware/rate-limit.js';
 import {
+  countTodayAiAsks,
+  jstDateString,
+  AI_BURST_MAX,
+  AI_BURST_WINDOW_MS,
+  AI_DAILY_CAP,
+  AI_QUESTION_MAX,
+} from '../services/liff-ai-ask.js';
+import {
+  getFriendById,
   getFriendRank,
   getMemberRanks,
   getCouponAssignmentsByFriend,
@@ -268,6 +280,71 @@ liffPortal.get('/api/liff/welcome-coupon', async (c) => {
     });
   } catch (err) {
     console.error('GET /api/liff/welcome-coupon error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/ask — ポータル内蔵AIチャット (LIFF Q&A)。
+ * 実 Workers AI (generateAiResponse) を LIFF から呼び、トークに戻らず質問→回答を完結する。
+ * コスト/DoSガード: ① burst (check: 1人 AI_BURST_MAX/分) ② daily cap (conversation_logs 当日数)。
+ * idToken 認証必須。質問は conversation_logs に記録され未解決質問ループ(PR2)にも連動する。
+ */
+liffPortal.post('/api/liff/ask', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+    if (!c.env.AI) {
+      return c.json({ success: true, data: { answer: '申し訳ございません、ただいまAIをご利用いただけません。', layer: 'unavailable' } });
+    }
+
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const question = typeof body.question === 'string' ? body.question.trim() : '';
+    if (!question) return c.json({ success: false, error: '質問を入力してください' }, 400);
+    if (question.length > AI_QUESTION_MAX) {
+      return c.json({ success: false, error: `質問は${AI_QUESTION_MAX}文字以内でお願いします` }, 400);
+    }
+
+    // Guard ①: burst (in-memory・1 friend 単位)
+    const burst = check(`liff-ai:${user.friendId}`, AI_BURST_MAX, AI_BURST_WINDOW_MS);
+    if (!burst.ok) {
+      return c.json({ success: true, data: { answer: '少し時間をおいてからもう一度お試しください🙏', layer: 'rate-limited', retryAfter: burst.retryAfter } });
+    }
+
+    // Guard ②: 日次上限 (conversation_logs 当日数・LINE側AIと合算)
+    const todayCount = await countTodayAiAsks(c.env.DB, user.friendId, jstDateString(Date.now()));
+    if (todayCount >= AI_DAILY_CAP) {
+      return c.json({ success: true, data: { answer: '本日のご質問の上限に達しました。詳しいご質問はカスタマーサポート(info@kenkoex.com / 03-6411-5513)へお気軽にどうぞ。明日また自動応答をご利用いただけます。', layer: 'daily-cap' } });
+    }
+
+    const friend = await getFriendById(c.env.DB, user.friendId);
+    const friendRecord = (friend ?? {}) as {
+      score?: number;
+      created_at?: string;
+      birth_month?: number | null;
+      age_group?: string | null;
+      display_name?: string | null;
+      line_account_id?: string | null;
+    };
+    const router = createAIRouterFromEnv(c.env as Parameters<typeof createAIRouterFromEnv>[0]);
+    const aiResult = await generateAiResponse(
+      router,
+      c.env.DB,
+      user.friendId,
+      friendRecord.score ?? 0,
+      friendRecord.created_at ?? '',
+      question,
+      c.env.AI_SYSTEM_PROMPT || undefined,
+      {
+        birthMonth: friendRecord.birth_month ?? null,
+        ageGroup: friendRecord.age_group ?? null,
+        displayName: friendRecord.display_name ?? null,
+        lineAccountId: friendRecord.line_account_id ?? null,
+      },
+    );
+    return c.json({ success: true, data: { answer: aiResult.text, layer: aiResult.layer } });
+  } catch (err) {
+    console.error('POST /api/liff/ask error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

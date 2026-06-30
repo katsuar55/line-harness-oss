@@ -626,6 +626,17 @@ function portalPage(liffId: string, apiBase: string): string {
         </div>
       </div>
 
+      <!-- AIチャット (ポータル内で質問→回答が完結) -->
+      <div class="card p-4" id="ai-chat-card">
+        <p class="text-xs text-gray-500 font-bold mb-2">🤖 AIに質問する</p>
+        <div id="ai-chat-log" class="space-y-2 mb-3" style="max-height:320px;overflow-y:auto"></div>
+        <div class="flex items-center gap-2">
+          <input id="ai-chat-input" type="text" maxlength="500" onkeydown="if(event.key==='Enter')sendAiChat()" placeholder="商品や使い方など、お気軽にどうぞ" class="flex-1 px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-green-400" />
+          <button id="ai-chat-send" onclick="sendAiChat()" class="btn-primary px-4 py-2 rounded-xl text-sm font-bold">送信</button>
+        </div>
+        <p class="text-gray-400 mt-2" style="font-size:10px">AIによる自動回答です。内容の正確性を保証するものではありません。</p>
+      </div>
+
       <!-- FAQ -->
       <div class="card p-4">
         <p class="text-xs text-gray-500 font-bold mb-3">よくあるご質問</p>
@@ -2313,10 +2324,64 @@ function onFaqCat(idx) {
 // FAQで解決しないとき → トーク画面に戻してAIに直接質問してもらう (= 離脱を AI 質問に転換)。
 // AI が答えられなければ conversation_logs に fallback 記録され、管理画面の「未解決の質問」→FAQ化に繋がる。
 function askAiFromFaq() {
+  // ポータル内蔵AIチャットがあればそこへ誘導 (トーク離脱せず完結)。無ければトークに戻す。
+  var input = document.getElementById('ai-chat-input');
+  if (input) {
+    input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    try { input.focus(); } catch (e) { /* ignore */ }
+    return;
+  }
   if (typeof liff !== 'undefined' && liff.closeWindow) {
     liff.closeWindow();
   } else {
     showToast('トーク画面に戻ってAIにメッセージを送ってください');
+  }
+}
+
+// ポータル内蔵AIチャット: 質問→/api/liff/ask→回答。値は textContent で描画 (XSS安全)。
+function appendAiChat(role, text) {
+  var log = document.getElementById('ai-chat-log');
+  if (!log) return null;
+  var wrap = document.createElement('div');
+  wrap.className = role === 'user' ? 'text-right' : 'text-left';
+  var bubble = document.createElement('span');
+  bubble.className = role === 'user'
+    ? 'inline-block bg-green-500 text-white rounded-2xl px-3 py-2 text-sm text-left'
+    : 'inline-block bg-gray-100 text-gray-800 rounded-2xl px-3 py-2 text-sm';
+  bubble.style.maxWidth = '85%';
+  bubble.style.whiteSpace = 'pre-wrap';
+  bubble.style.wordBreak = 'break-word';
+  bubble.textContent = text;
+  wrap.appendChild(bubble);
+  log.appendChild(wrap);
+  log.scrollTop = log.scrollHeight;
+  return wrap;
+}
+async function sendAiChat() {
+  var input = document.getElementById('ai-chat-input');
+  var btn = document.getElementById('ai-chat-send');
+  if (!input) return;
+  var q = (input.value || '').trim();
+  if (!q) return;
+  appendAiChat('user', q);
+  input.value = '';
+  if (btn) btn.disabled = true;
+  var thinking = appendAiChat('ai', '考え中…');
+  try {
+    var res = await fetch(API_BASE + '/api/liff/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) },
+      body: JSON.stringify({ question: q }),
+    });
+    var json = await res.json();
+    var answer = (json && json.data && json.data.answer) || '申し訳ございません、うまく回答できませんでした。';
+    if (thinking && thinking.parentNode) thinking.parentNode.removeChild(thinking);
+    appendAiChat('ai', answer);
+  } catch (e) {
+    if (thinking && thinking.parentNode) thinking.parentNode.removeChild(thinking);
+    appendAiChat('ai', '通信エラーが発生しました。時間をおいてお試しください。');
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
