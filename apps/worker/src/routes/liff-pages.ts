@@ -124,6 +124,17 @@ function portalPage(liffId: string, apiBase: string): string {
       <div id="welcome-coupon-card" class="card p-4" style="display:none"></div>
       <!-- LINE友だち限定クーポン (管理トグル ON 時のみ表示) -->
       <div id="friend-coupon-card" class="card p-4" style="display:none"></div>
+      <!-- メール配信オプトイン導線 (未dismiss時のみ表示) -->
+      <div id="opt-in-card" class="card p-4" style="display:none">
+        <div class="flex items-start justify-between gap-2">
+          <div class="flex-1">
+            <p class="text-sm font-bold text-gray-800 mb-1">📩 お得情報をメールでも受け取る</p>
+            <p class="text-xs text-gray-500 mb-3">限定クーポンや新商品のお知らせを、メールでもいち早くお届けします。</p>
+            <a href="javascript:void(0)" onclick="openFeaturePage('/liff/opt-in')" class="inline-block btn-primary py-2.5 px-4 rounded-xl text-sm font-bold">登録する →</a>
+          </div>
+          <button onclick="dismissOptIn()" aria-label="閉じる" class="text-gray-300 text-xl leading-none px-1">×</button>
+        </div>
+      </div>
       <!-- Rank Card -->
       <div id="rank-card" class="card p-4">
         <div class="skeleton h-24 rounded-lg"></div>
@@ -708,6 +719,21 @@ function openFeaturePage(path) {
   window.location.href = API_BASE + path + (isDemoRequested() ? '?demo=1' : '');
 }
 
+// メール配信オプトイン導線: 未dismiss時のみ表示 (subscribed=0.1% のため原則全員に提示)。
+// 「あとで」 (×) で localStorage に記録し再表示しない (= 痒い所に手が届く・しつこくしない)。
+function initOptInCard() {
+  try {
+    var el = document.getElementById('opt-in-card');
+    if (!el) return;
+    el.style.display = localStorage.getItem('optin_dismissed') === '1' ? 'none' : 'block';
+  } catch (e) { /* ignore */ }
+}
+function dismissOptIn() {
+  try { localStorage.setItem('optin_dismissed', '1'); } catch (e) { /* ignore */ }
+  var el = document.getElementById('opt-in-card');
+  if (el) el.style.display = 'none';
+}
+
 // ─── i18n ───
 var I18N = ${JSON.stringify(i18nData)};
 var currentLang = 'ja';
@@ -770,6 +796,7 @@ async function initLiff() {
         '<img src="' + profile.pictureUrl + '" class="w-8 h-8 rounded-full">';
     }
     await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadWelcomeCoupon(), loadFriendCoupon(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake(), loadBadges()]);
+    initOptInCard();
     await loadRank();
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
