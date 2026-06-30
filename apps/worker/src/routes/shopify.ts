@@ -14,6 +14,9 @@ import {
 import type { Env } from '../index.js';
 import { verifyShopifySignature } from '../utils/shopify-hmac.js';
 import { getShopifyAccessToken } from '../services/shopify-token.js';
+// 第2波-⑤: welcome クーポン redemption 追跡。 軽量 service のため static import
+// (vi.mock + dynamic import 干渉トラップ回避、 CLAUDE.md テストルール準拠)。
+import { processOrderCouponRedemption } from '../services/coupon-redemption.js';
 
 const shopify = new Hono<Env>();
 
@@ -314,6 +317,20 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
           }
         })();
       try { c.executionCtx.waitUntil(orderAsyncWork); } catch { /* no exec ctx in tests */ }
+
+      // 第2波-⑤: welcome クーポン redemption 追跡。
+      //   注文に乗った discount_codes を line_friend_coupons.coupon_code と照合し、 初回のみ
+      //   redeemed_at/status='redeemed' を atomic 更新する (冪等)。 orders/paid は本番未購読のため
+      //   購読済の本 topic を hook。 friend マッチ非依存 (coupon_code → friend_id で誰の coupon か判る)。
+      //   注文の主処理 (orderAsyncWork) とは独立した best-effort タスクとして隔離。
+      const couponRedemptionWork = (async () => {
+        try {
+          await processOrderCouponRedemption(db, { body, shopifyOrderId, topic });
+        } catch (err) {
+          console.error('Shopify webhook coupon redemption error:', err);
+        }
+      })();
+      try { c.executionCtx.waitUntil(couponRedemptionWork); } catch { /* no exec ctx in tests */ }
 
       return c.json({ success: true, data: { id: order.id, shopifyOrderId: order.shopify_order_id } });
     }
