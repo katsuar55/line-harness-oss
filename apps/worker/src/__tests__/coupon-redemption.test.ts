@@ -327,8 +327,9 @@ describe('processOrderCouponRedemption', () => {
       shopifyOrderId: '1',
       topic: 'orders/create',
     });
-    // 2 codes checked; first threw (handled), second matched+redeemed
+    // 2 codes checked; first threw (excluded from matched tally), second matched+redeemed
     expect(r.codesChecked).toBe(2);
+    expect(r.matched).toBe(1); // thrown 'LINE-BAD' must not be counted as matched
     expect(r.redeemed).toBe(1);
   });
 });
