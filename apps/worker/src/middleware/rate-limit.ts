@@ -34,7 +34,7 @@ function prune(windowMs: number): void {
   }
 }
 
-function check(key: string, max: number, windowMs: number): { ok: boolean; remaining: number; retryAfter: number } {
+export function check(key: string, max: number, windowMs: number): { ok: boolean; remaining: number; retryAfter: number } {
   const now = Date.now();
   const cutoff = now - windowMs;
 
