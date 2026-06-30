@@ -120,6 +120,8 @@ function portalPage(liffId: string, apiBase: string): string {
 
     <!-- ===== HOME Section ===== -->
     <div id="section-home" class="section active space-y-4">
+      <!-- 友だち追加 welcome クーポン (発行済みのときのみ表示・期限カウントダウン付き) -->
+      <div id="welcome-coupon-card" class="card p-4" style="display:none"></div>
       <!-- LINE友だち限定クーポン (管理トグル ON 時のみ表示) -->
       <div id="friend-coupon-card" class="card p-4" style="display:none"></div>
       <!-- Rank Card -->
@@ -767,7 +769,7 @@ async function initLiff() {
       document.getElementById('user-avatar').innerHTML =
         '<img src="' + profile.pictureUrl + '" class="w-8 h-8 rounded-full">';
     }
-    await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadFriendCoupon(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake(), loadBadges()]);
+    await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadWelcomeCoupon(), loadFriendCoupon(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake(), loadBadges()]);
     await loadRank();
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
@@ -1075,6 +1077,43 @@ async function loadFriendCoupon() {
 }
 function copyFriendCoupon() {
   var el = document.getElementById('friend-coupon-code');
+  if (!el) return;
+  var code = el.textContent || '';
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(code); }
+    showToast('クーポンコードをコピーしました');
+  } catch (e) { showToast('コピーできませんでした。コードを長押ししてください'); }
+}
+
+// 友だち追加 welcome クーポン (¥500 OFF・あなた専用)。発行済みのときだけ期限カウントダウン付きで表示。
+async function loadWelcomeCoupon() {
+  try {
+    const { data } = await apiGet('/api/liff/welcome-coupon');
+    var el = document.getElementById('welcome-coupon-card');
+    if (!el) return;
+    var cp = data && data.coupon;
+    if (!cp || !cp.code) { el.style.display = 'none'; return; }
+    el.style.display = 'block';
+    el.style.background = 'linear-gradient(135deg,#fff7ed,#ffffff)';
+    el.style.border = '1.5px solid rgba(234,88,12,.35)';
+    var currency = cp.currency === 'JPY' ? '¥' : (esc(cp.currency) + ' ');
+    el.innerHTML =
+      '<div class="flex items-center gap-2 mb-1">' +
+      '<span class="text-white bg-orange-500 px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700">🎁 あなた専用</span>' +
+      (cp.remainingText ? '<span class="text-xs font-bold text-orange-600">⏳ ' + esc(cp.remainingText) + 'で終了</span>' : '') + '</div>' +
+      '<p class="text-2xl font-extrabold text-orange-600 mb-1">' + currency + Number(cp.discountValue) + ' OFF クーポン</p>' +
+      '<p class="text-xs text-gray-500 mb-2">友だち追加のお礼です。公式ストアの初回購入にお使いいただけます。</p>' +
+      '<div class="flex items-center gap-2 mb-3">' +
+      '<code id="welcome-coupon-code" class="flex-1 text-center text-sm font-bold tracking-widest bg-white border border-orange-300 rounded-lg py-2">' + esc(cp.code) + '</code>' +
+      '<button onclick="copyWelcomeCoupon()" class="text-xs font-bold text-orange-600 border border-orange-300 bg-orange-50 rounded-lg px-3 py-2">コピー</button></div>' +
+      (cp.applyUrl ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" class="block text-center btn-primary py-3 rounded-xl text-sm font-bold">このクーポンで買う →</a>' : '');
+  } catch {
+    var e = document.getElementById('welcome-coupon-card');
+    if (e) e.style.display = 'none';
+  }
+}
+function copyWelcomeCoupon() {
+  var el = document.getElementById('welcome-coupon-code');
   if (!el) return;
   var code = el.textContent || '';
   try {
