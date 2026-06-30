@@ -207,3 +207,75 @@ describe('GET /api/line-friend-coupons', () => {
     expect(res.status).toBe(500);
   });
 });
+
+// ============================================================
+// GET /api/line-friend-coupons/stats (第2波-⑤ redemption 転換率)
+// ============================================================
+
+function mockStatsD1(row: Record<string, number>) {
+  return {
+    prepare: vi.fn(() => {
+      const self = {
+        bind: vi.fn(() => self),
+        first: vi.fn(async () => row),
+      };
+      return self;
+    }),
+  };
+}
+
+describe('GET /api/line-friend-coupons/stats', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('returns issued/redeemed/conversionRate computed from the aggregate', async () => {
+    const app = createApp();
+    const res = await app.request(
+      'http://localhost/api/line-friend-coupons/stats',
+      { method: 'GET', headers: { Authorization: `Bearer ${API_KEY}` } },
+      { DB: mockStatsD1({ issued: 4, redeemed: 1, expired: 1, revoked: 0, redeemed_value: 500 }) },
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      success: boolean;
+      data: {
+        issued: number;
+        redeemed: number;
+        expired: number;
+        outstanding: number;
+        conversionRate: number;
+        redeemedDiscountValue: number;
+      };
+    };
+    expect(json.success).toBe(true);
+    expect(json.data.issued).toBe(4);
+    expect(json.data.redeemed).toBe(1);
+    expect(json.data.outstanding).toBe(2); // 4 - 1 - 1 - 0
+    expect(json.data.conversionRate).toBe(0.25);
+    expect(json.data.redeemedDiscountValue).toBe(500);
+  });
+
+  it('requires auth (401)', async () => {
+    const app = createApp();
+    const res = await app.request(
+      'http://localhost/api/line-friend-coupons/stats',
+      { method: 'GET' },
+      { DB: mockStatsD1({ issued: 0, redeemed: 0, expired: 0, revoked: 0, redeemed_value: 0 }) },
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('handles D1 error gracefully (500)', async () => {
+    const app = createApp();
+    const failingDb = {
+      prepare: vi.fn(() => {
+        throw new Error('D1 unavailable');
+      }),
+    };
+    const res = await app.request(
+      'http://localhost/api/line-friend-coupons/stats',
+      { method: 'GET', headers: { Authorization: `Bearer ${API_KEY}` } },
+      { DB: failingDb },
+    );
+    expect(res.status).toBe(500);
+  });
+});

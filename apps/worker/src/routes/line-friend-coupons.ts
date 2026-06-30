@@ -18,6 +18,7 @@
  */
 
 import { Hono } from 'hono';
+import { getCouponRedemptionStats } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 const VALID_STATUSES = new Set(['issued', 'redeemed']);
@@ -126,6 +127,28 @@ lineFriendCoupons.get('/api/line-friend-coupons', async (c) => {
     });
   } catch (err) {
     console.error('GET /api/line-friend-coupons error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/line-friend-coupons/stats — 第2波-⑤ (2026-07-01)
+ *
+ * welcome クーポンの「発行 → 使用」転換率を 1 query で返す admin 閲覧 API。
+ * 「友だち追加 → welcome クーポン → 実購入」 の ROI を初めて数値化する。
+ * 任意で since/until (issued_at) と lineAccountId で絞り込み可能。
+ */
+lineFriendCoupons.get('/api/line-friend-coupons/stats', async (c) => {
+  try {
+    const since = c.req.query('since') ?? undefined;
+    const until = c.req.query('until') ?? undefined;
+    const lineAccountId = c.req.query('lineAccountId') ?? undefined;
+
+    const stats = await getCouponRedemptionStats(c.env.DB, { since, until, lineAccountId });
+
+    return c.json({ success: true, data: stats });
+  } catch (err) {
+    console.error('GET /api/line-friend-coupons/stats error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
