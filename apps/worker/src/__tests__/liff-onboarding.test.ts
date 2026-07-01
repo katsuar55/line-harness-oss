@@ -84,6 +84,13 @@ describe('LIFF 初回オンボーディング (第2波-⑥) — 静的構造', (
     expect(pages).toContain("switchTab('intake')");
   });
 
+  it('次の一手 CTA タップ後に renderNextMove で再評価する (session 中の stale 表示防止)', () => {
+    // lsSet(step.key,'1') → renderNextMove() → step.run() の順で、タップ済ステップを繰り返さない
+    expect(pages).toMatch(
+      /ctaEl\.onclick = function \(\) \{[\s\S]*?lsSet\(step\.key, '1'\);[\s\S]*?renderNextMove\(\);[\s\S]*?step\.run\(\);/,
+    );
+  });
+
   it('onboarding ブロックは esbuild backtick trap を踏まない (backtick/${ を含まない)', () => {
     if (!block) throw new Error('block missing');
     expect(block[0]).not.toContain('`');

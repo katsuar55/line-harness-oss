@@ -824,7 +824,12 @@ function renderNextMove() {
   if (descEl) descEl.textContent = step.desc;
   if (ctaEl) {
     ctaEl.textContent = step.cta + ' →';
-    ctaEl.onclick = function () { lsSet(step.key, '1'); step.run(); };
+    ctaEl.onclick = function () {
+      lsSet(step.key, '1');
+      // タップ直後に再評価して次の一手へ進める (switchTab で home に戻っても stale 表示にしない)
+      renderNextMove();
+      step.run();
+    };
   }
   el.style.display = 'block';
 }
