@@ -135,6 +135,19 @@ function portalPage(liffId: string, apiBase: string): string {
           <button onclick="dismissOptIn()" aria-label="閉じる" class="text-gray-300 text-xl leading-none px-1">×</button>
         </div>
       </div>
+      <!-- 次の一手 (第2波-⑥: 初回体験の埋没解消。文脈で1つだけ next action を提示・診断ファースト) -->
+      <div id="next-move-card" class="card p-4" style="display:none">
+        <div class="flex items-start justify-between gap-2">
+          <div class="flex-1">
+            <p class="text-xs font-bold text-emerald-600 mb-1">はじめの一歩</p>
+            <p class="text-sm font-bold text-gray-800 mb-1" id="next-move-title"></p>
+            <p class="text-xs text-gray-500 mb-3" id="next-move-desc"></p>
+            <a href="javascript:void(0)" id="next-move-cta" class="inline-block btn-primary py-2.5 px-4 rounded-xl text-sm font-bold"></a>
+          </div>
+          <button onclick="dismissNextMove()" aria-label="閉じる" class="text-gray-300 text-xl leading-none px-1">×</button>
+        </div>
+      </div>
+
       <!-- Rank Card -->
       <div id="rank-card" class="card p-4">
         <div class="skeleton h-24 rounded-lg"></div>
@@ -709,6 +722,22 @@ function portalPage(liffId: string, apiBase: string): string {
   <!-- Toast -->
   <div id="toast" role="status" aria-live="polite" class="fixed bottom-24 left-1/2 -translate-x-1/2 text-white px-5 py-2.5 rounded-2xl text-sm shadow-xl opacity-0 transition-opacity pointer-events-none z-50"></div>
 
+  <!-- 初回オンボーディングツアー (第2波-⑥: 初回起動のみ・診断ファースト・localStorage完結) -->
+  <div id="onboarding-tour" role="dialog" aria-modal="true" aria-labelledby="tour-title" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:60;background:rgba(0,0,0,0.55);">
+    <div style="position:absolute;bottom:0;left:0;right:0;max-height:88vh;overflow-y:auto;background:#fff;border-radius:24px 24px 0 0;padding:24px 24px 28px;">
+      <div class="flex justify-between items-center mb-3">
+        <div class="flex gap-1.5 items-center" id="tour-dots"></div>
+        <button onclick="skipTour()" class="text-gray-400 text-xs">スキップ</button>
+      </div>
+      <div class="text-center py-3">
+        <div class="text-5xl mb-4" id="tour-emoji"></div>
+        <p class="text-base font-bold text-gray-800 mb-2" id="tour-title"></p>
+        <p class="text-sm text-gray-500 leading-relaxed px-2" id="tour-body"></p>
+      </div>
+      <button onclick="tourPrimary()" id="tour-primary-btn" class="btn-primary w-full py-3.5 rounded-2xl text-sm font-bold shadow-lg mt-4">つぎへ</button>
+    </div>
+  </div>
+
 <script>
 const LIFF_ID = '${escapeHtml(liffId)}';
 const API_BASE = '${escapeHtml(apiBase)}';
@@ -743,6 +772,123 @@ function dismissOptIn() {
   try { localStorage.setItem('optin_dismissed', '1'); } catch (e) { /* ignore */ }
   var el = document.getElementById('opt-in-card');
   if (el) el.style.display = 'none';
+}
+
+// ─── 初回オンボーディング (第2波-⑥: 初回体験の埋没解消・診断ファースト・localStorage完結) ───
+// tour = 初回起動のみの informational な案内 (localStorage 'onboarding_tour_v1_done')。
+// next-move card = 文脈で1つだけ next action を提示 (localStorage milestone、新規 API/DB なし)。
+var ONBOARDING_TOUR_KEY = 'onboarding_tour_v1_done';
+var NEXT_MOVE_DISMISS_KEY = 'nextmove_dismissed';
+var tourIndex = 0;
+
+// 診断ファースト: 診断 → メール → 服用 の順で「まだ actioned でない最初の1つ」を提示。
+// run() は既存の switchTab / openFeaturePage を再利用 (新規遷移先なし)。
+var NEXT_MOVE_STEPS = [
+  { key: 'nm_quiz', title: 'まずは30秒の無料診断', desc: 'あなたの食生活に合うサプリを見つけましょう。', cta: '診断してみる', run: function () { switchTab('quiz'); } },
+  { key: 'nm_optin', title: 'お得情報をメールでも', desc: '限定クーポンや新商品を、いち早くお届けします。', cta: '登録する', run: function () { openFeaturePage('/liff/opt-in'); } },
+  { key: 'nm_intake', title: '今日の服用を記録', desc: '続けるほど習慣に。ワンタップで記録できます。', cta: '記録する', run: function () { switchTab('intake'); } }
+];
+
+var TOUR_STEPS = [
+  { emoji: '🌿', title: 'naturism へようこそ', body: '毎日の食事にそっと寄り添う、インナーケア習慣。ポータルの使い方をかんたんにご案内します。' },
+  { emoji: '🧪', title: 'まずは無料診断', body: '30秒の質問に答えるだけ。あなたにぴったりのサプリをご提案します。' },
+  { emoji: '🏆', title: '続けるほど、おトク', body: 'ご購入を重ねるほど会員ランクが上がり、限定特典が受けられます。マイランクでいつでも確認できます。' },
+  { emoji: '💬', title: '記録も相談も、ここで', body: '毎日の服用記録や、気になることのAIへの質問も、この画面から。困ったらいつでもどうぞ。' }
+];
+
+function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } }
+
+// まだ actioned でない最初の next-move step を返す (無ければ null)。
+// opt-in は既存の optin_dismissed も done とみなし二重提示を避ける。
+function computeNextMove() {
+  for (var i = 0; i < NEXT_MOVE_STEPS.length; i++) {
+    var step = NEXT_MOVE_STEPS[i];
+    if (lsGet(step.key) === '1') continue;
+    if (step.key === 'nm_optin' && lsGet('optin_dismissed') === '1') continue;
+    return step;
+  }
+  return null;
+}
+
+function renderNextMove() {
+  var el = document.getElementById('next-move-card');
+  if (!el) return;
+  if (lsGet(NEXT_MOVE_DISMISS_KEY) === '1') { el.style.display = 'none'; return; }
+  var step = computeNextMove();
+  if (!step) { el.style.display = 'none'; return; }
+  var titleEl = document.getElementById('next-move-title');
+  var descEl = document.getElementById('next-move-desc');
+  var ctaEl = document.getElementById('next-move-cta');
+  if (titleEl) titleEl.textContent = step.title;
+  if (descEl) descEl.textContent = step.desc;
+  if (ctaEl) {
+    ctaEl.textContent = step.cta + ' →';
+    ctaEl.onclick = function () { lsSet(step.key, '1'); step.run(); };
+  }
+  el.style.display = 'block';
+}
+
+function dismissNextMove() {
+  lsSet(NEXT_MOVE_DISMISS_KEY, '1');
+  var el = document.getElementById('next-move-card');
+  if (el) el.style.display = 'none';
+}
+
+function initOnboarding() {
+  try {
+    renderNextMove();
+    if (lsGet(ONBOARDING_TOUR_KEY) !== '1') { startTour(); }
+  } catch (e) { /* onboarding は非必須。失敗しても本体に影響させない */ }
+}
+
+function startTour() {
+  var overlay = document.getElementById('onboarding-tour');
+  if (!overlay) return;
+  tourIndex = 0;
+  overlay.style.display = 'block';
+  renderTourStep();
+}
+
+function renderTourStep() {
+  var step = TOUR_STEPS[tourIndex];
+  if (!step) { finishTour(); return; }
+  var emojiEl = document.getElementById('tour-emoji');
+  var titleEl = document.getElementById('tour-title');
+  var bodyEl = document.getElementById('tour-body');
+  var primaryEl = document.getElementById('tour-primary-btn');
+  if (emojiEl) emojiEl.textContent = step.emoji;
+  if (titleEl) titleEl.textContent = step.title;
+  if (bodyEl) bodyEl.textContent = step.body;
+  var isLast = tourIndex === TOUR_STEPS.length - 1;
+  if (primaryEl) primaryEl.textContent = isLast ? 'はじめる' : 'つぎへ';
+  renderTourDots();
+}
+
+function renderTourDots() {
+  var dots = document.getElementById('tour-dots');
+  if (!dots) return;
+  var html = '';
+  for (var i = 0; i < TOUR_STEPS.length; i++) {
+    html += '<span style="width:7px;height:7px;border-radius:9999px;display:inline-block;background:' + (i === tourIndex ? '#059669' : '#d1d5db') + '"></span>';
+  }
+  dots.innerHTML = html;
+}
+
+// 主 CTA: 最後のステップなら完了、そうでなければ次のステップへ。
+function tourPrimary() {
+  if (tourIndex >= TOUR_STEPS.length - 1) { finishTour(); return; }
+  tourIndex++;
+  renderTourStep();
+}
+
+function skipTour() { finishTour(); }
+
+function finishTour() {
+  lsSet(ONBOARDING_TOUR_KEY, '1');
+  var overlay = document.getElementById('onboarding-tour');
+  if (overlay) overlay.style.display = 'none';
+  renderNextMove();
 }
 
 // ─── i18n ───
@@ -814,6 +960,8 @@ async function initLiff() {
     // ハッシュベースのディープリンク（リッチメニューから特定タブへ遷移）
     handleDeepLink();
     document.getElementById('loading').style.display = 'none';
+    // 第2波-⑥: 初回オンボーディング (loading を消してから = ツアーが loading の上に出ないように)
+    initOnboarding();
   } catch (err) {
     console.error('LIFF init error:', err);
     // ?demo=1 を明示指定した時だけサンプル表示 (ブラウザプレビュー用)。
