@@ -8,12 +8,12 @@
 #   確認: cd apps\worker; npx wrangler whoami
 #
 # やること:
-#   1. OTP hash 用のランダム pepper (ACCOUNT_LINK_HMAC_KEY) をローカル生成
-#      (画面には表示しない・どこにも平文保存しない)
+#   1. OTP hash 用のランダム pepper (ACCOUNT_LINK_HMAC_KEY) をローカル生成 (画面には表示しない)
 #   2. ACCOUNT_LINK_ENABLED / ACCOUNT_LINK_HMAC_KEY / MEMBER_BACKFILL_ENABLED を
 #      `wrangler secret bulk` で一括投入
 #      (JSON ファイル方式 = PowerShell パイプの末尾 CRLF 混入トラップ回避)
-#   3. 一時ファイルを確実に削除し、secret 名の一覧を表示して確認
+#   3. 一時ファイル ($env:TEMP 配下・repo 外) を finally で削除し、secret 名の一覧を表示して確認
+#      ※ 強制終了された場合に備え、異常時は最後に一時ファイルの残存を確認してください
 #
 # secret は投入後すぐ有効 (worker の再デプロイ不要)。
 # 参照: docs/ACCOUNT_LINK_DESIGN.md §6 有効化手順
@@ -36,7 +36,8 @@ $secrets = [ordered]@{
   MEMBER_BACKFILL_ENABLED = 'true'
 } | ConvertTo-Json
 
-$tmp = Join-Path (Get-Location) 'secrets.account-link.tmp.json'
+# repo 外 ($env:TEMP) に書く — commit 事故と repo 内残存を防止 (review LOW)
+$tmp = Join-Path $env:TEMP ("secrets.account-link.{0}.json" -f [guid]::NewGuid().ToString('N'))
 Write-Host '=== 2/3 wrangler secret bulk で投入中 ==='
 try {
   # UTF8 (BOM なし) で書く — wrangler の JSON parse を確実に通す

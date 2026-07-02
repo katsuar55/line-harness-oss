@@ -26,9 +26,12 @@ import { processDmmRankImport, type DmmImportEntry } from '../services/dmm-rank-
 import { backfillCustomerOrders } from '../services/member-purchase-backfill.js';
 import { getShopifyAccessToken } from '../services/shopify-token.js';
 
-const MAX_IMPORT_ENTRIES = 50;
-const MAX_BACKFILL_PER_CALL = 10;
-const DEFAULT_BACKFILL_PER_CALL = 3;
+// Workers の subrequest 予算 (無料プラン 50/invocation、 D1 query も消費) に収める保守値。
+// import は entry あたり最大 ~7 D1 query、 backfill は customer あたり最大 6 GraphQL page +
+// 注文ごとの D1 write があるため、 呼び出し側で小さく分割して繰り返す運用 (review HIGH)。
+const MAX_IMPORT_ENTRIES = 10;
+const MAX_BACKFILL_PER_CALL = 3;
+const DEFAULT_BACKFILL_PER_CALL = 1;
 
 const accountLinkAdmin = new Hono<Env>();
 
@@ -120,8 +123,15 @@ accountLinkAdmin.post('/api/admin/account-link/backfill-linked', async (c) => {
     // 対象選定: friendIds 指定があればそれ (連携済のみ)、 無ければ backfill 待ちから limit 件
     let targets: LinkedFriendRow[];
     if (Array.isArray(body.friendIds) && body.friendIds.length > 0) {
-      const ids = body.friendIds.filter((v): v is string => typeof v === 'string').slice(0, MAX_BACKFILL_PER_CALL);
-      if (ids.length === 0) {
+      // silent drop 禁止: 上限超過は明示エラー (review LOW)
+      if (body.friendIds.length > MAX_BACKFILL_PER_CALL) {
+        return c.json(
+          { success: false, error: `friendIds must contain at most ${MAX_BACKFILL_PER_CALL} items (got ${body.friendIds.length}) — call repeatedly instead` },
+          400,
+        );
+      }
+      const ids = body.friendIds.filter((v): v is string => typeof v === 'string');
+      if (ids.length === 0 || ids.length !== body.friendIds.length) {
         return c.json({ success: false, error: 'friendIds must be an array of strings' }, 400);
       }
       const placeholders = ids.map(() => '?').join(',');
@@ -207,9 +217,12 @@ accountLinkAdmin.post('/api/admin/account-link/backfill-linked', async (c) => {
       }
     }
 
-    // skipped=false = backfill 完走 (0 件でも success audit が書かれ pending から抜ける)
-    const succeeded = processed.filter((p) => !p.skipped).length;
-    const remaining = Math.max(pendingBefore - succeeded, 0);
+    // remaining は算術推定でなく処理後の再 COUNT (= 正確値)。 failure audit の friend は
+    // pending に残り retry される — remaining が減らない場合は原因調査 (review MEDIUM)
+    const afterRow = await db
+      .prepare(`SELECT COUNT(*) AS n ${PENDING_PREDICATE}`)
+      .first<{ n: number }>();
+    const remaining = afterRow?.n ?? 0;
 
     return c.json({ success: true, data: { processed, pendingBefore, remaining } });
   } catch (err) {

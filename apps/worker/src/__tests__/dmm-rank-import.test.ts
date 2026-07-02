@@ -37,16 +37,21 @@ interface FriendRow {
   shopify_customer_id: string | null;
 }
 
+// 本体 (services/dmm-rank-import.ts normalizeDisplayName) と同じ変換: U+0020 / U+3000 のみ除去
 function normalizeName(s: string): string {
-  return s.replace(/[\s　]+/g, '');
+  return s.replace(/[ 　]+/g, '');
 }
 
 class FakeDb {
   customers: CustomerRow[];
   friends: FriendRow[];
   auditInserts: unknown[][] = [];
+  /** loyalty_purchase_backfill.completed success を受けた friend (= pending 除外対象) */
+  successAudits = new Set<string>();
   /** email をこの値にした entry の customer 検索で throw (隔離テスト用) */
   throwOnCustomerEmail: string | null = null;
+  /** UPDATE friends を UNIQUE constraint エラーで throw させる (race 分類テスト用) */
+  throwUniqueOnUpdate = false;
   /** backfill-linked 用: shopify_tokens の応答 */
   tokenRow: { access_token: string; scope: string | null; expires_at: string } | null = null;
 
@@ -145,12 +150,18 @@ class FakeDb {
   }
 
   pendingFriends(): FriendRow[] {
-    // 簡略化: 連携済 friend 全員を pending とみなす (purchase events / 成功 audit なし想定)
-    return this.friends.filter((f) => f.shopify_customer_id !== null);
+    // PENDING_PREDICATE のモデル: 連携済 かつ 成功 backfill audit なし
+    // (purchase events は本 suite では常に空とみなす)
+    return this.friends.filter(
+      (f) => f.shopify_customer_id !== null && !this.successAudits.has(f.id),
+    );
   }
 
   runSql(sql: string, params: unknown[]): { success: boolean; meta: { changes: number } } {
     if (sql.includes('UPDATE friends SET shopify_customer_id')) {
+      if (this.throwUniqueOnUpdate) {
+        throw new Error('UNIQUE constraint failed: friends.shopify_customer_id');
+      }
       const [customerId, , friendId] = params;
       const f = this.friends.find((x) => x.id === friendId);
       if (f && f.shopify_customer_id === null) {
@@ -161,6 +172,10 @@ class FakeDb {
     }
     if (sql.includes('INSERT INTO audit_logs')) {
       this.auditInserts.push(params);
+      // insertAuditLog bind 順: action=5, target_id=7, result=13
+      if (params[5] === 'loyalty_purchase_backfill.completed' && params[13] === 'success') {
+        this.successAudits.add(String(params[7]));
+      }
       return { success: true, meta: { changes: 1 } };
     }
     return { success: true, meta: { changes: 0 } };
@@ -370,6 +385,80 @@ describe('processDmmRankImport', () => {
     expect(out.results[0].status).toBe('error');
     expect(out.results[1].status).toBe('linkable');
   });
+
+  // ===== adversarial review 反映の regression =====
+
+  it('review HIGH: lineUserId 不一致なら表示名へフォールバックせず no_friend', async () => {
+    const db = new FakeDb(baseFixture());
+    const out = await processDmmRankImport(
+      db as unknown as D1Database,
+      // 表示名 '田中照美' は一意に存在するが、 lineUserId 'U-missing' は不在 → link してはいけない
+      [{ email: 'tanaka@example.com', displayName: '田中照美', lineUserId: 'U-missing' }],
+      { dryRun: false },
+    );
+    expect(out.results[0].status).toBe('no_friend');
+    expect(out.results[0].lineUserId).toBe('U-missing');
+    expect(db.friends.find((f) => f.id === 'f-tanaka')?.shopify_customer_id).toBeNull();
+    expect(db.auditInserts.length).toBe(0);
+  });
+
+  it('review MEDIUM: 完全一致1件でも正規化で複数一致なら ambiguous (自動連携しない)', async () => {
+    const fx = baseFixture();
+    fx.customers.push({ email: 'hanako@example.com', shopify_customer_id: '1004' });
+    fx.friends.push(
+      { id: 'f-hanako-1', display_name: '田中花子', shopify_customer_id: null },
+      { id: 'f-hanako-2', display_name: '田中 花子', shopify_customer_id: null },
+    );
+    const db = new FakeDb(fx);
+    const out = await processDmmRankImport(
+      db as unknown as D1Database,
+      [{ email: 'hanako@example.com', displayName: '田中花子' }],
+      { dryRun: false },
+    );
+    expect(out.results[0].status).toBe('ambiguous_friend');
+    expect(db.friends.find((f) => f.id === 'f-hanako-1')?.shopify_customer_id).toBeNull();
+  });
+
+  it('review MEDIUM: null entry は invalid で隔離され batch は継続する', async () => {
+    const db = new FakeDb(baseFixture());
+    const out = await processDmmRankImport(
+      db as unknown as D1Database,
+      [null as unknown as { email: string }, { email: 'tanaka@example.com', displayName: '田中照美' }],
+      { dryRun: true },
+    );
+    expect(out.results[0].status).toBe('invalid');
+    expect(out.results[1].status).toBe('linkable');
+  });
+
+  it('review LOW: batch 内で同一 friend を狙う 2 件目は conflict (dry-run の過大報告防止)', async () => {
+    const fx = baseFixture();
+    // 2 つの email が別 customer に解決するが、 表示名は同じ friend を指す
+    fx.customers.push({ email: 'tanaka2@example.com', shopify_customer_id: '1099' });
+    const db = new FakeDb(fx);
+    const out = await processDmmRankImport(
+      db as unknown as D1Database,
+      [
+        { email: 'tanaka@example.com', displayName: '田中照美' },
+        { email: 'tanaka2@example.com', displayName: '田中照美' },
+      ],
+      { dryRun: true },
+    );
+    expect(out.results[0].status).toBe('linkable');
+    expect(out.results[1].status).toBe('friend_linked_other');
+    expect(out.results[1].detail).toContain('batch');
+  });
+
+  it('review LOW: UNIQUE constraint race は customer_linked_other に分類する', async () => {
+    const db = new FakeDb(baseFixture());
+    db.throwUniqueOnUpdate = true;
+    const out = await processDmmRankImport(
+      db as unknown as D1Database,
+      [{ email: 'tanaka@example.com', displayName: '田中照美' }],
+      { dryRun: false },
+    );
+    expect(out.results[0].status).toBe('customer_linked_other');
+    expect(out.results[0].detail).toContain('raced');
+  });
 });
 
 // ============================================================
@@ -418,7 +507,7 @@ describe('POST /api/admin/account-link/import-dmm', () => {
     const res2 = await postJson(
       app,
       '/api/admin/account-link/import-dmm',
-      { entries: Array.from({ length: 51 }, () => ({ email: 'a@b.c' })) },
+      { entries: Array.from({ length: 11 }, () => ({ email: 'a@b.c' })) },
       { DB: new FakeDb() },
     );
     expect(res2.status).toBe(400);
@@ -510,6 +599,19 @@ describe('POST /api/admin/account-link/backfill-linked', () => {
     expect(json.data.processed.length).toBe(1);
     expect(json.data.processed[0].skipped).toBe(false);
     expect(json.data.processed[0].backfilled).toBe(0);
-    expect(json.data.remaining).toBe(json.data.pendingBefore - 1);
+    // remaining は処理後の再 COUNT: 成功 audit で pending から抜けるので 0
+    expect(json.data.pendingBefore).toBe(1);
+    expect(json.data.remaining).toBe(0);
+  });
+
+  it('friendIds が上限超過なら 400 (silent drop しない)', async () => {
+    const app = createApp();
+    const res = await postJson(
+      app,
+      '/api/admin/account-link/backfill-linked',
+      { friendIds: ['a', 'b', 'c', 'd'] },
+      { DB: new FakeDb(), MEMBER_BACKFILL_ENABLED: 'true' },
+    );
+    expect(res.status).toBe(400);
   });
 });
