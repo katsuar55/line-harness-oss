@@ -1,0 +1,94 @@
+name: Admin Ops
+
+# 手動専用 (workflow_dispatch のみ) の運用オペレーション。
+# ローカルに wrangler 認証が無い環境でも、CI の CLOUDFLARE_API_TOKEN で安全に実行するための経路。
+#
+#   enable-account-link:
+#     ③アカウント連携の有効化 secret 3 種を wrangler secret bulk で投入する。
+#     ACCOUNT_LINK_HMAC_KEY は runner 内で生成し、ログ/サマリには一切出力しない
+#     (wrangler secret bulk / list は secret 名のみ出力する)。
+#   fix-friends-metadata:
+#     本番 D1 friends に metadata 列を追加 (schema drift 修復・冪等・追加のみで破壊なし)。
+#     2026-07-02 発覚: 本番 friends に metadata 列が無く schema.sql:20 と乖離、
+#     friends.metadata に書く機能 (preferred_hour 等) が silent fail していた。
+#   expire-shopify-token:
+#     shopify_tokens のキャッシュを失効させ、次回 API 呼び出しで新スコープの token を
+#     再取得させる (read_all_orders スコープ追加後に 1 回実行する用途)。
+#
+# 必要な GitHub secrets: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID (deploy と同一)
+
+on:
+  workflow_dispatch:
+    inputs:
+      op:
+        description: 'Operation'
+        required: true
+        type: choice
+        options:
+          - enable-account-link
+          - fix-friends-metadata
+          - expire-shopify-token
+
+permissions:
+  contents: read
+
+jobs:
+  admin-op:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Enable account link (secrets bulk)
+        if: inputs.op == 'enable-account-link'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # HMAC pepper は runner 内で生成。echo しない・ファイルは即削除。
+          HMAC=$(openssl rand -hex 32)
+          TMP="$RUNNER_TEMP/secrets.account-link.json"
+          printf '{"ACCOUNT_LINK_ENABLED":"true","ACCOUNT_LINK_HMAC_KEY":"%s","MEMBER_BACKFILL_ENABLED":"true"}' "$HMAC" > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fix friends.metadata column (idempotent)
+        if: inputs.op == 'fix-friends-metadata'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          HAS=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS n FROM pragma_table_info('friends') WHERE name='metadata'")
+          echo "$HAS"
+          if echo "$HAS" | grep -Eq '"n": *1'; then
+            echo "metadata column already exists — skip"
+          else
+            npx wrangler d1 execute naturism-line-crm --remote \
+              --command "ALTER TABLE friends ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
+          fi
+          echo '### Verification (pragma_table_info)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name, type, dflt_value FROM pragma_table_info('friends') WHERE name='metadata'" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Expire shopify token cache
+        if: inputs.op == 'expire-shopify-token'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute naturism-line-crm --remote \
+            --command "UPDATE shopify_tokens SET expires_at='2020-01-01T00:00:00.000Z' WHERE id='default'"
+          echo 'shopify token cache expired — next API call will re-fetch with current scopes' >> "$GITHUB_STEP_SUMMARY"
