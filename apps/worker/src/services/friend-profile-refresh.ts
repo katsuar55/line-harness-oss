@@ -66,21 +66,26 @@ interface PendingFriendRow {
 
 /**
  * 未補完 friend の選定述語。 (test で本文 pinning — 変更時は friend-profile-refresh.test.ts も更新)
- * - metadata の失敗マーク除外が無いと、 ブロック済み friend が毎回再選択され auto ループが収束しない。
- * - json_valid ガードが無いと、 不正 JSON の metadata 行が 1 つあるだけで json_extract が
- *   malformed JSON を投げ、 全呼び出しが 500 になる (review LOW。 SQLite の OR は左から短絡)。
+ * - 失敗マーク除外が無いと、 ブロック済み friend が毎回再選択され auto ループが収束しない。
+ * - ⚠️ 失敗マークは friends.metadata でなく **audit_logs** に置く: 本番 smoke (2026-07-02) で
+ *   本番 friends テーブルに metadata 列が存在しない (schema.sql との drift、
+ *   D1_ERROR: no such column: metadata) ことが判明したため。 audit ベースの除外は
+ *   backfill-linked (routes/account-link-admin.ts) と同じ確立済みパターン。
  * - 既知の制約: line_account_id 非スコープ + route は単一 env token。 第2アカウント追加時は
  *   アカウント別 token 解決を実装してから使うこと (review LOW、 dmm-rank-import と同じ制約)。
  * - 永続マークは re-follow でも自動クリアされないが、 re-follow 時は webhook follow handler が
- *   都度 profile を取得するため実害は限定的 (review LOW、 必要なら metadata を手動クリア)。
+ *   都度 profile を取得するため実害は限定的 (review LOW)。
  */
 export const FRIEND_PROFILE_PENDING_PREDICATE = `
-  FROM friends
- WHERE is_following = 1
-   AND line_user_id IS NOT NULL AND line_user_id != ''
-   AND (display_name IS NULL OR display_name = '')
-   AND (metadata IS NULL OR metadata = '' OR NOT json_valid(metadata)
-        OR json_extract(metadata, '$.profile_refresh_failed_at') IS NULL)`;
+  FROM friends f
+ WHERE f.is_following = 1
+   AND f.line_user_id IS NOT NULL AND f.line_user_id != ''
+   AND (f.display_name IS NULL OR f.display_name = '')
+   AND NOT EXISTS (
+     SELECT 1 FROM audit_logs a
+      WHERE a.action = 'friend_profile_refresh.failed'
+        AND a.target_type = 'friend' AND a.target_id = f.id
+   )`;
 
 function markFailedStmt(
   db: D1Database,
@@ -88,21 +93,14 @@ function markFailedStmt(
   now: string,
   status: number | 'empty_profile',
 ): D1PreparedStatement {
-  const patch = JSON.stringify({
-    profile_refresh_failed_at: now,
-    profile_refresh_failed_status: String(status),
-  });
+  // friends.metadata が本番に無いため audit_logs を永続マークとして使う (append-only・確実に存在)。
+  // insertAuditLog は insert+readback の 2 query なので、 batch 用に直接 INSERT 1 本にする。
   return db
     .prepare(
-      // 不正 JSON の metadata は '{}' に置き換えてから patch (json_patch の malformed throw 回避)
-      `UPDATE friends
-          SET metadata = json_patch(
-                CASE WHEN metadata IS NULL OR metadata = '' OR NOT json_valid(metadata)
-                     THEN '{}' ELSE metadata END, ?),
-              updated_at = ?
-        WHERE id = ?`,
+      `INSERT INTO audit_logs (id, actor_type, action, target_type, target_id, result, metadata, created_at)
+       VALUES (?, 'api', 'friend_profile_refresh.failed', 'friend', ?, 'failure', ?, ?)`,
     )
-    .bind(patch, now, friendId);
+    .bind(crypto.randomUUID(), friendId, JSON.stringify({ status: String(status) }), now);
 }
 
 /** hang した fetch で admin 呼び出し全体が固まるのを防ぐ (review LOW、 #123 timeout 方針と整合) */
@@ -130,7 +128,7 @@ export async function refreshMissingFriendProfiles(
 ): Promise<ProfileRefreshResult> {
   const fetchTimeoutMs = opts.fetchTimeoutMs ?? 8_000;
   const res = await db
-    .prepare(`SELECT id, line_user_id ${FRIEND_PROFILE_PENDING_PREDICATE} ORDER BY created_at ASC LIMIT ?`)
+    .prepare(`SELECT f.id, f.line_user_id ${FRIEND_PROFILE_PENDING_PREDICATE} ORDER BY f.created_at ASC LIMIT ?`)
     .bind(opts.limit)
     .all<PendingFriendRow>();
   const targets = res.results ?? [];

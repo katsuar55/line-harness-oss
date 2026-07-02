@@ -41,6 +41,8 @@ interface FriendRow {
 class FakeDb {
   friends: FriendRow[];
   batchCalls = 0;
+  /** audit_logs の 'friend_profile_refresh.failed' マーク (= 選定除外) を受けた friend id */
+  failedMarks = new Set<string>();
 
   constructor(friends: FriendRow[]) {
     this.friends = friends;
@@ -53,7 +55,7 @@ class FakeDb {
           f.is_following === 1 &&
           f.line_user_id !== '' &&
           (f.display_name === null || f.display_name === '') &&
-          !(f.metadata ?? '').includes('profile_refresh_failed_at'),
+          !this.failedMarks.has(f.id),
       )
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
   }
@@ -65,7 +67,7 @@ class FakeDb {
       __params: params,
       bind: (...p: unknown[]) => make(p),
       async all() {
-        if (sql.includes('SELECT id, line_user_id')) {
+        if (sql.includes('SELECT f.id, f.line_user_id')) {
           const limit = Number(params[0] ?? 10);
           return {
             results: self.pending().slice(0, limit).map((f) => ({ id: f.id, line_user_id: f.line_user_id })),
@@ -102,13 +104,9 @@ class FakeDb {
       }
       return;
     }
-    if (sql.includes('json_patch')) {
-      const [patch, , id] = params;
-      const f = this.friends.find((x) => x.id === id);
-      if (f) {
-        const base = f.metadata && f.metadata !== '' ? (JSON.parse(f.metadata) as Record<string, unknown>) : {};
-        f.metadata = JSON.stringify({ ...base, ...(JSON.parse(String(patch)) as Record<string, unknown>) });
-      }
+    if (sql.includes("'friend_profile_refresh.failed'")) {
+      // INSERT INTO audit_logs bind 順: id(0), target_id(1), metadata(2), created_at(3)
+      this.failedMarks.add(String(params[1]));
     }
   }
 }
@@ -166,8 +164,7 @@ describe('refreshMissingFriendProfiles', () => {
     expect(r.failed).toBe(1);
     expect(r.remaining).toBe(0); // マークにより pending から抜けた
     expect(db.friends[0].display_name).toBeNull();
-    expect(db.friends[0].metadata).toContain('profile_refresh_failed_at');
-    expect(db.friends[0].metadata).toContain('"profile_refresh_failed_status":"404"');
+    expect(db.failedMarks.has('f1')).toBe(true); // audit_logs ベースの永続マーク
   });
 
   it('一時失敗 (5xx) はマークせず retry 対象に残る', async () => {
@@ -180,7 +177,7 @@ describe('refreshMissingFriendProfiles', () => {
     expect(r.transientErrors).toBe(1);
     expect(r.failed).toBe(0);
     expect(r.remaining).toBe(1); // pending のまま
-    expect(db.friends[0].metadata).toBeNull();
+    expect(db.failedMarks.size).toBe(0); // 永続マークしない
   });
 
   it('200 だが displayName 空は永続マーク (再選択の無限化防止)', async () => {
@@ -192,16 +189,17 @@ describe('refreshMissingFriendProfiles', () => {
     );
     expect(r.failed).toBe(1);
     expect(r.remaining).toBe(0);
-    expect(db.friends[0].metadata).toContain('empty_profile');
+    expect(db.failedMarks.has('f1')).toBe(true);
   });
 
   it('display_name 設定済 / unfollow / 失敗マーク済 は選定されない', async () => {
     const db = new FakeDb([
       friend({ id: 'f-named', display_name: '既存名' }),
       friend({ id: 'f-unfollow', is_following: 0 }),
-      friend({ id: 'f-marked', metadata: '{"profile_refresh_failed_at":"2026-07-01"}' }),
+      friend({ id: 'f-marked' }),
       friend({ id: 'f-target' }),
     ]);
+    db.failedMarks.add('f-marked');
     const r = await refreshMissingFriendProfiles(
       db as unknown as D1Database,
       { getProfileImpl: async () => ({ displayName: 'X' }) },
@@ -230,12 +228,14 @@ describe('refreshMissingFriendProfiles', () => {
   // ===== adversarial review 反映の regression =====
 
   it('review MEDIUM: 選定述語の本文 pinning (FakeDb は実 SQL を評価しないため drift をここで検知)', () => {
-    expect(FRIEND_PROFILE_PENDING_PREDICATE).toContain('is_following = 1');
-    expect(FRIEND_PROFILE_PENDING_PREDICATE).toContain("display_name IS NULL OR display_name = ''");
-    // 失敗マーク除外 (auto ループ収束の要)
-    expect(FRIEND_PROFILE_PENDING_PREDICATE).toContain("json_extract(metadata, '$.profile_refresh_failed_at') IS NULL");
-    // 不正 JSON ガード (1 行の malformed metadata で全呼び出し 500 を防ぐ)
-    expect(FRIEND_PROFILE_PENDING_PREDICATE).toContain('NOT json_valid(metadata)');
+    expect(FRIEND_PROFILE_PENDING_PREDICATE).toContain('f.is_following = 1');
+    expect(FRIEND_PROFILE_PENDING_PREDICATE).toContain("f.display_name IS NULL OR f.display_name = ''");
+    // 失敗マーク除外 (auto ループ収束の要)。 本番 friends に metadata 列が無いため audit_logs ベース
+    expect(FRIEND_PROFILE_PENDING_PREDICATE).toContain("a.action = 'friend_profile_refresh.failed'");
+    expect(FRIEND_PROFILE_PENDING_PREDICATE).toContain('NOT EXISTS');
+    // 本番に存在しない friends.metadata を参照しない (2026-07-02 smoke: no such column: metadata)
+    expect(FRIEND_PROFILE_PENDING_PREDICATE).not.toContain('metadata,');
+    expect(FRIEND_PROFILE_PENDING_PREDICATE).not.toContain('json_extract');
   });
 
   it('review MEDIUM: 401 (token 異常) は呼び出しを即中断し aborted を返す (loop 不収束防止)', async () => {
