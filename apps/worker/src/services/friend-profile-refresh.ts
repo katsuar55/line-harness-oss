@@ -48,6 +48,13 @@ export interface ProfileRefreshResult {
   failed: number;
   /** 一時失敗 (retry 対象のまま) の数 */
   transientErrors: number;
+  /**
+   * 呼び出し全体を中断した原因 ('400'|'401'|'429'|'timeout')。
+   * 401/400 = token 異常 (全 friend が失敗確定)、 429 = rate limit、 timeout = hang。
+   * これを返した呼び出しは進捗しない — 呼び出し側のループは即停止して原因調査すること
+   * (review MEDIUM: 旧実装は 401 でも 200/updated:0 を返し続け、 loop が収束しなかった)。
+   */
+  aborted?: string;
   /** 処理後の未補完残数 (再 COUNT の正確値) */
   remaining: number;
 }
@@ -58,16 +65,22 @@ interface PendingFriendRow {
 }
 
 /**
- * 未補完 friend の選定述語。
- * metadata の失敗マーク除外が無いと、 ブロック済み friend が毎回再選択され auto ループが
- * 収束しない。 metadata は controlled write のみ (JSON 妥当) 前提。
+ * 未補完 friend の選定述語。 (test で本文 pinning — 変更時は friend-profile-refresh.test.ts も更新)
+ * - metadata の失敗マーク除外が無いと、 ブロック済み friend が毎回再選択され auto ループが収束しない。
+ * - json_valid ガードが無いと、 不正 JSON の metadata 行が 1 つあるだけで json_extract が
+ *   malformed JSON を投げ、 全呼び出しが 500 になる (review LOW。 SQLite の OR は左から短絡)。
+ * - 既知の制約: line_account_id 非スコープ + route は単一 env token。 第2アカウント追加時は
+ *   アカウント別 token 解決を実装してから使うこと (review LOW、 dmm-rank-import と同じ制約)。
+ * - 永続マークは re-follow でも自動クリアされないが、 re-follow 時は webhook follow handler が
+ *   都度 profile を取得するため実害は限定的 (review LOW、 必要なら metadata を手動クリア)。
  */
-const PENDING_PREDICATE = `
+export const FRIEND_PROFILE_PENDING_PREDICATE = `
   FROM friends
  WHERE is_following = 1
    AND line_user_id IS NOT NULL AND line_user_id != ''
    AND (display_name IS NULL OR display_name = '')
-   AND (metadata IS NULL OR metadata = '' OR json_extract(metadata, '$.profile_refresh_failed_at') IS NULL)`;
+   AND (metadata IS NULL OR metadata = '' OR NOT json_valid(metadata)
+        OR json_extract(metadata, '$.profile_refresh_failed_at') IS NULL)`;
 
 function markFailedStmt(
   db: D1Database,
@@ -81,12 +94,29 @@ function markFailedStmt(
   });
   return db
     .prepare(
+      // 不正 JSON の metadata は '{}' に置き換えてから patch (json_patch の malformed throw 回避)
       `UPDATE friends
-          SET metadata = json_patch(COALESCE(NULLIF(metadata, ''), '{}'), ?),
+          SET metadata = json_patch(
+                CASE WHEN metadata IS NULL OR metadata = '' OR NOT json_valid(metadata)
+                     THEN '{}' ELSE metadata END, ?),
               updated_at = ?
         WHERE id = ?`,
     )
     .bind(patch, now, friendId);
+}
+
+/** hang した fetch で admin 呼び出し全体が固まるのを防ぐ (review LOW、 #123 timeout 方針と整合) */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(Object.assign(new Error(`profile fetch timeout after ${ms}ms`), { timeout: true })),
+      ms,
+    );
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e: unknown) => { clearTimeout(t); reject(e); },
+    );
+  });
 }
 
 /**
@@ -96,10 +126,11 @@ function markFailedStmt(
 export async function refreshMissingFriendProfiles(
   db: D1Database,
   deps: ProfileRefreshDeps,
-  opts: { limit: number },
+  opts: { limit: number; fetchTimeoutMs?: number },
 ): Promise<ProfileRefreshResult> {
+  const fetchTimeoutMs = opts.fetchTimeoutMs ?? 8_000;
   const res = await db
-    .prepare(`SELECT id, line_user_id ${PENDING_PREDICATE} ORDER BY created_at ASC LIMIT ?`)
+    .prepare(`SELECT id, line_user_id ${FRIEND_PROFILE_PENDING_PREDICATE} ORDER BY created_at ASC LIMIT ?`)
     .bind(opts.limit)
     .all<PendingFriendRow>();
   const targets = res.results ?? [];
@@ -109,10 +140,11 @@ export async function refreshMissingFriendProfiles(
   let updated = 0;
   let failed = 0;
   let transientErrors = 0;
+  let aborted: string | undefined;
 
   for (const t of targets) {
     try {
-      const profile = await deps.getProfileImpl(t.line_user_id);
+      const profile = await withTimeout(deps.getProfileImpl(t.line_user_id), fetchTimeoutMs);
       const name = (profile.displayName ?? '').trim();
       if (name) {
         stmts.push(
@@ -132,12 +164,20 @@ export async function refreshMissingFriendProfiles(
       }
     } catch (err) {
       const status = (err as { status?: number }).status;
+      const isTimeout = (err as { timeout?: boolean }).timeout === true;
       if (status === 404 || status === 403) {
         // ブロック/退会/権限なし = 再試行しても変わらない → マークして選定から除外
         stmts.push(markFailedStmt(db, t.id, now, status));
         failed += 1;
+      } else if (status === 400 || status === 401 || status === 429 || isTimeout) {
+        // token 異常 (400/401) は以降の全 fetch が失敗確定、 429 は rate limit へ追い打ち禁止、
+        // timeout は hang の兆候 → この呼び出しを即中断して aborted を返す (review MEDIUM)
+        transientErrors += 1;
+        aborted = isTimeout ? 'timeout' : String(status);
+        console.error(`[friend-profile-refresh] aborting call: ${aborted}`);
+        break;
       } else {
-        // 429/5xx/network = 一時失敗。 マークせず次回 retry (PII: userId は log しない)
+        // 5xx/network = 一時失敗。 マークせず次回 retry (PII: userId は log しない)
         transientErrors += 1;
         console.error(
           '[friend-profile-refresh] transient profile fetch failure:',
@@ -152,7 +192,7 @@ export async function refreshMissingFriendProfiles(
   }
 
   const afterRow = await db
-    .prepare(`SELECT COUNT(*) AS n ${PENDING_PREDICATE}`)
+    .prepare(`SELECT COUNT(*) AS n ${FRIEND_PROFILE_PENDING_PREDICATE}`)
     .first<{ n: number }>();
 
   return {
@@ -160,6 +200,7 @@ export async function refreshMissingFriendProfiles(
     updated,
     failed,
     transientErrors,
+    ...(aborted ? { aborted } : {}),
     remaining: afterRow?.n ?? 0,
   };
 }

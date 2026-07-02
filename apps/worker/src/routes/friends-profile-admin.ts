@@ -24,10 +24,14 @@ const friendsProfileAdmin = new Hono<Env>();
 
 friendsProfileAdmin.post('/api/admin/friends/refresh-profiles', async (c) => {
   try {
-    const body = await c.req
-      .json<{ limit?: unknown }>()
-      .catch(() => ({} as { limit?: unknown }));
-    const limitRaw = typeof body.limit === 'number' ? Math.floor(body.limit) : DEFAULT_LIMIT;
+    // JSON literal null は .catch を通らず parse 成功する → null ガード必須 (review LOW)
+    const body = (await c.req
+      .json<{ limit?: unknown } | null>()
+      .catch(() => null)) ?? {};
+    const limitRaw =
+      typeof body === 'object' && typeof (body as { limit?: unknown }).limit === 'number'
+        ? Math.floor((body as { limit: number }).limit)
+        : DEFAULT_LIMIT;
     const limit = Math.min(Math.max(limitRaw, 1), MAX_LIMIT);
 
     const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);

@@ -15,7 +15,10 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { refreshMissingFriendProfiles } from '../services/friend-profile-refresh.js';
+import {
+  refreshMissingFriendProfiles,
+  FRIEND_PROFILE_PENDING_PREDICATE,
+} from '../services/friend-profile-refresh.js';
 import { friendsProfileAdmin } from '../routes/friends-profile-admin.js';
 
 const API_KEY = 'test-api-key';
@@ -223,6 +226,45 @@ describe('refreshMissingFriendProfiles', () => {
     expect(r.selected).toBe(2);
     expect(r.remaining).toBe(3);
   });
+
+  // ===== adversarial review 反映の regression =====
+
+  it('review MEDIUM: 選定述語の本文 pinning (FakeDb は実 SQL を評価しないため drift をここで検知)', () => {
+    expect(FRIEND_PROFILE_PENDING_PREDICATE).toContain('is_following = 1');
+    expect(FRIEND_PROFILE_PENDING_PREDICATE).toContain("display_name IS NULL OR display_name = ''");
+    // 失敗マーク除外 (auto ループ収束の要)
+    expect(FRIEND_PROFILE_PENDING_PREDICATE).toContain("json_extract(metadata, '$.profile_refresh_failed_at') IS NULL");
+    // 不正 JSON ガード (1 行の malformed metadata で全呼び出し 500 を防ぐ)
+    expect(FRIEND_PROFILE_PENDING_PREDICATE).toContain('NOT json_valid(metadata)');
+  });
+
+  it('review MEDIUM: 401 (token 異常) は呼び出しを即中断し aborted を返す (loop 不収束防止)', async () => {
+    const db = new FakeDb([
+      friend({ id: 'f1', line_user_id: 'U-1' }),
+      friend({ id: 'f2', line_user_id: 'U-2', created_at: '2026-06-29T00:00:01.000+09:00' }),
+    ]);
+    let calls = 0;
+    const r = await refreshMissingFriendProfiles(
+      db as unknown as D1Database,
+      { getProfileImpl: async () => { calls += 1; throw httpError(401); } },
+      { limit: 10 },
+    );
+    expect(r.aborted).toBe('401');
+    expect(calls).toBe(1); // 2 人目へ追い打ちしない
+    expect(r.failed).toBe(0); // 永続マークもしない (token 復旧後に再処理可能)
+    expect(r.remaining).toBe(2);
+  });
+
+  it('review LOW: fetch timeout は呼び出しを中断し aborted=timeout を返す', async () => {
+    const db = new FakeDb([friend()]);
+    const r = await refreshMissingFriendProfiles(
+      db as unknown as D1Database,
+      { getProfileImpl: () => new Promise(() => { /* never resolves */ }) },
+      { limit: 10, fetchTimeoutMs: 20 },
+    );
+    expect(r.aborted).toBe('timeout');
+    expect(r.remaining).toBe(1);
+  });
 });
 
 // ============================================================
@@ -280,5 +322,23 @@ describe('POST /api/admin/friends/refresh-profiles', () => {
     expect(json.data.updated).toBe(1);
     expect(json.data.remaining).toBe(0);
     expect(db.friends[0].display_name).toBe('田中照美');
+  });
+
+  it('review LOW: body が JSON literal null でも 500 にならず default limit で処理する', async () => {
+    const db = new FakeDb([]);
+    const app = createApp();
+    const res = await app.request(
+      'http://localhost/api/admin/friends/refresh-profiles',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY}` },
+        body: 'null',
+      },
+      { DB: db, LINE_CHANNEL_ACCESS_TOKEN: 'tok' },
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { success: boolean; data: { selected: number } };
+    expect(json.success).toBe(true);
+    expect(json.data.selected).toBe(0);
   });
 });
