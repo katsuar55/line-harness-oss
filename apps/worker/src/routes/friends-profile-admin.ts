@@ -44,7 +44,10 @@ friendsProfileAdmin.post('/api/admin/friends/refresh-profiles', async (c) => {
     return c.json({ success: true, data: result });
   } catch (err) {
     console.error('POST /api/admin/friends/refresh-profiles error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    // admin (API_KEY) 専用 endpoint のため err.message を返す (500 の運用診断シグナル。
+    // wrangler 認証なし環境では logs にアクセスできず、 これが唯一の一次情報)
+    const detail = err instanceof Error ? `${err.name}: ${err.message}`.slice(0, 300) : 'unknown';
+    return c.json({ success: false, error: 'Internal server error', detail }, 500);
   }
 });
 
