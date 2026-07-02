@@ -80,6 +80,7 @@ import { liffOptIn } from './routes/liff-opt-in.js';
 import { liffOptInPage } from './routes/liff-opt-in-page.js';
 import { liffAccountLink } from './routes/liff-account-link.js';
 import { accountLinkAdmin } from './routes/account-link-admin.js';
+import { friendsProfileAdmin } from './routes/friends-profile-admin.js';
 import { integrationsResend } from './routes/integrations-resend.js';
 import { birthdayCollection } from './routes/birthday-collection.js';
 import { coachAdmin } from './routes/coach-admin.js';
@@ -298,6 +299,7 @@ app.route('/', liffOptIn);
 app.route('/', liffOptInPage);
 app.route('/', liffAccountLink);
 app.route('/', accountLinkAdmin);
+app.route('/', friendsProfileAdmin);
 app.route('/', integrationsResend);
 // liffCart route 削除 (2026-04-29): /api/liff/cart endpoints は dead code
 // (どのクライアントも未使用)。liff_carts table は本番に残置 (DROP は不可逆のため避ける)。
