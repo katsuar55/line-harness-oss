@@ -14,6 +14,17 @@ name: Admin Ops
 #   expire-shopify-token:
 #     shopify_tokens のキャッシュを失効させ、次回 API 呼び出しで新スコープの token を
 #     再取得させる (read_all_orders スコープ追加後に 1 回実行する用途)。
+#   secret-list:
+#     read-only。wrangler secret list (名前のみ) をサマリに出す。gate 投入状態の確認用。
+#   enable-rank-discount:
+#     RANK_DISCOUNT_ENABLED=true を投入 (= 5c ランク割引コード発行の本番有効化)。
+#     連携済 member への発行経路: my-rank LIFF 閲覧時の lazy 発行 + 月初 cron。
+#   rank-discount-status:
+#     read-only。loyalty_rank_discounts の status 別件数のみ (PII なし) をサマリに出す。
+#     発行の定点観測用 (repo は public のため件数以外は出さない)。
+#
+# ⚠️ repo は PUBLIC = workflow ログ/サマリは公開される。secret の値・顧客データ (PII) を
+#    echo/サマリ出力する op を追加してはならない (名前・件数のみ可)。
 #
 # 必要な GitHub secrets: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID (deploy と同一)
 
@@ -28,6 +39,9 @@ on:
           - enable-account-link
           - fix-friends-metadata
           - expire-shopify-token
+          - secret-list
+          - enable-rank-discount
+          - rank-discount-status
 
 permissions:
   contents: read
@@ -92,3 +106,41 @@ jobs:
           npx wrangler d1 execute naturism-line-crm --remote \
             --command "UPDATE shopify_tokens SET expires_at='2020-01-01T00:00:00.000Z' WHERE id='default'"
           echo 'shopify token cache expired — next API call will re-fetch with current scopes' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: List secrets (names only, read-only)
+        if: inputs.op == 'secret-list'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enable rank discount (RANK_DISCOUNT_ENABLED)
+        if: inputs.op == 'enable-rank-discount'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          TMP="$RUNNER_TEMP/secrets.rank-discount.json"
+          printf '{"RANK_DISCOUNT_ENABLED":"true"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Rank discount status (counts only, read-only)
+        if: inputs.op == 'rank-discount-status'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          echo '### loyalty_rank_discounts (counts by status, no PII)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT status, COUNT(*) AS n FROM loyalty_rank_discounts GROUP BY status" >> "$GITHUB_STEP_SUMMARY"
