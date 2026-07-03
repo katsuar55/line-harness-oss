@@ -116,7 +116,7 @@ jobs:
         run: |
           set -euo pipefail
           echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
-          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Enable rank discount (RANK_DISCOUNT_ENABLED)
         if: inputs.op == 'enable-rank-discount'
@@ -131,7 +131,7 @@ jobs:
           npx wrangler secret bulk "$TMP"
           rm -f "$TMP"
           echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
-          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Rank discount status (counts only, read-only)
         if: inputs.op == 'rank-discount-status'
@@ -143,4 +143,4 @@ jobs:
           set -euo pipefail
           echo '### loyalty_rank_discounts (counts by status, no PII)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
-            --command "SELECT status, COUNT(*) AS n FROM loyalty_rank_discounts GROUP BY status" >> "$GITHUB_STEP_SUMMARY"
+            --command "SELECT status, COUNT(*) AS n FROM loyalty_rank_discounts GROUP BY status" | tee -a "$GITHUB_STEP_SUMMARY"
