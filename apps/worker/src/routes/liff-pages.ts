@@ -1116,14 +1116,19 @@ async function api(path, body = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ idToken, ...body }),
   });
-  return res.json();
+  var json = await res.json();
+  // HTTP status を透過 (エラー文字列の英文 sniffing をせず status code で判定できるように)
+  if (json && typeof json === 'object' && json.status === undefined) { json.status = res.status; }
+  return json;
 }
 
 async function apiGet(path) {
   var headers = {};
   if (idToken) { headers['Authorization'] = 'Bearer ' + idToken; }
   const res = await fetch(API_BASE + path, { headers: headers });
-  return res.json();
+  var json = await res.json();
+  if (json && typeof json === 'object' && json.status === undefined) { json.status = res.status; }
+  return json;
 }
 
 // 致命的な初期化失敗 (idToken 取得不可 等) で skeleton 固着でなく明示的なエラー + 再読み込みを出す。
@@ -2182,9 +2187,10 @@ async function saveProfile() {
 // ─── SHOP Section ───
 // ─── SHOP Tab: error と empty を区別して描画 (skeleton 固着防止, 2026-07-04 実機フィードバック) ───
 
-// middleware は idToken 失効時に 'Invalid or expired ID token' を返す → 'token' 含有で判定
+// 401 (idToken 失効/未送信のどちらでも) はセッション切れとして再読み込みに誘導する。
+// api() が透過する HTTP status で判定 (エラー文字列の英文一致は将来の文言変更で壊れるため不使用)。
 function shopAuthExpired(res) {
-  return !!(res && typeof res.error === 'string' && res.error.indexOf('token') !== -1);
+  return !!(res && res.status === 401);
 }
 
 function shopErrorCard(el, auth) {

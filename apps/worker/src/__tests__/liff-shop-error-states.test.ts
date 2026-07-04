@@ -41,11 +41,20 @@ describe('ストアタブ error/empty 状態 — 静的構造', () => {
     expect(pages).toContain('再試行');
   });
 
-  it('idToken 失効はセッション切れとして再読み込みを誘導する', () => {
-    // middleware は 'Invalid or expired ID token' を返す → 'token' 含有で auth 失効判定
-    expect(pages).toMatch(/shopAuthExpired[\s\S]{0,200}indexOf\('token'\)/);
+  it('idToken 失効はセッション切れとして再読み込みを誘導する (HTTP 401 判定)', () => {
+    // 文字列 sniffing でなく api()/apiGet() が透過する HTTP status で判定する
+    // (middleware の 401 は 'Invalid or expired ID token' と 'Authentication required...' の
+    //  2 変種があり、どちらもセッション切れ扱いが正しい。文言変更にも壊れない)
+    expect(pages).toMatch(/function shopAuthExpired[\s\S]{0,160}status === 401/);
+    expect(pages).not.toMatch(/shopAuthExpired[\s\S]{0,200}indexOf\('token'\)/);
     expect(pages).toContain('セッションの有効期限が切れました');
     expect(pages).toMatch(/セッションの有効期限が切れました[\s\S]{0,400}location\.reload\(\)/);
+  });
+
+  it('api()/apiGet() は HTTP status を透過する (auth 判定の基盤)', () => {
+    const matches = pages.match(/json\.status = res\.status/g);
+    expect(matches).not.toBeNull();
+    expect(matches!.length).toBeGreaterThanOrEqual(2); // api と apiGet の両方
   });
 
   it('products が空のとき skeleton でなく説明つき空状態を出す (else 分岐が存在する)', () => {
