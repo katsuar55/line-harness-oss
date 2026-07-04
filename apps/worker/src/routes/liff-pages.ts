@@ -1116,14 +1116,19 @@ async function api(path, body = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ idToken, ...body }),
   });
-  return res.json();
+  var json = await res.json();
+  // HTTP status を透過 (エラー文字列の英文 sniffing をせず status code で判定できるように)
+  if (json && typeof json === 'object' && json.status === undefined) { json.status = res.status; }
+  return json;
 }
 
 async function apiGet(path) {
   var headers = {};
   if (idToken) { headers['Authorization'] = 'Bearer ' + idToken; }
   const res = await fetch(API_BASE + path, { headers: headers });
-  return res.json();
+  var json = await res.json();
+  if (json && typeof json === 'object' && json.status === undefined) { json.status = res.status; }
+  return json;
 }
 
 // 致命的な初期化失敗 (idToken 取得不可 等) で skeleton 固着でなく明示的なエラー + 再読み込みを出す。
@@ -2180,54 +2185,99 @@ async function saveProfile() {
 }
 
 // ─── SHOP Section ───
-async function loadShopData() {
-  try {
-    const { data } = await api('/api/liff/reorder');
-    if (data) {
-      // Products
-      var pel = document.getElementById('products-card');
-      if (data.products && data.products.length > 0) {
-        pel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-3">商品ラインナップ</p>' +
-          data.products.map(function(p) {
-            return '<div class="flex items-center gap-3 py-3 border-b last:border-0">' +
-              (p.imageUrl ? '<img src="' + esc(p.imageUrl) + '" class="w-16 h-16 rounded-lg object-cover">' : '<div class="w-16 h-16 rounded-lg bg-gray-100"></div>') +
-              '<div class="flex-1"><p class="text-sm font-bold text-gray-800">' + esc(p.title) + '</p>' +
-              '<p class="text-sm text-green-600 font-bold">¥' + Number(p.price).toLocaleString() + '</p></div>' +
-              '<a href="' + esc(p.storeUrl) + '" target="_blank" class="text-xs text-green-600 border border-green-600 px-3 py-1 rounded-full">購入</a></div>';
-          }).join('');
-      }
-      // Orders
-      var oel = document.getElementById('orders-card');
-      if (data.recentOrders && data.recentOrders.length > 0) {
-        oel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">最近の注文</p>' +
-          data.recentOrders.map(function(o) {
-            return '<div class="py-2 border-b last:border-0">' +
-              '<div class="flex justify-between items-center"><p class="text-sm font-bold">#' + esc(o.orderNumber) + '</p>' +
-              '<p class="text-sm text-green-600 font-bold">¥' + Number(o.totalPrice).toLocaleString() + '</p></div>' +
-              '<p class="text-xs text-gray-400">' + esc((o.createdAt || '').slice(0, 10)) + '</p></div>';
-          }).join('');
-      } else {
-        oel.innerHTML = '<p class="text-xs text-gray-400">まだ注文がありません</p>';
-      }
-    }
-  } catch { /* ignore */ }
+// ─── SHOP Tab: error と empty を区別して描画 (skeleton 固着防止, 2026-07-04 実機フィードバック) ───
 
-  // Fulfillments
-  try {
-    const { data } = await api('/api/liff/fulfillments');
-    var fel = document.getElementById('fulfillments-card');
-    if (data && data.fulfillments && data.fulfillments.length > 0) {
+// 401 (idToken 失効/未送信のどちらでも) はセッション切れとして再読み込みに誘導する。
+// api() が透過する HTTP status で判定 (エラー文字列の英文一致は将来の文言変更で壊れるため不使用)。
+function shopAuthExpired(res) {
+  return !!(res && res.status === 401);
+}
+
+function shopErrorCard(el, auth) {
+  if (!el) return;
+  el.innerHTML = '<div class="text-center py-6">' +
+    '<p class="text-2xl mb-2">🌿</p>' +
+    '<p class="text-xs text-gray-500 mb-3">' + (auth ? 'セッションの有効期限が切れました' : '読み込みに失敗しました') + '</p>' +
+    (auth
+      ? '<button onclick="location.reload()" class="btn-primary px-4 py-2 rounded-xl text-xs font-bold">再読み込み</button>'
+      : '<button onclick="retryShopData()" class="btn-primary px-4 py-2 rounded-xl text-xs font-bold">再試行</button>') +
+    '</div>';
+}
+
+function retryShopData() {
+  var pel = document.getElementById('products-card');
+  var oel = document.getElementById('orders-card');
+  var fel = document.getElementById('fulfillments-card');
+  if (pel) pel.innerHTML = '<div class="skeleton h-48 rounded-lg"></div>';
+  if (oel) oel.innerHTML = '<div class="skeleton h-24 rounded-lg"></div>';
+  if (fel) fel.innerHTML = '<div class="skeleton h-24 rounded-lg"></div>';
+  loadShopData();
+}
+
+async function loadShopData() {
+  // demo モードは init 時に renderDemoData がカードを描画済み — 上書きしない
+  if (isDemo) return;
+  var pel = document.getElementById('products-card');
+  var oel = document.getElementById('orders-card');
+  var fel = document.getElementById('fulfillments-card');
+
+  var res = null;
+  try { res = await api('/api/liff/reorder'); } catch (e) { res = null; }
+  if (res && res.data) {
+    var data = res.data;
+    // Products
+    if (data.products && data.products.length > 0) {
+      pel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-3">商品ラインナップ</p>' +
+        data.products.map(function(p) {
+          return '<div class="flex items-center gap-3 py-3 border-b last:border-0">' +
+            (p.imageUrl ? '<img src="' + esc(p.imageUrl) + '" class="w-16 h-16 rounded-lg object-cover">' : '<div class="w-16 h-16 rounded-lg bg-gray-100"></div>') +
+            '<div class="flex-1"><p class="text-sm font-bold text-gray-800">' + esc(p.title) + '</p>' +
+            '<p class="text-sm text-green-600 font-bold">¥' + Number(p.price).toLocaleString() + '</p></div>' +
+            '<a href="' + esc(p.storeUrl) + '" target="_blank" class="text-xs text-green-600 border border-green-600 px-3 py-1 rounded-full">購入</a></div>';
+        }).join('');
+    } else {
+      pel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">商品ラインナップ</p>' +
+        '<p class="text-xs text-gray-400">商品情報を準備中です。しばらくしてからお試しください。</p>';
+    }
+    // Orders
+    if (data.recentOrders && data.recentOrders.length > 0) {
+      oel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">最近の注文</p>' +
+        data.recentOrders.map(function(o) {
+          return '<div class="py-2 border-b last:border-0">' +
+            '<div class="flex justify-between items-center"><p class="text-sm font-bold">#' + esc(o.orderNumber) + '</p>' +
+            '<p class="text-sm text-green-600 font-bold">¥' + Number(o.totalPrice).toLocaleString() + '</p></div>' +
+            '<p class="text-xs text-gray-400">' + esc((o.createdAt || '').slice(0, 10)) + '</p></div>';
+        }).join('');
+    } else {
+      oel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">最近の注文</p>' +
+        '<p class="text-xs text-gray-400">まだ注文がありません</p>';
+    }
+  } else {
+    var auth = shopAuthExpired(res);
+    shopErrorCard(pel, auth);
+    shopErrorCard(oel, auth);
+    if (auth) { shopErrorCard(fel, true); return; }
+  }
+
+  // Fulfillments (エラーは「配送情報はありません」に化けさせない)
+  var fres = null;
+  try { fres = await api('/api/liff/fulfillments'); } catch (e) { fres = null; }
+  if (fres && fres.data) {
+    if (fres.data.fulfillments && fres.data.fulfillments.length > 0) {
       fel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">配送状況</p>' +
-        data.fulfillments.slice(0, 3).map(function(f) {
+        fres.data.fulfillments.slice(0, 3).map(function(f) {
           return '<div class="py-2 border-b last:border-0">' +
             '<div class="flex justify-between"><p class="text-sm">#' + esc(f.orderNumber) + '</p>' +
             '<span class="text-xs px-2 py-0.5 rounded-full ' + (f.status === 'delivered' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700') + '">' + esc(f.status || 'in_transit') + '</span></div>' +
             (f.trackingUrl ? '<a href="' + esc(f.trackingUrl) + '" target="_blank" class="text-xs text-blue-500 underline">追跡する</a>' : '') + '</div>';
         }).join('');
     } else {
-      fel.innerHTML = '<p class="text-xs text-gray-400">配送情報はありません</p>';
+      fel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">配送状況</p>' +
+        '<p class="text-xs text-gray-400">配送情報はありません</p>';
     }
-  } catch { /* ignore */ }
+  } else {
+    shopErrorCard(fel, shopAuthExpired(fres));
+  }
 }
 
 // ─── MORE Tab: Notifications, Subscriptions, FAQ ───
