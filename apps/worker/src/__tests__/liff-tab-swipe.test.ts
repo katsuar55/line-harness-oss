@@ -60,6 +60,24 @@ describe('タブ フリック切替', () => {
     expect(pages).toMatch(/id="onboarding-tour"[^>]*data-no-tab-swipe/);
     expect(pages).toMatch(/closest\('\[data-no-tab-swipe\]'\)/);
   });
+
+  it('他の overlay/横スクロール要素も swipe 除外されている (review HIGH/LOW)', () => {
+    // survey modal: 開いたままタブが裏で切り替わる desync を防ぐ
+    expect(pages).toMatch(/id="survey-answer-modal"[^>]*data-no-tab-swipe/);
+    // FAQ カテゴリチップ (overflow-x-auto): 横ドラッグでタブが切り替わらない
+    expect(pages).toMatch(/id="faq-cats"[^>]*data-no-tab-swipe/);
+  });
+
+  it('switchTab は未知タブで throw せず現状維持する (review HIGH: deadlock 防止)', () => {
+    expect(pages).toMatch(/function switchTab\(name\) \{[\s\S]{0,300}if \(!section\)/);
+  });
+
+  it('tabAnimating / tourAnimating は例外時も finally 系で必ず復帰する', () => {
+    expect(pages).toMatch(/finally \{ tabAnimating = false; \}/);
+    expect(pages).toMatch(/catch \(e\) \{\s*tabAnimating = false;/);
+    expect(pages).toMatch(/var tourAnimating = false;/);
+    expect(pages).toMatch(/finally \{ tourAnimating = false; \}/);
+  });
 });
 
 describe('ツアー スワイプ', () => {

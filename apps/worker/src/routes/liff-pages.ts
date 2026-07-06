@@ -281,7 +281,7 @@ function portalPage(liffId: string, apiBase: string): string {
           <p class="text-xs text-gray-500 font-bold mb-3">&#x1F4CB; 未回答アンケート</p>
           <div id="pending-surveys"></div>
         </div>
-        <div id="survey-answer-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:50;background:rgba(0,0,0,0.5);">
+        <div id="survey-answer-modal" data-no-tab-swipe style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:50;background:rgba(0,0,0,0.5);">
           <div style="position:absolute;bottom:0;left:0;right:0;max-height:85vh;overflow-y:auto;background:#fff;border-radius:24px 24px 0 0;padding:24px;">
             <div class="flex justify-between items-center mb-4">
               <p class="text-sm font-bold" id="survey-modal-title"></p>
@@ -654,7 +654,7 @@ function portalPage(liffId: string, apiBase: string): string {
       <div class="card p-4">
         <p class="text-xs text-gray-500 font-bold mb-3">よくあるご質問</p>
         <input id="faq-search" type="text" inputmode="search" oninput="onFaqSearch(this.value)" placeholder="キーワードで検索（例: 送料、解約、飲み方）" class="w-full mb-3 px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-green-400" />
-        <div id="faq-cats" class="flex gap-2 overflow-x-auto pb-2 mb-1" style="display:none"></div>
+        <div id="faq-cats" data-no-tab-swipe class="flex gap-2 overflow-x-auto pb-2 mb-1" style="display:none"></div>
         <div id="faq-list">
           <div class="skeleton h-24 rounded-lg"></div>
         </div>
@@ -886,7 +886,10 @@ function tourPrimary() {
 }
 
 // dir: 1 = 次へ / -1 = 前へ。端は clamp (最終ページの「次」は完了)。
+// 連打/連続フリックは tourAnimating で無視 (review MEDIUM: アニメの多重発火防止)
+var tourAnimating = false;
 function tourAdvance(dir) {
+  if (tourAnimating) return;
   if (dir > 0) {
     if (tourIndex >= TOUR_STEPS.length - 1) { finishTour(); return; }
     tourIndex++;
@@ -901,19 +904,27 @@ function tourAdvance(dir) {
 function animateTourStep(dir) {
   var content = document.getElementById('tour-content');
   if (!content || TAB_REDUCED_MOTION) { renderTourStep(); return; }
+  tourAnimating = true;
   content.style.transition = 'transform 0.16s ease-in, opacity 0.16s ease-in';
   content.style.transform = 'translateX(' + (dir * -26) + 'px)';
   content.style.opacity = '0';
   setTimeout(function () {
-    renderTourStep();
-    content.style.transition = 'none';
-    content.style.transform = 'translateX(' + (dir * 30) + 'px)';
-    requestAnimationFrame(function () {
-      content.style.transition = 'transform 0.26s cubic-bezier(0.22,1,0.36,1), opacity 0.26s ease-out';
-      content.style.transform = 'translateX(0)';
-      content.style.opacity = '1';
-      setTimeout(function () { content.style.transition = ''; }, 300);
-    });
+    try {
+      renderTourStep();
+      content.style.transition = 'none';
+      content.style.transform = 'translateX(' + (dir * 30) + 'px)';
+      requestAnimationFrame(function () {
+        content.style.transition = 'transform 0.26s cubic-bezier(0.22,1,0.36,1), opacity 0.26s ease-out';
+        content.style.transform = 'translateX(0)';
+        content.style.opacity = '1';
+        setTimeout(function () {
+          try { content.style.transition = ''; }
+          finally { tourAnimating = false; }
+        }, 300);
+      });
+    } catch (e) {
+      tourAnimating = false;
+    }
   }, 150);
 }
 
@@ -1229,11 +1240,14 @@ function handleDeepLink() {
 
 // ─── Tab Switching ───
 function switchTab(name) {
+  // 未知タブは現状維持で無視 (review HIGH: throw すると tabAnimating が固まり全タブ操作が死ぬ)
+  var section = document.getElementById('section-' + name);
+  if (!section) { console.error('switchTab: unknown tab', name); return; }
   document.querySelectorAll('.section').forEach(function(s) { s.classList.remove('active'); });
   document.querySelectorAll('nav button').forEach(function(b) { b.className = b.className.replace('tab-active', 'tab-inactive'); });
-  var section = document.getElementById('section-' + name);
   section.classList.add('active');
-  document.getElementById('tab-' + name).className = document.getElementById('tab-' + name).className.replace('tab-inactive', 'tab-active');
+  var tabBtn = document.getElementById('tab-' + name);
+  if (tabBtn) tabBtn.className = tabBtn.className.replace('tab-inactive', 'tab-active');
   // Scroll to top smoothly
   window.scrollTo({ top: 0, behavior: 'smooth' });
 
@@ -1267,24 +1281,29 @@ function switchTabAnimated(name, dir) {
   from.style.transform = 'translateX(' + (dir * -30) + 'px)';
   from.style.opacity = '0';
   setTimeout(function () {
-    from.style.transition = ''; from.style.transform = ''; from.style.opacity = '';
-    switchTab(name);
-    var to = document.getElementById('section-' + name);
-    if (!to) { tabAnimating = false; return; }
-    // 既定の fadeUp keyframe と二重にならないよう、横スライドで入る間は無効化
-    to.style.animation = 'none';
-    to.style.transition = 'none';
-    to.style.transform = 'translateX(' + (dir * 36) + 'px)';
-    to.style.opacity = '0';
-    requestAnimationFrame(function () {
-      to.style.transition = 'transform 0.28s cubic-bezier(0.22,1,0.36,1), opacity 0.28s ease-out';
-      to.style.transform = 'translateX(0)';
-      to.style.opacity = '1';
-      setTimeout(function () {
-        to.style.transition = ''; to.style.transform = ''; to.style.opacity = ''; to.style.animation = '';
-        tabAnimating = false;
-      }, 320);
-    });
+    // review HIGH: 例外時も tabAnimating を必ず復帰させる (固まると全タブ操作不能)
+    try {
+      from.style.transition = ''; from.style.transform = ''; from.style.opacity = '';
+      switchTab(name);
+      var to = document.getElementById('section-' + name);
+      if (!to) { tabAnimating = false; return; }
+      // 既定の fadeUp keyframe と二重にならないよう、横スライドで入る間は無効化
+      to.style.animation = 'none';
+      to.style.transition = 'none';
+      to.style.transform = 'translateX(' + (dir * 36) + 'px)';
+      to.style.opacity = '0';
+      requestAnimationFrame(function () {
+        to.style.transition = 'transform 0.28s cubic-bezier(0.22,1,0.36,1), opacity 0.28s ease-out';
+        to.style.transform = 'translateX(0)';
+        to.style.opacity = '1';
+        setTimeout(function () {
+          try { to.style.transition = ''; to.style.transform = ''; to.style.opacity = ''; to.style.animation = ''; }
+          finally { tabAnimating = false; }
+        }, 320);
+      });
+    } catch (e) {
+      tabAnimating = false;
+    }
   }, 180);
 }
 
