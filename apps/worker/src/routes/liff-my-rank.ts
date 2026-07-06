@@ -422,6 +422,8 @@ async function linkRequest(){
   var emailEl=document.getElementById('link-email');
   var email=((emailEl && emailEl.value) || '').trim();
   if(!email){ linkMsg('メールアドレスを入力してください', true); return; }
+  // 形式チェックはサーバ往復前に (不正フォーマットの往復待ちをなくす)
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ linkMsg('正しいメールアドレスをご入力ください', true); return; }
   linkMsg('', false); setLinkBusy('link-send-btn', true, '送信中…');
   try{
     var res=await fetch(API_BASE+'/api/liff/link/request-code', { method:'POST', headers:linkHeaders(), body:JSON.stringify({ email:email }) });
@@ -474,10 +476,11 @@ function renderLink(d){
   //       #link-msg は role=status aria-live=polite で検証/送信エラーを SR に通知。
   card.innerHTML =
     '<div class="flex items-center gap-2 mb-1.5"><span class="text-base">&#x1F517;</span>' +
-      '<p class="text-sm font-bold text-gray-700">Shopifyアカウントと連携</p></div>' +
-    '<p class="text-xs text-gray-500 leading-relaxed mb-3">ご購入時のメールアドレスで連携すると、これまでのお買い物が会員ランクに反映されます。</p>' +
+      '<p class="text-sm font-bold text-gray-700">これまでのお買い物をランクに反映</p></div>' +
+    // なぜメール? = 注文時メールで本人確認 → 購入履歴をランクへ。opt-in (メルマガ登録) とは別機能である区別も明記。
+    '<p class="text-xs text-gray-500 leading-relaxed mb-3">公式ストアの<b>ご注文時に使ったメールアドレス</b>宛に確認コードをお送りして本人確認し、これまでの購入履歴を会員ランクに反映します。メールマガジンの配信登録とは別の機能で、これによってメールが届くようになることはありません。</p>' +
     '<div id="link-step-email">' +
-      '<input id="link-email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" aria-label="メールアドレス" placeholder="メールアドレス" ' +
+      '<input id="link-email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" aria-label="ご注文時のメールアドレス" placeholder="ご注文時のメールアドレス" ' +
         'class="w-full px-3.5 py-2.5 rounded-xl text-sm mb-2" style="border:1px solid #e2e8f0;outline:none">' +
       '<button type="button" id="link-send-btn" class="tap w-full text-white text-sm font-bold py-2.5 rounded-xl shadow" ' +
         'style="background:linear-gradient(135deg,#0ABAB5,#22d3ee)">確認コードを送信</button>' +
@@ -487,8 +490,8 @@ function renderLink(d){
       '<input id="link-code" type="text" inputmode="numeric" autocomplete="one-time-code" enterkeyhint="done" aria-label="6桁の確認コード" maxlength="6" placeholder="6桁の確認コード" ' +
         'class="w-full px-3.5 py-2.5 rounded-xl text-sm mb-2 text-center font-bold" style="border:1px solid #e2e8f0;outline:none;letter-spacing:.4em">' +
       '<button type="button" id="link-verify-btn" class="tap w-full text-white text-sm font-bold py-2.5 rounded-xl shadow" ' +
-        'style="background:linear-gradient(135deg,#0ABAB5,#22d3ee)">連携する</button>' +
-      '<button type="button" id="link-restart" class="tap w-full text-xs text-gray-400 mt-2 py-2.5">別のメールアドレスで送り直す</button>' +
+        'style="background:linear-gradient(135deg,#0ABAB5,#22d3ee)">メールアドレスを確認して連携</button>' +
+      '<button type="button" id="link-restart" class="tap w-full text-xs text-gray-600 mt-2 py-3 rounded-xl" style="background:#f8fafc;border:1px solid #e2e8f0">別のメールアドレスで送り直す</button>' +
     '</div>' +
     '<p id="link-msg" role="status" aria-live="polite" style="display:none;font-size:12px;margin-top:8px;text-align:center"></p>';
   var sb=document.getElementById('link-send-btn'); if(sb) sb.addEventListener('click', linkRequest);
