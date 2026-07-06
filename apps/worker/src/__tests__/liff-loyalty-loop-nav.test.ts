@@ -26,7 +26,8 @@ describe('回遊ループ導線 (consolidation)', () => {
   it('服用記録(intake)タブ末尾に次アクション回遊導線を追加 (記録→ランク/購入)', () => {
     expect(pages).toContain('続けるほど、おトク');
     // 続けるほどおトク card は home tab (ランク/バッジ) と 会員購入 (my-rank) へ繋ぐ
-    expect(pages).toMatch(/続けるほど、おトク[\s\S]{0,400}switchTab\('home'\)/);
+    // (2026-07-04: タブ遷移は方向つきアニメの switchTabTo に統一)
+    expect(pages).toMatch(/続けるほど、おトク[\s\S]{0,400}switchTabTo\('home'\)/);
     expect(pages).toMatch(/続けるほど、おトク[\s\S]{0,400}openFeaturePage\('\/liff\/my-rank'\)/);
   });
 });

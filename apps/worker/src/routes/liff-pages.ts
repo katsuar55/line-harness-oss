@@ -87,7 +87,7 @@ function portalPage(liffId: string, apiBase: string): string {
   <!-- Header -->
   <header class="sticky top-0 z-50" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(0,0,0,.06)">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
-      <h1 class="text-lg font-bold tracking-tight" style="background:linear-gradient(135deg,#059669,#06C755);-webkit-background-clip:text;-webkit-text-fill-color:transparent">naturism</h1>
+      <h1 class="text-lg font-bold" style="letter-spacing:0.02em;background:linear-gradient(135deg,#0ABAB5,#2ec7c3);-webkit-background-clip:text;-webkit-text-fill-color:transparent">ナチュリズム<span style="font-weight:300;opacity:.55;margin:0 6px">|</span><span class="text-sm" style="font-weight:600">インナーケア</span></h1>
       <div class="flex items-center gap-3">
         <div class="relative">
           <button id="lang-btn" onclick="toggleLangMenu()" class="text-base w-10 h-10 flex items-center justify-center rounded-full hover:bg-gray-100 transition-colors" title="Language">&#x1F1EF;&#x1F1F5;</button>
@@ -107,12 +107,12 @@ function portalPage(liffId: string, apiBase: string): string {
   <!-- Tab Navigation -->
   <nav class="sticky top-[53px] z-40" style="background:rgba(255,255,255,.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid rgba(0,0,0,.05)">
     <div class="max-w-lg mx-auto flex">
-      <button onclick="switchTab('home')" id="tab-home" class="flex-1 py-3 text-xs text-center tab-active" data-i18n="tab_mypage">マイページ</button>
-      <button onclick="switchTab('quiz')" id="tab-quiz" class="flex-1 py-3 text-xs text-center tab-inactive">診断</button>
-      <button onclick="switchTab('intake')" id="tab-intake" class="flex-1 py-3 text-xs text-center tab-inactive" data-i18n="intake_log">服用記録</button>
-      <button onclick="switchTab('health')" id="tab-health" class="flex-1 py-3 text-xs text-center tab-inactive" data-i18n="tab_health">体調</button>
-      <button onclick="switchTab('shop')" id="tab-shop" class="flex-1 py-3 text-xs text-center tab-inactive">ストア</button>
-      <button onclick="switchTab('more')" id="tab-more" class="flex-1 py-3 text-xs text-center tab-inactive">その他</button>
+      <button onclick="switchTabTo('home')" id="tab-home" class="flex-1 py-3 text-xs text-center tab-active" data-i18n="tab_mypage">マイページ</button>
+      <button onclick="switchTabTo('quiz')" id="tab-quiz" class="flex-1 py-3 text-xs text-center tab-inactive">診断</button>
+      <button onclick="switchTabTo('intake')" id="tab-intake" class="flex-1 py-3 text-xs text-center tab-inactive" data-i18n="intake_log">服用記録</button>
+      <button onclick="switchTabTo('health')" id="tab-health" class="flex-1 py-3 text-xs text-center tab-inactive" data-i18n="tab_health">体調</button>
+      <button onclick="switchTabTo('shop')" id="tab-shop" class="flex-1 py-3 text-xs text-center tab-inactive">ストア</button>
+      <button onclick="switchTabTo('more')" id="tab-more" class="flex-1 py-3 text-xs text-center tab-inactive">その他</button>
     </div>
   </nav>
 
@@ -281,7 +281,7 @@ function portalPage(liffId: string, apiBase: string): string {
           <p class="text-xs text-gray-500 font-bold mb-3">&#x1F4CB; 未回答アンケート</p>
           <div id="pending-surveys"></div>
         </div>
-        <div id="survey-answer-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:50;background:rgba(0,0,0,0.5);">
+        <div id="survey-answer-modal" data-no-tab-swipe style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:50;background:rgba(0,0,0,0.5);">
           <div style="position:absolute;bottom:0;left:0;right:0;max-height:85vh;overflow-y:auto;background:#fff;border-radius:24px 24px 0 0;padding:24px;">
             <div class="flex justify-between items-center mb-4">
               <p class="text-sm font-bold" id="survey-modal-title"></p>
@@ -362,7 +362,7 @@ function portalPage(liffId: string, apiBase: string): string {
       <div class="card p-4">
         <p class="text-xs text-gray-500 font-bold mb-2">続けるほど、おトク 🌿</p>
         <div class="grid grid-cols-2 gap-2">
-          <button onclick="switchTab('home')" class="flex items-center justify-center gap-1 p-3 rounded-xl bg-green-50 text-green-700 text-xs font-bold hover:bg-green-100 transition-colors">🏆 ランク・バッジ</button>
+          <button onclick="switchTabTo('home')" class="flex items-center justify-center gap-1 p-3 rounded-xl bg-green-50 text-green-700 text-xs font-bold hover:bg-green-100 transition-colors">🏆 ランク・バッジ</button>
           <a href="javascript:void(0)" onclick="openFeaturePage('/liff/my-rank')" class="flex items-center justify-center gap-1 p-3 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-bold hover:bg-emerald-100 transition-colors">🛍 会員特典で購入</a>
         </div>
       </div>
@@ -654,7 +654,7 @@ function portalPage(liffId: string, apiBase: string): string {
       <div class="card p-4">
         <p class="text-xs text-gray-500 font-bold mb-3">よくあるご質問</p>
         <input id="faq-search" type="text" inputmode="search" oninput="onFaqSearch(this.value)" placeholder="キーワードで検索（例: 送料、解約、飲み方）" class="w-full mb-3 px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-green-400" />
-        <div id="faq-cats" class="flex gap-2 overflow-x-auto pb-2 mb-1" style="display:none"></div>
+        <div id="faq-cats" data-no-tab-swipe class="flex gap-2 overflow-x-auto pb-2 mb-1" style="display:none"></div>
         <div id="faq-list">
           <div class="skeleton h-24 rounded-lg"></div>
         </div>
@@ -723,13 +723,13 @@ function portalPage(liffId: string, apiBase: string): string {
   <div id="toast" role="status" aria-live="polite" class="fixed bottom-24 left-1/2 -translate-x-1/2 text-white px-5 py-2.5 rounded-2xl text-sm shadow-xl opacity-0 transition-opacity pointer-events-none z-50"></div>
 
   <!-- 初回オンボーディングツアー (第2波-⑥: 初回起動のみ・診断ファースト・localStorage完結) -->
-  <div id="onboarding-tour" role="dialog" aria-modal="true" aria-labelledby="tour-title" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:60;background:rgba(0,0,0,0.55);">
+  <div id="onboarding-tour" data-no-tab-swipe role="dialog" aria-modal="true" aria-labelledby="tour-title" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:60;background:rgba(0,0,0,0.55);">
     <div style="position:absolute;bottom:0;left:0;right:0;max-height:88vh;overflow-y:auto;background:#fff;border-radius:24px 24px 0 0;padding:24px 24px 28px;">
       <div class="flex justify-between items-center mb-3">
         <div class="flex gap-1.5 items-center" id="tour-dots"></div>
         <button onclick="skipTour()" class="text-gray-400 text-xs">スキップ</button>
       </div>
-      <div class="text-center py-3">
+      <div class="text-center py-3" id="tour-content">
         <div class="text-5xl mb-4" id="tour-emoji"></div>
         <p class="text-base font-bold text-gray-800 mb-2" id="tour-title"></p>
         <p class="text-sm text-gray-500 leading-relaxed px-2" id="tour-body"></p>
@@ -880,11 +880,76 @@ function renderTourDots() {
   dots.innerHTML = html;
 }
 
-// 主 CTA: 最後のステップなら完了、そうでなければ次のステップへ。
+// 主 CTA: 最後のステップなら完了、そうでなければ次のステップへ (スワイプと同じアニメ経路)。
 function tourPrimary() {
-  if (tourIndex >= TOUR_STEPS.length - 1) { finishTour(); return; }
-  tourIndex++;
-  renderTourStep();
+  tourAdvance(1);
+}
+
+// dir: 1 = 次へ / -1 = 前へ。端は clamp (最終ページの「次」は完了)。
+// 連打/連続フリックは tourAnimating で無視 (review MEDIUM: アニメの多重発火防止)
+var tourAnimating = false;
+function tourAdvance(dir) {
+  if (tourAnimating) return;
+  if (dir > 0) {
+    if (tourIndex >= TOUR_STEPS.length - 1) { finishTour(); return; }
+    tourIndex++;
+  } else {
+    if (tourIndex <= 0) return;
+    tourIndex--;
+  }
+  animateTourStep(dir);
+}
+
+// ページがめくれるように: 現内容が方向へ流れ、次内容が反対側から入る
+function animateTourStep(dir) {
+  var content = document.getElementById('tour-content');
+  if (!content || TAB_REDUCED_MOTION) { renderTourStep(); return; }
+  tourAnimating = true;
+  content.style.transition = 'transform 0.16s ease-in, opacity 0.16s ease-in';
+  content.style.transform = 'translateX(' + (dir * -26) + 'px)';
+  content.style.opacity = '0';
+  setTimeout(function () {
+    try {
+      renderTourStep();
+      content.style.transition = 'none';
+      content.style.transform = 'translateX(' + (dir * 30) + 'px)';
+      requestAnimationFrame(function () {
+        content.style.transition = 'transform 0.26s cubic-bezier(0.22,1,0.36,1), opacity 0.26s ease-out';
+        content.style.transform = 'translateX(0)';
+        content.style.opacity = '1';
+        setTimeout(function () {
+          try { content.style.transition = ''; }
+          finally { tourAnimating = false; }
+        }, 300);
+      });
+    } catch (e) {
+      tourAnimating = false;
+    }
+  }, 150);
+}
+
+// ツアーはフリックでも前後に動かせる (つぎへボタン併存)
+function initTourSwipe() {
+  var overlay = document.getElementById('onboarding-tour');
+  if (!overlay) return;
+  var sx = 0, sy = 0, tracking = false;
+  overlay.addEventListener('touchstart', function (e) {
+    tracking = false;
+    if (e.touches.length !== 1) return;
+    tracking = true;
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+  }, { passive: true });
+  overlay.addEventListener('touchend', function (e) {
+    if (!tracking) return;
+    tracking = false;
+    var t = e.changedTouches[0];
+    if (!t) return;
+    var dx = t.clientX - sx;
+    var dy = t.clientY - sy;
+    if (Math.abs(dx) < 48) return;
+    if (Math.abs(dx) < Math.abs(dy) * 1.4) return;
+    tourAdvance(dx < 0 ? 1 : -1);
+  }, { passive: true });
 }
 
 function skipTour() { finishTour(); }
@@ -964,6 +1029,9 @@ async function initLiff() {
     checkReferralParam();
     // ハッシュベースのディープリンク（リッチメニューから特定タブへ遷移）
     handleDeepLink();
+    // タブ/ツアーのフリック操作 (2026-07-04 先進性方針)
+    initTabSwipe();
+    initTourSwipe();
     document.getElementById('loading').style.display = 'none';
     // 第2波-⑥: 初回オンボーディング (loading を消してから = ツアーが loading の上に出ないように)
     initOnboarding();
@@ -1172,11 +1240,14 @@ function handleDeepLink() {
 
 // ─── Tab Switching ───
 function switchTab(name) {
+  // 未知タブは現状維持で無視 (review HIGH: throw すると tabAnimating が固まり全タブ操作が死ぬ)
+  var section = document.getElementById('section-' + name);
+  if (!section) { console.error('switchTab: unknown tab', name); return; }
   document.querySelectorAll('.section').forEach(function(s) { s.classList.remove('active'); });
   document.querySelectorAll('nav button').forEach(function(b) { b.className = b.className.replace('tab-active', 'tab-inactive'); });
-  var section = document.getElementById('section-' + name);
   section.classList.add('active');
-  document.getElementById('tab-' + name).className = document.getElementById('tab-' + name).className.replace('tab-inactive', 'tab-active');
+  var tabBtn = document.getElementById('tab-' + name);
+  if (tabBtn) tabBtn.className = tabBtn.className.replace('tab-inactive', 'tab-active');
   // Scroll to top smoothly
   window.scrollTo({ top: 0, behavior: 'smooth' });
 
@@ -1185,6 +1256,91 @@ function switchTab(name) {
   if (name === 'health') loadHealthData();
   if (name === 'shop') loadShopData();
   if (name === 'more') loadMoreData();
+}
+
+// ─── タブ フリック切替 (ページめくり、2026-07-04 先進性方針) ───
+// 左右フリック/タブタップで、現タブが押し出され次タブが滑り込む。
+// reduced-motion では即時切替。縦スクロール優位のジェスチャは無視する。
+var TAB_ORDER = ['home', 'quiz', 'intake', 'health', 'shop', 'more'];
+var TAB_REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+var tabAnimating = false;
+
+function currentTabIndex() {
+  var active = document.querySelector('.section.active');
+  if (!active) return 0;
+  var i = TAB_ORDER.indexOf(active.id.replace('section-', ''));
+  return i < 0 ? 0 : i;
+}
+
+function switchTabAnimated(name, dir) {
+  if (tabAnimating) return;
+  var from = document.querySelector('.section.active');
+  if (TAB_REDUCED_MOTION || !from) { switchTab(name); return; }
+  tabAnimating = true;
+  from.style.transition = 'transform 0.2s ease-in, opacity 0.2s ease-in';
+  from.style.transform = 'translateX(' + (dir * -30) + 'px)';
+  from.style.opacity = '0';
+  setTimeout(function () {
+    // review HIGH: 例外時も tabAnimating を必ず復帰させる (固まると全タブ操作不能)
+    try {
+      from.style.transition = ''; from.style.transform = ''; from.style.opacity = '';
+      switchTab(name);
+      var to = document.getElementById('section-' + name);
+      if (!to) { tabAnimating = false; return; }
+      // 既定の fadeUp keyframe と二重にならないよう、横スライドで入る間は無効化
+      to.style.animation = 'none';
+      to.style.transition = 'none';
+      to.style.transform = 'translateX(' + (dir * 36) + 'px)';
+      to.style.opacity = '0';
+      requestAnimationFrame(function () {
+        to.style.transition = 'transform 0.28s cubic-bezier(0.22,1,0.36,1), opacity 0.28s ease-out';
+        to.style.transform = 'translateX(0)';
+        to.style.opacity = '1';
+        setTimeout(function () {
+          try { to.style.transition = ''; to.style.transform = ''; to.style.opacity = ''; to.style.animation = ''; }
+          finally { tabAnimating = false; }
+        }, 320);
+      });
+    } catch (e) {
+      tabAnimating = false;
+    }
+  }, 180);
+}
+
+// タブボタン用: 現在位置との相対方向でスライド (同一タブは no-op)
+function switchTabTo(name) {
+  var cur = currentTabIndex();
+  var next = TAB_ORDER.indexOf(name);
+  if (next < 0 || next === cur) return;
+  switchTabAnimated(name, next > cur ? 1 : -1);
+}
+
+function initTabSwipe() {
+  var sx = 0, sy = 0, st = 0, tracking = false;
+  document.addEventListener('touchstart', function (e) {
+    tracking = false;
+    if (e.touches.length !== 1) return;
+    // ツアー overlay や将来の横操作 UI 上では発火させない
+    if (e.target && e.target.closest && e.target.closest('[data-no-tab-swipe]')) return;
+    tracking = true;
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now();
+  }, { passive: true });
+  document.addEventListener('touchend', function (e) {
+    if (!tracking) return;
+    tracking = false;
+    var t = e.changedTouches[0];
+    if (!t) return;
+    var dx = t.clientX - sx;
+    var dy = t.clientY - sy;
+    // フリック判定: 十分な横移動 / 横優位 / 素早い操作 のすべてを満たす
+    if (Math.abs(dx) < 56) return;
+    if (Math.abs(dx) < Math.abs(dy) * 1.6) return;
+    if (Date.now() - st > 600) return;
+    var i = currentTabIndex();
+    var next = dx < 0 ? i + 1 : i - 1;
+    if (next < 0 || next >= TAB_ORDER.length) return;
+    switchTabAnimated(TAB_ORDER[next], dx < 0 ? 1 : -1);
+  }, { passive: true });
 }
 
 // ─── Toast ───
