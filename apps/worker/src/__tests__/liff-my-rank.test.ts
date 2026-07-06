@@ -349,7 +349,7 @@ describe('GET /liff/my-rank (会員証ページ HTML)', () => {
     const r = await fetchPage();
     expect(r.body).toContain('id="link-card"');
     expect(r.body).toContain('function renderLink');
-    expect(r.body).toContain('Shopifyアカウントと連携');
+    expect(r.body).toContain('これまでのお買い物をランクに反映'); // 2026-07-07 顧客利益ベースの文言へ (採点R3 myrank_link)
     expect(r.body).toContain('/api/liff/link/request-code');
     expect(r.body).toContain('/api/liff/link/verify-code');
     // gated: accountLinkEnabled && !linked のときのみ表示する条件分岐
@@ -358,7 +358,7 @@ describe('GET /liff/my-rank (会員証ページ HTML)', () => {
 
   it('アカウント連携 UI の a11y 対応 (aria-label / aria-live / enterkeyhint) を含む', async () => {
     const r = await fetchPage();
-    expect(r.body).toContain('aria-label="メールアドレス"');
+    expect(r.body).toContain('aria-label="ご注文時のメールアドレス"');
     expect(r.body).toContain('aria-label="6桁の確認コード"');
     expect(r.body).toContain('role="status" aria-live="polite"'); // #link-msg を SR に通知
     expect(r.body).toContain('enterkeyhint="send"');

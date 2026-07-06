@@ -49,14 +49,14 @@ function portalPage(liffId: string, apiBase: string): string {
     .tab-inactive{color:#94a3b8;border-bottom:2.5px solid transparent}
     nav button{transition:color .2s,border-color .2s}
     .btn-primary{background:linear-gradient(135deg,#059669 0%,#06C755 100%);color:#fff;border:none;transition:transform .15s,box-shadow .15s}
-    .btn-primary:active{transform:scale(0.97);box-shadow:0 2px 8px rgba(5,150,105,.3)}
+    .btn-primary:active{transform:scale(0.95);box-shadow:0 4px 12px rgba(5,150,105,.35)}
     .card{background:rgba(255,255,255,.85);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-radius:16px;border:1px solid rgba(0,0,0,.04);box-shadow:0 1px 4px rgba(0,0,0,.04),0 4px 16px rgba(0,0,0,.02)}
-    .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px}
+    .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:8px}
     @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
     .progress-bar{transition:width .6s cubic-bezier(.4,0,.2,1)}
     .streak-fire{animation:pulse 1s ease-in-out infinite alternate}
     @keyframes pulse{0%{transform:scale(1)}100%{transform:scale(1.12)}}
-    .section{display:none;animation:fadeUp .25s ease-out}
+    .section{display:none;animation:fadeUp .38s cubic-bezier(.22,1,.36,1)}
     .section.active{display:block}
     @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
     input[type="time"],input[type="date"],input[type="number"],input[type="text"],textarea,select{border-radius:12px;border:1.5px solid #e2e8f0;padding:10px 12px;font-size:14px;transition:border-color .2s,box-shadow .2s;background:#fff}
@@ -80,6 +80,15 @@ function portalPage(liffId: string, apiBase: string): string {
     .sparkle-dots{position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;overflow:hidden}
     .sparkle-dot{position:absolute;width:4px;height:4px;border-radius:50%;background:radial-gradient(circle,#fbbf24,transparent);animation:sparkle 2s ease-in-out infinite}
     @keyframes sparkle{0%,100%{opacity:0;transform:scale(0)}50%{opacity:.7;transform:scale(1)}}
+    /* 2026-07-07 uiux_feel: 先進性方針 — skeleton は波状に光る (stagger)、タップは明確に柔らかく */
+    /* nth-child は display:none の隠しカード (welcome/friend-coupon 等) も数えて破綻するため、カード id で指定 */
+    #tip-card .skeleton{animation-delay:.15s}
+    #coupons-card .skeleton{animation-delay:.3s}
+    #referral-card .skeleton{animation-delay:.45s}
+    #orders-card .skeleton{animation-delay:.15s}
+    #fulfillments-card .skeleton{animation-delay:.3s}
+    .meal-btn:active{transform:scale(0.95)}
+    @media(prefers-reduced-motion:reduce){.skeleton,.streak-fire,.ambassador-badge,.sparkle-dot,.rank-ambassador::before,.section,#quiz-result{animation:none !important}.btn-primary:active,.meal-btn:active,.mood-btn:active,.skin-btn:active,.bowel-btn:active{transform:none !important}}
   </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -538,6 +547,7 @@ function portalPage(liffId: string, apiBase: string): string {
           <div class="flex-1 mx-3 bg-gray-100 rounded-full h-1.5 overflow-hidden">
             <div id="quiz-progress-bar" class="bg-green-500 h-1.5 transition-all duration-300" style="width:12.5%"></div>
           </div>
+          <button onclick="cancelQuiz()" aria-label="診断を中断する" class="text-gray-300 text-base leading-none px-1.5 py-1 -mr-1">✕</button>
         </div>
         <p class="text-sm font-bold text-gray-800 mb-4" id="quiz-question"></p>
         <div id="quiz-options" class="space-y-2"></div>
@@ -2928,11 +2938,42 @@ var QUIZ_PRODUCTS = {
 var quizCurrentStep = 0;
 var quizAnswers = {};
 var quizExcluded = [];
+var quizAdvancing = false;
+var quizAdvanceTimer = null;
+
+// 中断・誤リロードしても途中から再開できるように sessionStorage へ保存。
+// (注: タブ切替では DOM state が保持されるので不要 — これはリロード/中断対策)
+var QUIZ_STATE_KEY = 'quiz_state_v1';
+function saveQuizState() {
+  try { sessionStorage.setItem(QUIZ_STATE_KEY, JSON.stringify({ step: quizCurrentStep, answers: quizAnswers, excluded: quizExcluded })); } catch (e) { /* private mode 等 */ }
+}
+function loadQuizState() {
+  try {
+    var raw = sessionStorage.getItem(QUIZ_STATE_KEY);
+    if (!raw) return null;
+    var st = JSON.parse(raw);
+    if (!st || typeof st.step !== 'number' || st.step < 0 || st.step >= QUIZ_QUESTIONS.length) return null;
+    return st;
+  } catch (e) { return null; }
+}
+function clearQuizState() {
+  try { sessionStorage.removeItem(QUIZ_STATE_KEY); } catch (e) { /* ignore */ }
+}
 
 function startQuiz() {
-  quizCurrentStep = 0;
-  quizAnswers = {};
-  quizExcluded = [];
+  var saved = loadQuizState();
+  if (saved) {
+    // 途中再開 (中断/リロードからの復帰)
+    quizCurrentStep = saved.step;
+    quizAnswers = saved.answers || {};
+    quizExcluded = saved.excluded || [];
+  } else {
+    quizCurrentStep = 0;
+    quizAnswers = {};
+    quizExcluded = [];
+  }
+  if (quizAdvanceTimer) { clearTimeout(quizAdvanceTimer); quizAdvanceTimer = null; }
+  quizAdvancing = false;
   document.getElementById('quiz-intro').style.display = 'none';
   document.getElementById('quiz-result').style.display = 'none';
   document.getElementById('quiz-steps').style.display = 'block';
@@ -2940,7 +2981,17 @@ function startQuiz() {
 }
 
 function retryQuiz() {
+  clearQuizState();
   startQuiz();
+}
+
+// ✕ で中断 → intro へ戻る。進捗は保持されるので「診断スタート」で途中から再開できる。
+// pending の advance timer は必ず破棄 (150ms 窓で ✕→再開すると stale timer が state を進める race 防止)。
+function cancelQuiz() {
+  if (quizAdvanceTimer) { clearTimeout(quizAdvanceTimer); quizAdvanceTimer = null; }
+  quizAdvancing = false;
+  document.getElementById('quiz-steps').style.display = 'none';
+  document.getElementById('quiz-intro').style.display = 'block';
 }
 
 function renderQuizStep() {
@@ -2952,12 +3003,13 @@ function renderQuizStep() {
   var optHtml = '';
   for (var i = 0; i < q.options.length; i++) {
     var opt = q.options[i];
-    optHtml += '<button onclick="selectQuizOption(' + quizCurrentStep + ',' + i + ')" class="w-full text-left px-4 py-3 rounded-xl border border-gray-200 text-sm text-gray-700 hover:border-green-400 hover:bg-green-50 transition-colors active:bg-green-100">' + opt.label + '</button>';
+    optHtml += '<button onclick="selectQuizOption(' + quizCurrentStep + ',' + i + ')" class="w-full text-left px-4 py-3 rounded-xl border border-gray-200 text-sm text-gray-700 hover:border-green-400 hover:bg-green-50 transition-all duration-100 active:bg-green-100 active:scale-[0.98]">' + opt.label + '</button>';
   }
   document.getElementById('quiz-options').innerHTML = optHtml;
 }
 
 function selectQuizOption(stepIdx, optIdx) {
+  if (quizAdvancing) return; // 連打で 2 問飛ぶ二重 advance を防止
   var q = QUIZ_QUESTIONS[stepIdx];
   var opt = q.options[optIdx];
   quizAnswers[q.id] = opt.label;
@@ -2969,25 +3021,39 @@ function selectQuizOption(stepIdx, optIdx) {
     }
   }
 
-  // Highlight selected
+  // 回答は即時保存 (150ms の advance 待ちに依存させない — 待ち中の中断でも回答が残る)
+  saveQuizState();
+
+  // Highlight selected (classList で確実に — 文字列置換は class 順序/空白に脆い)
   var btns = document.getElementById('quiz-options').querySelectorAll('button');
   for (var b = 0; b < btns.length; b++) {
-    btns[b].className = btns[b].className.replace('border-green-500 bg-green-50 font-bold', 'border-gray-200');
+    btns[b].classList.remove('border-green-500', 'bg-green-50', 'font-bold');
+    btns[b].classList.add('border-gray-200');
   }
-  btns[optIdx].className = btns[optIdx].className.replace('border-gray-200', 'border-green-500 bg-green-50 font-bold');
+  btns[optIdx].classList.remove('border-gray-200');
+  btns[optIdx].classList.add('border-green-500', 'bg-green-50', 'font-bold');
 
-  // Auto advance after short delay
-  setTimeout(function() {
+  // progress bar は選択直後に即時更新 — 待ち時間が「進んでいる」アニメーションになる
+  var nextPct = Math.min((stepIdx + 2) / QUIZ_QUESTIONS.length * 100, 100);
+  document.getElementById('quiz-progress-bar').style.width = nextPct + '%';
+
+  // Auto advance (150ms: ハイライトを見せつつ軽快に)
+  quizAdvancing = true;
+  quizAdvanceTimer = setTimeout(function() {
+    quizAdvanceTimer = null;
+    quizAdvancing = false;
     if (quizCurrentStep < QUIZ_QUESTIONS.length - 1) {
       quizCurrentStep++;
+      saveQuizState();
       renderQuizStep();
     } else {
       finishQuiz();
     }
-  }, 300);
+  }, 150);
 }
 
 function finishQuiz() {
+  clearQuizState(); // 完了 → 次回は最初から
   // Score calculation (mirrors quiz-engine.ts)
   var scores = { blue: 0, pink: 0, premium: 0 };
   for (var i = 0; i < QUIZ_QUESTIONS.length; i++) {
@@ -3018,9 +3084,10 @@ function finishQuiz() {
 
   var product = QUIZ_PRODUCTS[winner];
 
-  // Display result
+  // Display result (entrance animation — .section class は switchTab 管理下に入るため inline で)
   document.getElementById('quiz-steps').style.display = 'none';
   document.getElementById('quiz-result').style.display = 'block';
+  document.getElementById('quiz-result').style.animation = 'fadeUp 0.38s cubic-bezier(0.22,1,0.36,1)';
   document.getElementById('result-emoji').textContent = product.emoji;
   document.getElementById('result-name').textContent = product.name;
   document.getElementById('result-price').textContent = product.price + '（' + product.components + '成分）';
@@ -3034,15 +3101,19 @@ function finishQuiz() {
   var barsHtml = '';
   for (var key in scores) {
     var pct = Math.round(scores[key] / maxScore * 100);
-    barsHtml += '<div class="flex items-center gap-2"><span class="text-xs w-16 text-gray-500">' + names[key] + '</span>' +
+    var isWin = key === winner;
+    barsHtml += '<div class="flex items-center gap-2"><span class="text-xs w-20 ' + (isWin ? 'font-bold text-green-600' : 'text-gray-500') + '">' + (isWin ? '★ ' : '') + names[key] + '</span>' +
       '<div class="flex-1 bg-gray-100 rounded-full h-2 overflow-hidden"><div class="h-2 rounded-full transition-all duration-500" style="width:' + pct + '%;background:' + colors[key] + '"></div></div>' +
       '<span class="text-xs text-gray-500 w-6 text-right">' + scores[key] + '</span></div>';
   }
   document.getElementById('result-scores').innerHTML = barsHtml;
 
-  // Submit to server (non-blocking)
+  // Submit to server (non-blocking、結果表示とかぶらないよう少し遅らせて通知)
   if (!isDemo && idToken) {
-    api('/api/liff/quiz/submit', { answers: quizAnswers }).catch(function() {});
+    api('/api/liff/quiz/submit', { answers: quizAnswers }).then(function(res) {
+      if (apiFailed(res)) { showToast('結果を保存できませんでした'); return; }
+      setTimeout(function() { showToast('診断結果を保存しました'); }, 600);
+    }).catch(function() { showToast('結果を保存できませんでした'); });
   }
 }
 
