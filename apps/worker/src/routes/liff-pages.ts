@@ -1014,7 +1014,7 @@ async function initLiff() {
       // ID token が取得できない (失効/openid scope 欠如)。LINE の ID token は自動 refresh されないため
       // isLoggedIn()=true でも null になり得る。このまま進むと全 /api/liff/* が 401 になりホームの各カードが
       // skeleton 固着するので、demo に倒さず明示的に再読み込みを促す (2026-06-29 監査 rank5 HIGH)。
-      showFatalError('セッションの有効期限が切れました。お手数ですが、トーク画面から開き直してください🌿');
+      showFatalError('ログインの有効期限が切れました。お手数ですが、トーク画面から開き直してください🌿');
       return;
     }
     const profile = await liff.getProfile();
@@ -1032,6 +1032,7 @@ async function initLiff() {
     // タブ/ツアーのフリック操作 (2026-07-04 先進性方針)
     initTabSwipe();
     initTourSwipe();
+    if (window.__fatalShown) return; // 401 検知で全画面エラー表示中 — loading 消しでエラーを隠さない
     document.getElementById('loading').style.display = 'none';
     // 第2波-⑥: 初回オンボーディング (loading を消してから = ツアーが loading の上に出ないように)
     initOnboarding();
@@ -1187,6 +1188,8 @@ async function api(path, body = {}) {
   var json = await res.json();
   // HTTP status を透過 (エラー文字列の英文 sniffing をせず status code で判定できるように)
   if (json && typeof json === 'object' && json.status === undefined) { json.status = res.status; }
+  // 401 = idToken 失効。どの呼び出し経路 (mutation 含む) でも全画面の再読み込み誘導へ
+  if (res.status === 401 && !isDemo) { handleAuthExpired(); }
   return json;
 }
 
@@ -1196,6 +1199,7 @@ async function apiGet(path) {
   const res = await fetch(API_BASE + path, { headers: headers });
   var json = await res.json();
   if (json && typeof json === 'object' && json.status === undefined) { json.status = res.status; }
+  if (res.status === 401 && !isDemo) { handleAuthExpired(); }
   return json;
 }
 
@@ -1203,6 +1207,7 @@ async function apiGet(path) {
 function showFatalError(msg){
   var el = document.getElementById('loading');
   if (!el) return;
+  window.__fatalShown = true;
   el.style.display = 'flex';
   el.innerHTML = '<div class="text-center px-8">' +
     '<p class="text-3xl mb-3">🌿</p>' +
@@ -1214,6 +1219,39 @@ function showFatalError(msg){
 // ?demo=1 を明示指定した時だけサンプル表示する。本物の API 失敗を偽データ (偽クーポン/偽注文/偽紹介実績) で隠さない。
 function isDemoRequested(){
   try { return new URLSearchParams(location.search).get('demo') === '1'; } catch (e) { return false; }
+}
+
+// ─── 共通 loader エラー描画 (2026-07-04 採点R3: silent catch → skeleton 固着の全域修正) ───
+// res = api()/apiGet() の返り値 (HTTP status 透過) / null = fetch 例外。
+// demo モードは従来どおり空状態に倒す (プレビューにエラーカードを出さない)。
+function apiFailed(res) {
+  if (isDemo) return false;
+  return !res || (typeof res.status === 'number' && res.status >= 400);
+}
+
+// 401 (idToken 失効) はカード毎に同文エラーを並べず、全画面の再読み込み誘導へ一本化する。
+function handleAuthExpired() {
+  if (window.__fatalShown) return;
+  showFatalError('ログインの有効期限が切れました。お手数ですが、開き直してください🌿');
+}
+
+// 失敗したカードに「読み込みに失敗しました + 再試行」を描画する。retryFnName は loader 自身の関数名。
+function cardError(el, res, retryFnName) {
+  if (res && res.status === 401) { handleAuthExpired(); return; }
+  if (!el) return;
+  // 非表示カード (friend/welcome クーポン等) のみ表示に戻す。
+  // grid/flex コンテナ (badge-grid 等) に display:block を焼き付けない (再試行成功後のレイアウト崩れ防止)。
+  if (el.style.display === 'none') { el.style.display = 'block'; }
+  el.innerHTML = '<div class="text-center py-3 col-span-full">' +
+    '<p class="text-xs text-gray-500 mb-2">読み込みに失敗しました</p>' +
+    (retryFnName ? '<button onclick="' + retryFnName + '()" class="text-xs font-bold text-green-700 border border-green-300 bg-green-50 rounded-lg px-3 py-1.5">再試行</button>' : '') +
+    '</div>';
+}
+
+// フォーム型 (カードでない) loader の失敗通知: 401 は全画面誘導、それ以外は toast。
+function loadErrorToast(res, msg) {
+  if (res && res.status === 401) { handleAuthExpired(); return; }
+  showToast(msg);
 }
 
 // ─── Deep Link (hash-based tab navigation from rich menu) ───
@@ -1353,10 +1391,12 @@ function showToast(msg) {
 
 // ─── HOME: Rank ───
 async function loadRank() {
+  const el = document.getElementById('rank-card');
   try {
-    const { data } = await api('/api/liff/rank');
+    const res = await api('/api/liff/rank');
+    if (apiFailed(res)) { cardError(el, res, 'loadRank'); return; }
+    const data = res.data;
     if (!data) return;
-    const el = document.getElementById('rank-card');
     if (data.currentRank) {
       const pct = data.progressPercent || 0;
       // Check if user is ambassador (will be set after loadAmbassador runs)
@@ -1383,14 +1423,16 @@ async function loadRank() {
     } else {
       el.innerHTML = '<p class="text-sm text-gray-500">まだ購入履歴がありません</p>';
     }
-  } catch { /* ignore */ }
+  } catch { cardError(el, null, 'loadRank'); }
 }
 
 // ─── HOME: Today's Tip ───
 async function loadTip() {
+  const el = document.getElementById('tip-card');
   try {
-    const { data } = await apiGet('/api/liff/tips/today');
-    const el = document.getElementById('tip-card');
+    const res = await apiGet('/api/liff/tips/today');
+    if (apiFailed(res)) { cardError(el, res, 'loadTip'); return; }
+    const data = res.data;
     if (data) {
       el.innerHTML = '<p class="text-xs text-green-600 font-bold mb-1">Today\\'s Tip</p>' +
         '<p class="text-sm font-bold text-gray-800">' + esc(data.title) + '</p>' +
@@ -1398,16 +1440,19 @@ async function loadTip() {
     } else {
       el.innerHTML = '<p class="text-xs text-gray-400">今日のTipはまだありません</p>';
     }
-  } catch { /* ignore */ }
+  } catch { cardError(el, null, 'loadTip'); }
 }
 
 // ─── HOME: Coupons ───
 // LINE友だち限定クーポン (ランク不問の一律 % OFF)。管理トグル ON 時のみ表示。
 async function loadFriendCoupon() {
+  var el = document.getElementById('friend-coupon-card');
+  if (!el) return;
   try {
-    const { data } = await apiGet('/api/liff/friend-coupon');
-    var el = document.getElementById('friend-coupon-card');
-    if (!el) return;
+    const res = await apiGet('/api/liff/friend-coupon');
+    // 「機能OFF/クーポンなし (200)」は非表示、「取得失敗」はエラーカード — 失敗を非表示に化けさせない
+    if (apiFailed(res)) { cardError(el, res, 'loadFriendCoupon'); return; }
+    const data = res.data;
     if (!data || !data.enabled || !data.code) { el.style.display = 'none'; return; }
     el.style.display = 'block';
     el.style.background = 'linear-gradient(135deg,#ecfdf5,#ffffff)';
@@ -1423,8 +1468,7 @@ async function loadFriendCoupon() {
       '<button onclick="copyFriendCoupon()" class="text-xs font-bold text-green-700 border border-green-300 bg-green-50 rounded-lg px-3 py-2">コピー</button></div>' +
       (data.applyUrl ? '<a href="' + esc(data.applyUrl) + '" target="_blank" class="block text-center btn-primary py-3 rounded-xl text-sm font-bold">このクーポンで買う →</a>' : '');
   } catch {
-    var e = document.getElementById('friend-coupon-card');
-    if (e) e.style.display = 'none';
+    cardError(el, null, 'loadFriendCoupon');
   }
 }
 function copyFriendCoupon() {
@@ -1439,11 +1483,12 @@ function copyFriendCoupon() {
 
 // 友だち追加 welcome クーポン (¥500 OFF・あなた専用)。発行済みのときだけ期限カウントダウン付きで表示。
 async function loadWelcomeCoupon() {
+  var el = document.getElementById('welcome-coupon-card');
+  if (!el) return;
   try {
-    const { data } = await apiGet('/api/liff/welcome-coupon');
-    var el = document.getElementById('welcome-coupon-card');
-    if (!el) return;
-    var cp = data && data.coupon;
+    const res = await apiGet('/api/liff/welcome-coupon');
+    if (apiFailed(res)) { cardError(el, res, 'loadWelcomeCoupon'); return; }
+    var cp = res.data && res.data.coupon;
     if (!cp || !cp.code) { el.style.display = 'none'; return; }
     el.style.display = 'block';
     el.style.background = 'linear-gradient(135deg,#fff7ed,#ffffff)';
@@ -1460,8 +1505,7 @@ async function loadWelcomeCoupon() {
       '<button onclick="copyWelcomeCoupon()" class="text-xs font-bold text-orange-600 border border-orange-300 bg-orange-50 rounded-lg px-3 py-2">コピー</button></div>' +
       (cp.applyUrl ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" class="block text-center btn-primary py-3 rounded-xl text-sm font-bold">このクーポンで買う →</a>' : '');
   } catch {
-    var e = document.getElementById('welcome-coupon-card');
-    if (e) e.style.display = 'none';
+    cardError(el, null, 'loadWelcomeCoupon');
   }
 }
 function copyWelcomeCoupon() {
@@ -1475,9 +1519,11 @@ function copyWelcomeCoupon() {
 }
 
 async function loadCoupons() {
+  const el = document.getElementById('coupons-card');
   try {
-    const { data } = await api('/api/liff/coupons');
-    const el = document.getElementById('coupons-card');
+    const res = await api('/api/liff/coupons');
+    if (apiFailed(res)) { cardError(el, res, 'loadCoupons'); return; }
+    const data = res.data;
     if (data && data.coupons && data.coupons.length > 0) {
       el.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">クーポン</p>' +
         data.coupons.map(function(cp) {
@@ -1489,7 +1535,7 @@ async function loadCoupons() {
     } else {
       el.innerHTML = '<p class="text-xs text-gray-400">利用可能なクーポンはありません</p>';
     }
-  } catch { /* ignore */ }
+  } catch { cardError(el, null, 'loadCoupons'); }
 }
 
 // ─── INTAKE Section ───
@@ -1509,13 +1555,14 @@ function selectProduct(name) {
 }
 
 async function loadIntakeData() {
+  const el = document.getElementById('streak-card');
   try {
     const [streakRes, logsRes] = await Promise.all([
       api('/api/liff/intake/streak'),
       api('/api/liff/intake', { days: 90 }).catch(function() { return { data: null }; }),
     ]);
+    if (apiFailed(streakRes)) { cardError(el, streakRes, 'loadIntakeData'); return; }
     const data = streakRes.data;
-    const el = document.getElementById('streak-card');
     if (data) {
       const fire = data.currentStreak >= 3 ? ' streak-fire' : '';
       el.innerHTML = '<div class="text-4xl mb-2' + fire + '">' + (data.currentStreak >= 7 ? '&#x1F525;' : data.currentStreak >= 3 ? '&#x2B50;' : '&#x1F331;') + '</div>' +
@@ -1530,7 +1577,7 @@ async function loadIntakeData() {
       logsRes.data.logs.forEach(function(l) { intakeDatesSet.add(l.intake_date); });
     }
     renderCalendar();
-  } catch { /* ignore */ }
+  } catch { cardError(el, null, 'loadIntakeData'); }
 }
 
 function renderCalendar() {
@@ -1655,10 +1702,8 @@ async function loadBadges() {
     return;
   }
   try {
-    const headers = { 'Content-Type': 'application/json' };
-    if (idToken) headers['Authorization'] = 'Bearer ' + idToken;
-    const res = await fetch(API_BASE + '/api/liff/badges', { method: 'GET', headers });
-    const json = await res.json();
+    const json = await apiGet('/api/liff/badges');
+    if (apiFailed(json)) { cardError(document.getElementById('badge-grid'), json, 'loadBadges'); return; }
     if (!json || !json.data) return;
 
     const data = json.data;
@@ -1686,7 +1731,7 @@ async function loadBadges() {
         '</div>';
     });
     document.getElementById('badge-grid').innerHTML = html;
-  } catch {}
+  } catch { cardError(document.getElementById('badge-grid'), null, 'loadBadges'); }
 }
 
 async function loadTodayIntake() {
@@ -1696,11 +1741,13 @@ async function loadTodayIntake() {
     return;
   }
   try {
-    // GET request: idToken は Authorization header で送る
-    const headers = { 'Content-Type': 'application/json' };
-    if (idToken) headers['Authorization'] = 'Bearer ' + idToken;
-    const res = await fetch(API_BASE + '/api/liff/intake/today', { method: 'GET', headers });
-    const json = await res.json();
+    const json = await apiGet('/api/liff/intake/today');
+    // 失敗は「0日」に化けさせない (401 は apiGet 中央検知が全画面誘導)
+    if (apiFailed(json)) {
+      var errNum = document.getElementById('intake-streak-num');
+      if (errNum) errNum.textContent = '-';
+      return;
+    }
     if (json && json.data && json.data.recorded) {
       ['breakfast', 'lunch', 'dinner'].forEach(function (m) {
         if (json.data.recorded[m]) markMealDone(m);
@@ -1712,7 +1759,10 @@ async function loadTodayIntake() {
       var num = document.getElementById('intake-streak-num');
       if (num) num.textContent = streakRes.data.streak.currentStreak || 0;
     }
-  } catch {}
+  } catch {
+    var errNum2 = document.getElementById('intake-streak-num');
+    if (errNum2) errNum2.textContent = '-';
+  }
 }
 
 // ─── Reminders (複数対応) ───
@@ -1843,7 +1893,9 @@ async function loadHealthData() {
   document.getElementById('health-date-label').textContent = new Date().toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' });
   // Load today's existing record if any
   try {
-    var { data } = await api('/api/liff/health/logs', { days: 1 });
+    var res = await api('/api/liff/health/logs', { days: 1 });
+    if (apiFailed(res)) { loadErrorToast(res, '体調データを読み込めませんでした'); return; }
+    var data = res.data;
     if (data && data.logs && data.logs.length > 0) {
       var today = data.logs[0];
       if (today.weight) document.getElementById('weight-input').value = today.weight;
@@ -1854,7 +1906,7 @@ async function loadHealthData() {
       if (today.sleep_hours) { document.getElementById('sleep-slider').value = today.sleep_hours; updateSleepDisplay(); }
       if (today.note) document.getElementById('health-note').value = today.note;
     }
-  } catch { /* ignore */ }
+  } catch { showToast('体調データを読み込めませんでした'); }
 }
 
 function adjustWeight(delta) {
@@ -1926,7 +1978,10 @@ async function saveHealthLog() {
 }
 
 // ─── Graph functions ───
+var currentGraphDays = 30;
+function retryGraph() { loadGraph(currentGraphDays); }
 async function loadGraph(days) {
+  currentGraphDays = days;
   // Update period button styles
   document.querySelectorAll('.graph-period-btn').forEach(function(b) {
     var d = parseInt(b.getAttribute('data-days'));
@@ -1934,7 +1989,9 @@ async function loadGraph(days) {
   });
 
   try {
-    var { data } = await api('/api/liff/health/trends', { days: days });
+    var res = await api('/api/liff/health/trends', { days: days });
+    if (apiFailed(res)) { cardError(document.getElementById('health-stats'), res, 'retryGraph'); return; }
+    var data = res.data;
     if (!data || !data.trends) return;
     var trends = data.trends;
     var labels = trends.map(function(t) { return t.log_date.slice(5); });
@@ -1969,7 +2026,7 @@ async function loadGraph(days) {
 
     // Stats summary
     renderHealthStats(trends, days);
-  } catch { /* ignore */ }
+  } catch { cardError(document.getElementById('health-stats'), null, 'retryGraph'); }
 }
 
 function renderLineChart(canvasId, chartKey, labels, data, borderColor, bgColor, unit) {
@@ -2026,14 +2083,15 @@ function renderHealthStats(trends, days) {
 
 // ─── REFERRAL + Sharing ───
 async function loadReferralCard() {
+  var el = document.getElementById('referral-card');
   try {
     const [genRes, statsRes] = await Promise.all([
       api('/api/liff/referral/generate'),
       api('/api/liff/referral/stats'),
     ]);
+    if (apiFailed(genRes)) { cardError(el, genRes, 'loadReferralCard'); return; }
     var refCode = genRes.data ? genRes.data.refCode : null;
-    var stats = statsRes.data || {};
-    var el = document.getElementById('referral-card');
+    var stats = (statsRes && statsRes.data) || {};
     if (!refCode) {
       el.innerHTML = '<p class="text-xs text-gray-400">紹介リンクを取得できませんでした</p>';
       return;
@@ -2048,7 +2106,7 @@ async function loadReferralCard() {
       '<button onclick="shareRefLine()" class="flex-1 py-2 rounded-lg text-xs font-bold text-white" style="background:#06C755">LINEで送る</button>' +
       '</div>' +
       (stats.totalReferred > 0 ? '<p class="text-xs text-gray-500 mt-3">紹介実績: <span class="font-bold text-green-600">' + stats.totalReferred + '人</span></p>' : '');
-  } catch { /* ignore */ }
+  } catch { cardError(el, null, 'loadReferralCard'); }
 }
 
 function copyRefLink() {
@@ -2083,7 +2141,10 @@ function shareRefLine() {
 // ─── Ranking ───
 async function loadRanking() {
   try {
-    const { data } = await apiGet('/api/liff/referral/ranking');
+    const res = await apiGet('/api/liff/referral/ranking');
+    // 任意カード: 非 auth エラーは非表示のまま (401 は apiGet 中央検知が全画面誘導)
+    if (apiFailed(res)) return;
+    const data = res.data;
     var el = document.getElementById('ranking-card');
     if (!data || data.length === 0) { el.style.display = 'none'; return; }
     el.style.display = 'block';
@@ -2105,7 +2166,10 @@ var fbRating = 0;
 
 async function loadAmbassador() {
   try {
-    const { data } = await api('/api/liff/ambassador/status');
+    const res = await api('/api/liff/ambassador/status');
+    // 任意セクション: 非 auth エラーは非表示のまま (401 は api 中央検知が全画面誘導)
+    if (apiFailed(res)) return;
+    const data = res.data;
     if (!data || data.status !== 'active') {
       document.getElementById('ambassador-section').style.display = 'none';
       return;
@@ -2166,9 +2230,11 @@ async function submitFeedback() {
 }
 
 async function loadFeedbackHistory() {
+  var el = document.getElementById('fb-history');
   try {
-    const { data } = await api('/api/liff/ambassador/feedbacks');
-    var el = document.getElementById('fb-history');
+    const res = await api('/api/liff/ambassador/feedbacks');
+    if (apiFailed(res)) { cardError(el, res, 'loadFeedbackHistory'); return; }
+    const data = res.data;
     if (!data || data.length === 0) {
       el.innerHTML = '<p class="text-xs text-gray-400 text-center py-2">まだフィードバックはありません</p>';
       return;
@@ -2183,7 +2249,7 @@ async function loadFeedbackHistory() {
         (stars ? '<span class="text-xs">' + stars + '</span>' : '') +
         '<p class="text-xs text-gray-700 mt-1">' + esc(fb.content.length > 100 ? fb.content.slice(0, 100) + '...' : fb.content) + '</p></div>';
     }).join('');
-  } catch { /* ignore */ }
+  } catch { cardError(el, null, 'loadFeedbackHistory'); }
 }
 
 // ─── Ambassador Surveys ───
@@ -2192,10 +2258,16 @@ var surveyAnswers = {};
 
 async function loadPendingSurveys() {
   if (!ambassadorData) return;
+  var card = document.getElementById('ambassador-surveys-card');
+  var el = document.getElementById('pending-surveys');
   try {
-    const { data } = await api('/api/liff/ambassador/surveys');
-    var card = document.getElementById('ambassador-surveys-card');
-    var el = document.getElementById('pending-surveys');
+    const res = await api('/api/liff/ambassador/surveys');
+    if (apiFailed(res)) {
+      if (card) card.style.display = 'block';
+      cardError(el, res, 'loadPendingSurveys');
+      return;
+    }
+    const data = res.data;
     if (!data || data.length === 0) {
       card.style.display = 'none';
       return;
@@ -2211,7 +2283,10 @@ async function loadPendingSurveys() {
         (s.description ? '<p class="text-xs text-gray-500 mt-1">' + esc(s.description) + '</p>' : '') +
         '<p class="text-xs text-green-600 mt-1 font-bold">' + s.questions.length + '問 &#x2192; 回答する</p></div>';
     }).join('');
-  } catch { /* ignore */ }
+  } catch {
+    if (card) card.style.display = 'block';
+    cardError(el, null, 'loadPendingSurveys');
+  }
 }
 
 function openSurvey(jsonStr) {
@@ -2307,7 +2382,9 @@ function setGender(g) {
 
 async function loadProfile() {
   try {
-    const { data } = await apiGet('/api/liff/profile');
+    const res = await apiGet('/api/liff/profile');
+    if (apiFailed(res)) { loadErrorToast(res, 'プロフィールを読み込めませんでした'); return; }
+    const data = res.data;
     if (!data) return;
     if (data.gender) {
       setGender(data.gender);
@@ -2315,7 +2392,7 @@ async function loadProfile() {
     if (data.birthday) {
       document.getElementById('birthday-input').value = data.birthday;
     }
-  } catch { /* ignore */ }
+  } catch { showToast('プロフィールを読み込めませんでした'); }
 }
 
 async function saveProfile() {
@@ -2353,7 +2430,7 @@ function shopErrorCard(el, auth) {
   if (!el) return;
   el.innerHTML = '<div class="text-center py-6">' +
     '<p class="text-2xl mb-2">🌿</p>' +
-    '<p class="text-xs text-gray-500 mb-3">' + (auth ? 'セッションの有効期限が切れました' : '読み込みに失敗しました') + '</p>' +
+    '<p class="text-xs text-gray-500 mb-3">' + (auth ? 'ログインの有効期限が切れました' : '読み込みに失敗しました') + '</p>' +
     (auth
       ? '<button onclick="location.reload()" class="btn-primary px-4 py-2 rounded-xl text-xs font-bold">再読み込み</button>'
       : '<button onclick="retryShopData()" class="btn-primary px-4 py-2 rounded-xl text-xs font-bold">再試行</button>') +
@@ -2445,17 +2522,23 @@ var moreLoaded = false;
 async function loadMoreData() {
   if (moreLoaded) return;
   moreLoaded = true;
-  await Promise.all([loadNotifPrefs(), loadSubscriptions(), loadFAQ()]);
+  var results = await Promise.all([loadNotifPrefs(), loadSubscriptions(), loadFAQ()]);
+  // 1 つでも失敗したらタブ再訪問で再読込できるように解放する (skeleton 固着防止)
+  if (results.indexOf(false) >= 0) { moreLoaded = false; }
 }
 
 async function loadNotifPrefs() {
+  var el = document.getElementById('notif-prefs-list');
   try {
     var res = await apiGet('/api/liff/notification-prefs');
-    if (res.data) {
-      notifPrefs = res.data;
-      renderNotifPrefs();
-    }
-  } catch { renderNotifPrefs(); }
+    if (apiFailed(res)) { cardError(el, res, 'loadNotifPrefs'); return false; }
+    if (res.data) { notifPrefs = res.data; }
+    renderNotifPrefs();
+    return true;
+  } catch {
+    cardError(el, null, 'loadNotifPrefs');
+    return false;
+  }
 }
 
 function renderNotifPrefs() {
@@ -2496,13 +2579,18 @@ async function toggleNotifPref(key, val) {
 }
 
 async function loadSubscriptions() {
+  var el = document.getElementById('subscriptions-list');
   try {
     var res = await apiGet('/api/liff/subscriptions');
-    if (res.data) {
-      subscriptionsList = res.data.subscriptions || [];
-      renderSubscriptions();
-    }
-  } catch { renderSubscriptions(); }
+    // エラーを「まだリマインダーが設定されていません」に化けさせない
+    if (apiFailed(res)) { cardError(el, res, 'loadSubscriptions'); return false; }
+    subscriptionsList = (res.data && res.data.subscriptions) || [];
+    renderSubscriptions();
+    return true;
+  } catch {
+    cardError(el, null, 'loadSubscriptions');
+    return false;
+  }
 }
 
 function renderSubscriptions() {
@@ -2599,6 +2687,8 @@ async function createSubscription() {
 async function loadFAQ() {
   try {
     var res = await apiGet('/api/liff/faq');
+    // エラーを default FAQ に化けさせない (apiFailed を fallback より先に判定)
+    if (apiFailed(res)) { cardError(document.getElementById('faq-list'), res, 'loadFAQ'); return false; }
     var items;
     if (res.data && res.data.faqs && res.data.faqs.length > 0) {
       items = res.data.faqs.map(function(f) {
@@ -2617,8 +2707,10 @@ async function loadFAQ() {
     window.__faqState = { items: items, cat: 'all', q: '' };
     renderFaqCats();
     renderFaqList();
+    return true;
   } catch {
-    document.getElementById('faq-list').innerHTML = '<p class="text-xs text-gray-400">FAQの読み込みに失敗しました</p>';
+    cardError(document.getElementById('faq-list'), null, 'loadFAQ');
+    return false;
   }
 }
 
@@ -2954,6 +3046,15 @@ function finishQuiz() {
 
 // ─── Init ───
 document.addEventListener('DOMContentLoaded', initLiff);
+
+// 「読み込み中...」永久固着の watchdog: liff.init や API が resolve も reject もしないまま
+// 固まるケース (SDK/回線不調) で、12 秒後に明示エラー + 再読み込みへ倒す。
+setTimeout(function () {
+  var el = document.getElementById('loading');
+  if (el && el.style.display !== 'none' && !window.__fatalShown) {
+    showFatalError('読み込みに時間がかかっています。通信環境をご確認のうえ、もう一度開いてください🌿');
+  }
+}, 12000);
 </script>
 </body>
 </html>`;

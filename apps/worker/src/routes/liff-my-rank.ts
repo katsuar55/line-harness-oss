@@ -619,7 +619,7 @@ function localizeError(code){
   if (!code) return null;
   var map = {
     'Friend not found': '友だち情報の同期中です。少し時間をおいて、もう一度お開きください🌿',
-    'Invalid or expired ID token': 'セッションの有効期限が切れました。お手数ですがLINEから開き直してください🌿',
+    'Invalid or expired ID token': 'ログインの有効期限が切れました。お手数ですがLINEから開き直してください🌿',
     'Authentication required': 'LINEアプリ内から開いてください🌿',
     'LIFF auth not configured': '只今メンテナンス中です。しばらくしてからお試しください🌿',
     'Unauthorized': 'お手数ですがLINEから開き直してください🌿'
