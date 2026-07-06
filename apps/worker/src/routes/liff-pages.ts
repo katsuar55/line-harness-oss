@@ -1753,10 +1753,12 @@ async function loadTodayIntake() {
         if (json.data.recorded[m]) markMealDone(m);
       });
     }
-    // streak 取得
+    // streak 取得 (HTTP エラーも「-」に倒す — 服用ボタン記録済みなのに streak だけ古い部分不整合を隠さない)
     const streakRes = await api('/api/liff/intake/streak', { days: 7 });
-    if (streakRes && streakRes.data && streakRes.data.streak) {
-      var num = document.getElementById('intake-streak-num');
+    var num = document.getElementById('intake-streak-num');
+    if (apiFailed(streakRes)) {
+      if (num) num.textContent = '-';
+    } else if (streakRes && streakRes.data && streakRes.data.streak) {
       if (num) num.textContent = streakRes.data.streak.currentStreak || 0;
     }
   } catch {

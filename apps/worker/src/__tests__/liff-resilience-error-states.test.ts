@@ -127,6 +127,11 @@ describe('全 loader へ cardError 適用 (silent catch → skeleton 固着の�
     expect(badges).not.toContain('fetch(API_BASE');
   });
 
+  it('loadTodayIntake は streak の HTTP エラー (throw しない経路) も「-」に倒す — 部分不整合を隠さない (review HIGH)', () => {
+    const today = loaderBlock('loadTodayIntake');
+    expect(today).toMatch(/apiFailed\(streakRes\)/);
+  });
+
   it('loadRanking / loadAmbassador (任意カード) も 401 だけは全画面誘導に流す', () => {
     const ranking = loaderBlock('loadRanking');
     const ambassador = loaderBlock('loadAmbassador');
