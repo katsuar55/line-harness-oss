@@ -27,11 +27,12 @@ describe('ai-message-builder — buildAiMessage prefix hint', () => {
     }
   });
 
-  it('returns text Message when prefix is alone (= falls back to raw)', () => {
+  it('marker のみ (本文なし) は raw を返さず fallback — marker を顧客に見せない (review 2026-07-07)', () => {
     const msg = buildAiMessage('[FMT:text]');
     expect(msg.type).toBe('text');
     if (msg.type === 'text') {
-      expect(msg.text).toBe('[FMT:text]');
+      expect(msg.text).not.toContain('[FMT');
+      expect(msg.text.length).toBeGreaterThan(0); // LINE は空 text を送れない
     }
   });
 });
@@ -75,6 +76,61 @@ describe('ai-message-builder — mangled/typo marker tolerance (2026-06-28 実�
     // (type は既存 structure heuristic で flex になりうるが、 本文が strip されないことを検証)
     const msg = buildAiMessage('【お知らせ】本日のおすすめはこちらです😊');
     expect(JSON.stringify(msg)).toContain('お知らせ');
+  });
+});
+
+describe('ai-message-builder — 日本語変形 marker tolerance (2026-07-04 実機で「[フォーマ…text]」露出)', () => {
+  it('[フォーマット:text] (日本語 prefix) → strip して本文のみ、顧客に marker が漏れない', () => {
+    const msg = buildAiMessage('[フォーマット:text]こんにちは😊 何かお手伝いできますか?');
+    expect(msg.type).toBe('text');
+    if (msg.type === 'text') {
+      expect(msg.text).toBe('こんにちは😊 何かお手伝いできますか?');
+      expect(msg.text).not.toContain('フォーマット');
+    }
+  });
+
+  it('[フォーマット：text] (全角コロン) も strip', () => {
+    const msg = buildAiMessage('[フォーマット：text]公式ストアはこちらです: https://naturism-diet.com');
+    expect(JSON.stringify(msg)).not.toContain('フォーマット');
+    expect(JSON.stringify(msg)).toContain('naturism-diet.com');
+  });
+
+  it('［フォーマット：text］ (全角括弧) も strip', () => {
+    const msg = buildAiMessage('［フォーマット：text］ありがとうございます🙏');
+    expect(JSON.stringify(msg)).not.toContain('フォーマット');
+    expect(JSON.stringify(msg)).toContain('ありがとうございます');
+  });
+
+  it('[形式:quiz_invite] → quiz invite flex に route', () => {
+    const msg = buildAiMessage('[形式:quiz_invite]診断しますね💚');
+    expect(msg.type).toBe('flex');
+  });
+
+  it('[フォーマット:price_table] → price table flex に route', () => {
+    const msg = buildAiMessage('[フォーマット:price_table]3商品の価格です💰');
+    expect(msg.type).toBe('flex');
+  });
+
+  it('誤 strip 防止: keyword が既知 3 種以外の日本語括弧は本文保持 (例 [お得:sale])', () => {
+    const msg = buildAiMessage('[お得:sale]本日のセール情報です😊');
+    expect(JSON.stringify(msg)).toContain('[お得:sale]');
+  });
+
+  it('誤 strip 防止: コロンなし日本語括弧 [重要] は本文保持', () => {
+    const msg = buildAiMessage('[重要]配送日変更のお知らせです');
+    expect(JSON.stringify(msg)).toContain('[重要]');
+  });
+
+  it('marker のみ (本文なし) の変形 marker も顧客に露出しない ([FMAT:text] / [フォーマット:text])', () => {
+    for (const raw of ['[FMAT:text]', '[フォーマット:text]', '［フォーマット：text］']) {
+      const msg = buildAiMessage(raw);
+      expect(msg.type, raw).toBe('text');
+      if (msg.type === 'text') {
+        expect(msg.text, raw).not.toContain('text]');
+        expect(msg.text, raw).not.toContain('フォーマット');
+        expect(msg.text.length, raw).toBeGreaterThan(0);
+      }
+    }
   });
 });
 
