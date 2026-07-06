@@ -26,6 +26,8 @@ import type { Message, FlexContainer } from '@line-crm/line-sdk';
 import { buildQuickQuizInviteMessage } from './quick-quiz.js';
 
 const FMT_TEXT_PREFIX = '[FMT:text]';
+// marker のみで本文が空の応答 (LLM の空振り) — marker を顧客に見せず、正直な聞き直しに倒す
+const MARKER_ONLY_FALLBACK = 'うまくお答えできませんでした。お手数ですが、もう一度お送りいただけますか🌿';
 const FMT_QUIZ_INVITE_PREFIX = '[FMT:quiz_invite]'; // Plan A-3 (2026-05-24): AI が「おすすめ」 intent 検出時に返す
 const FMT_PRICE_TABLE_PREFIX = '[FMT:price_table]'; // Plan A-6 (2026-05-24): AI が価格比較質問検出時に返す → grid flex
 const SHORT_TEXT_THRESHOLD = 50; // 字以下で markdown 構造なしなら text
@@ -55,7 +57,8 @@ export function buildAiMessage(text: string): Message {
   }
   if (trimmedRaw.startsWith(FMT_TEXT_PREFIX)) {
     const stripped = trimmedRaw.slice(FMT_TEXT_PREFIX.length).trim();
-    return { type: 'text', text: stripped || trimmedRaw };
+    // marker のみ (本文なし) は raw を返すと marker が顧客に露出する → fallback (review 2026-07-07)
+    return { type: 'text', text: stripped || MARKER_ONLY_FALLBACK };
   }
 
   // 1b. tolerant cleanup: LLM は marker を typo/変形することがある
@@ -71,6 +74,21 @@ export function buildAiMessage(text: string): Message {
     if (mangledMarker[1] === 'price_table') return buildPriceTableMessage();
     const cleaned = trimmedRaw.slice(mangledMarker[0].length).trim();
     if (cleaned) return buildAiMessage(cleaned); // strip 後の本文を再評価 (先頭 marker は除去済)
+    return { type: 'text', text: MARKER_ONLY_FALLBACK }; // marker のみ — 素通しで顧客に見せない
+  }
+
+  // 1c. 日本語変形 marker (実機 2026-07-04: 「[フォーマット:text]」 が顧客に露出)。
+  //     LLM は prefix 部分を日本語へ翻訳することがある (フォーマット/形式 等)。全角コロン・
+  //     全角括弧の変形も許容する。誤 strip を避けるため、prefix が何であっても
+  //     **keyword が既知 3 種に完全一致する場合のみ** marker とみなす
+  //     (= 「[お得:sale]」 「[重要]」 のような正当な括弧書きは保持される)。
+  const jaMarker = trimmedRaw.match(/^[\[［][^\[\]［］:：]{2,12}[:：](text|quiz_invite|price_table)[\]］]\s*/);
+  if (jaMarker) {
+    if (jaMarker[1] === 'quiz_invite') return buildQuickQuizInviteMessage();
+    if (jaMarker[1] === 'price_table') return buildPriceTableMessage();
+    const cleaned = trimmedRaw.slice(jaMarker[0].length).trim();
+    if (cleaned) return buildAiMessage(cleaned);
+    return { type: 'text', text: MARKER_ONLY_FALLBACK }; // marker のみ — 素通しで顧客に見せない
   }
 
   // 2. heuristics
