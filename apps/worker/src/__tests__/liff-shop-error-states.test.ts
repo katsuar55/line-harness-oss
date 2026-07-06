@@ -47,8 +47,8 @@ describe('ストアタブ error/empty 状態 — 静的構造', () => {
     //  2 変種があり、どちらもセッション切れ扱いが正しい。文言変更にも壊れない)
     expect(pages).toMatch(/function shopAuthExpired[\s\S]{0,160}status === 401/);
     expect(pages).not.toMatch(/shopAuthExpired[\s\S]{0,200}indexOf\('token'\)/);
-    expect(pages).toContain('セッションの有効期限が切れました');
-    expect(pages).toMatch(/セッションの有効期限が切れました[\s\S]{0,400}location\.reload\(\)/);
+    expect(pages).toContain('ログインの有効期限が切れました');
+    expect(pages).toMatch(/ログインの有効期限が切れました[\s\S]{0,400}location\.reload\(\)/);
   });
 
   it('api()/apiGet() は HTTP status を透過する (auth 判定の基盤)', () => {

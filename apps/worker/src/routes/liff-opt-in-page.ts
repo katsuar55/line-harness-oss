@@ -216,6 +216,11 @@ async function onSubmit(e) {
       body: JSON.stringify({ email: email, marketingConsent: true }),
     });
     const body = await res.json().catch(function(){ return null; });
+    if (res.status === 401) {
+      // idToken 失効: エラートーストで済ませず全画面の再読み込み誘導に倒す
+      showFatalError('ログインの有効期限が切れました。お手数ですが、開き直してください🌿');
+      return;
+    }
     if (res.status === 200 && body && body.success) {
       // success
       document.getElementById('form-view').style.display = 'none';
@@ -244,6 +249,7 @@ async function onSubmit(e) {
 function showFatalError(msg) {
   var el = document.getElementById('loading');
   if (!el) return;
+  window.__fatalShown = true;
   el.style.display = 'flex';
   el.innerHTML = '<div class="text-center px-8">' +
     '<p class="text-3xl mb-3">🌿</p>' +
@@ -262,7 +268,7 @@ async function initLiff() {
     }
     idToken = liff.getIDToken();
     if (!idToken) {
-      showFatalError('セッションの有効期限が切れました。お手数ですが、トーク画面から開き直してください🌿');
+      showFatalError('ログインの有効期限が切れました。お手数ですが、トーク画面から開き直してください🌿');
       return;
     }
     // pre-fill email from LINE profile if available (LINE が email scope を返す場合のみ)
@@ -282,6 +288,15 @@ async function initLiff() {
 }
 
 initLiff();
+
+// 「読み込み中...」永久固着の watchdog: liff.init や API が resolve も reject もしないまま
+// 固まるケース (SDK/回線不調) で、12 秒後に明示エラー + 再読み込みへ倒す (2026-07-04 実機で固着を確認)。
+setTimeout(function () {
+  var el = document.getElementById('loading');
+  if (el && el.style.display !== 'none' && !window.__fatalShown) {
+    showFatalError('読み込みに時間がかかっています。通信環境をご確認のうえ、もう一度開いてください🌿');
+  }
+}, 12000);
 </script>
 </body>
 </html>`;

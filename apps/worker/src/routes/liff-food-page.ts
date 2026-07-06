@@ -292,7 +292,7 @@ async function initLiff() {
     }
     idToken = liff.getIDToken();
     if (!idToken) {
-      showFatalError('セッションの有効期限が切れました。お手数ですが、トーク画面から開き直してください🌿');
+      showFatalError('ログインの有効期限が切れました。お手数ですが、トーク画面から開き直してください🌿');
       return;
     }
     setDefaultDateTime();
