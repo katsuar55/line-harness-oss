@@ -114,6 +114,7 @@ describe('遊び心 (進捗バーの 🌿)', () => {
   });
 
   it('進捗バーはブランドグラデ (LINE緑を含まない)', () => {
-    expect(pages).toMatch(/#scroll-progress\{[^}]*linear-gradient\(90deg,#80c8cd,#2fa8ad,#1d7d82\)/);
+    // 2026-07-07 コーラル挿し色: 終端を coral に (teal→coral のグラデ)
+    expect(pages).toMatch(/#scroll-progress\{[^}]*linear-gradient\(90deg,#80c8cd,#2fa8ad,#ffb39c\)/);
   });
 });

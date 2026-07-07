@@ -56,13 +56,18 @@ function portalPage(liffId: string, apiBase: string): string {
   <style>
     *{-webkit-tap-highlight-color:transparent}
     /* naturism ブランドトークン (Dawn テーマ実測: naturism-category.css / settings_data.json) */
-    :root{--brand:#2fa8ad;--brand-deep:#1d7d82;--brand-soft:#eef7f7;--brand-tint:#dff0f0;--brand-line:#e3ecec;--ink:#052422;--muted:#66727d}
+    :root{--brand:#2fa8ad;--brand-deep:#1d7d82;--brand-soft:#eef7f7;--brand-tint:#dff0f0;--brand-line:#e3ecec;--ink:#052422;--muted:#66727d;--coral:#ffb39c;--coral-deep:#e8836a;--coral-ink:#a44e37}
     body{font-family:'Noto Sans JP',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(165deg,#f2fafa 0%,#f8fafc 45%,#f3f7f8 100%);min-height:100vh;color:#052422}
     .tab-active{color:#1d7d82;border-bottom:2.5px solid #2fa8ad;font-weight:600}
     .tab-inactive{color:#475569;border-bottom:2.5px solid transparent}
     nav button{transition:color .2s,border-color .2s;white-space:nowrap}
     .btn-primary{background:linear-gradient(135deg,#2fa8ad 0%,#1d7d82 100%);color:#fff;border:none;border-radius:999px !important;letter-spacing:.02em;transition:transform .15s,box-shadow .15s}
     .btn-primary:active{transform:scale(0.95) translateY(1.5px);box-shadow:0 2px 6px rgba(29,125,130,.35)}
+    /* コーラル挿し色 (2026-07-07 Katsu FB: 三層設計 = ティール基調 / コーラル=感情・お得・アクション / ゴールド=プレミア。実測 pp-styles.css --color-coral) */
+    .btn-coral{background:linear-gradient(135deg,#e8836a 0%,#b85c41 100%);color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.15);border:none;border-radius:999px !important;letter-spacing:.02em;transition:transform .15s,box-shadow .15s}
+    .btn-coral:active{transform:scale(0.95) translateY(1.5px);box-shadow:0 2px 6px rgba(232,131,106,.4)}
+    .text-coral{color:#a44e37 !important}
+    #quiz-progress-bar{background:linear-gradient(90deg,#ffb39c,#e8836a) !important}
     .card{background:#ffffff;border-radius:20px;border:1px solid #e3ecec;box-shadow:0 2px 6px rgba(24,34,41,.05),0 12px 32px rgba(24,34,41,.06)}
     .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:8px}
     @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
@@ -102,7 +107,7 @@ function portalPage(liffId: string, apiBase: string): string {
     #fulfillments-card .skeleton{animation-delay:.3s}
     .meal-btn:active{transform:translateY(1.5px) scale(0.95)}
     /* 2026-07-07 没入スクロール (Katsu 指示: 高級感×先進性・大胆に・軽量に) — 3D カード cascade + スクロール進捗 */
-    #scroll-progress{position:fixed;top:0;left:0;width:100%;height:2.5px;z-index:60;background:linear-gradient(90deg,#80c8cd,#2fa8ad,#1d7d82);transform-origin:0 50%;transform:scaleX(0);pointer-events:none}
+    #scroll-progress{position:fixed;top:0;left:0;width:100%;height:2.5px;z-index:60;background:linear-gradient(90deg,#80c8cd,#2fa8ad,#ffb39c);transform-origin:0 50%;transform:scaleX(0);pointer-events:none}
     #scroll-leaf{position:fixed;top:-1px;left:-4px;z-index:61;font-size:13px;line-height:1;pointer-events:none;filter:drop-shadow(0 1px 2px rgba(29,125,130,.35))}
     .sr{opacity:0;transform:perspective(900px) translateY(34px) rotateX(7deg) scale(.97);will-change:transform,opacity}
     .sr-in{opacity:1;transform:perspective(900px) translateY(0) rotateX(0) scale(1);transition:transform .7s cubic-bezier(.22,1,.36,1),opacity .55s ease-out}
@@ -133,7 +138,7 @@ function portalPage(liffId: string, apiBase: string): string {
     button:active,.tap:active,label:active{transform:translateY(1.5px) scale(0.97)}
     /* quiz 選択肢の active:scale-[0.98] は詳細度で global を打ち消すため、translateY を同梱して統一 (review HIGH) */
     .active\\:scale-\\[0\\.98\\]:active{transform:translateY(1.5px) scale(0.98) !important}
-    @media(prefers-reduced-motion:reduce){.skeleton,.streak-fire,.ambassador-badge,.sparkle-dot,.rank-ambassador::before,.section,#quiz-result{animation:none !important}.btn-primary:active,.meal-btn:active,.mood-btn:active,.skin-btn:active,.bowel-btn:active,button:active,.tap:active,label:active{transform:none !important}.sr{opacity:1 !important;transform:none !important}.sr-in{transition:none !important}#scroll-progress,#scroll-leaf{display:none}}
+    @media(prefers-reduced-motion:reduce){.skeleton,.streak-fire,.ambassador-badge,.sparkle-dot,.rank-ambassador::before,.section,#quiz-result{animation:none !important}.btn-primary:active,.btn-coral:active,.meal-btn:active,.mood-btn:active,.skin-btn:active,.bowel-btn:active,button:active,.tap:active,label:active{transform:none !important}.sr{opacity:1 !important;transform:none !important}.sr-in{transition:none !important}#scroll-progress,#scroll-leaf{display:none}}
   </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -201,7 +206,7 @@ function portalPage(liffId: string, apiBase: string): string {
       <div id="next-move-card" class="card p-4" style="display:none">
         <div class="flex items-start justify-between gap-2">
           <div class="flex-1">
-            <p class="text-xs font-bold text-emerald-600 mb-1">はじめの一歩</p>
+            <p class="text-xs font-bold text-coral mb-1">はじめの一歩</p>
             <p class="text-sm font-bold text-gray-800 mb-1" id="next-move-title"></p>
             <p class="text-xs text-gray-500 mb-3" id="next-move-desc"></p>
             <a href="javascript:void(0)" id="next-move-cta" class="inline-block btn-primary py-2.5 px-4 rounded-xl text-sm font-bold"></a>
@@ -590,7 +595,7 @@ function portalPage(liffId: string, apiBase: string): string {
         <div class="text-5xl mb-3">💊</div>
         <h2 class="text-lg font-bold text-gray-800 mb-2">あなたにぴったりの naturism は？</h2>
         <p class="text-sm text-gray-500 mb-5 leading-relaxed">8つの質問に答えるだけで、<br>最適な商品をご提案します。</p>
-        <button onclick="startQuiz()" class="btn-primary px-10 py-3.5 rounded-2xl text-sm font-bold shadow-lg">診断スタート →</button>
+        <button onclick="startQuiz()" class="btn-coral px-10 py-3.5 rounded-2xl text-sm font-bold shadow-lg">診断スタート →</button>
       </div>
 
       <!-- Quiz Steps (hidden until started) -->
@@ -609,7 +614,7 @@ function portalPage(liffId: string, apiBase: string): string {
       <!-- Quiz Result (hidden until complete) -->
       <div id="quiz-result" style="display:none;">
         <div class="card p-6 text-center">
-          <p class="text-xs text-green-600 font-bold mb-2">あなたにおすすめ</p>
+          <p class="text-xs text-coral font-bold mb-2">あなたにおすすめ</p>
           <div class="text-4xl mb-2" id="result-emoji"></div>
           <h3 class="text-xl font-bold text-gray-800 mb-1" id="result-name"></h3>
           <p class="text-sm text-green-600 font-bold mb-3" id="result-price"></p>
@@ -1610,19 +1615,20 @@ async function loadWelcomeCoupon() {
     var cp = res.data && res.data.coupon;
     if (!cp || !cp.code) { el.style.display = 'none'; return; }
     el.style.display = 'block';
-    el.style.background = 'linear-gradient(135deg,#fff7ed,#ffffff)';
-    el.style.border = '1.5px solid rgba(234,88,12,.35)';
+    // お得の主役カード: 汎用 orange でなくブランドコーラルで統一 (2026-07-07 パレット準拠)
+    el.style.background = 'linear-gradient(135deg,#fff5ec,#ffffff)';
+    el.style.border = '1.5px solid rgba(232,131,106,.4)';
     var currency = cp.currency === 'JPY' ? '¥' : (esc(cp.currency) + ' ');
     el.innerHTML =
       '<div class="flex items-center gap-2 mb-1">' +
-      '<span class="text-white bg-orange-500 px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700">🎁 あなた専用</span>' +
-      (cp.remainingText ? '<span class="text-xs font-bold text-orange-600">⏳ ' + esc(cp.remainingText) + 'で終了</span>' : '') + '</div>' +
-      '<p class="text-2xl font-extrabold text-orange-600 mb-1">' + currency + Number(cp.discountValue) + ' OFF クーポン</p>' +
+      '<span class="text-white px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700;background:#b85c41">🎁 あなた専用</span>' +
+      (cp.remainingText ? '<span class="text-xs font-bold text-coral">⏳ ' + esc(cp.remainingText) + 'で終了</span>' : '') + '</div>' +
+      '<p class="text-2xl font-extrabold text-coral mb-1">' + currency + Number(cp.discountValue) + ' OFF クーポン</p>' +
       '<p class="text-xs text-gray-500 mb-2">友だち追加のお礼です。公式ストアの初回購入にお使いいただけます。</p>' +
       '<div class="flex items-center gap-2 mb-3">' +
-      '<code id="welcome-coupon-code" class="flex-1 text-center text-sm font-bold tracking-widest bg-white border border-orange-300 rounded-lg py-2">' + esc(cp.code) + '</code>' +
-      '<button onclick="copyWelcomeCoupon()" class="text-xs font-bold text-orange-600 border border-orange-300 bg-orange-50 rounded-lg px-3 py-2">コピー</button></div>' +
-      (cp.applyUrl ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" class="block text-center btn-primary py-3 rounded-xl text-sm font-bold">このクーポンで買う →</a>' : '');
+      '<code id="welcome-coupon-code" class="flex-1 text-center text-sm font-bold tracking-widest bg-white rounded-lg py-2" style="border:1px solid #f4c0ad">' + esc(cp.code) + '</code>' +
+      '<button onclick="copyWelcomeCoupon()" class="text-xs font-bold text-coral rounded-lg px-3 py-2" style="border:1px solid #f4c0ad;background:#fff5ec">コピー</button></div>' +
+      (cp.applyUrl ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" class="block text-center btn-coral py-3 rounded-xl text-sm font-bold">このクーポンで買う →</a>' : '');
   } catch {
     cardError(el, null, 'loadWelcomeCoupon');
   }
@@ -1685,7 +1691,7 @@ async function loadIntakeData() {
     if (data) {
       const fire = data.currentStreak >= 3 ? ' streak-fire' : '';
       el.innerHTML = '<div class="text-4xl mb-2' + fire + '">' + (data.currentStreak >= 7 ? '&#x1F525;' : data.currentStreak >= 3 ? '&#x2B50;' : '&#x1F331;') + '</div>' +
-        '<p class="text-3xl font-bold text-gray-800">' + data.currentStreak + '<span class="text-sm text-gray-500 ml-1">日連続</span></p>' +
+        '<p class="text-3xl font-bold ' + (data.currentStreak >= 3 ? 'text-coral' : 'text-gray-800') + '">' + data.currentStreak + '<span class="text-sm text-gray-500 ml-1">日連続</span></p>' +
         '<div class="flex justify-center gap-6 mt-3 text-xs text-gray-500">' +
         '<div>最長 <span class="font-bold text-gray-800">' + data.longestStreak + '日</span></div>' +
         '<div>累計 <span class="font-bold text-gray-800">' + data.totalDays + '日</span></div></div>';
@@ -2228,7 +2234,7 @@ async function loadReferralCard() {
       '<div class="flex gap-2">' +
       '<button onclick="shareRefLine()" class="flex-1 py-2 rounded-lg text-xs font-bold text-white" style="background:#06C755">LINEで送る</button>' +
       '</div>' +
-      (stats.totalReferred > 0 ? '<p class="text-xs text-gray-500 mt-3">紹介実績: <span class="font-bold text-green-600">' + stats.totalReferred + '人</span></p>' : '');
+      (stats.totalReferred > 0 ? '<p class="text-xs text-gray-500 mt-3">紹介実績: <span class="font-bold text-coral">' + stats.totalReferred + '人</span></p>' : '');
   } catch { cardError(el, null, 'loadReferralCard'); }
 }
 
