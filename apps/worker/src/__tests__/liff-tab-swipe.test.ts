@@ -17,9 +17,9 @@ const root = dirname(fileURLToPath(import.meta.url));
 const pages = readFileSync(join(root, '..', 'routes', 'liff-pages.ts'), 'utf8');
 
 describe('ヘッダー刷新', () => {
-  it('ブランド見出しがティールグラデ + 「ナチュリズム | インナーケア」', () => {
-    expect(pages).toMatch(/<h1[^>]*#0ABAB5[^>]*>ナチュリズム/);
-    expect(pages).toContain('インナーケア');
+  it('ブランド見出しは公式ロゴ SVG + fallback (2026-07-07 実機FBでテキスト見出しから変更)', () => {
+    expect(pages).toContain('officialLOGO');
+    expect(pages).toContain('id="brand-fallback"');
     // 旧 LINE グリーン (#06C755) の h1 グラデは残っていない
     expect(pages).not.toMatch(/<h1[^>]*#06C755[^>]*>naturism</);
   });

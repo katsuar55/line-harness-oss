@@ -46,8 +46,8 @@ function portalPage(liffId: string, apiBase: string): string {
     *{-webkit-tap-highlight-color:transparent}
     body{font-family:'Noto Sans JP',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%);min-height:100vh}
     .tab-active{color:#059669;border-bottom:2.5px solid #059669;font-weight:600}
-    .tab-inactive{color:#94a3b8;border-bottom:2.5px solid transparent}
-    nav button{transition:color .2s,border-color .2s}
+    .tab-inactive{color:#475569;border-bottom:2.5px solid transparent}
+    nav button{transition:color .2s,border-color .2s;white-space:nowrap}
     .btn-primary{background:linear-gradient(135deg,#059669 0%,#06C755 100%);color:#fff;border:none;transition:transform .15s,box-shadow .15s}
     .btn-primary:active{transform:scale(0.95);box-shadow:0 4px 12px rgba(5,150,105,.35)}
     .card{background:rgba(255,255,255,.85);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-radius:16px;border:1px solid rgba(0,0,0,.04);box-shadow:0 1px 4px rgba(0,0,0,.04),0 4px 16px rgba(0,0,0,.02)}
@@ -88,15 +88,28 @@ function portalPage(liffId: string, apiBase: string): string {
     #orders-card .skeleton{animation-delay:.15s}
     #fulfillments-card .skeleton{animation-delay:.3s}
     .meal-btn:active{transform:scale(0.95)}
-    @media(prefers-reduced-motion:reduce){.skeleton,.streak-fire,.ambassador-badge,.sparkle-dot,.rank-ambassador::before,.section,#quiz-result{animation:none !important}.btn-primary:active,.meal-btn:active,.mood-btn:active,.skin-btn:active,.bowel-btn:active{transform:none !important}}
+    /* 2026-07-07 没入スクロール (Katsu 指示: 高級感×先進性・大胆に・軽量に) — 3D カード cascade + スクロール進捗 */
+    #scroll-progress{position:fixed;top:0;left:0;width:100%;height:2.5px;z-index:60;background:linear-gradient(90deg,#0ABAB5,#06C755,#2ec7c3);transform-origin:0 50%;transform:scaleX(0);pointer-events:none}
+    .sr{opacity:0;transform:perspective(900px) translateY(34px) rotateX(7deg) scale(.97);will-change:transform,opacity}
+    .sr-in{opacity:1;transform:perspective(900px) translateY(0) rotateX(0) scale(1);transition:transform .7s cubic-bezier(.22,1,.36,1),opacity .55s ease-out}
+    .tab-strip{overflow-x:auto;scrollbar-width:none}
+    .tab-strip::-webkit-scrollbar{display:none}
+    @media(prefers-reduced-motion:reduce){.skeleton,.streak-fire,.ambassador-badge,.sparkle-dot,.rank-ambassador::before,.section,#quiz-result{animation:none !important}.btn-primary:active,.meal-btn:active,.mood-btn:active,.skin-btn:active,.bowel-btn:active{transform:none !important}.sr{opacity:1 !important;transform:none !important}.sr-in{transition:none !important}#scroll-progress{display:none}}
   </style>
 </head>
 <body class="min-h-screen pb-20">
 
+  <!-- スクロール進捗 (没入スクロール: ブランドグラデの細ライン) -->
+  <div id="scroll-progress" aria-hidden="true"></div>
+
   <!-- Header -->
   <header class="sticky top-0 z-50" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(0,0,0,.06)">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
-      <h1 class="text-lg font-bold" style="letter-spacing:0.02em;background:linear-gradient(135deg,#0ABAB5,#2ec7c3);-webkit-background-clip:text;-webkit-text-fill-color:transparent">ナチュリズム<span style="font-weight:300;opacity:.55;margin:0 6px">|</span><span class="text-sm" style="font-weight:600">インナーケア</span></h1>
+      <!-- 公式ロゴ (オフィシャルサイトと同一の Shopify CDN SVG。テーマ更新等で URL が変わったら onerror fallback) -->
+      <h1 class="flex items-center" style="margin:0;line-height:1">
+        <img src="https://naturism-diet.com/cdn/shop/files/officialLOGO_800x267.svg?v=1738394022" alt="naturism インナーケア" style="height:24px;width:auto;display:block" onerror="this.style.display='none';var f=document.getElementById('brand-fallback');if(f)f.style.display='inline'">
+        <span id="brand-fallback" class="text-lg font-bold" style="display:none;letter-spacing:0.02em;background:linear-gradient(135deg,#0ABAB5,#2ec7c3);-webkit-background-clip:text;-webkit-text-fill-color:transparent">naturism</span>
+      </h1>
       <div class="flex items-center gap-3">
         <div class="relative">
           <button id="lang-btn" onclick="toggleLangMenu()" class="text-base w-10 h-10 flex items-center justify-center rounded-full hover:bg-gray-100 transition-colors" title="Language">&#x1F1EF;&#x1F1F5;</button>
@@ -115,7 +128,7 @@ function portalPage(liffId: string, apiBase: string): string {
 
   <!-- Tab Navigation -->
   <nav class="sticky top-[53px] z-40" style="background:rgba(255,255,255,.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid rgba(0,0,0,.05)">
-    <div class="max-w-lg mx-auto flex">
+    <div class="max-w-lg mx-auto flex tab-strip" data-no-tab-swipe>
       <button onclick="switchTabTo('home')" id="tab-home" class="flex-1 py-3 text-xs text-center tab-active" data-i18n="tab_mypage">マイページ</button>
       <button onclick="switchTabTo('quiz')" id="tab-quiz" class="flex-1 py-3 text-xs text-center tab-inactive">診断</button>
       <button onclick="switchTabTo('intake')" id="tab-intake" class="flex-1 py-3 text-xs text-center tab-inactive" data-i18n="intake_log">服用記録</button>
@@ -1044,6 +1057,8 @@ async function initLiff() {
     initTourSwipe();
     if (window.__fatalShown) return; // 401 検知で全画面エラー表示中 — loading 消しでエラーを隠さない
     document.getElementById('loading').style.display = 'none';
+    // 没入スクロール起動 (loading 非表示後 = overlay 下で cascade が空撃ちされないように)
+    initScrollReveal();
     // 第2波-⑥: 初回オンボーディング (loading を消してから = ツアーが loading の上に出ないように)
     initOnboarding();
   } catch (err) {
@@ -1055,6 +1070,7 @@ async function initLiff() {
       isDemo = true;
       loadDemoData();
       document.getElementById('loading').style.display = 'none';
+      initScrollReveal();
       return;
     }
     showFatalError('読み込みに失敗しました。お手数ですが、トーク画面から開き直してください🌿');
@@ -1389,6 +1405,56 @@ function initTabSwipe() {
     if (next < 0 || next >= TAB_ORDER.length) return;
     switchTabAnimated(TAB_ORDER[next], dx < 0 ? 1 : -1);
   }, { passive: true });
+}
+
+// ─── 没入スクロール (2026-07-07 Katsu 指示「重要」: 高級感×先進性、大胆に、ただし軽量) ───
+// 3D カード cascade: 画面に入ったカードが perspective+rotateX で「起き上がる」ように現れる (stagger 付き)。
+// IntersectionObserver + transform/opacity のみ (ライブラリなし・reflow なし)。reveal 後は class を外して
+// will-change を解放 (低スペック端末のメモリ保護)。reduced-motion / IO 非対応では何もしない (= 常に可視)。
+var srInited = false;
+function initScrollReveal() {
+  if (srInited) return;
+  srInited = true;
+  // スクロール進捗バー (rAF throttle + passive — 60fps 維持)
+  var bar = document.getElementById('scroll-progress');
+  if (bar && !TAB_REDUCED_MOTION) {
+    var ticking = false;
+    window.addEventListener('scroll', function () {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(function () {
+        ticking = false;
+        var h = document.documentElement;
+        var max = (h.scrollHeight - h.clientHeight) || 1;
+        bar.style.transform = 'scaleX(' + Math.min(1, Math.max(0, h.scrollTop / max)) + ')';
+      });
+    }, { passive: true });
+  }
+  if (TAB_REDUCED_MOTION) return;
+  if (!('IntersectionObserver' in window)) return;
+  var queue = 0;
+  var io = new IntersectionObserver(function (entries) {
+    for (var i = 0; i < entries.length; i++) {
+      (function (el, isIn) {
+        if (!isIn) return;
+        io.unobserve(el);
+        var delay = Math.min(queue * 70, 420); // 同時に入った分は波状に (最大 420ms)
+        queue++;
+        setTimeout(function () {
+          el.classList.add('sr-in');
+          setTimeout(function () {
+            el.classList.remove('sr');
+            el.classList.remove('sr-in');
+            queue = Math.max(0, queue - 1);
+          }, 800);
+        }, delay);
+      })(entries[i].target, entries[i].isIntersecting);
+    }
+  }, { threshold: 0.08, rootMargin: '0px 0px -8% 0px' });
+  document.querySelectorAll('.section .card').forEach(function (el) {
+    el.classList.add('sr');
+    io.observe(el);
+  });
 }
 
 // ─── Toast ───
@@ -2108,7 +2174,9 @@ async function loadReferralCard() {
       el.innerHTML = '<p class="text-xs text-gray-400">紹介リンクを取得できませんでした</p>';
       return;
     }
-    var shareUrl = window.location.origin + '/liff/portal?ref=' + refCode;
+    // 共有URLは liff.line.me permalink — workers.dev の生 URL (katsu-7d5 等) は顧客に不信感を与え離脱要因。
+    // liff.line.me は LINE 内で最も自然に開け、?ref= は liff.state 経由で endpoint に復元される (#rank 導線と同機構)。
+    var shareUrl = LIFF_ID ? 'https://liff.line.me/' + LIFF_ID + '?ref=' + refCode : (window.location.origin + '/liff/portal?ref=' + refCode);
     el.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">友だち紹介</p>' +
       '<p class="text-sm text-gray-700 mb-2">リンクを共有しておトクにクーポンゲット!</p>' +
       '<div class="bg-gray-50 rounded-lg p-2 flex items-center gap-2 mb-3">' +
