@@ -1,8 +1,19 @@
 import { Hono } from 'hono';
 import { translations as i18nData } from '@line-crm/shared';
 import type { Env } from '../index.js';
+import { BRAND_LOGO_PNG_BASE64 } from './brand-logo.js';
 
 const liffPages = new Hono<Env>();
+
+// 公式ブランドロゴ (self-host)。Shopify CDN の officialLOGO SVG は 1MB の PNG 埋込で
+// モバイル初回表示に重すぎるため、抽出→トリム→72px 縮小した PNG を worker から配信する。
+liffPages.get('/liff/brand-logo.png', (c) => {
+  const bin = Uint8Array.from(atob(BRAND_LOGO_PNG_BASE64), (ch) => ch.charCodeAt(0));
+  return c.body(bin, 200, {
+    'Content-Type': 'image/png',
+    'Cache-Control': 'public, max-age=604800, immutable',
+  });
+});
 
 function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -30,7 +41,7 @@ function portalPage(liffId: string, apiBase: string): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#059669">
+  <meta name="theme-color" content="#2fa8ad">
   <title>naturism マイページ</title>
   <!-- 描画ブロッキングな外部 CDN への接続を前倒し (FCP 短縮) -->
   <link rel="preconnect" href="https://static.line-scdn.net" crossorigin>
@@ -44,13 +55,15 @@ function portalPage(liffId: string, apiBase: string): string {
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     *{-webkit-tap-highlight-color:transparent}
-    body{font-family:'Noto Sans JP',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%);min-height:100vh}
-    .tab-active{color:#059669;border-bottom:2.5px solid #059669;font-weight:600}
+    /* naturism ブランドトークン (Dawn テーマ実測: naturism-category.css / settings_data.json) */
+    :root{--brand:#2fa8ad;--brand-deep:#1d7d82;--brand-soft:#eef7f7;--brand-tint:#dff0f0;--brand-line:#e3ecec;--ink:#052422;--muted:#66727d}
+    body{font-family:'Noto Sans JP',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(165deg,#f2fafa 0%,#f8fafc 45%,#f3f7f8 100%);min-height:100vh;color:#052422}
+    .tab-active{color:#1d7d82;border-bottom:2.5px solid #2fa8ad;font-weight:600}
     .tab-inactive{color:#475569;border-bottom:2.5px solid transparent}
     nav button{transition:color .2s,border-color .2s;white-space:nowrap}
-    .btn-primary{background:linear-gradient(135deg,#059669 0%,#06C755 100%);color:#fff;border:none;transition:transform .15s,box-shadow .15s}
-    .btn-primary:active{transform:scale(0.95);box-shadow:0 4px 12px rgba(5,150,105,.35)}
-    .card{background:rgba(255,255,255,.85);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-radius:16px;border:1px solid rgba(0,0,0,.04);box-shadow:0 1px 4px rgba(0,0,0,.04),0 4px 16px rgba(0,0,0,.02)}
+    .btn-primary{background:linear-gradient(135deg,#2fa8ad 0%,#1d7d82 100%);color:#fff;border:none;border-radius:999px !important;letter-spacing:.02em;transition:transform .15s,box-shadow .15s}
+    .btn-primary:active{transform:scale(0.95) translateY(1.5px);box-shadow:0 2px 6px rgba(29,125,130,.35)}
+    .card{background:#ffffff;border-radius:20px;border:1px solid #e3ecec;box-shadow:0 2px 6px rgba(24,34,41,.05),0 12px 32px rgba(24,34,41,.06)}
     .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:8px}
     @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
     .progress-bar{transition:width .6s cubic-bezier(.4,0,.2,1)}
@@ -59,17 +72,17 @@ function portalPage(liffId: string, apiBase: string): string {
     .section{display:none;animation:fadeUp .38s cubic-bezier(.22,1,.36,1)}
     .section.active{display:block}
     @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-    input[type="time"],input[type="date"],input[type="number"],input[type="text"],textarea,select{border-radius:12px;border:1.5px solid #e2e8f0;padding:10px 12px;font-size:14px;transition:border-color .2s,box-shadow .2s;background:#fff}
-    input:focus,textarea:focus,select:focus{outline:none;border-color:#06C755;box-shadow:0 0 0 3px rgba(6,199,85,.12)}
-    input[type="range"]{height:6px;border-radius:3px;accent-color:#059669}
+    input[type="time"],input[type="date"],input[type="number"],input[type="text"],textarea,select{border-radius:12px;border:1.5px solid #dbe9e9;padding:10px 12px;font-size:14px;transition:border-color .2s,box-shadow .2s;background:#fbfdfd}
+    input:focus,textarea:focus,select:focus{outline:none;border-color:#2fa8ad;box-shadow:0 0 0 3px rgba(47,168,173,.15)}
+    input[type="range"]{height:6px;border-radius:3px;accent-color:#2fa8ad}
     .mood-btn,.skin-btn,.bowel-btn{transition:border-color .15s,background .15s,transform .1s}
-    .mood-btn:active,.skin-btn:active,.bowel-btn:active{transform:scale(0.95)}
+    .mood-btn:active,.skin-btn:active,.bowel-btn:active{transform:translateY(1.5px) scale(0.95)}
     .gender-btn{transition:all .15s;border-radius:12px !important}
     #toast{backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);background:rgba(15,23,42,.85);font-weight:500;letter-spacing:.02em}
     #loading{background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%)}
     .graph-period-btn{transition:all .15s}
     #survey-answer-modal>div{box-shadow:0 -4px 24px rgba(0,0,0,.08)}
-    @media(hover:hover){.btn-primary:hover{box-shadow:0 4px 16px rgba(5,150,105,.25)}}
+    @media(hover:hover){.btn-primary:hover{box-shadow:0 4px 16px rgba(29,125,130,.25)}}
     /* Ambassador badge */
     .ambassador-badge{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:linear-gradient(135deg,#fbbf24,#f59e0b);color:#fff;box-shadow:0 1px 4px rgba(245,158,11,.3);animation:badgePop .4s cubic-bezier(.34,1.56,.64,1)}
     @keyframes badgePop{from{transform:scale(0);opacity:0}to{transform:scale(1);opacity:1}}
@@ -87,28 +100,55 @@ function portalPage(liffId: string, apiBase: string): string {
     #referral-card .skeleton{animation-delay:.45s}
     #orders-card .skeleton{animation-delay:.15s}
     #fulfillments-card .skeleton{animation-delay:.3s}
-    .meal-btn:active{transform:scale(0.95)}
+    .meal-btn:active{transform:translateY(1.5px) scale(0.95)}
     /* 2026-07-07 没入スクロール (Katsu 指示: 高級感×先進性・大胆に・軽量に) — 3D カード cascade + スクロール進捗 */
-    #scroll-progress{position:fixed;top:0;left:0;width:100%;height:2.5px;z-index:60;background:linear-gradient(90deg,#0ABAB5,#06C755,#2ec7c3);transform-origin:0 50%;transform:scaleX(0);pointer-events:none}
+    #scroll-progress{position:fixed;top:0;left:0;width:100%;height:2.5px;z-index:60;background:linear-gradient(90deg,#80c8cd,#2fa8ad,#1d7d82);transform-origin:0 50%;transform:scaleX(0);pointer-events:none}
+    #scroll-leaf{position:fixed;top:-1px;left:-4px;z-index:61;font-size:13px;line-height:1;pointer-events:none;filter:drop-shadow(0 1px 2px rgba(29,125,130,.35))}
     .sr{opacity:0;transform:perspective(900px) translateY(34px) rotateX(7deg) scale(.97);will-change:transform,opacity}
     .sr-in{opacity:1;transform:perspective(900px) translateY(0) rotateX(0) scale(1);transition:transform .7s cubic-bezier(.22,1,.36,1),opacity .55s ease-out}
     .tab-strip{overflow-x:auto;scrollbar-width:none}
     .tab-strip::-webkit-scrollbar{display:none}
-    @media(prefers-reduced-motion:reduce){.skeleton,.streak-fire,.ambassador-badge,.sparkle-dot,.rank-ambassador::before,.section,#quiz-result{animation:none !important}.btn-primary:active,.meal-btn:active,.mood-btn:active,.skin-btn:active,.bowel-btn:active{transform:none !important}.sr{opacity:1 !important;transform:none !important}.sr-in{transition:none !important}#scroll-progress{display:none}}
+    /* ─ brand skin (2026-07-07 Katsu 指示: LINE黄緑封印 → naturism ティール統一、Dawn 実測トークン) ─
+       Tailwind CDN は実行時に <head> 末尾へ style を注入するため、green/emerald 系ユーティリティを
+       !important でブランド実色に上書きする (markup と JS の classList ロジックは無改変で全域が変わる)。
+       例外: 「LINEで送る」ボタン (LINE 機能そのもの) のみ LINE 緑を維持。 */
+    .text-green-500,.text-green-600,.text-emerald-600{color:#1d7d82 !important}
+    .text-green-700,.text-emerald-700{color:#17666a !important}
+    .bg-green-50,.bg-emerald-50{background-color:#eef7f7 !important}
+    .bg-green-100,.bg-emerald-100{background-color:#dff0f0 !important}
+    .bg-green-500,.bg-green-600{background-color:#2fa8ad !important}
+    .border-green-200{border-color:#cfe7e8 !important}
+    .border-green-300,.border-emerald-300{border-color:#a8d8da !important}
+    .border-green-400{border-color:#7cc6c9 !important}
+    .border-green-500,.border-green-600{border-color:#2fa8ad !important}
+    .from-emerald-100{--tw-gradient-from:#dff0f0 !important}
+    .to-green-50{--tw-gradient-to:#eef7f7 !important}
+    .hover\\:bg-green-50:hover{background-color:#eef7f7 !important}
+    .hover\\:bg-green-100:hover,.hover\\:bg-emerald-100:hover{background-color:#dff0f0 !important}
+    .active\\:bg-green-100:active,.active\\:bg-emerald-100:active{background-color:#d3ecec !important}
+    .hover\\:border-green-400:hover{border-color:#7cc6c9 !important}
+    .text-gray-800{color:#052422 !important}
+    /* 全ボタン「柔らかく押し込む」触感 (個別定義 .btn-primary 等はそちらが優先される) */
+    button,.tap{transition:transform .12s cubic-bezier(.22,1,.36,1)}
+    button:active,.tap:active,label:active{transform:translateY(1.5px) scale(0.97)}
+    /* quiz 選択肢の active:scale-[0.98] は詳細度で global を打ち消すため、translateY を同梱して統一 (review HIGH) */
+    .active\\:scale-\\[0\\.98\\]:active{transform:translateY(1.5px) scale(0.98) !important}
+    @media(prefers-reduced-motion:reduce){.skeleton,.streak-fire,.ambassador-badge,.sparkle-dot,.rank-ambassador::before,.section,#quiz-result{animation:none !important}.btn-primary:active,.meal-btn:active,.mood-btn:active,.skin-btn:active,.bowel-btn:active,button:active,.tap:active,label:active{transform:none !important}.sr{opacity:1 !important;transform:none !important}.sr-in{transition:none !important}#scroll-progress,#scroll-leaf{display:none}}
   </style>
 </head>
 <body class="min-h-screen pb-20">
 
-  <!-- スクロール進捗 (没入スクロール: ブランドグラデの細ライン) -->
+  <!-- スクロール進捗 (没入スクロール: ブランドグラデの細ライン + 先端を走る 🌿) -->
   <div id="scroll-progress" aria-hidden="true"></div>
+  <div id="scroll-leaf" aria-hidden="true">🌿</div>
 
   <!-- Header -->
   <header class="sticky top-0 z-50" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(0,0,0,.06)">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
       <!-- 公式ロゴ (オフィシャルサイトと同一の Shopify CDN SVG。テーマ更新等で URL が変わったら onerror fallback) -->
       <h1 class="flex items-center" style="margin:0;line-height:1">
-        <img src="https://naturism-diet.com/cdn/shop/files/officialLOGO_800x267.svg?v=1738394022" alt="naturism インナーケア" style="height:24px;width:auto;display:block" onerror="this.style.display='none';var f=document.getElementById('brand-fallback');if(f)f.style.display='inline'">
-        <span id="brand-fallback" class="text-lg font-bold" style="display:none;letter-spacing:0.02em;background:linear-gradient(135deg,#0ABAB5,#2ec7c3);-webkit-background-clip:text;-webkit-text-fill-color:transparent">naturism</span>
+        <img src="/liff/brand-logo.png" alt="naturism" width="129" height="24" style="height:24px;width:auto;display:block" onerror="this.style.display='none';var f=document.getElementById('brand-fallback');if(f)f.style.display='inline'">
+        <span id="brand-fallback" class="text-lg font-bold" style="display:none;letter-spacing:0.02em;background:linear-gradient(135deg,#2fa8ad,#80c8cd);-webkit-background-clip:text;-webkit-text-fill-color:transparent">naturism</span>
       </h1>
       <div class="flex items-center gap-3">
         <div class="relative">
@@ -737,7 +777,7 @@ function portalPage(liffId: string, apiBase: string): string {
   <!-- Loading overlay -->
   <div id="loading" class="fixed inset-0 flex items-center justify-center z-50" style="background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%)">
     <div class="text-center">
-      <div class="w-12 h-12 rounded-full animate-spin mx-auto mb-4" style="border:3px solid #e2e8f0;border-top-color:#059669"></div>
+      <div class="w-12 h-12 rounded-full animate-spin mx-auto mb-4" style="border:3px solid #e2e8f0;border-top-color:#2fa8ad"></div>
       <p class="text-sm text-gray-400 font-medium tracking-wide">読み込み中...</p>
     </div>
   </div>
@@ -898,7 +938,7 @@ function renderTourDots() {
   if (!dots) return;
   var html = '';
   for (var i = 0; i < TOUR_STEPS.length; i++) {
-    html += '<span style="width:7px;height:7px;border-radius:9999px;display:inline-block;background:' + (i === tourIndex ? '#059669' : '#d1d5db') + '"></span>';
+    html += '<span style="width:7px;height:7px;border-radius:9999px;display:inline-block;background:' + (i === tourIndex ? '#2fa8ad' : '#d1d5db') + '"></span>';
   }
   dots.innerHTML = html;
 }
@@ -1415,8 +1455,9 @@ var srInited = false;
 function initScrollReveal() {
   if (srInited) return;
   srInited = true;
-  // スクロール進捗バー (rAF throttle + passive — 60fps 維持)
+  // スクロール進捗バー (rAF throttle + passive — 60fps 維持)。先端を 🌿 が走る (ブランドの遊び心)
   var bar = document.getElementById('scroll-progress');
+  var leaf = document.getElementById('scroll-leaf');
   if (bar && !TAB_REDUCED_MOTION) {
     var ticking = false;
     window.addEventListener('scroll', function () {
@@ -1426,7 +1467,9 @@ function initScrollReveal() {
         ticking = false;
         var h = document.documentElement;
         var max = (h.scrollHeight - h.clientHeight) || 1;
-        bar.style.transform = 'scaleX(' + Math.min(1, Math.max(0, h.scrollTop / max)) + ')';
+        var p = Math.min(1, Math.max(0, h.scrollTop / max));
+        bar.style.transform = 'scaleX(' + p + ')';
+        if (leaf) { leaf.style.transform = 'translateX(' + Math.round(p * (h.clientWidth - 18)) + 'px) rotate(' + Math.round(p * 360) + 'deg)'; }
       });
     }, { passive: true });
   }
@@ -1531,8 +1574,8 @@ async function loadFriendCoupon() {
     const data = res.data;
     if (!data || !data.enabled || !data.code) { el.style.display = 'none'; return; }
     el.style.display = 'block';
-    el.style.background = 'linear-gradient(135deg,#ecfdf5,#ffffff)';
-    el.style.border = '1.5px solid rgba(6,199,85,.35)';
+    el.style.background = 'linear-gradient(135deg,#eef8f8,#ffffff)';
+    el.style.border = '1.5px solid rgba(47,168,173,.4)';
     el.innerHTML =
       '<div class="flex items-center gap-2 mb-1">' +
       '<span class="text-white bg-green-600 px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700">LINE友だち限定</span>' +
@@ -1683,7 +1726,7 @@ function calendarNext() { if (calendarOffset < 0) { calendarOffset++; renderCale
 function showConfetti() {
   var overlay = document.getElementById('confetti-overlay');
   overlay.style.display = 'block';
-  var colors = ['#06C755', '#f59e0b', '#ec4899', '#3b82f6', '#8b5cf6'];
+  var colors = ['#2fa8ad', '#f59e0b', '#ec4899', '#3b82f6', '#8b5cf6'];
   var html = '';
   for (var i = 0; i < 30; i++) {
     var x = Math.random() * 100;
@@ -1998,17 +2041,17 @@ function setMood(mood) {
   selectedMood = mood;
   document.querySelectorAll('.mood-btn').forEach(function(b) {
     var active = b.getAttribute('data-mood') === mood;
-    b.style.borderColor = active ? '#06C755' : 'transparent';
-    b.style.background = active ? '#f0fdf4' : 'transparent';
+    b.style.borderColor = active ? '#2fa8ad' : 'transparent';
+    b.style.background = active ? '#eef7f7' : 'transparent';
   });
 }
 
 function setSkin(skin) {
   selectedSkin = skin;
-  var colors = { good: '#06C755', normal: '#eab308', bad: '#ef4444' };
+  var colors = { good: '#2fa8ad', normal: '#eab308', bad: '#ef4444' };
   document.querySelectorAll('.skin-btn').forEach(function(b) {
     var active = b.getAttribute('data-skin') === skin;
-    b.style.borderColor = active ? (colors[skin] || '#06C755') : 'transparent';
+    b.style.borderColor = active ? (colors[skin] || '#2fa8ad') : 'transparent';
     b.style.background = active ? '#f9fafb' : '#f9fafb';
     b.style.fontWeight = active ? '700' : '400';
   });
@@ -2018,8 +2061,8 @@ function setBowel(form) {
   selectedBowel = form;
   document.querySelectorAll('.bowel-btn').forEach(function(b) {
     var active = b.getAttribute('data-bowel') === form;
-    b.style.borderColor = active ? '#06C755' : 'transparent';
-    b.style.background = active ? '#f0fdf4' : '#f9fafb';
+    b.style.borderColor = active ? '#2fa8ad' : 'transparent';
+    b.style.background = active ? '#eef7f7' : '#f9fafb';
   });
   if (bowelCount === 0) { bowelCount = 1; document.getElementById('bowel-count-display').textContent = '1'; }
 }
@@ -2077,7 +2120,7 @@ async function loadGraph(days) {
     // Weight chart
     renderLineChart('weight-chart', 'weightChart', labels,
       trends.map(function(t) { return t.weight; }),
-      'rgba(6,199,85,1)', 'rgba(6,199,85,0.1)', 'kg');
+      'rgba(47,168,173,1)', 'rgba(47,168,173,0.1)', 'kg');
 
     // Show weight change
     var weights = trends.filter(function(t) { return t.weight !== null; });
@@ -2093,7 +2136,7 @@ async function loadGraph(days) {
     var moodMap = { great: 5, good: 4, normal: 3, bad: 2, terrible: 1 };
     var condMap = { good: 4, normal: 3, bad: 2 };
     renderBarChart('condition-chart', 'condChart', labels, [
-      { label: '気分', data: trends.map(function(t) { return t.mood ? moodMap[t.mood] : null; }), color: 'rgba(6,199,85,0.7)' },
+      { label: '気分', data: trends.map(function(t) { return t.mood ? moodMap[t.mood] : null; }), color: 'rgba(47,168,173,0.7)' },
       { label: '肌', data: trends.map(function(t) { return t.skin_condition ? condMap[t.skin_condition] : null; }), color: 'rgba(168,85,247,0.7)' },
     ]);
 

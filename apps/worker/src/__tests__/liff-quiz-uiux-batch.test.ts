@@ -127,8 +127,8 @@ describe('uiux_feel (先進性方針: タップ柔らかく・skeleton 波状・
     expect(pages).toContain('.btn-primary:active{transform:scale(0.95)');
   });
 
-  it('meal-btn に押下 scale feedback', () => {
-    expect(pages).toMatch(/\.meal-btn:active\{transform:scale\(0\.95\)/);
+  it('meal-btn に押下 scale feedback (2026-07-07 PM: 押し込み統一で translateY 同梱)', () => {
+    expect(pages).toMatch(/\.meal-btn:active\{transform:translateY\(1\.5px\) scale\(0\.95\)\}/);
   });
 
   it('fadeUp は 0.38s の soft curve (0.25s ease-out から延長)', () => {

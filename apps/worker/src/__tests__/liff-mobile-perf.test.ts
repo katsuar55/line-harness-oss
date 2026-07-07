@@ -17,7 +17,8 @@ const pages = readFileSync(join(root, '..', 'routes', 'liff-pages.ts'), 'utf8');
 
 describe('portal mobile/perf/a11y polish', () => {
   it('theme-color meta (ブランド色) を持つ', () => {
-    expect(pages).toMatch(/<meta name="theme-color" content="#059669">/);
+    // 2026-07-07 brand skin: LINE緑 #059669 → naturism ティール #2fa8ad
+    expect(pages).toMatch(/<meta name="theme-color" content="#2fa8ad">/);
   });
 
   it('描画ブロッキング CDN への接続前倒し (preconnect/dns-prefetch) がある', () => {
