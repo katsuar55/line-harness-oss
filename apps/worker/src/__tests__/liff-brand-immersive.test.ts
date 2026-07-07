@@ -25,13 +25,13 @@ const root = dirname(fileURLToPath(import.meta.url));
 const pages = readFileSync(join(root, '..', 'routes', 'liff-pages.ts'), 'utf8');
 
 describe('ヘッダー: 公式ロゴ', () => {
-  it('公式ロゴ SVG (officialLOGO) を使用し、テキスト見出しを廃止', () => {
-    expect(pages).toContain('officialLOGO');
+  it('公式ロゴを使用し、テキスト見出しを廃止 (2026-07-07 PM: self-host PNG 化 — liff-brand-skin.test.ts 参照)', () => {
+    expect(pages).toContain('src="/liff/brand-logo.png"');
     expect(pages).not.toMatch(/<h1[^>]*>ナチュリズム/);
   });
 
-  it('CDN 障害/URL 変更時は onerror でブランド名 fallback を表示 (ロゴ消失でヘッダーが空にならない)', () => {
-    expect(pages).toMatch(/officialLOGO[^>]*onerror/);
+  it('取得失敗時は onerror でブランド名 fallback を表示 (ロゴ消失でヘッダーが空にならない)', () => {
+    expect(pages).toMatch(/brand-logo\.png[^>]*onerror/);
     expect(pages).toContain('id="brand-fallback"');
   });
 });
@@ -68,7 +68,7 @@ describe('紹介リンク URL', () => {
 describe('没入スクロール (3D cascade + 進捗バー)', () => {
   it('#scroll-progress 要素とブランドグラデ CSS (transform:scaleX のみ)', () => {
     expect(pages).toContain('<div id="scroll-progress"');
-    expect(pages).toMatch(/#scroll-progress\{[^}]*linear-gradient\(90deg,#0ABAB5/);
+    expect(pages).toMatch(/#scroll-progress\{[^}]*linear-gradient\(90deg,#80c8cd/);
     expect(pages).toMatch(/#scroll-progress\{[^}]*transform:scaleX\(0\)/);
   });
 
@@ -91,10 +91,10 @@ describe('没入スクロール (3D cascade + 進捗バー)', () => {
   it('reduced-motion / IO 非対応では内容が常に見える (opacity:0 で固まらない)', () => {
     // JS guard
     expect(pages).toMatch(/function initScrollReveal\(\) \{[\s\S]{0,700}TAB_REDUCED_MOTION/);
-    expect(pages).toMatch(/function initScrollReveal\(\) \{[\s\S]{0,900}'IntersectionObserver' in window/);
+    expect(pages).toMatch(/function initScrollReveal\(\) \{[\s\S]{0,1400}'IntersectionObserver' in window/);
     // CSS guard (.sr を強制表示 + 進捗バー非表示)
     expect(pages).toMatch(/prefers-reduced-motion:reduce\)[\s\S]{0,700}\.sr\{opacity:1 !important;transform:none !important\}/);
-    expect(pages).toMatch(/prefers-reduced-motion:reduce\)[\s\S]{0,700}#scroll-progress\{display:none\}/);
+    expect(pages).toMatch(/prefers-reduced-motion:reduce\)[\s\S]{0,900}#scroll-progress(,#scroll-leaf)?\{display:none\}/);
   });
 
   it('.sr の付与は initScrollReveal 実行時のみ (JS 未実行 = 全カード可視) + loading 非表示後に起動', () => {

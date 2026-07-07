@@ -17,8 +17,8 @@ const root = dirname(fileURLToPath(import.meta.url));
 const pages = readFileSync(join(root, '..', 'routes', 'liff-pages.ts'), 'utf8');
 
 describe('ヘッダー刷新', () => {
-  it('ブランド見出しは公式ロゴ SVG + fallback (2026-07-07 実機FBでテキスト見出しから変更)', () => {
-    expect(pages).toContain('officialLOGO');
+  it('ブランド見出しは公式ロゴ + fallback (2026-07-07 実機FBでテキスト見出しから変更、PM: self-host 化)', () => {
+    expect(pages).toContain('src="/liff/brand-logo.png"');
     expect(pages).toContain('id="brand-fallback"');
     // 旧 LINE グリーン (#06C755) の h1 グラデは残っていない
     expect(pages).not.toMatch(/<h1[^>]*#06C755[^>]*>naturism</);
