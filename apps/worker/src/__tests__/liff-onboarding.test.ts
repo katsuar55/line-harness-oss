@@ -66,8 +66,9 @@ describe('LIFF 初回オンボーディング (第2波-⑥) — 静的構造', (
 
   it('initOnboarding は loading を消してから呼ばれる (ツアーが loading の上に出ない)', () => {
     expect(pages).toContain('function initOnboarding');
+    // loading 非表示 → (没入スクロール起動を挟んで) → initOnboarding の順序 (2026-07-07 initScrollReveal 追加に追随)
     expect(pages).toMatch(
-      /getElementById\('loading'\)\.style\.display = 'none';\s*(?:\/\/[^\n]*\n\s*)*initOnboarding\(\);/,
+      /getElementById\('loading'\)\.style\.display = 'none';\s*(?:(?:\/\/[^\r\n]*|initScrollReveal\(\);)\s*)*initOnboarding\(\);/,
     );
   });
 
