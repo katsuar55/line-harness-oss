@@ -1893,6 +1893,29 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
   created_at TEXT NOT NULL             -- ISO8601 (UTC) 受信時刻 (= TTL prune 用)
 );
 
+-- from 068_line_referral_coupons.sql
+CREATE TABLE IF NOT EXISTS line_referral_coupons (
+  id                       TEXT PRIMARY KEY,
+  friend_id                TEXT NOT NULL,
+  reward_id                TEXT,                           -- referral_rewards.id (弱リンク)
+  role                     TEXT NOT NULL
+                           CHECK (role IN ('referrer', 'referred')),
+  coupon_code              TEXT NOT NULL,                  -- Shopify で発行された code
+  shopify_discount_code_id TEXT,                           -- Shopify GraphQL ID (gid://shopify/DiscountCodeNode/...)
+  discount_value           INTEGER NOT NULL DEFAULT 500,
+  discount_currency        TEXT NOT NULL DEFAULT 'JPY',
+  issued_at                TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  expires_at               TEXT,                            -- coupon 有効期限 (NULL = 無期限)
+  redeemed_at              TEXT,                            -- 使用時刻 (将来 orders webhook で更新)
+  status                   TEXT NOT NULL DEFAULT 'issued'
+                           CHECK (status IN ('issued', 'redeemed', 'expired', 'revoked')),
+  line_account_id          TEXT,
+  metadata                 TEXT,                            -- JSON (Shopify API response の subset 等)
+  FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id) ON DELETE SET NULL,
+  UNIQUE (friend_id, role)
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -2137,3 +2160,11 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_created_at
   ON webhook_deliveries(created_at);
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status_sending_started
   ON broadcasts (status, sending_started_at);
+CREATE INDEX IF NOT EXISTS idx_line_referral_coupons_friend
+  ON line_referral_coupons(friend_id);
+CREATE INDEX IF NOT EXISTS idx_line_referral_coupons_code
+  ON line_referral_coupons(coupon_code);
+CREATE INDEX IF NOT EXISTS idx_line_referral_coupons_reward
+  ON line_referral_coupons(reward_id);
+CREATE INDEX IF NOT EXISTS idx_line_referral_coupons_status
+  ON line_referral_coupons(status, issued_at DESC);

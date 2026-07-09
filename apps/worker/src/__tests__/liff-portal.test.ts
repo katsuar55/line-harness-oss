@@ -573,6 +573,36 @@ describe('LIFF Portal Routes', () => {
     });
   });
 
+  describe('POST /api/liff/referral/claim', () => {
+    it('records referral_rewards (pending) + attempts referred coupon (gated off → null), does NOT issue referrer at claim', async () => {
+      const db = await import('@line-crm/db');
+      (db.getReferralLinkByRefCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        id: 'rl-2', friend_id: 'friend-referrer', ref_code: 'ref-xyz', referrer_coupon_id: null, referred_coupon_id: null,
+      });
+      const res = await post(app, '/api/liff/referral/claim', { lineUserId: 'U_EXISTING', refCode: 'ref-xyz' });
+      expect(res.status).toBe(200);
+      const json = await res.json() as {
+        data: { alreadyClaimed: boolean; rewardId: string; status: string; coupons: Record<string, unknown> };
+      };
+      expect(json.data.alreadyClaimed).toBe(false);
+      expect(json.data.rewardId).toBe('rr-1');
+      expect(json.data.status).toBe('pending');
+      // gate off → referred は null。 referrer は claim 時に発行しない (deferral) = coupons に referrer キー無し
+      expect(json.data.coupons.referred).toBeNull();
+      expect(json.data.coupons.referrer).toBeUndefined();
+      expect(db.createReferralReward as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+    });
+
+    it('blocks self-referral (400)', async () => {
+      const db = await import('@line-crm/db');
+      (db.getReferralLinkByRefCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        id: 'rl-self', friend_id: 'friend-1', ref_code: 'ref-self', referrer_coupon_id: null, referred_coupon_id: null,
+      });
+      const res = await post(app, '/api/liff/referral/claim', { lineUserId: 'U_EXISTING', refCode: 'ref-self' });
+      expect(res.status).toBe(400);
+    });
+  });
+
   // ─── Ambassador ───────────────────────────────
   describe('POST /api/liff/ambassador/enroll', () => {
     it('enrolls friend as ambassador', async () => {
@@ -819,6 +849,22 @@ describe('LIFF More Tab APIs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     moreApp = createMoreTabApp();
+  });
+
+  // ─── Referral coupon (紹介特典クーポン表示) ─────────
+  describe('GET /api/liff/referral-coupon', () => {
+    it('gate off (REFERRAL_REWARD_ENABLED 未設定) → coupon:null (DB を触らない)', async () => {
+      const res = await moreReq(moreApp, 'GET', '/api/liff/referral-coupon');
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean; data: { coupon: unknown } };
+      expect(json.success).toBe(true);
+      expect(json.data.coupon).toBeNull();
+    });
+
+    it('未認証 → 401', async () => {
+      const res = await moreReq(moreApp, 'GET', '/api/liff/referral-coupon', undefined, false);
+      expect(res.status).toBe(401);
+    });
   });
 
   // ─── Notification Prefs ─────────────────────────

@@ -17,6 +17,8 @@ import { getShopifyAccessToken } from '../services/shopify-token.js';
 // 第2波-⑤: welcome クーポン redemption 追跡。 軽量 service のため static import
 // (vi.mock + dynamic import 干渉トラップ回避、 CLAUDE.md テストルール準拠)。
 import { processOrderCouponRedemption } from '../services/coupon-redemption.js';
+import { processReferralRewardOnPurchase } from '../services/referral-reward.js';
+import { LineClient } from '@line-crm/line-sdk';
 
 const shopify = new Hono<Env>();
 
@@ -309,6 +311,21 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
                   });
                 } catch (enrollErr) {
                   console.error('subscription enroll failed:', enrollErr);
+                }
+              }
+
+              // 紹介クーポン: この購入者が「紹介された側 (referred)」なら、 紹介者 (referrer) に
+              //   ¥500 実クーポンを発行し LINE push (orders/create のみ、 gated、 冪等)。
+              //   pending reward が無い organic buyer は no-op。 gate off なら完全 dormant。
+              //   注文の主処理を巻き込まないよう独立 try/catch で隔離。
+              if (topic === 'orders/create') {
+                try {
+                  const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+                  await processReferralRewardOnPurchase(db, c.env, lineClient, {
+                    referredFriendId: friendId,
+                  });
+                } catch (refErr) {
+                  console.error('referral reward on purchase failed:', refErr);
                 }
               }
             }
