@@ -106,7 +106,7 @@ function createMockR2Bucket() {
     get: vi.fn(async (): Promise<unknown> => null),
     delete: vi.fn(async () => undefined),
     list: vi.fn(async () => ({ objects: [], truncated: false })),
-    head: vi.fn(async () => null),
+    head: vi.fn(async (): Promise<unknown> => null),
     createMultipartUpload: vi.fn(),
     resumeMultipartUpload: vi.fn(),
   };
@@ -361,6 +361,8 @@ describe('Images Routes', () => {
         etag: '"abc123"',
       };
       const bucket = createMockR2Bucket();
+      // Range 対応で GET は head() で size+meta を先に取得する (2026-07-08)
+      bucket.head.mockResolvedValueOnce({ size: 1024, httpMetadata: { contentType: 'image/jpeg' }, etag: '"abc123"' });
       bucket.get.mockResolvedValueOnce(mockObject);
       const env = createMockEnv({ IMAGES: bucket as unknown as R2Bucket });
 
@@ -372,6 +374,7 @@ describe('Images Routes', () => {
       expect(res.headers.get('Cache-Control')).toContain('public');
       expect(res.headers.get('Cache-Control')).toContain('max-age=31536000');
       expect(res.headers.get('ETag')).toBe('"abc123"');
+      expect(res.headers.get('Accept-Ranges')).toBe('bytes');
     });
 
     it('returns 404 when image is not found', async () => {
@@ -405,6 +408,7 @@ describe('Images Routes', () => {
         etag: '"fallback"',
       };
       const bucket = createMockR2Bucket();
+      bucket.head.mockResolvedValueOnce({ size: 512, httpMetadata: {}, etag: '"fallback"' });
       bucket.get.mockResolvedValueOnce(mockObject);
       const env = createMockEnv({ IMAGES: bucket as unknown as R2Bucket });
 

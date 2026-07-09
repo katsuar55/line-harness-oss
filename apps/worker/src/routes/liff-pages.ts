@@ -56,7 +56,7 @@ function portalPage(liffId: string, apiBase: string): string {
   <style>
     *{-webkit-tap-highlight-color:transparent}
     /* naturism ブランドトークン (Dawn テーマ実測: naturism-category.css / settings_data.json) */
-    :root{--brand:#2fa8ad;--brand-deep:#1d7d82;--brand-soft:#eef7f7;--brand-tint:#dff0f0;--brand-line:#e3ecec;--ink:#052422;--muted:#66727d;--coral:#ffb39c;--coral-deep:#e8836a;--coral-ink:#a44e37}
+    :root{--brand:#2fa8ad;--brand-deep:#1d7d82;--brand-soft:#eef7f7;--brand-tint:#dff0f0;--brand-line:#e3ecec;--ink:#052422;--muted:#66727d;--coral:#ffb39c;--coral-deep:#d9573d;--coral-ink:#b84a2e;--coral-soft:#fff3ec}
     body{font-family:'Noto Sans JP',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(165deg,#f2fafa 0%,#f8fafc 45%,#f3f7f8 100%);min-height:100vh;color:#052422}
     .tab-active{color:#1d7d82;border-bottom:2.5px solid #2fa8ad;font-weight:600}
     .tab-inactive{color:#475569;border-bottom:2.5px solid transparent}
@@ -64,10 +64,15 @@ function portalPage(liffId: string, apiBase: string): string {
     .btn-primary{background:linear-gradient(135deg,#2fa8ad 0%,#1d7d82 100%);color:#fff;border:none;border-radius:999px !important;letter-spacing:.02em;transition:transform .15s,box-shadow .15s}
     .btn-primary:active{transform:scale(0.95) translateY(1.5px);box-shadow:0 2px 6px rgba(29,125,130,.35)}
     /* コーラル挿し色 (2026-07-07 Katsu FB: 三層設計 = ティール基調 / コーラル=感情・お得・アクション / ゴールド=プレミア。実測 pp-styles.css --color-coral) */
-    .btn-coral{background:linear-gradient(135deg,#e8836a 0%,#b85c41 100%);color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.15);border:none;border-radius:999px !important;letter-spacing:.02em;transition:transform .15s,box-shadow .15s}
-    .btn-coral:active{transform:scale(0.95) translateY(1.5px);box-shadow:0 2px 6px rgba(232,131,106,.4)}
-    .text-coral{color:#a44e37 !important}
-    #quiz-progress-bar{background:linear-gradient(90deg,#ffb39c,#e8836a) !important}
+    /* コーラルは「淡ピーチ chip」が主軸 (2026-07-08 Katsu「濃すぎ・薄く」): 14px 白文字×コーラルは
+       物理的に AA 不可 (#e8836a=2.66:1) なので白文字塗りを廃し、薄ピーチ地 + コーラル文字 + コーラル枠へ。
+       艶コーラル #d9573d は大数字 (≥24px/太字 = 3:1 で足りる) 専用に隔離。#b84a2e は小文字 AA (白 5.18 / #fff3ec 4.75)。 */
+    .btn-coral{background:#fff3ec;color:#b84a2e;border:1.5px solid #eaa588;border-radius:999px !important;font-weight:700;letter-spacing:.02em;box-shadow:0 2px 10px rgba(217,87,61,.18);transition:transform .15s,background .15s,box-shadow .15s}
+    .btn-coral:active{transform:scale(0.95) translateY(1.5px);background:#ffe6db;box-shadow:0 1px 4px rgba(217,87,61,.24)}
+    .text-coral{color:#b84a2e !important}
+    .text-coral-lg{color:#d9573d !important}
+    .chip-coral{background:#fff3ec;color:#b84a2e;border:1px solid #f0b49f}
+    #quiz-progress-bar{background:linear-gradient(90deg,#ffb39c,#d9573d) !important}
     .card{background:#ffffff;border-radius:20px;border:1px solid #e3ecec;box-shadow:0 2px 6px rgba(24,34,41,.05),0 12px 32px rgba(24,34,41,.06)}
     .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:8px}
     @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
@@ -592,7 +597,16 @@ function portalPage(liffId: string, apiBase: string): string {
     <div id="section-quiz" class="section space-y-4">
       <!-- Quiz Intro -->
       <div id="quiz-intro" class="card p-6 text-center">
-        <div class="text-5xl mb-3">💊</div>
+        <!-- 商品ヒーロー動画 (💊 差し替え、2026-07-08): カード上端に full-bleed 16:9。R2 配信・poster 先出し・
+             reduced-motion は poster 静止・診断タブ表示時のみ再生 (データ節約)。onerror で poster/絵文字 fallback。 -->
+        <div class="-mt-6 -mx-6 mb-5 overflow-hidden rounded-t-[20px]" style="background:#fbf7f4">
+          <video id="quiz-hero-video" class="w-full block" style="aspect-ratio:16/9;object-fit:cover;background:#fbf7f4"
+            muted loop playsinline preload="metadata" aria-label="naturism 商品ラインナップ"
+            src="${apiBase}/images/quiz-hero-v1.mp4"
+            poster="${apiBase}/images/quiz-hero-poster-v1.jpg"
+            onerror="this.style.display='none';var f=document.getElementById('quiz-hero-fallback');if(f)f.style.display='block'"></video>
+          <div id="quiz-hero-fallback" style="display:none" class="py-6 text-5xl">💊</div>
+        </div>
         <h2 class="text-lg font-bold text-gray-800 mb-2">あなたにぴったりの naturism は？</h2>
         <p class="text-sm text-gray-500 mb-5 leading-relaxed">8つの質問に答えるだけで、<br>最適な商品をご提案します。</p>
         <button onclick="startQuiz()" class="btn-coral px-10 py-3.5 rounded-2xl text-sm font-bold shadow-lg">診断スタート →</button>
@@ -1365,6 +1379,20 @@ function switchTab(name) {
   if (name === 'health') loadHealthData();
   if (name === 'shop') loadShopData();
   if (name === 'more') loadMoreData();
+  if (name === 'quiz') playQuizHeroVideo();
+}
+
+// 診断ヒーロー動画: 診断タブが表示された時だけ再生 (データ節約 = home 初期表示では読まない)。
+// reduced-motion では poster 静止のまま (自動再生の動きを出さない = WCAG 2.2.2 尊重)。
+var quizHeroPlayed = false;
+function playQuizHeroVideo() {
+  var v = document.getElementById('quiz-hero-video');
+  if (!v || TAB_REDUCED_MOTION) return;
+  quizHeroPlayed = true;
+  try {
+    var p = v.play();
+    if (p && p.catch) { p.catch(function () { /* autoplay 拒否時は poster のまま */ }); }
+  } catch (e) { /* poster fallback */ }
 }
 
 // ─── タブ フリック切替 (ページめくり、2026-07-04 先進性方針) ───
@@ -1621,9 +1649,9 @@ async function loadWelcomeCoupon() {
     var currency = cp.currency === 'JPY' ? '¥' : (esc(cp.currency) + ' ');
     el.innerHTML =
       '<div class="flex items-center gap-2 mb-1">' +
-      '<span class="text-white px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700;background:#b85c41">🎁 あなた専用</span>' +
+      '<span class="chip-coral px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700">🎁 あなた専用</span>' +
       (cp.remainingText ? '<span class="text-xs font-bold text-coral">⏳ ' + esc(cp.remainingText) + 'で終了</span>' : '') + '</div>' +
-      '<p class="text-2xl font-extrabold text-coral mb-1">' + currency + Number(cp.discountValue) + ' OFF クーポン</p>' +
+      '<p class="text-2xl font-extrabold text-coral-lg mb-1">' + currency + Number(cp.discountValue) + ' OFF クーポン</p>' +
       '<p class="text-xs text-gray-500 mb-2">友だち追加のお礼です。公式ストアの初回購入にお使いいただけます。</p>' +
       '<div class="flex items-center gap-2 mb-3">' +
       '<code id="welcome-coupon-code" class="flex-1 text-center text-sm font-bold tracking-widest bg-white rounded-lg py-2" style="border:1px solid #f4c0ad">' + esc(cp.code) + '</code>' +
@@ -1691,7 +1719,7 @@ async function loadIntakeData() {
     if (data) {
       const fire = data.currentStreak >= 3 ? ' streak-fire' : '';
       el.innerHTML = '<div class="text-4xl mb-2' + fire + '">' + (data.currentStreak >= 7 ? '&#x1F525;' : data.currentStreak >= 3 ? '&#x2B50;' : '&#x1F331;') + '</div>' +
-        '<p class="text-3xl font-bold ' + (data.currentStreak >= 3 ? 'text-coral' : 'text-gray-800') + '">' + data.currentStreak + '<span class="text-sm text-gray-500 ml-1">日連続</span></p>' +
+        '<p class="text-3xl font-bold ' + (data.currentStreak >= 3 ? 'text-coral-lg' : 'text-gray-800') + '">' + data.currentStreak + '<span class="text-sm text-gray-500 ml-1">日連続</span></p>' +
         '<div class="flex justify-center gap-6 mt-3 text-xs text-gray-500">' +
         '<div>最長 <span class="font-bold text-gray-800">' + data.longestStreak + '日</span></div>' +
         '<div>累計 <span class="font-bold text-gray-800">' + data.totalDays + '日</span></div></div>';
