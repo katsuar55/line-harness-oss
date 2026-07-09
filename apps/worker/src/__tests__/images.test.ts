@@ -106,7 +106,7 @@ function createMockR2Bucket() {
     get: vi.fn(async (): Promise<unknown> => null),
     delete: vi.fn(async () => undefined),
     list: vi.fn(async () => ({ objects: [], truncated: false })),
-    head: vi.fn(async () => null),
+    head: vi.fn(async (): Promise<unknown> => null),
     createMultipartUpload: vi.fn(),
     resumeMultipartUpload: vi.fn(),
   };
