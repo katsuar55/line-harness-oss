@@ -151,12 +151,17 @@ export async function processReferralRewardOnPurchase(
   const lineAccountId = input.lineAccountId ?? null;
   const nowFn = input.now ?? Date.now;
 
-  // 1. この friend が「紹介された側」である pending reward を取得 (通常 0 or 1)
+  // 1. この friend が「紹介された側」である pending reward を取得。
+  //   1 購入で報われる referrer は最古 (先着) の 1 人だけに絞る (ORDER BY created_at ASC LIMIT 1)。
+  //   claim 側で referred 単位に cap 済のため通常 1 行だが、 万一の並行 claim race で複数行できても
+  //   「1 購入 = 1 referrer 報酬」を保ち報酬増幅を防ぐ (review HIGH の多重防御)。
   const { results } = await db
     .prepare(
       `SELECT id, referrer_friend_id
          FROM referral_rewards
-        WHERE referred_friend_id = ? AND status = 'pending'`,
+        WHERE referred_friend_id = ? AND status = 'pending'
+        ORDER BY created_at ASC
+        LIMIT 1`,
     )
     .bind(referredFriendId)
     .all<PendingRewardRow>();
@@ -198,11 +203,16 @@ export async function processReferralRewardOnPurchase(
       continue;
     }
 
-    // 4. referrer の line_user_id を引いて push (blacklist/not_following は dispatch が自動 skip)
-    const referrer = await db
-      .prepare('SELECT line_user_id FROM friends WHERE id = ?')
-      .bind(reward.referrer_friend_id)
-      .first<{ line_user_id: string | null }>();
+    // 4. referrer に push — ただし「新規発行クーポン」のときだけ (誤通知防止)。
+    //   この referrer が別の referred の購入で既に受給済 (isExisting) なら、 新しいクーポンは無いのに
+    //   「クーポンをプレゼント」を再送してしまう。 reward 行は flip 済 (terminal) なので、 push だけ抑止する。
+    //   blacklist/not_following は dispatch が自動 skip。
+    const referrer = coupon.isExisting
+      ? null
+      : await db
+          .prepare('SELECT line_user_id FROM friends WHERE id = ?')
+          .bind(reward.referrer_friend_id)
+          .first<{ line_user_id: string | null }>();
 
     if (referrer?.line_user_id) {
       const message = buildReferrerRewardMessage(coupon.code, coupon.expiresAt, liffUrl);

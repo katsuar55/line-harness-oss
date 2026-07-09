@@ -1283,12 +1283,12 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
       return c.json({ success: false, error: 'Cannot refer yourself' }, 400);
     }
 
-    // 重複チェック
+    // 重複チェック: この referred は既に「いずれかの referrer」から成立済か (= 1 referred に 1 referrer、 先着勝ち)。
+    //   referrer 単位でなく referred 単位で弾く理由: 複数 referrer の link を claim できると、
+    //   referred の 1 回の購入で全 referrer に ¥500 が出る「報酬増幅」を招くため (review HIGH)。
     const existing = await c.env.DB
-      .prepare(
-        'SELECT id FROM referral_rewards WHERE referrer_friend_id = ? AND referred_friend_id = ?',
-      )
-      .bind(link.friend_id, user.friendId)
+      .prepare('SELECT id FROM referral_rewards WHERE referred_friend_id = ? LIMIT 1')
+      .bind(user.friendId)
       .first<{ id: string }>();
 
     if (existing) {
