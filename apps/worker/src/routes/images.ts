@@ -114,7 +114,7 @@ images.get('/images/:key', async (c) => {
     return c.json({ success: false, error: 'Image not found' }, 404);
   }
   const total = head.size;
-  const contentType = head.httpMetadata?.contentType || 'application/octet-stream';
+  const contentType = head.httpMetadata?.contentType || 'image/png';
   const baseHeaders = {
     'Content-Type': contentType,
     'Cache-Control': 'public, max-age=31536000, immutable',
