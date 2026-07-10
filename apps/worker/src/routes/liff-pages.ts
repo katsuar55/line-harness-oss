@@ -45,7 +45,7 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#2fa8ad">
-  <title>naturism マイページ</title>
+  <title>naturism 公式ポータル</title>
   <!-- 描画ブロッキングな外部 CDN への接続を前倒し (FCP 短縮) -->
   <link rel="preconnect" href="https://static.line-scdn.net" crossorigin>
   <link rel="dns-prefetch" href="https://cdn.tailwindcss.com">
@@ -185,7 +185,8 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
             <button onclick="setLanguage('th')" class="block w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors">&#x1F1F9;&#x1F1ED; ไทย</button>
           </div>
         </div>
-        <div id="user-avatar" class="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-100 to-green-50 ring-2 ring-white shadow-sm"></div>
+        <!-- 4タブ再設計: アバターをタップ → マイアカウント (プロフィール/設定/サポート) -->
+        <button id="user-avatar" onclick="switchTab('account')" aria-label="マイアカウント" class="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-100 to-green-50 ring-2 ring-white shadow-sm overflow-hidden flex items-center justify-center text-sm" style="padding:0;cursor:pointer">👤</button>
       </div>
     </div>
   </header>
@@ -193,12 +194,13 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
   <!-- Tab Navigation -->
   <nav class="sticky top-[53px] z-40" style="background:rgba(255,255,255,.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid rgba(0,0,0,.05)">
     <div class="max-w-lg mx-auto flex tab-strip" data-no-tab-swipe>
-      <button onclick="switchTabTo('home')" id="tab-home" class="flex-1 py-3 text-xs text-center tab-active" data-i18n="tab_mypage">マイページ</button>
-      <button onclick="switchTabTo('quiz')" id="tab-quiz" class="flex-1 py-3 text-xs text-center tab-inactive">診断</button>
-      <button onclick="switchTabTo('intake')" id="tab-intake" class="flex-1 py-3 text-xs text-center tab-inactive" data-i18n="intake_log">服用記録</button>
-      <button onclick="switchTabTo('health')" id="tab-health" class="flex-1 py-3 text-xs text-center tab-inactive" data-i18n="tab_health">体調</button>
-      <button onclick="switchTabTo('shop')" id="tab-shop" class="flex-1 py-3 text-xs text-center tab-inactive">ストア</button>
-      <button onclick="switchTabTo('more')" id="tab-more" class="flex-1 py-3 text-xs text-center tab-inactive">その他</button>
+      <!-- 4タブ再設計 (実機FB第5弾): モバイルファーストで 6→4。行動が名前 (診断する/買う/記録する)。
+           体調は「記録」に統合、旧「その他」は解体 (定期→Shop / 設定・サポート→マイアカウント=右上アバター)。
+           data-i18n は旧キー (tab_mypage 等) の D1 訳が旧名で上書きしないよう新キーに変更。 -->
+      <button onclick="switchTabTo('home')" id="tab-home" class="flex-1 py-3 text-xs text-center tab-active" data-i18n="tab_home">ホーム</button>
+      <button onclick="switchTabTo('quiz')" id="tab-quiz" class="flex-1 py-3 text-xs text-center tab-inactive" data-i18n="tab_quiz">診断</button>
+      <button onclick="switchTabTo('shop')" id="tab-shop" class="flex-1 py-3 text-xs text-center tab-inactive">Shop</button>
+      <button onclick="switchTabTo('intake')" id="tab-intake" class="flex-1 py-3 text-xs text-center tab-inactive" data-i18n="tab_record">記録</button>
     </div>
   </nav>
 
@@ -212,17 +214,6 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
       <div id="referral-coupon-card" class="card p-4" style="display:none"></div>
       <!-- LINE友だち限定クーポン (管理トグル ON 時のみ表示) -->
       <div id="friend-coupon-card" class="card p-4" style="display:none"></div>
-      <!-- メール配信オプトイン導線 (未dismiss時のみ表示) -->
-      <div id="opt-in-card" class="card p-4" style="display:none">
-        <div class="flex items-start justify-between gap-2">
-          <div class="flex-1">
-            <p class="text-sm font-bold text-gray-800 mb-1">📩 お得情報をメールでも受け取る</p>
-            <p class="text-xs text-gray-500 mb-3">限定クーポンや新商品のお知らせを、メールでもいち早くお届けします。</p>
-            <a href="javascript:void(0)" onclick="openFeaturePage('/liff/opt-in')" class="inline-block btn-primary py-2.5 px-4 rounded-xl text-sm font-bold">登録する →</a>
-          </div>
-          <button onclick="dismissOptIn()" aria-label="閉じる" class="text-gray-300 text-xl leading-none px-1">×</button>
-        </div>
-      </div>
       <!-- 次の一手 (第2波-⑥: 初回体験の埋没解消。文脈で1つだけ next action を提示・診断ファースト) -->
       <div id="next-move-card" class="card p-4" style="display:none">
         <div class="flex items-start justify-between gap-2">
@@ -291,23 +282,6 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
           </button>
         </div>
         <p class="text-xs text-gray-400 text-center mt-2">タップして記録 (1日1回ずつ、押し忘れOK)</p>
-      </div>
-
-      <!-- Nutrition & Wellness discovery (PR-B: food/コーチ/グラフ を home に露出。従来は 0 導線で 4+タップ埋没していた) -->
-      <div class="card p-4">
-        <p class="text-sm font-bold text-gray-700 mb-1">🍽 栄養 & ウェルネス</p>
-        <p class="text-xs text-gray-400 mb-3">毎日の食事を記録 → AIコーチがあなたに合うサプリ・食生活をご提案</p>
-        <div class="grid grid-cols-3 gap-2">
-          <a href="javascript:void(0)" onclick="openFeaturePage('/liff/food')" class="flex flex-col items-center gap-1 p-3 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-bold hover:bg-emerald-100 transition-colors">
-            <span class="text-xl">🍽</span> 食事記録
-          </a>
-          <a href="javascript:void(0)" onclick="openFeaturePage('/liff/coach')" class="flex flex-col items-center gap-1 p-3 rounded-xl bg-green-50 text-green-700 text-xs font-bold hover:bg-green-100 transition-colors">
-            <span class="text-xl">🧠</span> AIコーチ
-          </a>
-          <a href="javascript:void(0)" onclick="openFeaturePage('/liff/food/graph')" class="flex flex-col items-center gap-1 p-3 rounded-xl bg-teal-50 text-teal-700 text-xs font-bold hover:bg-teal-100 transition-colors">
-            <span class="text-xl">📊</span> グラフ
-          </a>
-        </div>
       </div>
 
       <!-- Today's Tip -->
@@ -381,26 +355,6 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
         </div>
       </div>
 
-      <!-- Profile (gender/birthday) -->
-      <div id="profile-card" class="card p-4">
-        <p class="text-xs text-gray-500 font-bold mb-3">プロフィール</p>
-        <div class="space-y-3">
-          <div>
-            <label class="text-xs text-gray-500">性別</label>
-            <div class="flex gap-2 mt-1">
-              <button onclick="setGender('male')" data-gender="male" class="gender-btn flex-1 py-2 rounded-lg text-xs border">男性</button>
-              <button onclick="setGender('female')" data-gender="female" class="gender-btn flex-1 py-2 rounded-lg text-xs border">女性</button>
-              <button onclick="setGender('other')" data-gender="other" class="gender-btn flex-1 py-2 rounded-lg text-xs border">その他</button>
-              <button onclick="setGender('unspecified')" data-gender="unspecified" class="gender-btn flex-1 py-2 rounded-lg text-xs border">未回答</button>
-            </div>
-          </div>
-          <div>
-            <label class="text-xs text-gray-500">誕生日</label>
-            <input type="date" id="birthday-input" class="w-full mt-1 p-2 border rounded-lg text-sm" min="1920-01-01" max="2020-12-31">
-          </div>
-          <button onclick="saveProfile()" class="btn-primary w-full py-2.5 rounded-2xl text-xs font-bold shadow-md">保存</button>
-        </div>
-      </div>
     </div>
 
     <!-- ===== INTAKE Section ===== -->
@@ -456,10 +410,28 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
       </div>
       <!-- Confetti overlay -->
       <div id="confetti-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:9999;"></div>
-    </div>
 
-    <!-- ===== HEALTH Section ===== -->
-    <div id="section-health" class="section space-y-4">
+      <!-- 栄養 & ウェルネス (4タブ再設計: home から移設 — 健康サポート機能を「記録」に集約) -->
+      <div class="card p-4">
+        <p class="text-sm font-bold text-gray-700 mb-1">🍽 栄養 & ウェルネス</p>
+        <p class="text-xs text-gray-400 mb-3">毎日の食事を記録 → AIコーチがあなたに合うサプリ・食生活をご提案</p>
+        <div class="grid grid-cols-3 gap-2">
+          <a href="javascript:void(0)" onclick="openFeaturePage('/liff/food')" class="flex flex-col items-center gap-1 p-3 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-bold hover:bg-emerald-100 transition-colors">
+            <span class="text-xl">🍽</span> 食事記録
+          </a>
+          <a href="javascript:void(0)" onclick="openFeaturePage('/liff/coach')" class="flex flex-col items-center gap-1 p-3 rounded-xl bg-green-50 text-green-700 text-xs font-bold hover:bg-green-100 transition-colors">
+            <span class="text-xl">🧠</span> AIコーチ
+          </a>
+          <a href="javascript:void(0)" onclick="openFeaturePage('/liff/food/graph')" class="flex flex-col items-center gap-1 p-3 rounded-xl bg-teal-50 text-teal-700 text-xs font-bold hover:bg-teal-100 transition-colors">
+            <span class="text-xl">📊</span> グラフ
+          </a>
+        </div>
+      </div>
+
+      <!-- ── 体調記録 (4タブ再設計: 旧・体調タブを「記録」に統合。服用も体調も食事も"記録する"行為で括る) ── -->
+      <div class="flex items-center gap-2 pt-2">
+        <p class="text-sm font-bold text-gray-700">🩺 体調の記録</p>
+      </div>
       <!-- Sub-tabs: Record / Graph -->
       <div class="flex bg-gray-100/80 rounded-2xl p-1">
         <button onclick="switchHealthView('record')" id="htab-record" class="flex-1 py-2 text-xs font-bold rounded-xl bg-white shadow-sm text-emerald-600 transition-all">📝 記録する</button>
@@ -678,24 +650,15 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
       <div id="fulfillments-card" class="card p-4">
         <div class="skeleton h-24 rounded-lg"></div>
       </div>
-    </div>
 
-    <!-- ===== MORE Section ===== -->
-    <div id="section-more" class="section space-y-4">
-      <!-- Quick Links -->
+      <!-- 再注文ショートカット (旧クイックリンクの再注文のみ Shop 文脈で存置。配送状況は上の fulfillments が担う) -->
       <div class="card p-4">
-        <p class="text-xs text-gray-500 font-bold mb-3">クイックリンク</p>
-        <div class="grid grid-cols-2 gap-2">
-          <a href="javascript:void(0)" onclick="openLiffPage('reorder')" class="flex items-center gap-2 p-3 rounded-xl bg-green-50 text-green-700 text-sm font-bold hover:bg-green-100 transition-colors">
-            <span class="text-lg">🔄</span> 再注文する
-          </a>
-          <a href="javascript:void(0)" onclick="openLiffPage('delivery')" class="flex items-center gap-2 p-3 rounded-xl bg-blue-50 text-blue-700 text-sm font-bold hover:bg-blue-100 transition-colors">
-            <span class="text-lg">📦</span> 配送状況
-          </a>
-        </div>
+        <a href="javascript:void(0)" onclick="openLiffPage('reorder')" class="flex items-center justify-center gap-2 p-3 rounded-xl bg-emerald-50 text-emerald-700 text-sm font-bold hover:bg-emerald-100 transition-colors">
+          <span class="text-lg">🔄</span> 購入履歴から再注文する
+        </a>
       </div>
 
-      <!-- Subscription Reminders -->
+      <!-- Subscription Reminders (4タブ再設計: 旧・その他タブから移設 = 定期は買い物の文脈) -->
       <div class="card p-4">
         <div class="flex items-center justify-between mb-3">
           <div>
@@ -728,14 +691,59 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
           <button onclick="createSubscription()" class="btn-primary w-full py-2.5 rounded-2xl text-xs font-bold shadow-md">リマインダーを設定</button>
         </div>
       </div>
+    </div>
+
+    <!-- ===== ACCOUNT Section (マイアカウント: 右上アバターから開く。タブバーには出さない) ===== -->
+    <div id="section-account" class="section space-y-4">
+      <div class="flex items-center gap-2">
+        <p class="text-base font-bold text-gray-800">👤 マイアカウント</p>
+      </div>
+
+      <!-- Profile (4タブ再設計: 旧マイページ下部から移設) -->
+      <div id="profile-card" class="card p-4">
+        <p class="text-xs text-gray-500 font-bold mb-3">プロフィール</p>
+        <div class="space-y-3">
+          <div>
+            <label class="text-xs text-gray-500">性別</label>
+            <div class="flex gap-2 mt-1">
+              <button onclick="setGender('male')" data-gender="male" class="gender-btn flex-1 py-2 rounded-lg text-xs border">男性</button>
+              <button onclick="setGender('female')" data-gender="female" class="gender-btn flex-1 py-2 rounded-lg text-xs border">女性</button>
+              <button onclick="setGender('other')" data-gender="other" class="gender-btn flex-1 py-2 rounded-lg text-xs border">その他</button>
+              <button onclick="setGender('unspecified')" data-gender="unspecified" class="gender-btn flex-1 py-2 rounded-lg text-xs border">未回答</button>
+            </div>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">誕生日</label>
+            <input type="date" id="birthday-input" class="w-full mt-1 p-2 border rounded-lg text-sm" min="1920-01-01" max="2020-12-31">
+          </div>
+          <button onclick="saveProfile()" class="btn-primary w-full py-2.5 rounded-2xl text-xs font-bold shadow-md">保存</button>
+        </div>
+      </div>
+
+      <p class="text-xs text-gray-400 font-bold pt-1">⚙️ 設定</p>
+
+      <!-- メール受信設定 (4タブ再設計: 旧ホームの opt-in カードを設定として移設。
+           意図 = LINE 単一依存のリスクヘッジ (ブロック/BAN時の連絡網) + email 配信基盤の獲得経路) -->
+      <div id="opt-in-card" class="card p-4" style="display:none">
+        <div class="flex items-start justify-between gap-2">
+          <div class="flex-1">
+            <p class="text-sm font-bold text-gray-800 mb-1">📩 お得情報をメールでも受け取る</p>
+            <p class="text-xs text-gray-500 mb-3">限定クーポンや新商品のお知らせを、メールでもいち早くお届けします。</p>
+            <a href="javascript:void(0)" onclick="openFeaturePage('/liff/opt-in')" class="inline-block btn-primary py-2.5 px-4 rounded-xl text-sm font-bold">登録する →</a>
+          </div>
+          <button onclick="dismissOptIn()" aria-label="閉じる" class="text-gray-300 text-xl leading-none px-1">×</button>
+        </div>
+      </div>
 
       <!-- Notification Settings -->
       <div class="card p-4">
-        <p class="text-xs text-gray-500 font-bold mb-3">通知設定</p>
+        <p class="text-xs text-gray-500 font-bold mb-3">🔔 通知設定</p>
         <div class="space-y-3" id="notif-prefs-list">
           <div class="skeleton h-32 rounded-lg"></div>
         </div>
       </div>
+
+      <p class="text-xs text-gray-400 font-bold pt-1">🛟 サポート</p>
 
       <!-- AIチャット (ポータル内で質問→回答が完結) -->
       <div class="card p-4" id="ai-chat-card">
@@ -1359,7 +1367,7 @@ function loadErrorToast(res, msg) {
 // ─── Deep Link (hash-based tab navigation from rich menu) ───
 function handleDeepLink() {
   var hash = window.location.hash.replace('#', '');
-  var tabMap = { shop: 'shop', store: 'shop', home: 'home', mypage: 'home', rank: 'home', referral: 'home', quiz: 'quiz', intake: 'intake', health: 'health', delivery: 'shop', reorder: 'shop' };
+  var tabMap = { shop: 'shop', store: 'shop', home: 'home', mypage: 'home', rank: 'home', referral: 'home', quiz: 'quiz', intake: 'intake', health: 'intake', delivery: 'shop', reorder: 'shop', more: 'account', account: 'account', settings: 'account' };
   // URLSearchParams もチェック（openLiffPage 互換）
   if (!hash) {
     var params = new URLSearchParams(window.location.search);
@@ -1391,11 +1399,10 @@ function switchTab(name) {
   // Scroll to top smoothly
   window.scrollTo({ top: 0, behavior: 'smooth' });
 
-  // Lazy load section data
-  if (name === 'intake') { loadIntakeData(); initReminder(); }
-  if (name === 'health') loadHealthData();
-  if (name === 'shop') loadShopData();
-  if (name === 'more') loadMoreData();
+  // Lazy load section data (4タブ再設計: 体調は「記録」に統合、旧 more は「マイアカウント」へ)
+  if (name === 'intake') { loadIntakeData(); initReminder(); loadHealthData(); }
+  if (name === 'shop') { loadShopData(); loadSubscriptionsOnce(); }
+  if (name === 'account') loadAccountData();
   if (name === 'quiz') playQuizHeroVideo();
 }
 
@@ -1415,7 +1422,7 @@ function playQuizHeroVideo() {
 // ─── タブ フリック切替 (ページめくり、2026-07-04 先進性方針) ───
 // 左右フリック/タブタップで、現タブが押し出され次タブが滑り込む。
 // reduced-motion では即時切替。縦スクロール優位のジェスチャは無視する。
-var TAB_ORDER = ['home', 'quiz', 'intake', 'health', 'shop', 'more'];
+var TAB_ORDER = ['home', 'quiz', 'shop', 'intake']; // 4タブ (account はアバターから開く隠しセクション = スワイプ対象外)
 var TAB_REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 var tabAnimating = false;
 
@@ -2791,18 +2798,27 @@ function renderFulfillHero(f) {
     '</div>';
 }
 
-// ─── MORE Tab: Notifications, Subscriptions, FAQ ───
+// ─── ACCOUNT (マイアカウント) / Shop 移設分: Notifications, Subscriptions, FAQ ───
 
 var notifPrefs = {};
 var subscriptionsList = [];
-var moreLoaded = false;
+var accountLoaded = false;
+var subsLoaded = false;
 
-async function loadMoreData() {
-  if (moreLoaded) return;
-  moreLoaded = true;
-  var results = await Promise.all([loadNotifPrefs(), loadSubscriptions(), loadFAQ()]);
+async function loadAccountData() {
+  if (accountLoaded) return;
+  accountLoaded = true;
+  var results = await Promise.all([loadNotifPrefs(), loadFAQ()]);
   // 1 つでも失敗したらタブ再訪問で再読込できるように解放する (skeleton 固着防止)
-  if (results.indexOf(false) >= 0) { moreLoaded = false; }
+  if (results.indexOf(false) >= 0) { accountLoaded = false; }
+}
+
+// 定期お届けリマインダーは Shop タブへ移設 (4タブ再設計) — shop 表示時に一度だけ読む
+async function loadSubscriptionsOnce() {
+  if (subsLoaded) return;
+  subsLoaded = true;
+  var ok = await loadSubscriptions();
+  if (ok === false) { subsLoaded = false; }
 }
 
 async function loadNotifPrefs() {
@@ -2956,7 +2972,7 @@ async function createSubscription() {
     if (json.success) {
       showToast('リマインダーを設定しました');
       document.getElementById('sub-add-form').style.display = 'none';
-      moreLoaded = false;
+      subsLoaded = false;
       loadSubscriptions();
     }
   } catch { showToast('エラーが発生しました'); }

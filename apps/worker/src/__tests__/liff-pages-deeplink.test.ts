@@ -31,7 +31,7 @@ describe('GET /liff/portal — マイランク deep-link 配線', () => {
   it('200 を返し、ポータル SPA がレンダリングされる', async () => {
     const r = await fetchPage('/liff/portal');
     expect(r.status).toBe(200);
-    expect(r.body).toMatch(/<title>naturism マイページ/);
+    expect(r.body).toMatch(/<title>naturism 公式ポータル/);
     expect(r.body).toMatch(/static\.line-scdn\.net\/liff\/edge\/2\/sdk\.js/);
   });
 
