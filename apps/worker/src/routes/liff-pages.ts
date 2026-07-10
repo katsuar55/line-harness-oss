@@ -1824,13 +1824,23 @@ async function loadCoupons() {
     } else {
       // 採点R1: 「無い」の告知でなく、クーポンを得る次の一手 (紹介ヒーロー) へ橋渡し。
       //   文言は gate 連動: off の間は referred 側 (=welcome、稼働中) の訴求のみ (景表法セーフ)。
+      //   ⚠️ onclick 内に「バックスラッシュ+シングルクォート」で JS を書いてはいけない
+      //   (TS template literal が素のクォートに潰し、client script 全体が SyntaxError =
+      //   ポータル全損。2026-07-10 本番障害の実原因) →
+      //   引用符ネストが要る handler は必ず名前付き関数にする。
       var refBridge = REFERRAL_REWARD_ON
         ? '🎁 お友だち紹介で ¥500 クーポンがもらえます →'
         : '🎁 お友だちに ¥500 クーポンをプレゼントできます →';
       el.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-1">クーポン</p>' +
-        '<a href="javascript:void(0)" onclick="var r=document.getElementById(\'referral-card\');if(r)r.scrollIntoView({behavior:\'smooth\'})" class="tap block text-sm font-bold rounded-xl py-2.5 text-center" style="color:#b84a2e;background:#fff3ec;border:1px solid #f4c0ad">' + refBridge + '</a>';
+        '<a href="javascript:void(0)" onclick="scrollToReferralCard()" class="tap block text-sm font-bold rounded-xl py-2.5 text-center" style="color:#b84a2e;background:#fff3ec;border:1px solid #f4c0ad">' + refBridge + '</a>';
     }
   } catch { cardError(el, null, 'loadCoupons'); }
+}
+
+// 空クーポン→紹介ヒーローへの橋渡し (inline onclick の引用符ネスト回避のため名前付き関数)
+function scrollToReferralCard() {
+  var r = document.getElementById('referral-card');
+  if (r) r.scrollIntoView({ behavior: 'smooth' });
 }
 
 // ─── INTAKE Section ───
