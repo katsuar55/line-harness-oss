@@ -219,6 +219,9 @@ async function handleEvent(
         const couponResult = await issueCouponForFriend(db, env, {
           friendId: friend.id,
           lineAccountId,
+          // 有効期限 7 日: 友だち追加特典であり、 かつ友だち紹介 (referred が 7 日以内に利用) の起点。
+          //   referred の ¥500 = この welcome クーポン (別途の紹介クーポンは発行しない = 二重¥500 回避)。
+          validDays: 7,
         });
         lineFriendCouponCode = couponResult?.code ?? null;
       } catch (err) {

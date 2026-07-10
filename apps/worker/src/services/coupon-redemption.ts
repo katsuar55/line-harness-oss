@@ -57,6 +57,11 @@ export interface ProcessRedemptionResult {
   matched: number;
   /** この呼び出しで実際に redeemed へ遷移させた code 数 */
   redeemed: number;
+  /**
+   * この呼び出しで「初回 redemption」を確定した coupon の所有 friend_id 群 (重複排除)。
+   * 紹介報酬 (referred がクーポン利用 → referrer に報酬) の起点として caller が使う。
+   */
+  redeemedFriendIds: string[];
 }
 
 export interface ProcessRedemptionParams {
@@ -78,7 +83,7 @@ export async function processOrderCouponRedemption(
 ): Promise<ProcessRedemptionResult> {
   const codes = extractDiscountCodes(params.body);
   if (codes.length === 0) {
-    return { codesChecked: 0, matched: 0, redeemed: 0 };
+    return { codesChecked: 0, matched: 0, redeemed: 0, redeemedFriendIds: [] };
   }
 
   const nowMs = (params.now ?? Date.now)();
@@ -88,6 +93,7 @@ export async function processOrderCouponRedemption(
 
   let matched = 0;
   let redeemed = 0;
+  const redeemedFriendIds = new Set<string>();
 
   for (const code of codes) {
     try {
@@ -101,6 +107,7 @@ export async function processOrderCouponRedemption(
       if (result.matched) matched += 1;
       if (result.redeemed) {
         redeemed += 1;
+        if (result.friendId) redeemedFriendIds.add(result.friendId);
         // 初回 redemption のみ audit に残す (= 転換の監査証跡、 admin /audit-logs で観察)。
         await auditSystem(db, {
           action: 'line_friend_coupon.redeemed',
@@ -125,5 +132,5 @@ export async function processOrderCouponRedemption(
     }
   }
 
-  return { codesChecked: codes.length, matched, redeemed };
+  return { codesChecked: codes.length, matched, redeemed, redeemedFriendIds: [...redeemedFriendIds] };
 }

@@ -1,8 +1,11 @@
 /**
- * Referral Reward on Purchase (= 紹介者への購入時報酬, 2026-07-10)
+ * Referral Reward on Coupon Redemption (= 紹介者への報酬, 2026-07-10)
  *
- * 役割: referred (紹介された友だち) が購入したとき、 その紹介者 (referrer) に ¥500 実クーポンを
- *   発行し、 LINE push で通知する。 orders webhook (orders/create) の friendId 解決後に呼ばれる。
+ * 役割: referred (紹介された友だち) が「¥500 クーポン (= 友だち追加 welcome クーポン) を利用して購入」
+ *   したとき、 その紹介者 (referrer) に ¥500 実クーポンを発行し、 LINE push で通知する。
+ *   orders webhook の coupon-redemption 経路 (processOrderCouponRedemption が redeem を確定した
+ *   friend) から、 その friend を referredFriendId として呼ばれる。
+ *   ※ 任意の購入ではなく「クーポン利用」が条件 (= 成立1件 referred¥500 + referrer¥500 = ¥1,000)。
  *
  * 冪等性 (二重報酬防止):
  *   - issueReferralCoupon が (friend, role='referrer') UNIQUE で冪等 (= 同 referrer に 1 枚)。
@@ -29,7 +32,7 @@ export interface ReferralRewardEnv extends ReferralCouponEnv {
 }
 
 export interface ProcessReferralRewardInput {
-  /** 購入した friend (= 潜在的 referred)。 orders webhook が email/phone から解決した内部 ID。 */
+  /** ¥500 クーポンを利用して購入した friend (= 潜在的 referred)。 coupon-redemption が確定した所有 friend_id。 */
   referredFriendId: string;
   lineAccountId?: string | null;
   /** test 用 clock 注入 (referral_rewards.rewarded_at 用) */

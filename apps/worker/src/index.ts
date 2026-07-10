@@ -191,10 +191,15 @@ export type Env = {
     // 自社内製ロイヤリティ PR5 (2026-06-04): ランク割引コードの本番発行 gate
     //   'true' で issueRankDiscountForFriend が本番 Shopify に書込 (= 未設定なら no-op、 本番未書込)。
     RANK_DISCOUNT_ENABLED?: string;
-    // 友だち紹介の両側実クーポン発行 gate (2026-07-10): referred=claim時 / referrer=購入時
+    // 友だち紹介の referrer 報酬クーポン発行 gate (2026-07-10): referred がクーポン利用購入時に発行
     //   'true' で issueReferralCoupon が本番 Shopify に書込 (= 未設定なら no-op、 本番未書込)。
     //   ⚠️ 有効化前に migration 068 (line_referral_coupons) 適用が必要。
     REFERRAL_REWARD_ENABLED?: string;
+    // 新規ユーザー限定 welcome クーポン用の顧客セグメント gid (2026-07-10):
+    //   例 gid://shopify/Segment/xxx (= Shopify Admin で「注文回数 0」segment を作成)。
+    //   設定時、 welcome クーポンはこのセグメントのみ対象 (= 既存客の複数アカウント farming 防止)。
+    //   未設定なら全顧客 (従来挙動)。
+    SHOPIFY_WELCOME_CUSTOMER_SEGMENT_ID?: string;
     SHOPIFY_TOKEN_ENCRYPTION_KEY?: string;     // Shopify access token 暗号化鍵 (= token cache、 getShopifyAccessToken)
     LOYALTY_RANK_CRON_FORCE?: string;          // 'true' で月次 rank 再判定 cron の JST 1日 09:05 gating を bypass
   };

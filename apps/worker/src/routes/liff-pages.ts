@@ -1678,30 +1678,34 @@ async function loadReferralCoupon() {
   try {
     const res = await apiGet('/api/liff/referral-coupon');
     if (apiFailed(res)) { cardError(el, res, 'loadReferralCoupon'); return; }
-    var cp = res.data && res.data.coupon;
-    if (!cp || !cp.code) { el.style.display = 'none'; return; }
+    var list = (res.data && res.data.coupons) || [];
+    if (!list.length) { el.style.display = 'none'; return; }
     el.style.display = 'block';
     el.style.background = 'linear-gradient(135deg,#fff5ec,#ffffff)';
     el.style.border = '1.5px solid rgba(232,131,106,.4)';
-    var lead = cp.role === 'referrer' ? 'ご紹介ありがとうございます!お礼のクーポンです。' : 'お友だち紹介ありがとうございます!特典クーポンです。';
-    el.innerHTML =
+    var val = Number(list[0].discountValue) || 500;
+    // 紹介した側の獲得クーポンは成立ごとに増える → 全枚数を一覧表示
+    var head =
       '<div class="flex items-center gap-2 mb-1">' +
       '<span class="chip-coral px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700">🎁 紹介特典</span>' +
-      (cp.remainingText ? '<span class="text-xs font-bold text-coral">⏳ ' + esc(cp.remainingText) + 'で終了</span>' : '') + '</div>' +
-      '<p class="text-2xl font-extrabold text-coral-lg mb-1">¥' + Number(cp.discountValue) + ' OFF クーポン</p>' +
-      '<p class="text-xs text-gray-500 mb-2">' + lead + '公式ストアでお使いいただけます。</p>' +
-      '<div class="flex items-center gap-2 mb-3">' +
-      '<code id="referral-coupon-code" class="flex-1 text-center text-sm font-bold tracking-widest bg-white rounded-lg py-2" style="border:1px solid #f4c0ad">' + esc(cp.code) + '</code>' +
-      '<button onclick="copyReferralCoupon()" class="text-xs font-bold text-coral rounded-lg px-3 py-2" style="border:1px solid #f4c0ad;background:#fff5ec">コピー</button></div>' +
-      (cp.applyUrl ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" class="block text-center btn-coral py-3 rounded-xl text-sm font-bold">このクーポンで買う →</a>' : '');
+      '<span class="text-xs font-bold text-coral">' + list.length + '枚 利用可能</span></div>' +
+      '<p class="text-2xl font-extrabold text-coral-lg mb-1">¥' + val + ' OFF クーポン</p>' +
+      '<p class="text-xs text-gray-500 mb-2">ご紹介ありがとうございます!お友だちが購入するたびに増えます。公式ストアでお使いいただけます。</p>';
+    var items = list.map(function(cp) {
+      return '<div class="flex items-center gap-2 mb-2">' +
+        '<code class="flex-1 text-center text-sm font-bold tracking-widest bg-white rounded-lg py-2" style="border:1px solid #f4c0ad">' + esc(cp.code) + '</code>' +
+        '<button onclick="copyRefCode(this)" data-code="' + esc(cp.code) + '" class="text-xs font-bold text-coral rounded-lg px-3 py-2 whitespace-nowrap" style="border:1px solid #f4c0ad;background:#fff5ec">コピー</button>' +
+        (cp.applyUrl ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" class="text-xs font-bold btn-coral rounded-lg px-3 py-2 whitespace-nowrap">使う</a>' : '') +
+        '</div>' +
+        (cp.remainingText ? '<p class="text-xs text-coral mb-2" style="margin-top:-4px">⏳ ' + esc(cp.remainingText) + 'で終了</p>' : '');
+    }).join('');
+    el.innerHTML = head + items;
   } catch {
     cardError(el, null, 'loadReferralCoupon');
   }
 }
-function copyReferralCoupon() {
-  var el = document.getElementById('referral-coupon-code');
-  if (!el) return;
-  var code = el.textContent || '';
+function copyRefCode(btn) {
+  var code = (btn && btn.getAttribute('data-code')) || '';
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(code); }
     showToast('クーポンコードをコピーしました');
@@ -3055,9 +3059,8 @@ function checkReferralParam() {
     // Claim referral (non-blocking)
     api('/api/liff/referral/claim', { refCode: ref }).then(function(res) {
       if (res.success && res.data && !res.data.alreadyClaimed) {
-        showToast('紹介リンクが適用されました!');
-        // referred へ実クーポンが発行された場合、 特典カードを即時反映 (発行は claim 内で完了済)
-        try { loadReferralCoupon(); } catch (e) {}
+        // referred の ¥500 は友だち追加 welcome クーポン (welcome-coupon-card に表示) がそれに当たる。
+        showToast('紹介リンクが適用されました!お友だち追加特典の500円クーポンをご利用ください✨');
       }
     }).catch(function() {});
   } catch(e) { /* ignore */ }

@@ -313,21 +313,6 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
                   console.error('subscription enroll failed:', enrollErr);
                 }
               }
-
-              // 紹介クーポン: この購入者が「紹介された側 (referred)」なら、 紹介者 (referrer) に
-              //   ¥500 実クーポンを発行し LINE push (orders/create のみ、 gated、 冪等)。
-              //   pending reward が無い organic buyer は no-op。 gate off なら完全 dormant。
-              //   注文の主処理を巻き込まないよう独立 try/catch で隔離。
-              if (topic === 'orders/create') {
-                try {
-                  const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
-                  await processReferralRewardOnPurchase(db, c.env, lineClient, {
-                    referredFriendId: friendId,
-                  });
-                } catch (refErr) {
-                  console.error('referral reward on purchase failed:', refErr);
-                }
-              }
             }
           } catch (err) {
             console.error('Shopify webhook async processing error (order):', err);
@@ -342,7 +327,18 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
       //   注文の主処理 (orderAsyncWork) とは独立した best-effort タスクとして隔離。
       const couponRedemptionWork = (async () => {
         try {
-          await processOrderCouponRedemption(db, { body, shopifyOrderId, topic });
+          const redemption = await processOrderCouponRedemption(db, { body, shopifyOrderId, topic });
+
+          // 紹介クーポン: referred が「¥500 クーポンを利用して購入」した = welcome クーポンを redeem した
+          //   時にだけ、 紹介者 (referrer) に ¥500 実クーポンを発行 + LINE push (gated、 冪等)。
+          //   pending reward が無い organic buyer (= 紹介経由でない) は no-op。 gate off なら完全 dormant。
+          //   ※ redeemedFriendIds = 今回初めて redeemed を確定した coupon の所有 friend (= 利用者)。
+          if (redemption.redeemedFriendIds.length > 0) {
+            const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+            for (const referredFriendId of redemption.redeemedFriendIds) {
+              await processReferralRewardOnPurchase(db, c.env, lineClient, { referredFriendId });
+            }
+          }
         } catch (err) {
           console.error('Shopify webhook coupon redemption error:', err);
         }

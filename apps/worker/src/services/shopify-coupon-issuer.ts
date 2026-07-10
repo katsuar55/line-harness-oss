@@ -75,6 +75,12 @@ export interface ShopifyEnv {
   SHOPIFY_CLIENT_ID?: string;
   SHOPIFY_CLIENT_SECRET?: string;
   SHOPIFY_TOKEN_ENCRYPTION_KEY?: string;
+  /**
+   * 新規ユーザー限定 welcome クーポン用の顧客セグメント gid
+   * (例: gid://shopify/Segment/xxx = 「注文回数 0」の first-time buyers)。
+   * 設定時、 welcome クーポンはこのセグメントのみ対象 (= 既存客の farming 防止)。 未設定なら全顧客。
+   */
+  SHOPIFY_WELCOME_CUSTOMER_SEGMENT_ID?: string;
 }
 
 interface ExistingCouponRow {
@@ -150,6 +156,7 @@ async function callShopifyDiscountCreate(
   validDays: number,
   now: number,
   fetchImpl: typeof fetch,
+  customerSegmentId?: string | null,
 ): Promise<ShopifyCreateResult> {
   const startsAt = new Date(now).toISOString();
   const endsAt = new Date(now + validDays * 86_400_000).toISOString();
@@ -174,7 +181,12 @@ async function callShopifyDiscountCreate(
       code,
       startsAt,
       endsAt,
-      customerSelection: { all: true },
+      // 新規ユーザー限定 (Katsu 確定): SHOPIFY_WELCOME_CUSTOMER_SEGMENT_ID が設定されていれば、
+      //   その顧客セグメント (= 例「注文回数 0 の first-time buyers」) だけを対象にする。
+      //   未設定なら従来どおり all (= 全顧客)。 usageLimit:1 + appliesOncePerCustomer で 1 回限り。
+      customerSelection: customerSegmentId
+        ? { customerSegments: { add: [customerSegmentId] } }
+        : { all: true },
       customerGets: {
         value: { discountAmount: { amount: discountAmount, appliesOnEachItem: false } },
         items: { all: true },
@@ -333,6 +345,7 @@ export async function issueCouponForFriend(
     validDays,
     now,
     fetchImpl,
+    env.SHOPIFY_WELCOME_CUSTOMER_SEGMENT_ID || null,
   );
   if (!result.ok) {
     console.error('[shopify-coupon-issuer] discountCodeBasicCreate failed:', result.error);
