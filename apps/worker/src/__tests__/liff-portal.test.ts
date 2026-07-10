@@ -574,7 +574,7 @@ describe('LIFF Portal Routes', () => {
   });
 
   describe('POST /api/liff/referral/claim', () => {
-    it('records referral_rewards (pending) + attempts referred coupon (gated off → null), does NOT issue referrer at claim', async () => {
+    it('records referral_rewards (pending) のみ — claim ではクーポンを発行しない (referred の¥500=welcome、 referrer=購入時)', async () => {
       const db = await import('@line-crm/db');
       (db.getReferralLinkByRefCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         id: 'rl-2', friend_id: 'friend-referrer', ref_code: 'ref-xyz', referrer_coupon_id: null, referred_coupon_id: null,
@@ -582,14 +582,13 @@ describe('LIFF Portal Routes', () => {
       const res = await post(app, '/api/liff/referral/claim', { lineUserId: 'U_EXISTING', refCode: 'ref-xyz' });
       expect(res.status).toBe(200);
       const json = await res.json() as {
-        data: { alreadyClaimed: boolean; rewardId: string; status: string; coupons: Record<string, unknown> };
+        data: { alreadyClaimed: boolean; rewardId: string; status: string; coupons?: unknown };
       };
       expect(json.data.alreadyClaimed).toBe(false);
       expect(json.data.rewardId).toBe('rr-1');
       expect(json.data.status).toBe('pending');
-      // gate off → referred は null。 referrer は claim 時に発行しない (deferral) = coupons に referrer キー無し
-      expect(json.data.coupons.referred).toBeNull();
-      expect(json.data.coupons.referrer).toBeUndefined();
+      // claim ではクーポンを発行しない (referred は welcome クーポン、 referrer は購入時) → coupons フィールド無し
+      expect(json.data.coupons).toBeUndefined();
       expect(db.createReferralReward as ReturnType<typeof vi.fn>).toHaveBeenCalled();
     });
 
@@ -853,12 +852,13 @@ describe('LIFF More Tab APIs', () => {
 
   // ─── Referral coupon (紹介特典クーポン表示) ─────────
   describe('GET /api/liff/referral-coupon', () => {
-    it('gate off (REFERRAL_REWARD_ENABLED 未設定) → coupon:null (DB を触らない)', async () => {
+    it('gate off (REFERRAL_REWARD_ENABLED 未設定) → coupons:[] (DB を触らない)', async () => {
       const res = await moreReq(moreApp, 'GET', '/api/liff/referral-coupon');
       expect(res.status).toBe(200);
-      const json = await res.json() as { success: boolean; data: { coupon: unknown } };
+      const json = await res.json() as { success: boolean; data: { coupons: unknown[]; count: number } };
       expect(json.success).toBe(true);
-      expect(json.data.coupon).toBeNull();
+      expect(json.data.coupons).toEqual([]);
+      expect(json.data.count).toBe(0);
     });
 
     it('未認証 → 401', async () => {

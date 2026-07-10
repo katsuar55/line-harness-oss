@@ -3,7 +3,7 @@ import { getShopifyAccessToken } from '../services/shopify-token.js';
 import { getFriendCouponConfig } from '../services/friend-coupon-config.js';
 import { buildDiscountApplyUrl } from '../services/cart-permalink.js';
 import { getActiveWelcomeCoupon, formatCouponCountdown } from '../services/welcome-coupon.js';
-import { issueReferralCoupon, getActiveReferralCoupon } from '../services/referral-coupon-issuer.js';
+import { getActiveReferralCoupons } from '../services/referral-coupon-issuer.js';
 import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
 import { generateAiResponse } from '../services/ai-response.js';
 import { check } from '../middleware/rate-limit.js';
@@ -286,37 +286,33 @@ liffPortal.get('/api/liff/welcome-coupon', async (c) => {
 });
 
 /**
- * GET /api/liff/referral-coupon — 紹介特典で発行済みの「あなた専用」実クーポン。
- * referred は claim 時、 referrer は紹介先の購入時に発行される (line_referral_coupons)。
- * gate off (= 機能未有効化) なら常に coupon:null (= migration 068 未適用でも安全に null)。
+ * GET /api/liff/referral-coupon — 紹介した側 (referrer) が獲得した「あなた専用」実クーポン群。
+ * 紹介先が購入するたびに 1 枚発行される (line_referral_coupons、 成立ごとに増える)。
+ * gate off (= 機能未有効化) なら常に空 (= migration 068 未適用でも安全)。
  * idToken 認証必須 (= 本人の friendId に紐づくクーポンのみ)。
+ * ※ referred (紹介された側) の ¥500 は welcome クーポン (/api/liff/welcome-coupon) がそれに当たる。
  */
 liffPortal.get('/api/liff/referral-coupon', async (c) => {
   try {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    // 未有効化なら DB を触らず null (= テーブル未存在の pre-migration でも安全)
+    // 未有効化なら DB を触らず空 (= テーブル未存在の pre-migration でも安全)
     if (c.env.REFERRAL_REWARD_ENABLED !== 'true') {
-      return c.json({ success: true, data: { coupon: null } });
+      return c.json({ success: true, data: { coupons: [], count: 0 } });
     }
 
-    const coupon = await getActiveReferralCoupon(c.env.DB, user.friendId);
-    if (!coupon) return c.json({ success: true, data: { coupon: null } });
+    const active = await getActiveReferralCoupons(c.env.DB, user.friendId);
+    const coupons = active.map((cp) => ({
+      code: cp.code,
+      discountValue: cp.discountValue,
+      role: cp.role,
+      expiresAt: cp.expiresAt,
+      remainingText: formatCouponCountdown(cp.expiresAt, Date.now()),
+      applyUrl: buildDiscountApplyUrl(FRIEND_COUPON_STORE_DOMAIN, cp.code),
+    }));
 
-    return c.json({
-      success: true,
-      data: {
-        coupon: {
-          code: coupon.code,
-          discountValue: coupon.discountValue,
-          role: coupon.role,
-          expiresAt: coupon.expiresAt,
-          remainingText: formatCouponCountdown(coupon.expiresAt, Date.now()),
-          applyUrl: buildDiscountApplyUrl(FRIEND_COUPON_STORE_DOMAIN, coupon.code),
-        },
-      },
-    });
+    return c.json({ success: true, data: { coupons, count: coupons.length } });
   } catch (err) {
     console.error('GET /api/liff/referral-coupon error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -1299,25 +1295,14 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
     }
 
     // 紹介成立記録 (status='pending')。
-    //   referrer 報酬は referred の「購入時」に referral-reward.ts が発行するため、 ここでは作らない。
+    //   referred の ¥500 は「友だち追加 welcome クーポン」(follow 時に既発行) がそれに当たるため、
+    //   ここでは新規クーポンを発行しない (= referred は ¥500 一枚)。
+    //   referrer 報酬は referred がその welcome クーポンを「利用して購入」した時に、 orders webhook の
+    //   coupon-redemption 経路 (processReferralRewardOnPurchase) が発行する。
     const reward = await createReferralReward(c.env.DB, {
       referrerFriendId: link.friend_id,
       referredFriendId: user.friendId,
     });
-
-    // referred へ即時 ¥500 実クーポン発行 (welcome と同じ Shopify 実発行経路、 gated、 7日期限、 ランク併用可)。
-    //   gate off / Shopify 失敗時は null → クーポン無しで成立記録のみ (safe fallback、 業務阻害なし)。
-    let referredCode: string | null = null;
-    try {
-      const issued = await issueReferralCoupon(c.env.DB, c.env, {
-        friendId: user.friendId,
-        role: 'referred',
-        rewardId: reward.id,
-      });
-      referredCode = issued?.code ?? null;
-    } catch (issueErr) {
-      console.error('POST /api/liff/referral/claim issue error:', issueErr);
-    }
 
     return c.json({
       success: true,
@@ -1325,7 +1310,6 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
         alreadyClaimed: false,
         rewardId: reward.id,
         status: reward.status,
-        coupons: { referred: referredCode },
       },
     });
   } catch (err) {

@@ -1896,9 +1896,9 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 -- from 068_line_referral_coupons.sql
 CREATE TABLE IF NOT EXISTS line_referral_coupons (
   id                       TEXT PRIMARY KEY,
-  friend_id                TEXT NOT NULL,
-  reward_id                TEXT,                           -- referral_rewards.id (弱リンク)
-  role                     TEXT NOT NULL
+  friend_id                TEXT NOT NULL,                   -- referrer (= 紹介した側、 報酬クーポンの所有者)
+  reward_id                TEXT NOT NULL,                   -- referral_rewards.id (= 紹介成立1件。 冪等キー)
+  role                     TEXT NOT NULL DEFAULT 'referrer'
                            CHECK (role IN ('referrer', 'referred')),
   coupon_code              TEXT NOT NULL,                  -- Shopify で発行された code
   shopify_discount_code_id TEXT,                           -- Shopify GraphQL ID (gid://shopify/DiscountCodeNode/...)
@@ -1913,7 +1913,10 @@ CREATE TABLE IF NOT EXISTS line_referral_coupons (
   metadata                 TEXT,                            -- JSON (Shopify API response の subset 等)
   FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id) ON DELETE SET NULL,
-  UNIQUE (friend_id, role)
+  -- 紹介成立 (referral_rewards) 1 件につき referrer クーポン 1 枚 = 冪等キー。
+  -- referrer は「何度でも紹介でき、 紹介先が購入するたびに ¥500」= friend_id では UNIQUE にしない
+  -- (= 1 referrer が複数の reward で複数クーポンを持てる)。
+  UNIQUE (reward_id)
 );
 
 -- Indexes from migrations

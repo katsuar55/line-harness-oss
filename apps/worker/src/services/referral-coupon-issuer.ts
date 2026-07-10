@@ -60,7 +60,7 @@ export interface ReferralCouponEnv {
 export interface IssueReferralCouponOptions {
   friendId: string;
   role: ReferralRole;
-  /** referral_rewards.id (弱リンク、 監査/突合用)。 */
+  /** referral_rewards.id (= 冪等キー・必須。 未指定なら発行しない。 成立1件につき1枚)。 */
   rewardId?: string | null;
   lineAccountId?: string | null;
   discountValueJpy?: number;
@@ -91,22 +91,21 @@ interface ExistingReferralCouponRow {
 }
 
 // ============================================================
-// 既発行チェック (friend × role で冪等)
+// 既発行チェック (reward_id で冪等 = 紹介成立1件につき1枚)
 // ============================================================
 
 export async function findReferralCoupon(
   db: D1Database,
-  friendId: string,
-  role: ReferralRole,
+  rewardId: string,
 ): Promise<ExistingReferralCouponRow | null> {
   const row = await db
     .prepare(
       `SELECT coupon_code, discount_value, discount_currency, expires_at, shopify_discount_code_id
          FROM line_referral_coupons
-        WHERE friend_id = ? AND role = ?
+        WHERE reward_id = ?
         LIMIT 1`,
     )
-    .bind(friendId, role)
+    .bind(rewardId)
     .first<ExistingReferralCouponRow>();
   return row ?? null;
 }
@@ -278,8 +277,12 @@ export async function issueReferralCoupon(
     return null;
   }
 
-  // 2. 既発行確認 (friend × role で冪等)
-  const existing = await findReferralCoupon(db, friendId, role);
+  // 2. 既発行確認 (reward_id で冪等 = 紹介成立1件につき1枚。 同 referrer でも別 reward なら別途発行)
+  if (!rewardId) {
+    console.error('[referral-coupon-issuer] rewardId required (= 冪等キー・NOT NULL) friend=', friendId);
+    return null;
+  }
+  const existing = await findReferralCoupon(db, rewardId);
   if (existing) {
     return toIssued(existing, role);
   }
@@ -353,7 +356,7 @@ export async function issueReferralCoupon(
     return null;
   }
 
-  // 6. DB 記録 (friend × role UNIQUE — 並行呼び出しの重複は INSERT 失敗、 そのときは既発行を再取得)
+  // 6. DB 記録 (reward_id UNIQUE — 並行呼び出しの重複は INSERT 失敗、 そのときは既発行を再取得)
   const id = crypto.randomUUID();
   try {
     await db
@@ -378,13 +381,13 @@ export async function issueReferralCoupon(
       )
       .run();
   } catch (err) {
-    // UNIQUE(friend_id, role) 違反 → 並行発行された → re-fetch
+    // UNIQUE(reward_id) 違反 → 同 reward が並行発行された → re-fetch
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(
       '[referral-coupon-issuer] INSERT failed (likely UNIQUE conflict), re-fetching existing:',
       errMsg,
     );
-    const refetch = await findReferralCoupon(db, friendId, role);
+    const refetch = await findReferralCoupon(db, rewardId);
     if (refetch) {
       return toIssued(refetch, role);
     }
@@ -431,7 +434,7 @@ export async function issueReferralCoupon(
 }
 
 // ============================================================
-// DB-only lookup (表示用: friend の active な紹介クーポン 1 枚)
+// DB-only lookup (表示用: friend の active な紹介クーポン群)
 // ============================================================
 
 export interface ActiveReferralCoupon {
@@ -442,18 +445,20 @@ export interface ActiveReferralCoupon {
 }
 
 /**
- * friend の「まだ使える」紹介クーポンを 1 枚返す (表示用、 env/Shopify API 不要)。
- * status='issued' かつ未失効 (expires_at が未来 or NULL)。 複数 role あれば最新発行を優先。
- * fail-safe: エラー時は null (= テーブル未存在の pre-migration でも安全)。
+ * friend (= referrer) の「まだ使える」紹介クーポンを全件返す (表示用、 env/Shopify API 不要)。
+ * referrer は紹介成立ごとに 1 枚 = 複数持ちうるため配列で返す (最新発行順、 最大 limit 枚)。
+ * status='issued' かつ未失効 (expires_at が未来 or NULL)。
+ * fail-safe: エラー時は [] (= テーブル未存在の pre-migration でも安全)。
  */
-export async function getActiveReferralCoupon(
+export async function getActiveReferralCoupons(
   db: D1Database,
   friendId: string,
   nowIso?: string,
-): Promise<ActiveReferralCoupon | null> {
+  limit = 20,
+): Promise<ActiveReferralCoupon[]> {
   const iso = nowIso ?? new Date().toISOString();
   try {
-    const row = await db
+    const { results } = await db
       .prepare(
         `SELECT coupon_code, discount_value, role, expires_at
            FROM line_referral_coupons
@@ -461,23 +466,22 @@ export async function getActiveReferralCoupon(
             AND status = 'issued'
             AND (expires_at IS NULL OR expires_at >= ?)
           ORDER BY issued_at DESC
-          LIMIT 1`,
+          LIMIT ?`,
       )
-      .bind(friendId, iso)
-      .first<{ coupon_code: string; discount_value: number; role: ReferralRole; expires_at: string | null }>();
-    if (!row) return null;
-    return {
+      .bind(friendId, iso, limit)
+      .all<{ coupon_code: string; discount_value: number; role: ReferralRole; expires_at: string | null }>();
+    return (results ?? []).map((row) => ({
       code: row.coupon_code,
       discountValue: row.discount_value,
       role: row.role,
       expiresAt: row.expires_at,
-    };
+    }));
   } catch (err) {
     console.error(
-      '[referral-coupon-issuer] getActiveReferralCoupon failed (fail-safe null):',
+      '[referral-coupon-issuer] getActiveReferralCoupons failed (fail-safe []):',
       err instanceof Error ? err.name : 'unknown',
     );
-    return null;
+    return [];
   }
 }
 

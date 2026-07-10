@@ -276,7 +276,7 @@ describe('processOrderCouponRedemption', () => {
       shopifyOrderId: '1',
       topic: 'orders/create',
     });
-    expect(r).toEqual({ codesChecked: 0, matched: 0, redeemed: 0 });
+    expect(r).toEqual({ codesChecked: 0, matched: 0, redeemed: 0, redeemedFriendIds: [] });
     expect(db.auditInserts.length).toBe(0);
   });
 
@@ -298,6 +298,8 @@ describe('processOrderCouponRedemption', () => {
     expect(r.codesChecked).toBe(2);
     expect(r.matched).toBe(1);
     expect(r.redeemed).toBe(1);
+    // 紹介報酬の起点: 初回 redeem した coupon の所有 friend_id を返す (referred がクーポン利用)
+    expect(r.redeemedFriendIds).toEqual(['f1']);
     expect(db.coupons[0].status).toBe('redeemed');
     // 1 audit insert for the single redemption
     expect(db.auditInserts.length).toBe(1);
@@ -314,6 +316,7 @@ describe('processOrderCouponRedemption', () => {
     });
     expect(r.matched).toBe(1);
     expect(r.redeemed).toBe(0);
+    expect(r.redeemedFriendIds).toEqual([]); // 既 redeemed → 新規 friend なし
     expect(db.auditInserts.length).toBe(0);
   });
 

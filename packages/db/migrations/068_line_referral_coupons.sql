@@ -1,27 +1,23 @@
 -- Migration 068: line_referral_coupons — 友だち紹介の両側実クーポン台帳 (2026-07-10)
 --
--- 背景:
---   紹介機能は claim (POST /api/liff/referral/claim) で referral_rewards を作るが、
---   クーポンは referral_coupons テンプレ + shopify_coupon_assignments に「偽コード」
---   (Shopify 未作成 = 使えない) を書くだけで、通知も無く、両側とも claim 時に即発行
---   していた。 本 migration + 紹介クーポン完成 PR で:
---     - referred = claim (友だち追加→ポータル ?ref) 時に即時 ¥500 実クーポン発行
---     - referrer = referred が購入して初めて ¥500 実クーポン発行 + LINE push
---   を、 welcome クーポンと同じ Shopify discountCodeBasicCreate 経路 (実発行) で行う。
+-- 背景 (確定仕様 2026-07-10):
+--   - referred (紹介された側) の ¥500 = 「友だち追加 welcome クーポン」(= 別途の紹介クーポンは
+--     発行しない。 referred は ¥500 一枚)。 welcome は 7 日有効・1 アカウント1回・新規ユーザー限定。
+--   - referrer (紹介した側) = referred がその welcome クーポンを「利用して購入」するたびに ¥500 実
+--     クーポンを 1 枚獲得 (= 何度でも紹介でき、 成立ごとに 1 枚)。 本テーブルは referrer の獲得
+--     クーポン専用台帳 (referred は line_friend_coupons の welcome を使う)。
+--   発行は welcome と同じ Shopify discountCodeBasicCreate 経路 (実発行) で行う。
 --
 -- なぜ line_friend_coupons を再利用せず別テーブルか:
---   line_friend_coupons.friend_id は列レベル UNIQUE (migration 050)。 welcome を受給済の
---   friend に 2 枚目 (紹介) を発行するには複合 UNIQUE 化が必要だが、 SQLite/D1 は列レベル
---   UNIQUE を ALTER で外せずテーブル再構築 (DROP TABLE) = 破壊的 migration になる。 かつ
---   welcome 発行経路 (findExistingCoupon/getCouponCodeForFriend) を source-aware に変える
---   必要があり、 列未追加のまま deploy すると全 follow で welcome 発行がクラッシュする。
---   → additive な別テーブルにすれば非破壊 + welcome 経路無改変 + deploy 順序ハザード無。
+--   line_friend_coupons.friend_id は列レベル UNIQUE (migration 050) で referrer が複数の獲得
+--   クーポンを持てない。 追加種別を additive な別テーブルにすれば非破壊 + welcome 経路無改変 +
+--   deploy 順序ハザード無 (= 破壊的 rebuild 回避)。
 --
 -- 設計:
---   - UNIQUE(friend_id, role) で friend × 役割ごとに 1 枚 (= 冪等キー)。 referrer は生涯 1 枚
---     (= 既知の MVP 制約。 refer 多数でも referral coupon は 1 枚)。
+--   - UNIQUE(reward_id) で「紹介成立1件につき referrer クーポン1枚」= 冪等キー。 friend_id では
+--     UNIQUE にしない (= referrer は複数の reward で複数クーポンを持てる = 無制限紹介に対応)。
 --   - status enum で issued / redeemed / expired / revoked ライフサイクル。
---   - reward_id で referral_rewards.id を弱リンク (FK は張らず、 削除時の連鎖を避け柔軟に)。
+--   - reward_id は referral_rewards.id (FK は張らず柔軟に、 だが NOT NULL の冪等キー)。
 --   - issued_at/expires_at は発行 service が explicit UTC ISO ('Z') で書く (line_friend_coupons と
 --     同じ TZ 規約。 表示 read も new Date().toISOString() (UTC) で比較するため整合)。
 --   - line_account_id (NULL 可、 multi-tenant 対応)。
@@ -33,9 +29,9 @@
 
 CREATE TABLE IF NOT EXISTS line_referral_coupons (
   id                       TEXT PRIMARY KEY,
-  friend_id                TEXT NOT NULL,
-  reward_id                TEXT,                           -- referral_rewards.id (弱リンク)
-  role                     TEXT NOT NULL
+  friend_id                TEXT NOT NULL,                   -- referrer (= 紹介した側、 報酬クーポンの所有者)
+  reward_id                TEXT NOT NULL,                   -- referral_rewards.id (= 紹介成立1件。 冪等キー)
+  role                     TEXT NOT NULL DEFAULT 'referrer'
                            CHECK (role IN ('referrer', 'referred')),
   coupon_code              TEXT NOT NULL,                  -- Shopify で発行された code
   shopify_discount_code_id TEXT,                           -- Shopify GraphQL ID (gid://shopify/DiscountCodeNode/...)
@@ -50,7 +46,10 @@ CREATE TABLE IF NOT EXISTS line_referral_coupons (
   metadata                 TEXT,                            -- JSON (Shopify API response の subset 等)
   FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id) ON DELETE SET NULL,
-  UNIQUE (friend_id, role)
+  -- 紹介成立 (referral_rewards) 1 件につき referrer クーポン 1 枚 = 冪等キー。
+  -- referrer は「何度でも紹介でき、 紹介先が購入するたびに ¥500」= friend_id では UNIQUE にしない
+  -- (= 1 referrer が複数の reward で複数クーポンを持てる)。
+  UNIQUE (reward_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_line_referral_coupons_friend
