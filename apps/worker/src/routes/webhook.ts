@@ -55,7 +55,7 @@ import {
 } from '../services/quick-quiz.js';
 import type { Env } from '../index.js';
 
-import { buildAiMessage } from '../services/ai-message-builder.js';
+import { buildAiMessage, buildContactMessage } from '../services/ai-message-builder.js';
 // ULTRATHINK fix (2026-05-26): deterministic keyword routing (= Plan A-1/A-3/A-6 safety net)
 import { detectIntent, buildMessagesForIntentAsync } from '../services/intent-router.js';
 
@@ -735,7 +735,31 @@ async function handleEvent(
 
     let matched = false;
     let replyTokenConsumed = false;
+
+    // お問い合わせカード (実機FB第5弾 2026-07-10): リッチメニュー Q&A は text「お問い合わせ」を送る。
+    //   旧経路 (AI 応答の table 描画) は連絡先がタップもコピーもできなかった → タップ可能な
+    //   contact Flex (電話 tel: / メール bridge / 公式サイト / アドレスコピー) を code で先取りして返す。
+    //   exact match のみ (自由文の連絡先質問は AI が [FMT:contact] marker で同カードに合流)。
+    //   auto_replies と同じ matched フラグ方式 (= message_received の event bus は素通しで発火)。
+    if (incomingText.trim() === 'お問い合わせ') {
+      try {
+        await lineClient.replyMessage(event.replyToken, [buildContactMessage(workerUrl)]);
+        replyTokenConsumed = true;
+        matched = true;
+        await db
+          .prepare(
+            `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, created_at)
+             VALUES (?, ?, 'outgoing', 'flex', ?, NULL, NULL, 'reply', ?)`,
+          )
+          .bind(crypto.randomUUID(), friend.id, '[contact card]', jstNow())
+          .run();
+      } catch (err) {
+        console.error('Failed to send contact card (falling through to auto-reply/AI):', err);
+      }
+    }
+
     for (const rule of autoReplies.results) {
+      if (matched) break; // contact card 送信済なら auto_replies は評価しない
       const isMatch =
         rule.match_type === 'exact'
           ? incomingText === rule.keyword
@@ -852,7 +876,7 @@ async function handleEvent(
           .first<{ cnt: number }>();
         if ((daily?.cnt ?? 0) >= DAILY_AI_CAP) {
           await trySendGuard(
-            '本日の AI 応答の上限に達しました。詳しいご質問はカスタマーサポート (info@kenkoex.com / 03-6411-5513) までご連絡ください。明日また自動応答をご利用いただけます。',
+            '本日の AI 応答の上限に達しました。詳しいご質問はカスタマーサポート (info@naturism-diet.com / 03-6411-5513) までご連絡ください。明日また自動応答をご利用いただけます。',
             'daily-cap',
           );
         }
@@ -957,7 +981,7 @@ async function handleEvent(
         );
 
         // Plan A-4 (2026-05-24): context-aware に text or flex を選択 (= AI prefix hint + heuristics)
-        await lineClient.replyMessage(event.replyToken, [buildAiMessage(aiResult.text)]);
+        await lineClient.replyMessage(event.replyToken, [buildAiMessage(aiResult.text, { workerUrl })]);
         replyTokenConsumed = true;
         matched = true;
 

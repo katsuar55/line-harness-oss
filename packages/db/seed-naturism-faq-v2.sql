@@ -112,7 +112,7 @@ INSERT INTO auto_replies (id, keyword, match_type, response_type, response_conte
  '妊娠中・授乳中の方は、かかりつけの医師にご相談の上でご使用をご検討ください🙏
 お体の状態に合わせたアドバイスは医師が最適です。
 ご不明な点がありましたらお気軽にお問い合わせください😊
-📩 info@kenkoex.com', 1);
+📩 info@naturism-diet.com', 1);
 
 -- 賞味期限
 INSERT INTO auto_replies (id, keyword, match_type, response_type, response_content, is_active) VALUES

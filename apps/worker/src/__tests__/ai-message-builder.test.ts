@@ -246,7 +246,53 @@ describe('ai-message-builder — buildAiFlexJson (regression)', () => {
     const json = buildAiFlexJson('テスト');
     const bubble = JSON.parse(json);
     expect(bubble.header.contents.some((c: { text?: string }) => c.text === 'naturism')).toBe(true);
-    expect(bubble.footer.contents[0].contents.some((c: { text?: string }) => c.text === 'info@kenkoex.com')).toBe(true);
+    // 実機FB第5弾 (2026-07-10): info@kenkoex.com → info@naturism-diet.com
+    expect(bubble.footer.contents[0].contents.some((c: { text?: string }) => c.text === 'info@naturism-diet.com')).toBe(true);
+  });
+});
+
+// 実機FB第5弾 (2026-07-10): タップ可能な連絡先カード
+describe('ai-message-builder — buildContactMessage ([FMT:contact])', () => {
+  function extractActions(msg: ReturnType<typeof buildAiMessage>): Array<Record<string, unknown>> {
+    const flex = msg as unknown as { contents: { body: { contents: Array<{ type: string; action?: Record<string, unknown> }> } } };
+    return flex.contents.body.contents.filter((c) => c.type === 'button').map((c) => c.action!);
+  }
+
+  it('[FMT:contact] prefix returns contact flex with tel/bridge/site/clipboard actions', () => {
+    const msg = buildAiMessage('[FMT:contact]', { workerUrl: 'https://example.workers.dev' });
+    expect(msg.type).toBe('flex');
+    const actions = extractActions(msg);
+    // 電話 = tel: (LINE 公式対応 scheme で 1 タップ発信)
+    expect(actions.some((a) => a.type === 'uri' && String(a.uri).startsWith('tel:'))).toBe(true);
+    // メール = mailto 非対応のため https ブリッジページ経由
+    expect(actions.some((a) => a.type === 'uri' && a.uri === 'https://example.workers.dev/contact/email')).toBe(true);
+    // 公式サイト
+    expect(actions.some((a) => a.type === 'uri' && a.uri === 'https://naturism-diet.com')).toBe(true);
+    // アドレスコピー = clipboard action
+    expect(actions.some((a) => a.type === 'clipboard' && a.clipboardText === 'info@naturism-diet.com')).toBe(true);
+    // mailto: を uri action に直接使っていない (LINE 公式 scheme 外 → 送信時 400 のリスク)
+    expect(actions.every((a) => !(a.type === 'uri' && String(a.uri).startsWith('mailto:')))).toBe(true);
+  });
+
+  it('mangled marker [FMAT:contact] / 日本語 marker [フォーマット:contact] も contact card に route する', () => {
+    const m1 = buildAiMessage('[FMAT:contact]', { workerUrl: 'https://x.dev' });
+    const m2 = buildAiMessage('[フォーマット:contact]', { workerUrl: 'https://x.dev' });
+    expect(m1.type).toBe('flex');
+    expect(m2.type).toBe('flex');
+    expect(JSON.stringify(m1)).toContain('tel:');
+    expect(JSON.stringify(m2)).toContain('tel:');
+  });
+
+  it('workerUrl 未指定でもメールボタンが壊れない (公式サイトへ fallback)', () => {
+    const msg = buildAiMessage('[FMT:contact]');
+    const json = JSON.stringify(msg);
+    expect(json).not.toContain('undefined/contact/email');
+    expect(json).toContain('tel:');
+  });
+
+  it('連絡先カードに LINE 黄緑 (#06C755) を使わない (2026-07-07 ブランド方針)', () => {
+    const msg = buildAiMessage('[FMT:contact]', { workerUrl: 'https://x.dev' });
+    expect(JSON.stringify(msg)).not.toContain('#06C755');
   });
 });
 

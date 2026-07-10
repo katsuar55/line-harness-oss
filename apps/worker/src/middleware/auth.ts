@@ -13,6 +13,8 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/api/affiliates/click' ||
     path.startsWith('/t/') ||
     path.startsWith('/r/') ||
+    // メール起動ブリッジ (実機FB第5弾): contact card の「メールを送る」が開く公開静的ページ
+    (c.req.method === 'GET' && path === '/contact/email') ||
     path.startsWith('/images/') ||
     path.startsWith('/api/liff/') ||
     // LIFF HTML ページは API ではなく SPA エントリ (内部の API 呼び出しは

@@ -544,6 +544,57 @@ describe('Auto-reply matching', () => {
     expect((lastReply.messages[0] as { type: string }).type).toBe('text');
   });
 
+  it('「お問い合わせ」exact はタップ可能な contact card を code 先取りで返す (auto_replies より優先)', async () => {
+    const userId = 'U_user_contact';
+    friendsDb.set(userId, {
+      id: `friend-${userId}`,
+      line_user_id: userId,
+      display_name: 'ContactUser',
+      is_following: true,
+      score: 0,
+      created_at: '2026-03-01',
+      user_id: null,
+    });
+
+    const db = createMockD1();
+    const mockStmt = {
+      bind: vi.fn().mockReturnThis(),
+      run: vi.fn().mockResolvedValue({ success: true }),
+      first: vi.fn().mockResolvedValue(null),
+      all: vi.fn().mockResolvedValue({
+        results: [
+          // contains でマッチしうる旧 auto_reply が居ても contact card が優先されることを検証
+          {
+            id: 'ar-old-contact',
+            keyword: '問い合わせ',
+            match_type: 'contains',
+            response_type: 'text',
+            response_content: '旧テンプレ連絡先',
+            is_active: 1,
+            created_at: '2026-01-01',
+          },
+        ],
+      }),
+    };
+    (db.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
+
+    const body = makeTextMessageBody(userId, 'お問い合わせ');
+    const res = await postWebhook(body, undefined, { db });
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(capturedReplies.length).toBeGreaterThanOrEqual(1);
+    const lastReply = capturedReplies[capturedReplies.length - 1];
+    const msg = lastReply.messages[0] as { type: string };
+    expect(msg.type).toBe('flex');
+    const json = JSON.stringify(msg);
+    expect(json).toContain('tel:');              // 電話 1タップ発信
+    expect(json).toContain('/contact/email');    // メールは https ブリッジ経由 (mailto 直は LINE 非対応)
+    expect(json).toContain('info@naturism-diet.com'); // 新アドレス
+    expect(json).not.toContain('kenkoex');
+    expect(json).not.toContain('旧テンプレ連絡先'); // auto_replies は評価されない
+  });
+
   it('contains match triggers correct auto-reply', async () => {
     const userId = 'U_user_contains';
     friendsDb.set(userId, {

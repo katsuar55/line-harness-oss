@@ -349,7 +349,7 @@ liffPortal.post('/api/liff/ask', async (c) => {
     // Guard ②: 日次上限 (conversation_logs 当日数・LINE側AIと合算)
     const todayCount = await countTodayAiAsks(c.env.DB, user.friendId, jstDateString(Date.now()));
     if (todayCount >= AI_DAILY_CAP) {
-      return c.json({ success: true, data: { answer: '本日のご質問の上限に達しました。詳しいご質問はカスタマーサポート(info@kenkoex.com / 03-6411-5513)へお気軽にどうぞ。明日また自動応答をご利用いただけます。', layer: 'daily-cap' } });
+      return c.json({ success: true, data: { answer: '本日のご質問の上限に達しました。詳しいご質問はカスタマーサポート(info@naturism-diet.com / 03-6411-5513)へお気軽にどうぞ。明日また自動応答をご利用いただけます。', layer: 'daily-cap' } });
     }
 
     const friend = await getFriendById(c.env.DB, user.friendId);
