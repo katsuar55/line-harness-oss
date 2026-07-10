@@ -245,6 +245,35 @@ WORKER_URL: string
 新パターンでハングした場合、本ファイルの「禁止パターン」表に該当パターンを追記してから次の作業に移る。
 追記なき再発は同じ穴を踏み続けるため、必ずルール側にフィードバックする。
 
+## LIFF inline JS コーディングルール (絶対遵守 — 再発防止)
+
+2026-07-10 に #192 デプロイ後、ポータルが「読み込み中」スピナーのまま**全ユーザーで全損**する本番障害が発生 (#193 で hotfix)。原因は inline onclick 属性内の JS に `\'` エスケープを書いたこと。同じ穴を踏まないために以下を守る。
+
+### 禁止パターン
+
+| パターン | 理由 |
+|---|---|
+| server 側 TS の template literal 内で、client JS 文字列に「バックスラッシュ+シングルクォート」エスケープを書く (例: onclick 属性内の JS) | TS の template literal がエスケープを素のクォートに潰して emit → client JS の文字列リテラルが途中終端 → **inline script 全体が SyntaxError → ページ全損** (watchdog も同 script 内なので死ぬ)。regex ベースの静的ガードでも typecheck でも原理的に検出不能 |
+| inline onclick / onerror 属性値に引用符ネストが必要な JS を直接書く | 上記エスケープ地獄の温床。両引用符 (HTML=二重・JS=単一) を跨ぐ時点で危険信号 |
+
+### 推奨パターン
+
+| やりたいこと | 正しい方法 |
+|---|---|
+| onclick で複数文の JS を実行 | **名前付き関数を script 内に定義**して `onclick="fnName()"` で呼ぶ (例: `scrollToReferralCard()`) |
+| client JS 内に改行文字を書く | `\\n` (バックスラッシュ2つ) — emit 後に `\n` になる (例: shareRefLine の msg) |
+| 変更後の検証 | `liff-script-syntax.test.ts` が /liff/portal の**吐き出された inline script を new Function で parse** する (gate on/off 両分岐)。LIFF ページに inline script を持つ新ルートを追加したら、このテストにそのルートも追加すること |
+
+### 自己点検チェックリスト (liff-pages.ts 等の inline JS を編集する前)
+
+- [ ] 追加した client JS 文字列に「バックスラッシュ+シングルクォート」が無いか?
+- [ ] onclick 属性に引用符ネストを書いていないか? (必要なら名前付き関数へ)
+- [ ] `liff-script-syntax.test.ts` を実行したか? (吐き出された JS の parse 検証)
+
+### 違反時の必須アクション
+
+新パターンで inline script が壊れた場合、本ファイルの「禁止パターン」表に該当パターンを追記してから次の作業に移る。
+
 ## テストコーディングルール (絶対遵守 — 再発防止)
 
 2026-05-17 に Phase 5β-prep adoption batch 2 で `vi.mock` と `await import()` の干渉により
