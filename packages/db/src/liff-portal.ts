@@ -26,7 +26,10 @@ export async function createIntakeLog(
   const now = jstNow();
   const today = now.slice(0, 10); // YYYY-MM-DD
 
-  // 同日同 meal_type で既に記録があるか確認 (能動pull設計: 重複は無視して既存値を返す)
+  // 同日重複ガード (能動pull設計: 重複は無視して既存値を返す)。
+  //   mealType あり = 同日同 meal / なし (メインの「服用を記録する」) = 同日の非 meal ログ。
+  //   後者は従来ノーガードで、連打のたびに INSERT + intake_log スコアリングが発火していた
+  //   (採点R3: point farming)。alreadyLogged=true なら caller 側で fireEvent しない (既存挙動)。
   if (data.mealType) {
     const existing = await db
       .prepare(
@@ -36,6 +39,18 @@ export async function createIntakeLog(
       )
       .bind(data.friendId, today, data.mealType)
       .first<{ id: string; streak_count: number; logged_at: string; meal_type: MealType }>();
+    if (existing) {
+      return { ...existing, alreadyLogged: true };
+    }
+  } else {
+    const existing = await db
+      .prepare(
+        `SELECT id, streak_count, logged_at, meal_type FROM intake_logs
+         WHERE friend_id = ? AND substr(logged_at, 1, 10) = ? AND meal_type IS NULL
+         LIMIT 1`,
+      )
+      .bind(data.friendId, today)
+      .first<{ id: string; streak_count: number; logged_at: string; meal_type: MealType | null }>();
     if (existing) {
       return { ...existing, alreadyLogged: true };
     }

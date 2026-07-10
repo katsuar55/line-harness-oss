@@ -60,7 +60,8 @@ describe('タブ フリック切替', () => {
 
   it('ツアー overlay 上のフリックはタブ切替に波及しない (data-no-tab-swipe)', () => {
     expect(pages).toMatch(/id="onboarding-tour"[^>]*data-no-tab-swipe/);
-    expect(pages).toMatch(/closest\('\[data-no-tab-swipe\]'\)/);
+    // 採点R3: range スライダー (睡眠時間) の drag もタブ切替から除外
+    expect(pages).toMatch(/closest\('\[data-no-tab-swipe\],input\[type="range"\]'\)/);
   });
 
   it('他の overlay/横スクロール要素も swipe 除外されている (review HIGH/LOW)', () => {

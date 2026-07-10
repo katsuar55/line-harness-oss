@@ -1161,6 +1161,15 @@ async function initLiff() {
       document.getElementById('user-avatar').innerHTML =
         '<img src="' + profile.pictureUrl + '" class="w-full h-full rounded-full object-cover" alt="">';
     }
+    // 採点R3: リッチメニュー #delivery/#reorder 直行時、shop の fetch を home batch と並列に先行
+    //   (旧: home 12 loader 完了後に直列で shop fetch = 体感2倍待ち)。switchTab 側は 1 回だけ skip。
+    try {
+      var earlyDest = (location.hash || '').replace('#', '') || (new URLSearchParams(location.search).get('page') || '');
+      if (earlyDest === 'delivery' || earlyDest === 'reorder' || earlyDest === 'shop' || earlyDest === 'store') {
+        window.__shopPrefetched = true;
+        loadShopData(); loadSubscriptionsOnce();
+      }
+    } catch (e) { /* prefetch は最適化 — 失敗しても通常経路で読む */ }
     await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadWelcomeCoupon(), loadReferralCoupon(), loadFriendCoupon(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake(), loadBadges()]);
     initOptInCard();
     initAccountHint();
@@ -1434,7 +1443,12 @@ function switchTab(name) {
 
   // Lazy load section data (4タブ再設計: 体調は「記録」に統合、旧 more は「マイアカウント」へ)
   if (name === 'intake') { loadIntakeData(); initReminder(); loadHealthData(); }
-  if (name === 'shop') { loadShopData(); loadSubscriptionsOnce(); }
+  if (name === 'shop') {
+    // deep-link 先行フェッチ済みなら 1 回だけ skip (double-fetch 回避)
+    if (window.__shopPrefetched) { window.__shopPrefetched = false; }
+    else { loadShopData(); }
+    loadSubscriptionsOnce();
+  }
   if (name === 'account') loadAccountData();
   if (name === 'quiz') playQuizHeroVideo();
 }
@@ -1520,8 +1534,8 @@ function initTabSwipe() {
   document.addEventListener('touchstart', function (e) {
     tracking = false;
     if (e.touches.length !== 1) return;
-    // ツアー overlay や将来の横操作 UI 上では発火させない
-    if (e.target && e.target.closest && e.target.closest('[data-no-tab-swipe]')) return;
+    // ツアー overlay や将来の横操作 UI 上では発火させない (採点R3: range スライダーの drag も横操作)
+    if (e.target && e.target.closest && e.target.closest('[data-no-tab-swipe],input[type="range"]')) return;
     tracking = true;
     sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now();
   }, { passive: true });
@@ -1696,9 +1710,13 @@ function copyFriendCoupon() {
   var el = document.getElementById('friend-coupon-code');
   if (!el) return;
   var code = el.textContent || '';
+  // 採点R3: コピー失敗時に成功トーストを出さない
   try {
-    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(code); }
-    showToast('クーポンコードをコピーしました');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code)
+        .then(function() { showToast('クーポンコードをコピーしました'); })
+        .catch(function() { showToast('コピーできませんでした。コードを長押ししてください'); });
+    } else { showToast('コピーできませんでした。コードを長押ししてください'); }
   } catch (e) { showToast('コピーできませんでした。コードを長押ししてください'); }
 }
 
@@ -1734,9 +1752,13 @@ function copyWelcomeCoupon() {
   var el = document.getElementById('welcome-coupon-code');
   if (!el) return;
   var code = el.textContent || '';
+  // 採点R3: コピー失敗時に成功トーストを出さない
   try {
-    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(code); }
-    showToast('クーポンコードをコピーしました');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code)
+        .then(function() { showToast('クーポンコードをコピーしました'); })
+        .catch(function() { showToast('コピーできませんでした。コードを長押ししてください'); });
+    } else { showToast('コピーできませんでした。コードを長押ししてください'); }
   } catch (e) { showToast('コピーできませんでした。コードを長押ししてください'); }
 }
 async function loadReferralCoupon() {
@@ -1773,9 +1795,13 @@ async function loadReferralCoupon() {
 }
 function copyRefCode(btn) {
   var code = (btn && btn.getAttribute('data-code')) || '';
+  // 採点R3: コピー失敗時に成功トーストを出さない (clipboard は Promise — .then で成功時のみ)
   try {
-    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(code); }
-    showToast('クーポンコードをコピーしました');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code)
+        .then(function() { showToast('クーポンコードをコピーしました'); })
+        .catch(function() { showToast('コピーできませんでした。コードを長押ししてください'); });
+    } else { showToast('コピーできませんでした。コードを長押ししてください'); }
   } catch (e) { showToast('コピーできませんでした。コードを長押ししてください'); }
 }
 
@@ -1851,6 +1877,7 @@ async function loadIntakeData() {
 
 function renderCalendar() {
   var now = new Date();
+  now.setDate(1); // 採点R3: 29-31日に setMonth が月跨ぎ overflow して前月ボタンが死ぬのを防ぐ
   now.setMonth(now.getMonth() + calendarOffset);
   var year = now.getFullYear();
   var month = now.getMonth();
@@ -1901,6 +1928,9 @@ async function logIntake() {
     if (apiFailed(res)) {
       // 採点R1: HTTP エラーを silent にしない (false-success/無反応の根絶)
       showToast('記録に失敗しました');
+    } else if (res.data && res.data.alreadyLogged) {
+      // 採点R3: 同日重複はサーバが既存値を返す (INSERT/スコアリングなし) — 正直に伝える
+      showToast('本日は記録済みです (連続' + res.data.streakCount + '日)');
     } else if (res.data) {
       showToast('記録しました! (連続' + res.data.streakCount + '日)');
       showConfetti();
@@ -2811,9 +2841,14 @@ async function loadShopData() {
     if (data.recentOrders && data.recentOrders.length > 0) {
       oel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">最近の注文</p>' +
         data.recentOrders.map(function(o) {
+          // 採点R3: 商品名サマリで「何を再注文するか」を明示 (blind action 解消、API は lineItems を返却済)
+          var itemsLabel = (o.lineItems && o.lineItems.length)
+            ? esc(o.lineItems[0].name || '') + (o.lineItems.length > 1 ? ' 他' + (o.lineItems.length - 1) + '点' : '')
+            : '';
           return '<div class="py-2 border-b last:border-0">' +
             '<div class="flex justify-between items-center"><p class="text-sm font-bold">#' + esc(o.orderNumber) + '</p>' +
             '<p class="text-sm text-green-600 font-bold">¥' + Number(o.totalPrice).toLocaleString() + '</p></div>' +
+            (itemsLabel ? '<p class="text-xs text-gray-500 truncate">' + itemsLabel + '</p>' : '') +
             '<div class="flex justify-between items-center mt-0.5"><p class="text-xs text-gray-400">' + esc((o.createdAt || '').slice(0, 10)) + '</p>' +
             (o.id ? '<button onclick="reorderFromOrder(this)" data-order-id="' + esc(o.id) + '" class="tap text-xs font-bold text-teal-700 rounded-full px-3 py-1" style="border:1px solid #bfe8e3;background:#effaf8">🔄 この注文を再注文</button>' : '') +
             '</div></div>';
