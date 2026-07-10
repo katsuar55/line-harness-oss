@@ -73,8 +73,9 @@ describe('コントラストと触感', () => {
   });
 
   it('全ボタン「柔らかく押し込む」触感 (translateY + scale) + reduced-motion では無効', () => {
-    expect(pages).toMatch(/button:active,\.tap:active,label:active\{transform:translateY\(1\.5px\) scale\(0\.97\)\}/);
-    expect(pages).toMatch(/prefers-reduced-motion:reduce\)[\s\S]{0,700}button:active[\s\S]{0,80}transform:none !important/);
+    // 採点R1: onclick アンカー CTA にも押し込み触感を拡張 (a[onclick]:active)
+    expect(pages).toMatch(/button:active,\.tap:active,label:active,a\[onclick\]:active\{transform:translateY\(1\.5px\) scale\(0\.97\)\}/);
+    expect(pages).toMatch(/prefers-reduced-motion:reduce\)[\s\S]{0,700}button:active[\s\S]{0,120}transform:none !important/);
   });
 
   it('個別 :active ルールも translateY を同梱 — 押し込み触感が全ボタンで統一 (review confirmed 2件)', () => {

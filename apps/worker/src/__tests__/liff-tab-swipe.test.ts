@@ -26,8 +26,10 @@ describe('ヘッダー刷新', () => {
 });
 
 describe('タブ フリック切替', () => {
-  it('TAB_ORDER が 6 タブを画面順で定義している', () => {
-    expect(pages).toMatch(/var TAB_ORDER = \['home', 'quiz', 'intake', 'health', 'shop', 'more'\]/);
+  it('TAB_ORDER が 4 タブを画面順で定義している (4タブ再設計: account はスワイプ対象外)', () => {
+    expect(pages).toMatch(/var TAB_ORDER = \['home', 'quiz', 'shop', 'intake'\]/);
+    // account はアバターから開く隠しセクション (タブバー/スワイプに出さない)
+    expect(pages).not.toMatch(/TAB_ORDER = \[[^\]]*'account'/);
   });
 
   it('touchstart/touchend の passive リスナーで水平フリックを判定する', () => {
@@ -58,7 +60,8 @@ describe('タブ フリック切替', () => {
 
   it('ツアー overlay 上のフリックはタブ切替に波及しない (data-no-tab-swipe)', () => {
     expect(pages).toMatch(/id="onboarding-tour"[^>]*data-no-tab-swipe/);
-    expect(pages).toMatch(/closest\('\[data-no-tab-swipe\]'\)/);
+    // 採点R3: range スライダー (睡眠時間) の drag もタブ切替から除外
+    expect(pages).toMatch(/closest\('\[data-no-tab-swipe\],input\[type="range"\]'\)/);
   });
 
   it('他の overlay/横スクロール要素も swipe 除外されている (review HIGH/LOW)', () => {

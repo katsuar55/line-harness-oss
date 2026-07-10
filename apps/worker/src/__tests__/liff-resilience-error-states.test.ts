@@ -140,11 +140,16 @@ describe('全 loader へ cardError 適用 (silent catch → skeleton 固着の�
   });
 });
 
-describe('MORE タブ: moreLoaded 固着の解消', () => {
-  it('loadMoreData は 1 つでも失敗したら moreLoaded を解放し再訪問で再読込できる', () => {
-    const b = loaderBlock('loadMoreData');
+describe('マイアカウント (旧 MORE): accountLoaded 固着の解消', () => {
+  it('loadAccountData は 1 つでも失敗したら accountLoaded を解放し再訪問で再読込できる', () => {
+    const b = loaderBlock('loadAccountData');
     expect(b).toMatch(/indexOf\(false\) >= 0/);
-    expect(b).toMatch(/moreLoaded = false/);
+    expect(b).toMatch(/accountLoaded = false/);
+  });
+
+  it('loadSubscriptionsOnce (Shop 移設分) も失敗時に subsLoaded を解放する', () => {
+    const b = loaderBlock('loadSubscriptionsOnce');
+    expect(b).toMatch(/subsLoaded = false/);
   });
 
   it('loadNotifPrefs / loadSubscriptions / loadFAQ は成功/失敗を boolean で返す', () => {

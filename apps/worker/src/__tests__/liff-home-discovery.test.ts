@@ -25,7 +25,7 @@ describe('portal home の二次機能 発見性 (PR-B)', () => {
     expect(pages).toMatch(/function openFeaturePage[\s\S]{0,200}API_BASE \+ path/);
   });
 
-  it('home に「栄養 & ウェルネス」discovery card がある', () => {
+  it('「栄養 & ウェルネス」discovery card がある (4タブ再設計で記録タブへ集約)', () => {
     expect(pages).toContain('栄養 & ウェルネス');
   });
 
@@ -35,13 +35,13 @@ describe('portal home の二次機能 発見性 (PR-B)', () => {
     expect(pages).toMatch(/openFeaturePage\('\/liff\/food\/graph'\)/);
   });
 
-  it('discovery card は home section 内 (intake-today-card と tip-card の間) に置かれる', () => {
-    // section-home 内に栄養カードが存在し、section-more より前 (= home タブで見える)
-    const homeIdx = pages.indexOf('id="section-home"');
+  it('discovery card は記録 (intake) section 内に置かれる (4タブ再設計: 健康サポートは記録に集約)', () => {
+    const intakeIdx = pages.indexOf('id="section-intake"');
     const wellnessIdx = pages.indexOf('栄養 & ウェルネス');
-    const moreIdx = pages.indexOf('id="section-more"');
-    expect(homeIdx).toBeGreaterThan(-1);
-    expect(wellnessIdx).toBeGreaterThan(homeIdx);
-    expect(wellnessIdx).toBeLessThan(moreIdx);
+    const quizIdx = pages.indexOf('id="section-quiz"');
+    expect(intakeIdx).toBeGreaterThan(-1);
+    expect(wellnessIdx).toBeGreaterThan(intakeIdx);
+    // intake セクションの次のセクション (quiz) より前 = intake 内
+    expect(wellnessIdx).toBeLessThan(quizIdx);
   });
 });

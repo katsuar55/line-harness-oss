@@ -265,7 +265,11 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/fulfillment', async (c) =
     const trackingNumber = (body.tracking_number as string) ?? undefined;
     const trackingUrl = (body.tracking_url as string) ?? undefined;
     const trackingCompany = (body.tracking_company as string) ?? undefined;
-    const status = (body.status as string) ?? undefined;
+    // 採点R1 HIGH: 配送進捗は body.shipment_status (in_transit/out_for_delivery/delivered 等) に
+    //   乗るが旧実装は body.status (success 固定) しか見ず、LIFF の進捗ステップが
+    //   「発送済み」で止まっていた。shipment_status を優先して status 列に保存する
+    //   (additive・migration 不要。client の日本語 map は両語彙対応済)。
+    const status = ((body.shipment_status as string) || (body.status as string)) ?? undefined;
     const lineItemsRaw = body.line_items as Array<Record<string, unknown>> | undefined;
 
     // 注文IDで内部IDを取得
