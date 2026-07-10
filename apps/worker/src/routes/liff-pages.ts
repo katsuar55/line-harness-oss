@@ -783,32 +783,32 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
       <div class="card p-4">
         <p class="text-xs text-gray-500 font-bold mb-3">オフィシャルリンク</p>
         <div class="space-y-2">
-          <a href="https://naturism.jp" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+          <a href="https://naturism.jp" target="_blank" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
             <span class="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center text-sm">🌿</span>
             <div class="flex-1"><p class="text-sm font-bold text-gray-800">公式サイト</p><p class="text-xs text-gray-400">naturism.jp</p></div>
             <span class="text-gray-300 text-sm">→</span>
           </a>
-          <a href="https://xn-0ckn0a9fxa4a.myshopify.com" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+          <a href="https://xn-0ckn0a9fxa4a.myshopify.com" target="_blank" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
             <span class="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-sm">🛒</span>
             <div class="flex-1"><p class="text-sm font-bold text-gray-800">オンラインストア</p><p class="text-xs text-gray-400">Shopify公式ストア</p></div>
             <span class="text-gray-300 text-sm">→</span>
           </a>
-          <a href="https://www.instagram.com/naturism_supplement/" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+          <a href="https://www.instagram.com/naturism_supplement/" target="_blank" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
             <span class="w-8 h-8 rounded-full bg-pink-100 flex items-center justify-center text-sm">📸</span>
             <div class="flex-1"><p class="text-sm font-bold text-gray-800">Instagram</p><p class="text-xs text-gray-400">@naturism_supplement</p></div>
             <span class="text-gray-300 text-sm">→</span>
           </a>
-          <a href="https://x.com/naturism_diet" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+          <a href="https://x.com/naturism_diet" target="_blank" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
             <span class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-sm">𝕏</span>
             <div class="flex-1"><p class="text-sm font-bold text-gray-800">X (Twitter)</p><p class="text-xs text-gray-400">@naturism_diet</p></div>
             <span class="text-gray-300 text-sm">→</span>
           </a>
-          <a href="https://www.tiktok.com/@naturism_official" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+          <a href="https://www.tiktok.com/@naturism_official" target="_blank" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
             <span class="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-sm text-white">♪</span>
             <div class="flex-1"><p class="text-sm font-bold text-gray-800">TikTok</p><p class="text-xs text-gray-400">@naturism_official</p></div>
             <span class="text-gray-300 text-sm">→</span>
           </a>
-          <a href="https://www.youtube.com/@naturism-diet" target="_blank" class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+          <a href="https://www.youtube.com/@naturism-diet" target="_blank" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
             <span class="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center text-sm">▶</span>
             <div class="flex-1"><p class="text-sm font-bold text-gray-800">YouTube</p><p class="text-xs text-gray-400">@naturism-diet</p></div>
             <span class="text-gray-300 text-sm">→</span>
@@ -1416,7 +1416,7 @@ function handleDeepLink() {
   if (hash === 'referral') { setTimeout(function() { var el = document.getElementById('referral-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
   // ショップタブ内のカードへスクロール
   if (hash === 'delivery') { window.__pendingDeliveryScroll = true; setTimeout(function() { var el = document.getElementById('fulfillments-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
-  if (hash === 'reorder') { setTimeout(function() { var el = document.getElementById('orders-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
+  if (hash === 'reorder') { window.__pendingReorderScroll = true; setTimeout(function() { var el = document.getElementById('orders-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
 }
 
 // ─── Tab Switching ───
@@ -1634,7 +1634,7 @@ async function loadRank() {
         '<div class="bg-gray-100 rounded-full h-2 overflow-hidden" style="position:relative;z-index:1"><div class="' + (isAmb ? 'h-2 progress-bar' : 'bg-green-500 h-2 progress-bar') + '" style="width:' + pct + '%;' + (isAmb ? 'background:linear-gradient(90deg,#fbbf24,#f59e0b)' : '') + '"></div></div>' +
         (data.nextRank ? '<p class="text-xs text-gray-400 mt-1" style="position:relative;z-index:1">次のランク ' + esc(data.nextRank.name) + ' まであと ¥' + Number(data.nextRank.remaining).toLocaleString() + '</p>' : '<p class="text-xs text-green-600 mt-1" style="position:relative;z-index:1">最高ランク達成!</p>') +
         // 回遊: ランク表示で終わらせず、会員特典のおトクな購入へ繋ぐ (purchase motivation)
-        '<a href="' + API_BASE + '/liff/my-rank" class="block mt-3 text-center text-xs text-green-700 bg-green-50 rounded-xl py-2 font-bold" style="position:relative;z-index:1">🛍 会員特典・おトクに購入する →</a>';
+        '<a href="' + API_BASE + '/liff/my-rank" class="tap block mt-3 text-center text-xs text-green-700 bg-green-50 rounded-xl py-2 font-bold" style="position:relative;z-index:1">🛍 会員特典・おトクに購入する →</a>';
     } else {
       // 採点R1: 未購入ユーザーに「死んだグレー行」でなくランク制度のティーザーを見せる (割引訴求のみ=薬機法セーフ)
       el.innerHTML =
@@ -1786,12 +1786,14 @@ async function loadCoupons() {
     if (apiFailed(res)) { cardError(el, res, 'loadCoupons'); return; }
     const data = res.data;
     if (data && data.coupons && data.coupons.length > 0) {
+      // 採点R2: 一覧行にもコピー行動を (welcome/紹介カードと同じ「使える」体験に)
       el.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">クーポン</p>' +
         data.coupons.map(function(cp) {
-          return '<div class="flex items-center justify-between py-2 border-b last:border-0">' +
-            '<div><p class="text-sm font-bold text-green-600">' + esc(cp.code) + '</p>' +
-            '<p class="text-xs text-gray-500">' + esc(cp.title) + '</p></div>' +
-            '<p class="text-xs text-gray-400">' + (cp.expiresAt ? '~' + esc(cp.expiresAt.slice(0, 10)) : '') + '</p></div>';
+          return '<div class="flex items-center justify-between gap-2 py-2 border-b last:border-0">' +
+            '<div class="flex-1 min-w-0"><p class="text-sm font-bold text-green-600 truncate">' + esc(cp.code) + '</p>' +
+            '<p class="text-xs text-gray-500 truncate">' + esc(cp.title) + '</p>' +
+            (cp.expiresAt ? '<p class="text-xs text-gray-400">~' + esc(cp.expiresAt.slice(0, 10)) + '</p>' : '') + '</div>' +
+            '<button onclick="copyRefCode(this)" data-code="' + esc(cp.code) + '" class="tap text-xs font-bold text-teal-700 rounded-full px-3 py-1 whitespace-nowrap" style="border:1px solid #bfe8e3;background:#effaf8">コピー</button></div>';
         }).join('');
     } else {
       // 採点R1: 「無い」の告知でなく、クーポンを得る次の一手 (紹介ヒーロー) へ橋渡し。
@@ -2037,8 +2039,9 @@ async function loadTodayIntake() {
     var num = document.getElementById('intake-streak-num');
     if (apiFailed(streakRes)) {
       if (num) num.textContent = '-';
-    } else if (streakRes && streakRes.data && streakRes.data.streak) {
-      if (num) num.textContent = streakRes.data.streak.currentStreak || 0;
+    } else if (streakRes && streakRes.data && typeof streakRes.data.currentStreak === 'number') {
+      // 採点R2: endpoint は streak をトップレベルに spread する flat shape (data.streak は存在しない)
+      if (num) num.textContent = streakRes.data.currentStreak;
     }
   } catch {
     var errNum2 = document.getElementById('intake-streak-num');
@@ -2183,14 +2186,19 @@ async function loadHealthData() {
     if (apiFailed(res)) { loadErrorToast(res, '体調データを読み込めませんでした'); return; }
     var data = res.data;
     if (data && data.logs && data.logs.length > 0) {
-      var today = data.logs[0];
-      if (today.weight) document.getElementById('weight-input').value = today.weight;
-      if (today.mood) setMood(today.mood);
-      if (today.skin_condition) setSkin(today.skin_condition);
-      if (today.bowel_form) setBowel(today.bowel_form);
-      if (today.bowel_count) { bowelCount = today.bowel_count; document.getElementById('bowel-count-display').textContent = bowelCount; }
-      if (today.sleep_hours) { document.getElementById('sleep-slider').value = today.sleep_hours; updateSleepDisplay(); }
-      if (today.note) document.getElementById('health-note').value = today.note;
+      var latestLog = data.logs[0];
+      // 採点R2: log_date を確認せず昨日のログを「今日の記録」として prefill していた →
+      //   本日 (JST) のログのみ prefill。体重だけは前回値を初期値として引き継ぐ (入力補助)。
+      var jstToday = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+      if (latestLog.weight) document.getElementById('weight-input').value = latestLog.weight;
+      if (String(latestLog.log_date || '').slice(0, 10) === jstToday) {
+        if (latestLog.mood) setMood(latestLog.mood);
+        if (latestLog.skin_condition) setSkin(latestLog.skin_condition);
+        if (latestLog.bowel_form) setBowel(latestLog.bowel_form);
+        if (latestLog.bowel_count) { bowelCount = latestLog.bowel_count; document.getElementById('bowel-count-display').textContent = bowelCount; }
+        if (latestLog.sleep_hours) { document.getElementById('sleep-slider').value = latestLog.sleep_hours; updateSleepDisplay(); }
+        if (latestLog.note) document.getElementById('health-note').value = latestLog.note;
+      }
     }
   } catch { showToast('体調データを読み込めませんでした'); }
 }
@@ -2529,15 +2537,18 @@ async function submitFeedback() {
   btn.disabled = true;
   btn.textContent = '送信中...';
   try {
-    await api('/api/liff/ambassador/feedback', {
+    var fbRes = await api('/api/liff/ambassador/feedback', {
       category: category,
       content: content,
       rating: fbRating > 0 ? fbRating : undefined,
     });
-    showToast('フィードバックを送信しました!');
-    document.getElementById('fb-content').value = '';
-    setFbRating(0);
-    loadFeedbackHistory();
+    if (apiFailed(fbRes)) { showToast((fbRes && fbRes.error) || '送信に失敗しました'); } // 採点R2: false-success 防止 (入力は保持)
+    else {
+      showToast('フィードバックを送信しました!');
+      document.getElementById('fb-content').value = '';
+      setFbRating(0);
+      loadFeedbackHistory();
+    }
   } catch { showToast('送信に失敗しました'); }
   btn.disabled = false;
   btn.textContent = '送信する';
@@ -2670,13 +2681,16 @@ async function submitSurveyAnswers() {
   btn.disabled = true;
   btn.textContent = '送信中...';
   try {
-    await api('/api/liff/ambassador/survey/respond', {
+    var svRes = await api('/api/liff/ambassador/survey/respond', {
       surveyId: currentSurvey.id,
       answers: surveyAnswers,
     });
-    showToast('回答を送信しました！ありがとうございます');
-    closeSurveyModal();
-    loadPendingSurveys();
+    if (apiFailed(svRes)) { showToast((svRes && svRes.error) || '送信に失敗しました'); } // 採点R2: 失敗時は modal を開いたまま=回答を失わない
+    else {
+      showToast('回答を送信しました！ありがとうございます');
+      closeSurveyModal();
+      loadPendingSurveys();
+    }
   } catch { showToast('送信に失敗しました'); }
   btn.disabled = false;
   btn.textContent = '回答を送信';
@@ -2787,7 +2801,7 @@ async function loadShopData() {
             (p.imageUrl ? '<img src="' + esc(p.imageUrl) + '" class="w-16 h-16 rounded-lg object-cover">' : '<div class="w-16 h-16 rounded-lg bg-gray-100"></div>') +
             '<div class="flex-1"><p class="text-sm font-bold text-gray-800">' + esc(p.title) + '</p>' +
             '<p class="text-sm text-green-600 font-bold">¥' + Number(p.price).toLocaleString() + '</p></div>' +
-            '<a href="' + esc(p.storeUrl) + '" target="_blank" class="text-xs text-green-600 border border-green-600 px-3 py-1 rounded-full">購入</a></div>';
+            '<a href="' + esc(p.storeUrl) + '" target="_blank" class="tap text-xs text-green-600 border border-green-600 px-3 py-1 rounded-full">購入</a></div>';
         }).join('');
     } else {
       pel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">商品ラインナップ</p>' +
@@ -2845,10 +2859,14 @@ async function loadShopData() {
     shopErrorCard(fel, shopAuthExpired(fres));
   }
 
-  // #delivery 直行時: hero 描画後にもう一度スクロール (skeleton→hero のレイアウトシフト補正)
+  // #delivery / #reorder 直行時: 描画後にもう一度スクロール (skeleton→実カードのレイアウトシフト補正)
   if (window.__pendingDeliveryScroll) {
     window.__pendingDeliveryScroll = false;
     setTimeout(function() { if (fel) fel.scrollIntoView({ behavior: 'smooth' }); }, 80);
+  }
+  if (window.__pendingReorderScroll) {
+    window.__pendingReorderScroll = false;
+    setTimeout(function() { if (oel) oel.scrollIntoView({ behavior: 'smooth' }); }, 80);
   }
 }
 
@@ -2865,7 +2883,13 @@ async function reorderFromOrder(btn) {
       showToast((res && res.error) || '再注文の作成に失敗しました');
     } else if (res.data && res.data.invoiceUrl) {
       showToast('ご注文ページを開きます');
-      window.open(res.data.invoiceUrl, '_blank');
+      // 採点R2: await 後の window.open は LINE iOS in-app browser で popup block されうる →
+      //   gesture 非依存の liff.openWindow を優先し、無ければ同タブ遷移に degrade
+      if (typeof liff !== 'undefined' && liff.openWindow) {
+        liff.openWindow({ url: res.data.invoiceUrl, external: true });
+      } else {
+        window.location.href = res.data.invoiceUrl;
+      }
     } else {
       showToast('再注文の作成に失敗しました');
     }
@@ -2983,14 +3007,18 @@ async function toggleNotifPref(key, val) {
   renderNotifPrefs();
   var body = {};
   body[key] = val;
+  function revertToggle() { notifPrefs[key] = val ? 0 : 1; renderNotifPrefs(); showToast('設定の保存に失敗しました'); }
   try {
-    await fetch(API_BASE + '/api/liff/notification-prefs', {
+    var r = await fetch(API_BASE + '/api/liff/notification-prefs', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) },
       body: JSON.stringify(body),
     });
+    // 採点R2: false-success + 楽観更新の未復帰を解消 (401 は中央処理へ)
+    if (r.status === 401) { handleAuthExpired(); return; }
+    if (!r.ok) { revertToggle(); return; }
     showToast(val ? '通知をONにしました' : '通知をOFFにしました');
-  } catch { showToast('設定の保存に失敗しました'); }
+  } catch { revertToggle(); }
 }
 
 async function loadSubscriptions() {
@@ -3097,6 +3125,9 @@ async function createSubscription() {
       document.getElementById('sub-add-form').style.display = 'none';
       subsLoaded = false;
       loadSubscriptions();
+    } else {
+      // 採点R2: success:false / HTTP エラーの silent 失敗を解消 (フォームは開いたまま=入力を失わない)
+      showToast((json && json.error) || 'リマインダーの設定に失敗しました');
     }
   } catch { showToast('エラーが発生しました'); }
 }
