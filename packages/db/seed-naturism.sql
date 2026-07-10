@@ -15,14 +15,14 @@ INSERT INTO auto_replies (id, keyword, match_type, response_type, response_conte
 (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))),
  '電話', 'contains', 'text',
  'お電話でのお問い合わせは 03-6411-5513 までお願いします😊
-メールでのお問い合わせは info@kenkoex.com へどうぞ✉️', 1);
+メールでのお問い合わせは info@naturism-diet.com へどうぞ✉️', 1);
 
 INSERT INTO auto_replies (id, keyword, match_type, response_type, response_content, is_active) VALUES
 (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))),
  '解約', 'contains', 'text',
  '定期便の解約は次回お届け予定日の10日前までにご連絡ください。
 お休みプランもご用意していますので、よかったらご検討くださいね😊
-お問い合わせ: info@kenkoex.com', 1);
+お問い合わせ: info@naturism-diet.com', 1);
 
 INSERT INTO auto_replies (id, keyword, match_type, response_type, response_content, is_active) VALUES
 (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))),
@@ -30,7 +30,7 @@ INSERT INTO auto_replies (id, keyword, match_type, response_type, response_conte
  '商品到着後8日以内にご連絡いただければ、未開封品に限り返品を承ります📦
 ※ゆうパケット配送のご注文は返品不可です
 ※着払い返品はお受けできません
-お問い合わせ: info@kenkoex.com', 1);
+お問い合わせ: info@naturism-diet.com', 1);
 
 INSERT INTO auto_replies (id, keyword, match_type, response_type, response_content, is_active) VALUES
 (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))),
@@ -38,7 +38,7 @@ INSERT INTO auto_replies (id, keyword, match_type, response_type, response_conte
  '初回購入に限り全額返金保証がございます✨
 対象: ナチュリズム180粒・酵素inナチュリズム180粒
 商品到着後14日以内にご連絡ください。
-お問い合わせ: info@kenkoex.com', 1);
+お問い合わせ: info@naturism-diet.com', 1);
 
 INSERT INTO auto_replies (id, keyword, match_type, response_type, response_content, is_active) VALUES
 (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))),
@@ -65,4 +65,4 @@ INSERT INTO auto_replies (id, keyword, match_type, response_type, response_conte
  '営業時間', 'contains', 'text',
  'naturism公式オンラインストアは24時間ご利用いただけます✨
 お問い合わせへのご返信は平日に順次対応しております。
-メール: info@kenkoex.com', 1);
+メール: info@naturism-diet.com', 1);

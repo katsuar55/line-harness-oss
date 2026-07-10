@@ -141,7 +141,9 @@ export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<
     path === '/docs' ||
     path === '/openapi.json' ||
     path.startsWith('/r/') ||
-    path.startsWith('/liff/')
+    path.startsWith('/liff/') ||
+    // メール起動ブリッジ (contact card 経由の公開静的ページ、 CGNAT-safe に exempt)
+    path === '/contact/email'
   ) {
     return next();
   }

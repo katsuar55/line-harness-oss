@@ -30,12 +30,15 @@ const portalHandler = (c: { env: Env['Bindings']; html: (html: string) => Respon
   const liffUrl = c.env.LIFF_URL || '';
   const workerUrl = c.env.WORKER_URL || '';
   const liffId = liffUrl.replace('https://liff.line.me/', '');
-  return c.html(portalPage(liffId, workerUrl));
+  // 紹介報酬 gate を client に注入 (実機FB第5弾): on のとき紹介カードが
+  // 「お友だちが購入するとあなたにも¥500」訴求 + 承認済コピー A' に自動切替する。
+  const referralRewardOn = c.env.REFERRAL_REWARD_ENABLED === 'true';
+  return c.html(portalPage(liffId, workerUrl, referralRewardOn));
 };
 liffPages.get('/liff/portal', portalHandler as never);
 liffPages.get('/liff/portal/', portalHandler as never);
 
-function portalPage(liffId: string, apiBase: string): string {
+function portalPage(liffId: string, apiBase: string, referralRewardOn = false): string {
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -118,6 +121,17 @@ function portalPage(liffId: string, apiBase: string): string {
     .sr-in{opacity:1;transform:perspective(900px) translateY(0) rotateX(0) scale(1);transition:transform .7s cubic-bezier(.22,1,.36,1),opacity .55s ease-out}
     .tab-strip{overflow-x:auto;scrollbar-width:none}
     .tab-strip::-webkit-scrollbar{display:none}
+    /* ─ 友だち紹介ヒーロー (実機FB第5弾 2026-07-10: 「お得感を演出」— 動くグラデ枠 + シャイン + 弾む🎁) ─ */
+    .ref-hero{position:relative;border-radius:20px;padding:2px;background:linear-gradient(120deg,#0ABAB5,#ffb39c,#d9573d,#0ABAB5);background-size:300% 300%;animation:refBorder 7s ease infinite}
+    .ref-hero-inner{background:linear-gradient(160deg,#fffdfb,#fff5ec);border-radius:18px;padding:18px 16px;overflow:hidden;position:relative}
+    .ref-hero-inner::after{content:'';position:absolute;top:0;left:-60%;width:40%;height:100%;background:linear-gradient(105deg,transparent,rgba(255,255,255,.6),transparent);transform:skewX(-20deg);animation:refShine 4.5s ease-in-out infinite;pointer-events:none}
+    @keyframes refBorder{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+    @keyframes refShine{0%,55%{left:-60%}85%,100%{left:130%}}
+    .ref-step{background:#fff;border:1px solid #f4c0ad;border-radius:12px;padding:8px 4px;text-align:center}
+    .ref-500{font-size:36px;font-weight:800;color:#d9573d;line-height:1;letter-spacing:-.5px}
+    @keyframes refPop{0%,100%{transform:scale(1) rotate(0)}50%{transform:scale(1.12) rotate(-6deg)}}
+    .ref-gift{display:inline-block;animation:refPop 2.6s ease-in-out infinite;transform-origin:60% 60%}
+    @media (prefers-reduced-motion: reduce){.ref-hero{animation:none}.ref-hero-inner::after{display:none}.ref-gift{animation:none}}
     /* ─ brand skin (2026-07-07 Katsu 指示: LINE黄緑封印 → naturism ティール統一、Dawn 実測トークン) ─
        Tailwind CDN は実行時に <head> 末尾へ style を注入するため、green/emerald 系ユーティリティを
        !important でブランド実色に上書きする (markup と JS の classList ロジックは無改変で全域が変わる)。
@@ -825,6 +839,7 @@ function portalPage(liffId: string, apiBase: string): string {
 <script>
 const LIFF_ID = '${escapeHtml(liffId)}';
 const API_BASE = '${escapeHtml(apiBase)}';
+const REFERRAL_REWARD_ON = ${referralRewardOn ? 'true' : 'false'};
 let idToken = null;
 let selectedCondition = null;
 
@@ -2295,15 +2310,26 @@ async function loadReferralCard() {
     // 共有URLは liff.line.me permalink — workers.dev の生 URL (katsu-7d5 等) は顧客に不信感を与え離脱要因。
     // liff.line.me は LINE 内で最も自然に開け、?ref= は liff.state 経由で endpoint に復元される (#rank 導線と同機構)。
     var shareUrl = LIFF_ID ? 'https://liff.line.me/' + LIFF_ID + '?ref=' + refCode : (window.location.origin + '/liff/portal?ref=' + refCode);
-    el.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">友だち紹介</p>' +
-      '<p class="text-sm text-gray-700 mb-2">リンクを共有しておトクにクーポンゲット!</p>' +
-      '<div class="bg-gray-50 rounded-lg p-2 flex items-center gap-2 mb-3">' +
-      '<span class="text-xs font-mono text-gray-600 truncate flex-1" id="ref-url">' + shareUrl + '</span>' +
-      '<button onclick="copyRefLink()" class="text-xs text-green-600 font-bold whitespace-nowrap">コピー</button></div>' +
-      '<div class="flex gap-2">' +
-      '<button onclick="shareRefLine()" class="flex-1 py-2 rounded-lg text-xs font-bold text-white" style="background:#06C755">LINEで送る</button>' +
-      '</div>' +
-      (stats.totalReferred > 0 ? '<p class="text-xs text-gray-500 mt-3">紹介実績: <span class="font-bold text-coral">' + stats.totalReferred + '人</span></p>' : '');
+    // 実機FB第5弾: 「ボタンを押した人は興味がある」→ お得感を演出するヒーローカードへ刷新。
+    //   動くグラデ枠 + シャイン + 弾む🎁 + ¥500 大数字 + 3ステップ図。主役は「LINEで送る」1本、
+    //   コピーは LINE 外シェア (Instagram/X/メール等) 用に小さなテキストリンクへ降格。
+    el.style.padding = '0'; el.style.background = 'transparent'; el.style.border = 'none'; el.style.boxShadow = 'none';
+    el.innerHTML = '<div class="ref-hero"><div class="ref-hero-inner">' +
+      '<div class="flex items-center gap-2 mb-2">' +
+      '<span class="ref-gift" style="font-size:24px">🎁</span>' +
+      '<span class="chip-coral px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700">友だち紹介プログラム</span></div>' +
+      '<p class="text-sm font-bold text-gray-700">お友だちに</p>' +
+      '<p class="mb-1"><span class="ref-500">¥500</span><span class="text-sm font-bold" style="color:#b84a2e"> OFFクーポンをプレゼント</span></p>' +
+      (REFERRAL_REWARD_ON ? '<p class="text-xs font-bold mt-1" style="color:#0f766e">👑 お友だちがクーポンで購入すると、あなたにも ¥500</p>' : '') +
+      '<div class="grid grid-cols-3 gap-1.5 mt-3 mb-3">' +
+      '<div class="ref-step"><p style="font-size:18px">📮</p><p style="font-size:10px;color:#64748b;font-weight:700">リンクを送る</p></div>' +
+      '<div class="ref-step"><p style="font-size:18px">👋</p><p style="font-size:10px;color:#64748b;font-weight:700">友だち追加</p></div>' +
+      '<div class="ref-step"><p style="font-size:18px">🎉</p><p style="font-size:10px;color:#64748b;font-weight:700">クーポンGET</p></div></div>' +
+      '<button onclick="shareRefLine()" class="w-full py-3.5 rounded-xl text-sm font-bold text-white" style="background:#06C755">LINEで送る</button>' +
+      '<p class="text-center mt-2"><a href="javascript:void(0)" onclick="copyRefLink()" class="text-xs text-gray-400 underline">リンクをコピー (LINE以外で送る)</a></p>' +
+      '<span id="ref-url" style="display:none">' + esc(shareUrl) + '</span>' +
+      (stats.totalReferred > 0 ? '<p class="text-xs text-gray-500 mt-2 text-center">これまでの紹介: <span class="font-bold text-coral">' + stats.totalReferred + '人</span></p>' : '') +
+      '</div></div>';
   } catch { cardError(el, null, 'loadReferralCard'); }
 }
 
@@ -2325,7 +2351,11 @@ function openLineShare(msg) {
 
 function shareRefLine() {
   var url = document.getElementById('ref-url').textContent;
-  var msg = 'naturismを一緒に始めませんか? 紹介リンクからお互い500円OFFクーポンがもらえます!\\n' + url;
+  // gate 連動 (実機FB第5弾): 紹介報酬 (referrer 側 ¥500) が有効化されたら承認済コピー A' に自動切替。
+  //   off の間は referred 側 (= welcome ¥500、稼働中) のみを約束する文言 (景表法セーフ)。
+  var msg = REFERRAL_REWARD_ON
+    ? '🎁ナチュリズムの500円クーポン、おすそ分け!\\nこのリンクから友だち追加するだけで、あなたにも500円クーポンが届くよ✨\\n100%植物由来のインナーケア(食事サポート)が実質¥1,876〜\\n' + url
+    : 'naturismを一緒に始めませんか? 友だち追加で500円OFFクーポンがもらえます!\\n' + url;
   if (typeof liff !== 'undefined' && liff.isApiAvailable && liff.isApiAvailable('shareTargetPicker')) {
     liff.shareTargetPicker([{ type: 'text', text: msg }]).then(function(res) {
       if (res) showToast('送信しました!');
@@ -2691,24 +2721,74 @@ async function loadShopData() {
   }
 
   // Fulfillments (エラーは「配送情報はありません」に化けさせない)
+  //   実機FB第5弾: リッチメニュー「配送状況をみる」(#delivery) からワンタップで
+  //   「最新の注文の配送状況」が即読める hero 表示 (ステータス日本語化 + 進捗ステップ + 追跡ボタン)。
   var fres = null;
   try { fres = await api('/api/liff/fulfillments'); } catch (e) { fres = null; }
   if (fres && fres.data) {
     if (fres.data.fulfillments && fres.data.fulfillments.length > 0) {
-      fel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">配送状況</p>' +
-        fres.data.fulfillments.slice(0, 3).map(function(f) {
-          return '<div class="py-2 border-b last:border-0">' +
-            '<div class="flex justify-between"><p class="text-sm">#' + esc(f.orderNumber) + '</p>' +
-            '<span class="text-xs px-2 py-0.5 rounded-full ' + (f.status === 'delivered' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700') + '">' + esc(f.status || 'in_transit') + '</span></div>' +
-            (f.trackingUrl ? '<a href="' + esc(f.trackingUrl) + '" target="_blank" class="text-xs text-blue-500 underline">追跡する</a>' : '') + '</div>';
-        }).join('');
+      var latest = fres.data.fulfillments[0];
+      var rest = fres.data.fulfillments.slice(1, 3);
+      fel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">🚚 配送状況</p>' +
+        renderFulfillHero(latest) +
+        (rest.length ? '<p class="text-xs text-gray-400 font-bold mt-3 mb-1">それ以前のお届け</p>' +
+          rest.map(function(f) {
+            return '<div class="py-2 border-b last:border-0 flex justify-between items-center">' +
+              '<p class="text-sm text-gray-600">#' + esc(f.orderNumber) + '</p>' +
+              '<span class="text-xs px-2 py-0.5 rounded-full ' + fulfillBadgeClass(f.status) + '">' + fulfillStatusJa(f.status) + '</span></div>';
+          }).join('') : '');
     } else {
-      fel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">配送状況</p>' +
-        '<p class="text-xs text-gray-400">配送情報はありません</p>';
+      fel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">🚚 配送状況</p>' +
+        '<p class="text-sm text-gray-500">現在配送中のお荷物はありません。</p>' +
+        '<p class="text-xs text-gray-400 mt-1">ご注文いただくと、ここでお届け状況をご確認いただけます。</p>';
     }
   } else {
     shopErrorCard(fel, shopAuthExpired(fres));
   }
+}
+
+// 配送ステータスの日本語化 (Shopify fulfillment/shipment status → 顧客向け表現)
+function fulfillStatusJa(status) {
+  var map = {
+    delivered: '配達完了', out_for_delivery: '配達中', in_transit: '配送中',
+    attempted_delivery: '配達試行', ready_for_pickup: '受取可能', label_printed: '発送準備中',
+    label_purchased: '発送準備中', confirmed: '発送準備中', pending: '発送準備中',
+    open: '発送済み', success: '発送済み', failure: '配送遅延', error: '配送遅延',
+  };
+  return map[String(status || '').toLowerCase()] || '配送中';
+}
+function fulfillBadgeClass(status) {
+  var s = String(status || '').toLowerCase();
+  if (s === 'delivered') return 'bg-emerald-100 text-emerald-700';
+  if (s === 'failure' || s === 'error') return 'bg-red-100 text-red-600';
+  return 'bg-teal-50 text-teal-700';
+}
+// 最新のお届けを大きくヒーロー表示 (進捗3ステップ + 追跡番号 + 追跡ボタン)
+function renderFulfillHero(f) {
+  var ja = fulfillStatusJa(f.status);
+  var s = String(f.status || '').toLowerCase();
+  // 進捗ステップ: 発送準備中(0) → 配送中(1) → 配達完了(2)
+  var stage = (s === 'delivered') ? 2 :
+    (s === 'pending' || s === 'confirmed' || s === 'label_printed' || s === 'label_purchased') ? 0 : 1;
+  var steps = ['発送準備', '配送中', 'お届け完了'];
+  var stepHtml = '<div class="flex items-center gap-1 mt-3 mb-1">' + steps.map(function(label, i) {
+    var on = i <= stage;
+    return '<div class="flex-1">' +
+      '<div class="h-1.5 rounded-full" style="background:' + (on ? '#0f766e' : '#e2e8f0') + '"></div>' +
+      '<p class="text-center mt-1" style="font-size:10px;color:' + (on ? '#0f766e' : '#94a3b8') + ';font-weight:' + (i === stage ? '700' : '400') + '">' + label + '</p></div>';
+  }).join('') + '</div>';
+  var items = (f.lineItems && f.lineItems.length)
+    ? esc(f.lineItems[0].name || '') + (f.lineItems.length > 1 ? ' 他' + (f.lineItems.length - 1) + '点' : '')
+    : '';
+  return '<div class="rounded-2xl p-4" style="background:linear-gradient(135deg,#effaf8,#ffffff);border:1.5px solid #bfe8e3">' +
+    '<div class="flex justify-between items-center">' +
+    '<p class="text-sm font-bold text-gray-700">最新のお届け <span class="text-gray-400 font-normal">#' + esc(f.orderNumber) + '</span></p>' +
+    '<span class="text-xs px-2.5 py-1 rounded-full font-bold ' + fulfillBadgeClass(f.status) + '">' + ja + '</span></div>' +
+    (items ? '<p class="text-xs text-gray-500 mt-1">' + items + '</p>' : '') +
+    stepHtml +
+    (f.trackingNumber ? '<p class="text-xs text-gray-400 mt-2">追跡番号: ' + esc(f.trackingNumber) + (f.trackingCompany ? ' (' + esc(f.trackingCompany) + ')' : '') + '</p>' : '') +
+    (f.trackingUrl ? '<a href="' + esc(f.trackingUrl) + '" target="_blank" class="block text-center btn-primary py-2.5 rounded-xl text-sm font-bold mt-2">配送状況を追跡 ▶</a>' : '') +
+    '</div>';
 }
 
 // ─── MORE Tab: Notifications, Subscriptions, FAQ ───

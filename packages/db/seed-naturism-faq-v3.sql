@@ -74,13 +74,13 @@ naturism は食品（健康食品）のため、開封・未開封を問わず�
 🔧 不良品・配送破損
 商品到着後10日以内のご連絡で、送料当社負担にて交換または全額返金いたします。
 
-📩 info@kenkoex.com ／ 📞 03-6411-5513（平日10:00〜17:00）', 1),
+📩 info@naturism-diet.com ／ 📞 03-6411-5513（平日10:00〜17:00）', 1),
 (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))),
  '返金', 'contains', 'text',
  '【全額返金保証について】🎁
 対象3商品（ナチュリズム180粒／酵素in ナチュリズム180粒／ナチュリズム プレミアム180粒）の初回ご購入に限り、ご満足いただけなければ全額返金いたします✨
 
-・商品到着後14日以内に info@kenkoex.com までご連絡
+・商品到着後14日以内に info@naturism-diet.com までご連絡
 ・残りの商品をご返送（送料お客様負担）
 ・返送確認後3〜5営業日で全額返金
 ・初回購入のみ（2回目以降は対象外）
@@ -135,7 +135,7 @@ INSERT INTO auto_replies (id, keyword, match_type, response_type, response_conte
 平日 10:00〜17:00（土日祝・年末年始を除く）
 
 📞 03-6411-5513
-📩 info@kenkoex.com
+📩 info@naturism-diet.com
 
 公式オンラインストア（naturism-diet.com）は24時間ご注文いただけます✨
 お問い合わせはお急ぎでなければメールが便利です（順次ご返信いたします）😊', 1);

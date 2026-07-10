@@ -30,6 +30,14 @@ const FMT_TEXT_PREFIX = '[FMT:text]';
 const MARKER_ONLY_FALLBACK = 'うまくお答えできませんでした。お手数ですが、もう一度お送りいただけますか🌿';
 const FMT_QUIZ_INVITE_PREFIX = '[FMT:quiz_invite]'; // Plan A-3 (2026-05-24): AI が「おすすめ」 intent 検出時に返す
 const FMT_PRICE_TABLE_PREFIX = '[FMT:price_table]'; // Plan A-6 (2026-05-24): AI が価格比較質問検出時に返す → grid flex
+const FMT_CONTACT_PREFIX = '[FMT:contact]'; // 実機FB第5弾 (2026-07-10): 連絡先質問 → タップ可能な contact card
+
+// 連絡先 (実機FB第5弾 2026-07-10: info@kenkoex.com → info@naturism-diet.com)
+const CONTACT_EMAIL = 'info@naturism-diet.com';
+const CONTACT_TEL = '03-6411-5513';
+const CONTACT_TEL_URI = 'tel:0364115513';
+const CONTACT_SITE = 'https://naturism-diet.com';
+const CONTACT_HOURS = '受付: 平日10:00〜17:00 (土日祝・年末年始を除く)';
 const SHORT_TEXT_THRESHOLD = 50; // 字以下で markdown 構造なしなら text
 const URL_TEXT_THRESHOLD = 200; // URL 含む短文なら text
 
@@ -42,7 +50,7 @@ const MARKDOWN_STRUCTURE_REGEX = /^(##\s+|[■●▶]|\*\*[^*]+\*\*[:：]|[*・\
  * @param text AI 応答 raw text
  * @returns LINE Message ({ type: 'text', ... } or { type: 'flex', altText, contents })
  */
-export function buildAiMessage(text: string): Message {
+export function buildAiMessage(text: string, opts?: { workerUrl?: string }): Message {
   // 1. prefix check
   const trimmedRaw = text.trim();
   // Plan A-3: [FMT:quiz_invite] prefix → quick_quiz 招待 flex Message (= 「診断スタート ▶」 button)
@@ -54,6 +62,10 @@ export function buildAiMessage(text: string): Message {
   // 価格 data は ai-response.ts system prompt と同じ source (= hardcoded constant)、 ハルシネーション 0
   if (trimmedRaw.startsWith(FMT_PRICE_TABLE_PREFIX)) {
     return buildPriceTableMessage();
+  }
+  // 実機FB第5弾: [FMT:contact] prefix → タップ可能な連絡先カード (電話/メール/公式サイト 1タップ)
+  if (trimmedRaw.startsWith(FMT_CONTACT_PREFIX)) {
+    return buildContactMessage(opts?.workerUrl);
   }
   if (trimmedRaw.startsWith(FMT_TEXT_PREFIX)) {
     const stripped = trimmedRaw.slice(FMT_TEXT_PREFIX.length).trim();
@@ -72,8 +84,9 @@ export function buildAiMessage(text: string): Message {
   if (mangledMarker) {
     if (mangledMarker[1] === 'quiz_invite') return buildQuickQuizInviteMessage();
     if (mangledMarker[1] === 'price_table') return buildPriceTableMessage();
+    if (mangledMarker[1] === 'contact') return buildContactMessage(opts?.workerUrl);
     const cleaned = trimmedRaw.slice(mangledMarker[0].length).trim();
-    if (cleaned) return buildAiMessage(cleaned); // strip 後の本文を再評価 (先頭 marker は除去済)
+    if (cleaned) return buildAiMessage(cleaned, opts); // strip 後の本文を再評価 (先頭 marker は除去済)
     return { type: 'text', text: MARKER_ONLY_FALLBACK }; // marker のみ — 素通しで顧客に見せない
   }
 
@@ -82,12 +95,13 @@ export function buildAiMessage(text: string): Message {
   //     全角括弧の変形も許容する。誤 strip を避けるため、prefix が何であっても
   //     **keyword が既知 3 種に完全一致する場合のみ** marker とみなす
   //     (= 「[お得:sale]」 「[重要]」 のような正当な括弧書きは保持される)。
-  const jaMarker = trimmedRaw.match(/^[\[［][^\[\]［］:：]{2,12}[:：](text|quiz_invite|price_table)[\]］]\s*/);
+  const jaMarker = trimmedRaw.match(/^[\[［][^\[\]［］:：]{2,12}[:：](text|quiz_invite|price_table|contact)[\]］]\s*/);
   if (jaMarker) {
     if (jaMarker[1] === 'quiz_invite') return buildQuickQuizInviteMessage();
     if (jaMarker[1] === 'price_table') return buildPriceTableMessage();
+    if (jaMarker[1] === 'contact') return buildContactMessage(opts?.workerUrl);
     const cleaned = trimmedRaw.slice(jaMarker[0].length).trim();
-    if (cleaned) return buildAiMessage(cleaned);
+    if (cleaned) return buildAiMessage(cleaned, opts);
     return { type: 'text', text: MARKER_ONLY_FALLBACK }; // marker のみ — 素通しで顧客に見せない
   }
 
@@ -110,6 +124,102 @@ export function buildAiMessage(text: string): Message {
     type: 'flex',
     altText: 'naturism AI 応答',
     contents: JSON.parse(buildAiFlexJson(trimmedRaw)),
+  };
+}
+
+/**
+ * タップ可能な連絡先カード (実機FB第5弾 2026-07-10)。
+ *
+ * 背景: 旧 Q&A 応答は連絡先を text 行で描画しタップもコピーもできなかった。
+ *   LINE に HTML メッセージは無いが、 Flex の button action で 1 タップ化できる:
+ *   - 電話: `tel:` uri (LINE 公式対応)
+ *   - 公式サイト: `https:` uri
+ *   - メール: `mailto:` は uri action 非対応 (公式 scheme は http/https/line/tel) →
+ *     worker の `/contact/email` ブリッジページ (開くと即メールアプリ起動 + コピー fallback) 経由
+ *   - アドレスコピー: clipboard action (LINE 13.6+、 旧クライアントはボタン無効なだけ)
+ *
+ * ブランド: 2026-07-07 方針に従い teal 基調 (LINE 黄緑は使わない)。
+ */
+export function buildContactMessage(workerUrl?: string): Message {
+  const emailBridgeUri = workerUrl ? `${workerUrl.replace(/\/$/, '')}/contact/email` : CONTACT_SITE;
+  const bubble = {
+    type: 'bubble',
+    size: 'kilo',
+    header: {
+      type: 'box',
+      layout: 'horizontal',
+      backgroundColor: '#0f766e',
+      paddingAll: '12px',
+      contents: [
+        { type: 'text', text: '🌿', size: 'sm', flex: 0 },
+        { type: 'text', text: 'naturism', size: 'xs', color: '#ffffff', weight: 'bold', gravity: 'center', margin: 'sm' },
+        { type: 'filler' },
+        { type: 'text', text: 'お問い合わせ', size: 'xxs', color: '#ccfbf1', gravity: 'center' },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '16px',
+      spacing: 'sm',
+      contents: [
+        { type: 'text', text: 'お気軽にご連絡ください😊', size: 'sm', color: '#334155', wrap: true },
+        { type: 'text', text: CONTACT_HOURS, size: 'xxs', color: '#94a3b8', wrap: true, margin: 'sm' },
+        {
+          type: 'button',
+          style: 'primary',
+          color: '#0f766e',
+          height: 'sm',
+          margin: 'md',
+          action: { type: 'uri', label: '📞 電話をかける', uri: CONTACT_TEL_URI },
+        },
+        {
+          type: 'button',
+          style: 'primary',
+          color: '#0ABAB5',
+          height: 'sm',
+          margin: 'sm',
+          action: { type: 'uri', label: '✉️ メールを送る', uri: emailBridgeUri },
+        },
+        {
+          type: 'button',
+          style: 'secondary',
+          height: 'sm',
+          margin: 'sm',
+          action: { type: 'uri', label: '🌐 公式サイトを見る', uri: CONTACT_SITE },
+        },
+        {
+          type: 'button',
+          style: 'link',
+          height: 'sm',
+          margin: 'sm',
+          action: { type: 'clipboard', label: 'メールアドレスをコピー', clipboardText: CONTACT_EMAIL },
+        },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '12px',
+      backgroundColor: '#f8fafc',
+      contents: [
+        {
+          type: 'text',
+          text: `${CONTACT_EMAIL} / ${CONTACT_TEL}`,
+          size: 'xxs',
+          color: '#94a3b8',
+          align: 'center',
+          wrap: true,
+        },
+      ],
+    },
+    styles: { footer: { separator: true } },
+  };
+
+  return {
+    type: 'flex',
+    altText: 'お問い合わせ先のご案内 (電話/メール/公式サイト)',
+    contents: bubble as unknown as FlexContainer,
   };
 }
 
@@ -265,7 +375,7 @@ export function buildAiFlexJson(text: string): string {
           spacing: 'xs',
           contents: [
             { type: 'text', text: '詳しくは', size: 'xxs', color: '#94a3b8', flex: 0 },
-            { type: 'text', text: 'info@kenkoex.com', size: 'xxs', color: '#06C755', weight: 'bold', flex: 0, decoration: 'underline' },
+            { type: 'text', text: CONTACT_EMAIL, size: 'xxs', color: '#0f766e', weight: 'bold', flex: 0, decoration: 'underline' },
             { type: 'text', text: 'まで📩', size: 'xxs', color: '#94a3b8', flex: 0 },
           ],
         },

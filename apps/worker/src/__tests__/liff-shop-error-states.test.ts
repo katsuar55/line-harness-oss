@@ -65,7 +65,8 @@ describe('ストアタブ error/empty 状態 — 静的構造', () => {
   it('orders/fulfillments の「空」文言は維持しつつ、エラー時とは区別される', () => {
     const b = block![0];
     expect(b).toContain('まだ注文がありません');
-    expect(b).toContain('配送情報はありません');
+    // 実機FB第5弾で空文言を「現在配送中のお荷物はありません」に刷新 (空状態は説明つきで維持)
+    expect(b).toContain('現在配送中のお荷物はありません');
     // fulfillments 失敗時は空文言でなく shopErrorCard に倒す
     expect(b).toMatch(/fulfillments[\s\S]*shopErrorCard\(fel/);
   });
