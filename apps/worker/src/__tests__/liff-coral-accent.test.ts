@@ -51,10 +51,11 @@ describe('適用箇所 (quiz + home + intake の3タブ、三層規律)', () => 
     expect(pages).toMatch(/#quiz-progress-bar\{background:linear-gradient\(90deg,#ffb39c,#d9573d\) !important\}/);
   });
 
-  it('「はじめの一歩」「あなたにおすすめ」「紹介実績」の小ラベル/数字が text-coral (#b84a2e)', () => {
+  it('「はじめの一歩」「あなたにおすすめ」「紹介数」の小ラベル/数字が text-coral (#b84a2e)', () => {
     expect(pages).toMatch(/text-coral[^>]*>はじめの一歩|はじめの一歩[\s\S]{0,40}text-coral/);
     expect(pages).toMatch(/class="text-xs text-coral font-bold mb-2">あなたにおすすめ/);
-    expect(pages).toMatch(/紹介実績: <span class="font-bold text-coral">/);
+    // 実機FB第5弾: 紹介カード刷新で「紹介実績:」→「これまでの紹介:」(coral 数字は維持)
+    expect(pages).toMatch(/これまでの紹介: <span class="font-bold text-coral">/);
   });
 
   it('welcome クーポン: 大数字は艶コーラル text-coral-lg、バッジは chip-coral (白文字塗り廃止)', () => {
