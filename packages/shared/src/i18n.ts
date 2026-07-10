@@ -23,6 +23,8 @@ export const translations = {
   ja: {
     // Tab labels
     tab_home: 'ホーム',
+    tab_quiz: '診断',
+    tab_record: '記録',
     tab_health: '体調',
     tab_mypage: 'マイページ',
     // Home
@@ -92,6 +94,8 @@ export const translations = {
   },
   en: {
     tab_home: 'Home',
+    tab_quiz: 'Quiz',
+    tab_record: 'Log',
     tab_health: 'Health',
     tab_mypage: 'My Page',
     welcome: 'Hello',
@@ -154,6 +158,8 @@ export const translations = {
   },
   ko: {
     tab_home: '홈',
+    tab_quiz: '진단',
+    tab_record: '기록',
     tab_health: '건강',
     tab_mypage: '마이페이지',
     welcome: '안녕하세요',
@@ -216,6 +222,8 @@ export const translations = {
   },
   zh: {
     tab_home: '首页',
+    tab_quiz: '诊断',
+    tab_record: '记录',
     tab_health: '健康',
     tab_mypage: '我的',
     welcome: '你好',
@@ -278,6 +286,8 @@ export const translations = {
   },
   th: {
     tab_home: 'หน้าแรก',
+    tab_quiz: 'วิเคราะห์',
+    tab_record: 'บันทึก',
     tab_health: 'สุขภาพ',
     tab_mypage: 'ของฉัน',
     welcome: 'สวัสดี',

@@ -80,6 +80,7 @@ describe('適用箇所 (quiz + home + intake の3タブ、三層規律)', () => 
   });
 
   it('reduced-motion で btn-coral の押し込みも無効化', () => {
-    expect(pages).toMatch(/prefers-reduced-motion:reduce\)[\s\S]{0,900}\.btn-coral:active[\s\S]{0,120}transform:none !important/);
+    // 採点R1: a[onclick]:active が列挙に加わり距離が伸びたため 0,160 に (意図は不変)
+    expect(pages).toMatch(/prefers-reduced-motion:reduce\)[\s\S]{0,900}\.btn-coral:active[\s\S]{0,160}transform:none !important/);
   });
 });

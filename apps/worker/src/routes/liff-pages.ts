@@ -113,6 +113,9 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
     #referral-card .skeleton{animation-delay:.45s}
     #orders-card .skeleton{animation-delay:.15s}
     #fulfillments-card .skeleton{animation-delay:.3s}
+    #subscriptions-list .skeleton{animation-delay:.45s}
+    #notif-prefs-list .skeleton{animation-delay:.15s}
+    #faq-list .skeleton{animation-delay:.3s}
     .meal-btn:active{transform:translateY(1.5px) scale(0.95)}
     /* 2026-07-07 没入スクロール (Katsu 指示: 高級感×先進性・大胆に・軽量に) — 3D カード cascade + スクロール進捗 */
     #scroll-progress{position:fixed;top:0;left:0;width:100%;height:2.5px;z-index:60;background:linear-gradient(90deg,#80c8cd,#2fa8ad,#ffb39c);transform-origin:0 50%;transform:scaleX(0);pointer-events:none}
@@ -132,6 +135,12 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
     @keyframes refPop{0%,100%{transform:scale(1) rotate(0)}50%{transform:scale(1.12) rotate(-6deg)}}
     .ref-gift{display:inline-block;animation:refPop 2.6s ease-in-out infinite;transform-origin:60% 60%}
     @media (prefers-reduced-motion: reduce){.ref-hero{animation:none}.ref-hero-inner::after{display:none}.ref-gift{animation:none}}
+    /* ─ マイアカウント coach mark (採点R1: 旧「その他」ユーザーにアバター導線を一度だけ教える) ─ */
+    #account-hint{position:fixed;top:56px;right:12px;z-index:55;background:#0f766e;color:#fff;font-size:11px;font-weight:700;padding:8px 12px;border-radius:12px;box-shadow:0 4px 14px rgba(15,118,110,.3)}
+    #account-hint::before{content:'';position:absolute;top:-5px;right:18px;border:5px solid transparent;border-bottom-color:#0f766e;border-top:0}
+    @keyframes avatarPulse{0%,100%{box-shadow:0 0 0 2px rgba(47,168,173,.5)}50%{box-shadow:0 0 0 7px rgba(47,168,173,.12)}}
+    .avatar-pulse{animation:avatarPulse 1.8s ease-in-out infinite}
+    @media (prefers-reduced-motion: reduce){.avatar-pulse{animation:none;box-shadow:0 0 0 2px rgba(47,168,173,.5)}}
     /* ─ brand skin (2026-07-07 Katsu 指示: LINE黄緑封印 → naturism ティール統一、Dawn 実測トークン) ─
        Tailwind CDN は実行時に <head> 末尾へ style を注入するため、green/emerald 系ユーティリティを
        !important でブランド実色に上書きする (markup と JS の classList ロジックは無改変で全域が変わる)。
@@ -154,10 +163,10 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
     .text-gray-800{color:#052422 !important}
     /* 全ボタン「柔らかく押し込む」触感 (個別定義 .btn-primary 等はそちらが優先される) */
     button,.tap{transition:transform .12s cubic-bezier(.22,1,.36,1)}
-    button:active,.tap:active,label:active{transform:translateY(1.5px) scale(0.97)}
+    button:active,.tap:active,label:active,a[onclick]:active{transform:translateY(1.5px) scale(0.97)}
     /* quiz 選択肢の active:scale-[0.98] は詳細度で global を打ち消すため、translateY を同梱して統一 (review HIGH) */
     .active\\:scale-\\[0\\.98\\]:active{transform:translateY(1.5px) scale(0.98) !important}
-    @media(prefers-reduced-motion:reduce){.skeleton,.streak-fire,.ambassador-badge,.sparkle-dot,.rank-ambassador::before,.section,#quiz-result{animation:none !important}.btn-primary:active,.btn-coral:active,.meal-btn:active,.mood-btn:active,.skin-btn:active,.bowel-btn:active,button:active,.tap:active,label:active{transform:none !important}.sr{opacity:1 !important;transform:none !important}.sr-in{transition:none !important}#scroll-progress,#scroll-leaf{display:none}}
+    @media(prefers-reduced-motion:reduce){.skeleton,.streak-fire,.ambassador-badge,.sparkle-dot,.rank-ambassador::before,.section,#quiz-result{animation:none !important}.btn-primary:active,.btn-coral:active,.meal-btn:active,.mood-btn:active,.skin-btn:active,.bowel-btn:active,button:active,.tap:active,label:active,a[onclick]:active{transform:none !important}.sr{opacity:1 !important;transform:none !important}.sr-in{transition:none !important}#scroll-progress,#scroll-leaf{display:none}}
   </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -185,8 +194,9 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
             <button onclick="setLanguage('th')" class="block w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors">&#x1F1F9;&#x1F1ED; ไทย</button>
           </div>
         </div>
-        <!-- 4タブ再設計: アバターをタップ → マイアカウント (プロフィール/設定/サポート) -->
-        <button id="user-avatar" onclick="switchTab('account')" aria-label="マイアカウント" class="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-100 to-green-50 ring-2 ring-white shadow-sm overflow-hidden flex items-center justify-center text-sm" style="padding:0;cursor:pointer">👤</button>
+        <!-- 4タブ再設計: アバターをタップ → マイアカウント (プロフィール/設定/サポート)。
+             採点R1: 旧・装飾 div と同見た目ではタップ可能に見えない → ティールの halo + サイズを言語ボタンに揃える -->
+        <button id="user-avatar" onclick="switchTab('account')" aria-label="マイアカウント" class="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-100 to-green-50 shadow-sm overflow-hidden flex items-center justify-center text-sm" style="padding:0;cursor:pointer;box-shadow:0 0 0 2px rgba(47,168,173,.45),0 1px 3px rgba(0,0,0,.08)">👤</button>
       </div>
     </div>
   </header>
@@ -231,6 +241,21 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
       <div id="rank-card" class="card p-4">
         <div class="skeleton h-24 rounded-lg"></div>
       </div>
+
+      <!-- ── お得ゾーン (採点R1 HIGH: 定常ユーザーの fold もディールファーストに。
+           保有クーポン → 紹介ヒーロー → ランキング を rank 直後へ、 バッジ/服用は retention flesh として後段) ── -->
+      <!-- Coupons -->
+      <div id="coupons-card" class="card p-4">
+        <div class="skeleton h-16 rounded-lg"></div>
+      </div>
+
+      <!-- Referral + Sharing -->
+      <div id="referral-card" class="card p-4">
+        <div class="skeleton h-16 rounded-lg"></div>
+      </div>
+
+      <!-- Referral Ranking -->
+      <div id="ranking-card" class="card p-4" style="display:none;"></div>
 
       <!-- Level + Badges (Phase 2: ゲーミフィケーション) -->
       <div id="badge-card" class="card p-4">
@@ -288,19 +313,6 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
       <div id="tip-card" class="card p-4">
         <div class="skeleton h-16 rounded-lg"></div>
       </div>
-
-      <!-- Coupons -->
-      <div id="coupons-card" class="card p-4">
-        <div class="skeleton h-16 rounded-lg"></div>
-      </div>
-
-      <!-- Referral + Sharing -->
-      <div id="referral-card" class="card p-4">
-        <div class="skeleton h-16 rounded-lg"></div>
-      </div>
-
-      <!-- Referral Ranking -->
-      <div id="ranking-card" class="card p-4" style="display:none;"></div>
 
       <!-- Ambassador Section (visible only for ambassadors) -->
       <div id="ambassador-section" style="display:none;">
@@ -408,9 +420,6 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
           <a href="javascript:void(0)" onclick="openFeaturePage('/liff/my-rank')" class="flex items-center justify-center gap-1 p-3 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-bold hover:bg-emerald-100 transition-colors">🛍 会員特典で購入</a>
         </div>
       </div>
-      <!-- Confetti overlay -->
-      <div id="confetti-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:9999;"></div>
-
       <!-- 栄養 & ウェルネス (4タブ再設計: home から移設 — 健康サポート機能を「記録」に集約) -->
       <div class="card p-4">
         <p class="text-sm font-bold text-gray-700 mb-1">🍽 栄養 & ウェルネス</p>
@@ -651,9 +660,10 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
         <div class="skeleton h-24 rounded-lg"></div>
       </div>
 
-      <!-- 再注文ショートカット (旧クイックリンクの再注文のみ Shop 文脈で存置。配送状況は上の fulfillments が担う) -->
+      <!-- 再注文ショートカット (採点R1 HIGH: 旧実装は同タブへの full reload だった → 注文カードへスクロール。
+           実際の再注文は各注文行の「🔄 この注文を再注文」= Draft Order ワンタップ) -->
       <div class="card p-4">
-        <a href="javascript:void(0)" onclick="openLiffPage('reorder')" class="flex items-center justify-center gap-2 p-3 rounded-xl bg-emerald-50 text-emerald-700 text-sm font-bold hover:bg-emerald-100 transition-colors">
+        <a href="javascript:void(0)" onclick="var el=document.getElementById('orders-card');if(el)el.scrollIntoView({behavior:'smooth'})" class="tap flex items-center justify-center gap-2 p-3 rounded-xl bg-emerald-50 text-emerald-700 text-sm font-bold hover:bg-emerald-100 transition-colors">
           <span class="text-lg">🔄</span> 購入履歴から再注文する
         </a>
       </div>
@@ -695,8 +705,10 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
 
     <!-- ===== ACCOUNT Section (マイアカウント: 右上アバターから開く。タブバーには出さない) ===== -->
     <div id="section-account" class="section space-y-4">
-      <div class="flex items-center gap-2">
+      <div class="flex items-center justify-between gap-2">
         <p class="text-base font-bold text-gray-800">👤 マイアカウント</p>
+        <!-- 採点R1: タブバー外セクションからの明示的な戻り導線 -->
+        <button onclick="switchTab('home')" class="tap text-xs font-bold text-teal-700 rounded-full px-3 py-1.5" style="border:1px solid #bfe8e3;background:#effaf8">← ホームへ戻る</button>
       </div>
 
       <!-- Profile (4タブ再設計: 旧マイページ下部から移設) -->
@@ -723,16 +735,12 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
       <p class="text-xs text-gray-400 font-bold pt-1">⚙️ 設定</p>
 
       <!-- メール受信設定 (4タブ再設計: 旧ホームの opt-in カードを設定として移設。
+           設定行なので dismiss (×) は廃止し常時表示 — 採点R1: 過去に×した人が永久に到達不能だった。
            意図 = LINE 単一依存のリスクヘッジ (ブロック/BAN時の連絡網) + email 配信基盤の獲得経路) -->
-      <div id="opt-in-card" class="card p-4" style="display:none">
-        <div class="flex items-start justify-between gap-2">
-          <div class="flex-1">
-            <p class="text-sm font-bold text-gray-800 mb-1">📩 お得情報をメールでも受け取る</p>
-            <p class="text-xs text-gray-500 mb-3">限定クーポンや新商品のお知らせを、メールでもいち早くお届けします。</p>
-            <a href="javascript:void(0)" onclick="openFeaturePage('/liff/opt-in')" class="inline-block btn-primary py-2.5 px-4 rounded-xl text-sm font-bold">登録する →</a>
-          </div>
-          <button onclick="dismissOptIn()" aria-label="閉じる" class="text-gray-300 text-xl leading-none px-1">×</button>
-        </div>
+      <div id="opt-in-card" class="card p-4">
+        <p class="text-sm font-bold text-gray-800 mb-1">📩 メール受信設定</p>
+        <p class="text-xs text-gray-500 mb-3">限定クーポンや新商品のお知らせを、メールでもいち早くお届けします。</p>
+        <a href="javascript:void(0)" onclick="openFeaturePage('/liff/opt-in')" class="tap inline-block btn-primary py-2.5 px-4 rounded-xl text-sm font-bold">受信設定を開く →</a>
       </div>
 
       <!-- Notification Settings -->
@@ -828,6 +836,9 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
   <!-- Toast -->
   <div id="toast" role="status" aria-live="polite" class="fixed bottom-24 left-1/2 -translate-x-1/2 text-white px-5 py-2.5 rounded-2xl text-sm shadow-xl opacity-0 transition-opacity pointer-events-none z-50"></div>
 
+  <!-- Confetti overlay (採点R1: section-intake 内にあると home のワンタップ記録で紙吹雪が出なかった → body 直下へ) -->
+  <div id="confetti-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:9999;"></div>
+
   <!-- 初回オンボーディングツアー (第2波-⑥: 初回起動のみ・診断ファースト・localStorage完結) -->
   <div id="onboarding-tour" data-no-tab-swipe role="dialog" aria-modal="true" aria-labelledby="tour-title" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:60;background:rgba(0,0,0,0.55);">
     <div style="position:absolute;bottom:0;left:0;right:0;max-height:88vh;overflow-y:auto;background:#fff;border-radius:24px 24px 0 0;padding:24px 24px 28px;">
@@ -866,19 +877,39 @@ function openFeaturePage(path) {
   window.location.href = API_BASE + path + (isDemoRequested() ? '?demo=1' : '');
 }
 
-// メール配信オプトイン導線: 未dismiss時のみ表示 (subscribed=0.1% のため原則全員に提示)。
-// 「あとで」 (×) で localStorage に記録し再表示しない (= 痒い所に手が届く・しつこくしない)。
+// メール受信設定 (4タブ再設計でマイアカウント>設定へ移設): 設定行なので dismiss せず常時表示。
+// 旧×の optin_dismissed キーは next-move (nm_optin) のスキップ判定でのみ引き続き参照される。
 function initOptInCard() {
   try {
     var el = document.getElementById('opt-in-card');
     if (!el) return;
-    el.style.display = localStorage.getItem('optin_dismissed') === '1' ? 'none' : 'block';
+    el.style.display = 'block';
   } catch (e) { /* ignore */ }
 }
-function dismissOptIn() {
-  try { localStorage.setItem('optin_dismissed', '1'); } catch (e) { /* ignore */ }
-  var el = document.getElementById('opt-in-card');
-  if (el) el.style.display = 'none';
+
+// マイアカウント coach mark: 旧「その他」を知る既存ユーザー (ツアー済み) にだけ、
+// アバター導線を一度だけ教える (localStorage 'account_hint_v1'、reduced-motion は静的リング)。
+function initAccountHint() {
+  try {
+    if (lsGet('account_hint_v1') === '1') return;
+    if (lsGet(ONBOARDING_TOUR_KEY) !== '1') { lsSet('account_hint_v1', '1'); return; } // 新規はツアーで学ぶ
+    var av = document.getElementById('user-avatar');
+    if (!av) return;
+    av.classList.add('avatar-pulse');
+    var tip = document.createElement('div');
+    tip.id = 'account-hint';
+    tip.textContent = '設定・サポートはこちら';
+    document.body.appendChild(tip);
+    var dismissed = false;
+    function dismissHint() {
+      if (dismissed) return; dismissed = true;
+      lsSet('account_hint_v1', '1');
+      av.classList.remove('avatar-pulse');
+      if (tip.parentNode) tip.parentNode.removeChild(tip);
+    }
+    av.addEventListener('click', dismissHint, { once: true });
+    setTimeout(dismissHint, 8000);
+  } catch (e) { /* hint は非必須 */ }
 }
 
 // ─── 初回オンボーディング (第2波-⑥: 初回体験の埋没解消・診断ファースト・localStorage完結) ───
@@ -900,7 +931,8 @@ var TOUR_STEPS = [
   { emoji: '🌿', title: 'naturism へようこそ', body: '毎日の食事にそっと寄り添う、インナーケア習慣。ポータルの使い方をかんたんにご案内します。' },
   { emoji: '🧪', title: 'まずは無料診断', body: '30秒の質問に答えるだけ。あなたにぴったりのサプリをご提案します。' },
   { emoji: '🏆', title: '続けるほど、おトク', body: 'ご購入を重ねるほど会員ランクが上がり、限定特典が受けられます。マイランクでいつでも確認できます。' },
-  { emoji: '💬', title: '記録も相談も、ここで', body: '毎日の服用記録や、気になることのAIへの質問も、この画面から。困ったらいつでもどうぞ。' }
+  { emoji: '💬', title: '記録も相談も、ここで', body: '毎日の服用記録は「記録」タブから。気になることは、右上のアイコン → マイアカウントの「AIに質問」へ。困ったらいつでもどうぞ。' },
+  { emoji: '👤', title: '設定は右上のアイコンから', body: 'プロフィール・通知設定・よくあるご質問は、右上のあなたのアイコンをタップすると開く「マイアカウント」にまとまっています。' }
 ];
 
 function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
@@ -1127,10 +1159,11 @@ async function initLiff() {
     const profile = await liff.getProfile();
     if (profile.pictureUrl) {
       document.getElementById('user-avatar').innerHTML =
-        '<img src="' + profile.pictureUrl + '" class="w-8 h-8 rounded-full">';
+        '<img src="' + profile.pictureUrl + '" class="w-full h-full rounded-full object-cover" alt="">';
     }
     await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadWelcomeCoupon(), loadReferralCoupon(), loadFriendCoupon(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake(), loadBadges()]);
     initOptInCard();
+    initAccountHint();
     await loadRank();
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
@@ -1382,7 +1415,7 @@ function handleDeepLink() {
   if (hash === 'rank') { setTimeout(function() { var el = document.getElementById('rank-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
   if (hash === 'referral') { setTimeout(function() { var el = document.getElementById('referral-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
   // ショップタブ内のカードへスクロール
-  if (hash === 'delivery') { setTimeout(function() { var el = document.getElementById('fulfillments-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
+  if (hash === 'delivery') { window.__pendingDeliveryScroll = true; setTimeout(function() { var el = document.getElementById('fulfillments-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
   if (hash === 'reorder') { setTimeout(function() { var el = document.getElementById('orders-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
 }
 
@@ -1470,9 +1503,15 @@ function switchTabAnimated(name, dir) {
 
 // タブボタン用: 現在位置との相対方向でスライド (同一タブは no-op)
 function switchTabTo(name) {
-  var cur = currentTabIndex();
+  // 同一タブ判定は index でなく実セクション id で行う (採点R1 HIGH: account 表示中は
+  // TAB_ORDER に無い=index 0 扱いになり、home ボタンが index 一致で無反応だった)
+  var active = document.querySelector('.section.active');
+  if (active && active.id === 'section-' + name) return;
   var next = TAB_ORDER.indexOf(name);
-  if (next < 0 || next === cur) return;
+  if (next < 0) return;
+  // account 等 TAB_ORDER 外のセクションからの復帰は方向が定義できない → 素の switchTab
+  if (!active || TAB_ORDER.indexOf(active.id.replace('section-', '')) < 0) { switchTab(name); return; }
+  var cur = currentTabIndex();
   switchTabAnimated(name, next > cur ? 1 : -1);
 }
 
@@ -1597,7 +1636,13 @@ async function loadRank() {
         // 回遊: ランク表示で終わらせず、会員特典のおトクな購入へ繋ぐ (purchase motivation)
         '<a href="' + API_BASE + '/liff/my-rank" class="block mt-3 text-center text-xs text-green-700 bg-green-50 rounded-xl py-2 font-bold" style="position:relative;z-index:1">🛍 会員特典・おトクに購入する →</a>';
     } else {
-      el.innerHTML = '<p class="text-sm text-gray-500">まだ購入履歴がありません</p>';
+      // 採点R1: 未購入ユーザーに「死んだグレー行」でなくランク制度のティーザーを見せる (割引訴求のみ=薬機法セーフ)
+      el.innerHTML =
+        '<div class="flex items-center gap-3 mb-2">' +
+        '<div class="w-12 h-12 rounded-full flex items-center justify-center text-2xl" style="background:#effaf8">🌱</div>' +
+        '<div><p class="text-sm font-bold text-gray-800">会員ランク</p>' +
+        '<p class="text-xs text-gray-500">ご購入でランクが上がり、割引特典が受けられます</p></div></div>' +
+        '<a href="' + API_BASE + '/liff/my-rank" class="tap block mt-1 text-center text-xs text-green-700 bg-green-50 rounded-xl py-2 font-bold">🛍 会員特典を見てみる →</a>';
     }
   } catch { cardError(el, null, 'loadRank'); }
 }
@@ -1749,7 +1794,13 @@ async function loadCoupons() {
             '<p class="text-xs text-gray-400">' + (cp.expiresAt ? '~' + esc(cp.expiresAt.slice(0, 10)) : '') + '</p></div>';
         }).join('');
     } else {
-      el.innerHTML = '<p class="text-xs text-gray-400">利用可能なクーポンはありません</p>';
+      // 採点R1: 「無い」の告知でなく、クーポンを得る次の一手 (紹介ヒーロー) へ橋渡し。
+      //   文言は gate 連動: off の間は referred 側 (=welcome、稼働中) の訴求のみ (景表法セーフ)。
+      var refBridge = REFERRAL_REWARD_ON
+        ? '🎁 お友だち紹介で ¥500 クーポンがもらえます →'
+        : '🎁 お友だちに ¥500 クーポンをプレゼントできます →';
+      el.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-1">クーポン</p>' +
+        '<a href="javascript:void(0)" onclick="var r=document.getElementById(\'referral-card\');if(r)r.scrollIntoView({behavior:\'smooth\'})" class="tap block text-sm font-bold rounded-xl py-2.5 text-center" style="color:#b84a2e;background:#fff3ec;border:1px solid #f4c0ad">' + refBridge + '</a>';
     }
   } catch { cardError(el, null, 'loadCoupons'); }
 }
@@ -1773,10 +1824,10 @@ function selectProduct(name) {
 async function loadIntakeData() {
   const el = document.getElementById('streak-card');
   try {
-    const [streakRes, logsRes] = await Promise.all([
-      api('/api/liff/intake/streak'),
-      api('/api/liff/intake', { days: 90 }).catch(function() { return { data: null }; }),
-    ]);
+    // 採点R1 HIGH: 旧実装は POST /api/liff/intake (= 記録作成 endpoint) を「取得」目的で叩き、
+    //   タブを開くたび phantom 服用ログ + scoring イベントが発生していた。streak endpoint が
+    //   recentLogs (90日分) を返すので 1 リクエストに統合し、カレンダーもそこから塗る。
+    const streakRes = await api('/api/liff/intake/streak', { days: 90 });
     if (apiFailed(streakRes)) { cardError(el, streakRes, 'loadIntakeData'); return; }
     const data = streakRes.data;
     if (data) {
@@ -1787,10 +1838,10 @@ async function loadIntakeData() {
         '<div>最長 <span class="font-bold text-gray-800">' + data.longestStreak + '日</span></div>' +
         '<div>累計 <span class="font-bold text-gray-800">' + data.totalDays + '日</span></div></div>';
     }
-    // Update calendar dates
+    // Update calendar dates (recentLogs[].loggedAt は jstNow 由来の ISO 文字列 → 先頭10桁が日付)
     intakeDatesSet.clear();
-    if (logsRes.data && Array.isArray(logsRes.data.logs)) {
-      logsRes.data.logs.forEach(function(l) { intakeDatesSet.add(l.intake_date); });
+    if (data && Array.isArray(data.recentLogs)) {
+      data.recentLogs.forEach(function(l) { if (l.loggedAt) intakeDatesSet.add(String(l.loggedAt).slice(0, 10)); });
     }
     renderCalendar();
   } catch { cardError(el, null, 'loadIntakeData'); }
@@ -1821,6 +1872,7 @@ function calendarPrev() { calendarOffset--; renderCalendar(); }
 function calendarNext() { if (calendarOffset < 0) { calendarOffset++; renderCalendar(); } }
 
 function showConfetti() {
+  if (TAB_REDUCED_MOTION) return; // 採点R1: reduced-motion では紙吹雪を出さない (トーストが節目を伝える)
   var overlay = document.getElementById('confetti-overlay');
   overlay.style.display = 'block';
   var colors = ['#2fa8ad', '#f59e0b', '#ec4899', '#3b82f6', '#8b5cf6'];
@@ -1840,17 +1892,21 @@ async function logIntake() {
   if (isDemo) { showToast('DEMO: 記録しました! (連続6日)'); showConfetti(); return; }
   var btn = document.getElementById('intake-btn');
   btn.disabled = true;
+  var origLabel = btn.textContent;
   btn.textContent = '記録中...';
   try {
-    const { data } = await api('/api/liff/intake', { productName: 'naturism ' + selectedProduct });
-    if (data) {
-      showToast('記録しました! (連続' + data.streakCount + '日)');
+    var res = await api('/api/liff/intake', { productName: 'naturism ' + selectedProduct });
+    if (apiFailed(res)) {
+      // 採点R1: HTTP エラーを silent にしない (false-success/無反応の根絶)
+      showToast('記録に失敗しました');
+    } else if (res.data) {
+      showToast('記録しました! (連続' + res.data.streakCount + '日)');
       showConfetti();
       loadIntakeData();
     }
   } catch { showToast('記録に失敗しました'); }
   btn.disabled = false;
-  btn.textContent = '服用を記録する';
+  btn.textContent = origLabel;
 }
 
 // Phase 1: 能動pull 型の朝/昼/夜 ボタン処理
@@ -1864,10 +1920,17 @@ async function logMeal(mealType) {
   if (!btn || btn.disabled) return;
   btn.disabled = true;
   try {
-    const { data } = await api('/api/liff/intake', {
+    var res = await api('/api/liff/intake', {
       productName: 'naturism ' + (selectedProduct || 'Blue'),
       mealType: mealType,
     });
+    if (apiFailed(res)) {
+      // 採点R1: HTTP エラー時に無反応 + ボタン固着だった → フィードバック + 復帰
+      showToast('記録に失敗しました');
+      btn.disabled = false;
+      return;
+    }
+    var data = res.data;
     if (data) {
       if (data.alreadyLogged) {
         showToast(mealLabel(mealType) + 'は既に記録済みです');
@@ -2021,9 +2084,11 @@ async function initReminder() {
   }
   try {
     var res = await apiGet('/api/liff/intake/reminders');
+    // 採点R1: error-as-empty の残存を解消 (HTTP エラーを「未設定」に化けさせない)
+    if (apiFailed(res)) { cardError(document.getElementById('reminders-list'), res, 'initReminder'); return; }
     remindersData = res.data || [];
     renderReminders();
-  } catch { /* ignore */ }
+  } catch { cardError(document.getElementById('reminders-list'), null, 'initReminder'); }
 }
 
 async function addReminderSlot() {
@@ -2051,12 +2116,13 @@ async function addReminderSlot() {
 async function updateReminderTime(id, newTime) {
   if (isDemo) { showToast('DEMO: ' + newTime + ' に変更'); return; }
   try {
-    await fetch(API_BASE + '/api/liff/intake/reminders/' + id, {
+    var r = await fetch(API_BASE + '/api/liff/intake/reminders/' + id, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) },
       body: JSON.stringify({ reminderTime: newTime }),
     });
-    var item = remindersData.find(function(r) { return r.id === id; });
+    if (!r.ok) { showToast('変更に失敗しました'); return; } // 採点R1: false-success 防止
+    var item = remindersData.find(function(r2) { return r2.id === id; });
     if (item) item.reminderTime = newTime;
     showToast(newTime + ' に変更しました');
   } catch { showToast('変更に失敗しました'); }
@@ -2068,11 +2134,12 @@ async function toggleReminderById(id) {
   var newActive = !item.isActive;
   if (isDemo) { item.isActive = newActive; renderReminders(); showToast('DEMO: ' + (newActive ? 'ON' : 'OFF')); return; }
   try {
-    await fetch(API_BASE + '/api/liff/intake/reminders/' + id, {
+    var r = await fetch(API_BASE + '/api/liff/intake/reminders/' + id, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) },
       body: JSON.stringify({ isActive: newActive }),
     });
+    if (!r.ok) { showToast('変更に失敗しました'); return; } // 採点R1: false-success 防止
     item.isActive = newActive;
     renderReminders();
     showToast(newActive ? 'ONにしました' : 'OFFにしました');
@@ -2082,11 +2149,12 @@ async function toggleReminderById(id) {
 async function deleteReminderById(id) {
   if (isDemo) { remindersData = remindersData.filter(function(r) { return r.id !== id; }); renderReminders(); showToast('DEMO: 削除しました'); return; }
   try {
-    await fetch(API_BASE + '/api/liff/intake/reminders/' + id, {
+    var r = await fetch(API_BASE + '/api/liff/intake/reminders/' + id, {
       method: 'DELETE',
       headers: idToken ? { Authorization: 'Bearer ' + idToken } : {},
     });
-    remindersData = remindersData.filter(function(r) { return r.id !== id; });
+    if (!r.ok) { showToast('削除に失敗しました'); return; } // 採点R1: false-success 防止
+    remindersData = remindersData.filter(function(r2) { return r2.id !== id; });
     renderReminders();
     showToast('削除しました');
   } catch { showToast('削除に失敗しました'); }
@@ -2181,7 +2249,7 @@ async function saveHealthLog() {
   var sleepHours = parseFloat(document.getElementById('sleep-slider').value);
   var note = document.getElementById('health-note').value;
   try {
-    await api('/api/liff/health/log', {
+    var res = await api('/api/liff/health/log', {
       weight: isNaN(weight) ? undefined : weight,
       condition: selectedMood === 'great' || selectedMood === 'good' ? 'good' : selectedMood === 'normal' ? 'normal' : selectedMood ? 'bad' : undefined,
       skinCondition: selectedSkin || undefined,
@@ -2191,6 +2259,7 @@ async function saveHealthLog() {
       mood: selectedMood || undefined,
       note: note || undefined,
     });
+    if (apiFailed(res)) { showToast('記録に失敗しました'); return; } // 採点R1: false-success 防止
     showToast('記録しました！');
   } catch { showToast('記録に失敗しました'); }
 }
@@ -2341,8 +2410,18 @@ async function loadReferralCard() {
 }
 
 function copyRefLink() {
-  var url = document.getElementById('ref-url').textContent;
-  navigator.clipboard.writeText(url).then(function() { showToast('コピーしました!'); });
+  var span = document.getElementById('ref-url');
+  var url = span ? span.textContent : '';
+  // 採点R1: clipboard 失敗時の silent dead-end を解消 — URL を可視・選択可能にして手動コピーへ degrade
+  function fallbackShowUrl() {
+    showToast('コピーできませんでした。URLを長押しでコピーしてください');
+    if (span) { span.style.display = 'block'; span.className = 'text-xs break-all select-all text-gray-500 mt-2'; }
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(function() { showToast('コピーしました!'); }).catch(fallbackShowUrl);
+    } else { fallbackShowUrl(); }
+  } catch (e) { fallbackShowUrl(); }
 }
 
 function openLineShare(msg) {
@@ -2689,8 +2768,15 @@ async function loadShopData() {
   var oel = document.getElementById('orders-card');
   var fel = document.getElementById('fulfillments-card');
 
-  var res = null;
-  try { res = await api('/api/liff/reorder'); } catch (e) { res = null; }
+  // 採点R1: 配送ヒーローの取得を商品/注文と並列化 (#delivery 直行時の体感短縮)
+  var res = null, fres = null;
+  try {
+    var pair = await Promise.all([
+      api('/api/liff/reorder').catch(function() { return null; }),
+      api('/api/liff/fulfillments').catch(function() { return null; }),
+    ]);
+    res = pair[0]; fres = pair[1];
+  } catch (e) { /* 個別 catch 済のため到達しない */ }
   if (res && res.data) {
     var data = res.data;
     // Products
@@ -2707,14 +2793,16 @@ async function loadShopData() {
       pel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">商品ラインナップ</p>' +
         '<p class="text-xs text-gray-400">商品情報を準備中です。しばらくしてからお試しください。</p>';
     }
-    // Orders
+    // Orders (採点R1 HIGH: 注文行にワンタップ再注文 — 既存 /api/liff/reorder/create (Draft Order) を配線)
     if (data.recentOrders && data.recentOrders.length > 0) {
       oel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">最近の注文</p>' +
         data.recentOrders.map(function(o) {
           return '<div class="py-2 border-b last:border-0">' +
             '<div class="flex justify-between items-center"><p class="text-sm font-bold">#' + esc(o.orderNumber) + '</p>' +
             '<p class="text-sm text-green-600 font-bold">¥' + Number(o.totalPrice).toLocaleString() + '</p></div>' +
-            '<p class="text-xs text-gray-400">' + esc((o.createdAt || '').slice(0, 10)) + '</p></div>';
+            '<div class="flex justify-between items-center mt-0.5"><p class="text-xs text-gray-400">' + esc((o.createdAt || '').slice(0, 10)) + '</p>' +
+            (o.id ? '<button onclick="reorderFromOrder(this)" data-order-id="' + esc(o.id) + '" class="tap text-xs font-bold text-teal-700 rounded-full px-3 py-1" style="border:1px solid #bfe8e3;background:#effaf8">🔄 この注文を再注文</button>' : '') +
+            '</div></div>';
         }).join('');
     } else {
       oel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">最近の注文</p>' +
@@ -2730,12 +2818,16 @@ async function loadShopData() {
   // Fulfillments (エラーは「配送情報はありません」に化けさせない)
   //   実機FB第5弾: リッチメニュー「配送状況をみる」(#delivery) からワンタップで
   //   「最新の注文の配送状況」が即読める hero 表示 (ステータス日本語化 + 進捗ステップ + 追跡ボタン)。
-  var fres = null;
-  try { fres = await api('/api/liff/fulfillments'); } catch (e) { fres = null; }
   if (fres && fres.data) {
     if (fres.data.fulfillments && fres.data.fulfillments.length > 0) {
-      var latest = fres.data.fulfillments[0];
-      var rest = fres.data.fulfillments.slice(1, 3);
+      // hero はキャンセル済みでない最新を優先 (無ければ先頭)
+      var flist = fres.data.fulfillments;
+      var latest = null;
+      for (var fi = 0; fi < flist.length; fi++) {
+        if (String(flist[fi].status || '').toLowerCase() !== 'cancelled') { latest = flist[fi]; break; }
+      }
+      if (!latest) latest = flist[0];
+      var rest = flist.filter(function(x) { return x !== latest; }).slice(0, 2);
       fel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">🚚 配送状況</p>' +
         renderFulfillHero(latest) +
         (rest.length ? '<p class="text-xs text-gray-400 font-bold mt-3 mb-1">それ以前のお届け</p>' +
@@ -2752,6 +2844,33 @@ async function loadShopData() {
   } else {
     shopErrorCard(fel, shopAuthExpired(fres));
   }
+
+  // #delivery 直行時: hero 描画後にもう一度スクロール (skeleton→hero のレイアウトシフト補正)
+  if (window.__pendingDeliveryScroll) {
+    window.__pendingDeliveryScroll = false;
+    setTimeout(function() { if (fel) fel.scrollIntoView({ behavior: 'smooth' }); }, 80);
+  }
+}
+
+// ワンタップ再注文 (採点R1 HIGH): 注文行 → Draft Order 作成 → チェックアウトを開く。
+// 失敗 (429 の 5分レート制限含む) はサーバ message をトーストで可視化し、ボタンを復帰する。
+async function reorderFromOrder(btn) {
+  var orderId = btn && btn.getAttribute('data-order-id');
+  if (!orderId || btn.disabled) return;
+  var orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '作成中…';
+  try {
+    var res = await api('/api/liff/reorder/create', { orderId: orderId });
+    if (apiFailed(res)) {
+      showToast((res && res.error) || '再注文の作成に失敗しました');
+    } else if (res.data && res.data.invoiceUrl) {
+      showToast('ご注文ページを開きます');
+      window.open(res.data.invoiceUrl, '_blank');
+    } else {
+      showToast('再注文の作成に失敗しました');
+    }
+  } catch (e) { showToast('再注文の作成に失敗しました'); }
+  btn.disabled = false; btn.textContent = orig;
 }
 
 // 配送ステータスの日本語化 (Shopify fulfillment/shipment status → 顧客向け表現)
@@ -2761,6 +2880,7 @@ function fulfillStatusJa(status) {
     attempted_delivery: '配達試行', ready_for_pickup: '受取可能', label_printed: '発送準備中',
     label_purchased: '発送準備中', confirmed: '発送準備中', pending: '発送準備中',
     open: '発送済み', success: '発送済み', failure: '配送遅延', error: '配送遅延',
+    cancelled: 'キャンセル',
   };
   return map[String(status || '').toLowerCase()] || '配送中';
 }
@@ -2768,6 +2888,7 @@ function fulfillBadgeClass(status) {
   var s = String(status || '').toLowerCase();
   if (s === 'delivered') return 'bg-emerald-100 text-emerald-700';
   if (s === 'failure' || s === 'error') return 'bg-red-100 text-red-600';
+  if (s === 'cancelled') return 'bg-gray-100 text-gray-500';
   return 'bg-teal-50 text-teal-700';
 }
 // 最新のお届けを大きくヒーロー表示 (進捗3ステップ + 追跡番号 + 追跡ボタン)
@@ -2912,11 +3033,12 @@ function renderSubscriptions() {
 
 async function toggleSubscription(id, isActive) {
   try {
-    await fetch(API_BASE + '/api/liff/subscriptions/' + id, {
+    var r = await fetch(API_BASE + '/api/liff/subscriptions/' + id, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) },
       body: JSON.stringify({ isActive: isActive }),
     });
+    if (!r.ok) { showToast('変更に失敗しました'); return; } // 採点R1: false-success 防止
     for (var i = 0; i < subscriptionsList.length; i++) {
       if (subscriptionsList[i].id === id) subscriptionsList[i].is_active = isActive ? 1 : 0;
     }
@@ -2928,10 +3050,11 @@ async function toggleSubscription(id, isActive) {
 async function deleteSubscription(id) {
   if (!confirm('このリマインダーを削除しますか？')) return;
   try {
-    await fetch(API_BASE + '/api/liff/subscriptions/' + id, {
+    var r = await fetch(API_BASE + '/api/liff/subscriptions/' + id, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: 'Bearer ' + idToken } : {}) },
     });
+    if (!r.ok) { showToast('削除に失敗しました'); return; } // 採点R1: false-success 防止
     subscriptionsList = subscriptionsList.filter(function(s) { return s.id !== id; });
     renderSubscriptions();
     showToast('リマインダーを削除しました');
@@ -2992,8 +3115,8 @@ async function loadFAQ() {
       // DBが空のときの fallback (検索・カテゴリも同じ描画経路を通す)
       items = [
         { question: 'naturismはいつ飲むのがおすすめですか？', answer: '毎日同じ時間に、食事と一緒にお飲みいただくと続けやすくなります。商品ごとの目安は商品ページをご確認ください。', category: 'usage' },
-        { question: '定期購入はできますか？', answer: 'この画面の「定期お届けリマインダー」で、お好みのサイクルでリマインドを設定できます。タイミングが来たらLINEでお知らせし、ワンタッチで再注文いただけます。マイページから24時間いつでも解約・スキップ・変更も可能です。', category: 'subscription' },
-        { question: '配送にどのくらいかかりますか？', answer: '平日12時までのご注文は原則当日発送（在庫がある場合）。12時以降・土日祝・年末年始は翌営業日発送です。配送状況は「ストア」タブまたは「配送状況」ページでご確認いただけます。', category: 'shipping' },
+        { question: '定期購入はできますか？', answer: 'Shopタブの「定期お届けリマインダー」で、お好みのサイクルでリマインドを設定できます。タイミングが来たらLINEでお知らせし、ワンタッチで再注文いただけます。24時間いつでも解約・スキップ・変更も可能です。', category: 'subscription' },
+        { question: '配送にどのくらいかかりますか？', answer: '平日12時までのご注文は原則当日発送（在庫がある場合）。12時以降・土日祝・年末年始は翌営業日発送です。配送状況は「Shop」タブの「🚚 配送状況」でご確認いただけます。', category: 'shipping' },
         { question: '返品・交換はできますか？', answer: '食品のため原則お客様都合の返品はお受けしておりません。対象3商品の初回購入は到着後14日以内のご連絡で全額返金保証、不良品・配送破損は10日以内のご連絡で対応いたします。詳しくは公式サイトの返品・返金ポリシーをご確認ください。', category: 'return' },
         { question: '問い合わせはどこからできますか？', answer: 'このLINEアカウントにメッセージを送っていただくか、公式サイトのお問い合わせフォームからご連絡ください。', category: 'support' },
       ];
