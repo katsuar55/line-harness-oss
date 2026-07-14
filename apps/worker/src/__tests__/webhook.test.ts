@@ -14,6 +14,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 
+// WI-1: subscription-concierge が使う契約 read 関数の実実装。
+// beforeEach 毎に importOriginal すると cold cache で hookTimeout (10s) を招くため
+// (採点R2 HIGH)、ファイルスコープで 1 度だけロードしてキャッシュする。
+const actualDbPromise = vi.importActual<typeof import('@line-crm/db')>('@line-crm/db');
+
 // ---------------------------------------------------------------------------
 // Helper: compute a real HMAC-SHA256 signature (same algo as LINE platform)
 // ---------------------------------------------------------------------------
@@ -90,6 +95,8 @@ interface MockFriend {
   score: number;
   created_at: string;
   user_id: string | null;
+  /** WI-1 サブスク・コンシェルジュ: friend↔Shopify 顧客リンク (未連携は undefined/null) */
+  shopify_customer_id?: string | null;
 }
 
 const friendsDb: Map<string, MockFriend> = new Map();
@@ -211,7 +218,13 @@ beforeEach(async () => {
     };
   });
 
+  // WI-1: subscription-concierge が使う契約 read 関数は実実装をパススルーする
+  // (テストは options.db の mock D1 で応答を制御する)。実装ロードはファイルスコープの
+  // actualDbPromise で 1 度だけ (beforeEach 毎の importOriginal は hookTimeout の原因)。
+  const actualDb = await actualDbPromise;
   vi.doMock('@line-crm/db', () => ({
+    getSubscriptionContract: actualDb.getSubscriptionContract,
+    getSubscriptionContractsByCustomerId: actualDb.getSubscriptionContractsByCustomerId,
     jstNow: () => '2026-03-31T12:00:00+09:00',
     upsertFriend: vi.fn(async (_db: unknown, data: { lineUserId: string; displayName?: string | null }) => {
       const existing = friendsDb.get(data.lineUserId);
@@ -273,7 +286,7 @@ beforeEach(async () => {
   const { webhook } = await import('../routes/webhook.js');
   app = new Hono();
   app.route('/', webhook);
-});
+}, 30_000);
 
 afterEach(() => {
   capturedReplies.length = 0;
@@ -320,6 +333,8 @@ interface RequestOptions {
   ai?: object | null;
   aiSystemPrompt?: string;
   workerUrl?: string;
+  /** WI-1 サブスク・コンシェルジュ gate ('true' で有効、未指定 = 本番デフォルトの OFF) */
+  subscriptionMenuEnabled?: string;
 }
 
 async function postWebhook(
@@ -345,6 +360,7 @@ async function postWebhook(
     LINE_LOGIN_CHANNEL_SECRET: 'login-secret',
     WORKER_URL: options.workerUrl ?? 'https://worker.example.com',
     AI_SYSTEM_PROMPT: options.aiSystemPrompt,
+    SUBSCRIPTION_MENU_ENABLED: options.subscriptionMenuEnabled,
   };
 
   const req = new Request('http://localhost/webhook', {
@@ -1087,5 +1103,269 @@ describe('Edge cases', () => {
 
     // Should not crash, no reply sent for unknown friend
     // (webhook handler returns early if friend is null)
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WI-1 (2026-07-14): サブスク・コンシェルジュ postback / gate
+// docs/SUBSCRIPTION_ULTRAPLAN_2026-07-14.md — 採点R1 tests HIGH 対応。
+// gate OFF のゼロ変更保証と、teiki_guide の IDOR/stale フォールバックを E2E で固定する。
+// ---------------------------------------------------------------------------
+
+function makePostbackBody(userId: string, data: string, destination = 'U_bot_default'): object {
+  return {
+    destination,
+    events: [
+      {
+        type: 'postback',
+        replyToken: 'reply-token-postback',
+        source: { type: 'user', userId },
+        postback: { data },
+        mode: 'active',
+        timestamp: 1234567890,
+        webhookEventId: 'evt-postback-wi1',
+        deliveryContext: { isRedelivery: false },
+      },
+    ],
+  };
+}
+
+/** handleEvent は waitUntil 経由の非同期実行のため、既存テストと同様に flush を待つ */
+async function postAndFlush(
+  body: object,
+  signature?: string,
+  options: RequestOptions = {},
+): Promise<Response> {
+  const res = await postWebhook(body, signature, options);
+  // 負荷時のフレーク対策: reply 到着を最大 2s ポーリング + settle 待ち
+  // (reply 0 件を期待するテストはポーリングを使い切ってから判定される)
+  for (let i = 0; i < 20 && capturedReplies.length === 0; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  await new Promise((r) => setTimeout(r, 150));
+  return res;
+}
+
+interface SubscriptionDbOptions {
+  contractById?: Record<string, unknown> | null;
+  contractsByCustomer?: Array<Record<string, unknown>>;
+  friendRow?: Record<string, unknown> | null;
+  throwOnSubscription?: boolean;
+}
+
+/** subscription_contracts / friends の SELECT だけ応答を制御し、他は無害なデフォルトを返す mock D1 */
+function createSubscriptionDb(opts: SubscriptionDbOptions): D1Database {
+  const makeExec = (sql: string) => ({
+    first: vi.fn(async () => {
+      if (sql.includes('FROM subscription_contracts WHERE contract_id')) {
+        if (opts.throwOnSubscription) throw new Error('no such table: subscription_contracts');
+        return opts.contractById ?? null;
+      }
+      if (sql.includes('FROM friends WHERE id')) {
+        return opts.friendRow ?? null;
+      }
+      return null;
+    }),
+    all: vi.fn(async () => {
+      if (sql.includes('FROM subscription_contracts')) {
+        if (opts.throwOnSubscription) throw new Error('no such table: subscription_contracts');
+        return { results: opts.contractsByCustomer ?? [] };
+      }
+      return { results: [] };
+    }),
+    run: vi.fn(async () => ({ success: true })),
+  });
+  return {
+    prepare: vi.fn((sql: string) => {
+      const exec = makeExec(String(sql));
+      return { bind: vi.fn(() => exec), ...exec };
+    }),
+    exec: vi.fn(),
+    batch: vi.fn(),
+    dump: vi.fn(),
+  } as unknown as D1Database;
+}
+
+function subContract(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    contract_id: '100',
+    shopify_customer_id: 'cust-1',
+    plan_name: '[5％OFF定期便] 30日に1回配送（2回目からは5%OFF)',
+    interval_days: 30,
+    order_count: 2,
+    last_order_id: 'ord-1',
+    last_order_at: '2026-07-05T10:00:00+09:00',
+    last_delivery_date: '2026-07-08',
+    skip_count: 0,
+    skip_count_at_last_order: 0,
+    paused_at: null,
+    cancelled_at: null,
+    // 実時計依存 (isStaleEstimate) との結合による時限爆弾を避けるため動的な未来日 (採点R3)
+    next_billing_estimate: new Date(Date.now() + 21 * 86_400_000 + 9 * 3_600_000)
+      .toISOString()
+      .slice(0, 10),
+    estimate_source: 'derived',
+    reminded_for_estimate: null,
+    created_at: '2026-07-05 10:00:00',
+    updated_at: '2026-07-05 10:00:00',
+    ...overrides,
+  };
+}
+
+const SUB_USER = 'U_subscription_user';
+
+function seedSubFriend(shopifyCustomerId: string | null): void {
+  friendsDb.set(SUB_USER, {
+    id: `friend-${SUB_USER}`,
+    line_user_id: SUB_USER,
+    display_name: 'サブスク太郎',
+    is_following: true,
+    score: 0,
+    created_at: '2026-03-31T12:00:00+09:00',
+    user_id: null,
+    shopify_customer_id: shopifyCustomerId,
+  });
+}
+
+function subPrepareCalls(db: D1Database): unknown[][] {
+  return (db.prepare as unknown as ReturnType<typeof vi.fn>).mock.calls.filter((c: unknown[]) =>
+    String(c[0]).includes('subscription_contracts'),
+  );
+}
+
+describe('webhook — サブスク・コンシェルジュ postback (WI-1)', () => {
+  it('gate OFF: subscription_menu は DB 非接触の固定応答のみ (準備中 + マイページ誘導)', async () => {
+    seedSubFriend('cust-1');
+    const db = createSubscriptionDb({ contractsByCustomer: [subContract()] });
+    const res = await postAndFlush(makePostbackBody(SUB_USER, 'action=subscription_menu'), undefined, { db });
+    expect(res.status).toBe(200);
+    expect(capturedReplies).toHaveLength(1);
+    const s = JSON.stringify(capturedReplies[0].messages);
+    expect(s).toContain('準備中');
+    expect(s).toContain('naturism-diet.com/account');
+    expect(subPrepareCalls(db)).toHaveLength(0);
+  });
+
+  it('gate OFF: teiki_guide も同様に固定応答 (ロールバック時の死ボタン防止)', async () => {
+    seedSubFriend('cust-1');
+    const db = createSubscriptionDb({ contractById: subContract() });
+    await postAndFlush(makePostbackBody(SUB_USER, 'action=teiki_guide&op=skip&cid=100'), undefined, { db });
+    expect(capturedReplies).toHaveLength(1);
+    expect(JSON.stringify(capturedReplies[0].messages)).toContain('準備中');
+    expect(subPrepareCalls(db)).toHaveLength(0);
+  });
+
+  it('gate ON + 未連携 friend → メール登録導線カード', async () => {
+    seedSubFriend(null);
+    const db = createSubscriptionDb({});
+    await postAndFlush(makePostbackBody(SUB_USER, 'action=subscription_menu'), undefined, {
+      db,
+      subscriptionMenuEnabled: 'true',
+    });
+    expect(capturedReplies).toHaveLength(1);
+    const s = JSON.stringify(capturedReplies[0].messages);
+    expect(s).toContain('アカウント連携');
+    // 連携UI が実在する /liff/my-rank (#rank) へ誘導する (採点R2: #account は行き止まり)
+    expect(s).toContain('#rank');
+  });
+
+  it('gate ON + 連携済み・契約カードには操作 postback と締切が載る', async () => {
+    seedSubFriend('cust-1');
+    const db = createSubscriptionDb({ contractsByCustomer: [subContract()] });
+    await postAndFlush(makePostbackBody(SUB_USER, 'action=subscription_menu'), undefined, {
+      db,
+      subscriptionMenuEnabled: 'true',
+    });
+    const s = JSON.stringify(capturedReplies[0].messages);
+    expect(s).toContain('action=teiki_guide&op=skip&cid=100');
+    expect(s).toContain('次回決済の3日前');
+  });
+
+  it('teiki_guide: 自分の契約なら手順ガイドカード', async () => {
+    seedSubFriend('cust-1');
+    const db = createSubscriptionDb({ contractById: subContract() });
+    await postAndFlush(makePostbackBody(SUB_USER, 'action=teiki_guide&op=skip&cid=100'), undefined, {
+      db,
+      subscriptionMenuEnabled: 'true',
+    });
+    const s = JSON.stringify(capturedReplies[0].messages);
+    expect(s).toContain('マイページにログイン');
+    expect(s).toContain('スキップ');
+  });
+
+  it('teiki_guide IDOR: 他人の契約 cid はガイドを出さず、存在も漏らさずメニューへ', async () => {
+    seedSubFriend('cust-1');
+    const db = createSubscriptionDb({
+      contractById: subContract({ shopify_customer_id: 'cust-VICTIM' }),
+      contractsByCustomer: [],
+    });
+    await postAndFlush(makePostbackBody(SUB_USER, 'action=teiki_guide&op=skip&cid=100'), undefined, {
+      db,
+      subscriptionMenuEnabled: 'true',
+    });
+    const s = JSON.stringify(capturedReplies[0].messages);
+    expect(s).not.toContain('マイページにログイン');
+    expect(s).toContain('ご契約中の定期便はありません');
+  });
+
+  it('teiki_guide stale: 解約済み契約の古いボタン → ガイドでなく最新メニューカード', async () => {
+    seedSubFriend('cust-1');
+    const cancelled = subContract({ cancelled_at: '2026-07-10', next_billing_estimate: null });
+    const db = createSubscriptionDb({ contractById: cancelled, contractsByCustomer: [cancelled] });
+    await postAndFlush(makePostbackBody(SUB_USER, 'action=teiki_guide&op=skip&cid=100'), undefined, {
+      db,
+      subscriptionMenuEnabled: 'true',
+    });
+    const s = JSON.stringify(capturedReplies[0].messages);
+    expect(s).not.toContain('マイページにログイン');
+    expect(s).toContain('解約済み');
+  });
+
+  it('gate ON + D1 障害 → 誠実なエラーカード (false-success しない)', async () => {
+    seedSubFriend('cust-1');
+    const db = createSubscriptionDb({ throwOnSubscription: true });
+    await postAndFlush(makePostbackBody(SUB_USER, 'action=subscription_menu'), undefined, {
+      db,
+      subscriptionMenuEnabled: 'true',
+    });
+    expect(capturedReplies).toHaveLength(1);
+    expect(JSON.stringify(capturedReplies[0].messages)).toContain('うまく確認できませんでした');
+  });
+
+  it('gate OFF + テキスト「解約したい」→ サブスクカードを出さず従来経路のまま', async () => {
+    seedSubFriend('cust-1');
+    const db = createSubscriptionDb({ contractsByCustomer: [subContract()] });
+    await postAndFlush(makeTextMessageBody(SUB_USER, '解約したい'), undefined, { db });
+    const all = JSON.stringify(capturedReplies);
+    expect(all).not.toContain('ご契約中の定期便');
+    expect(subPrepareCalls(db)).toHaveLength(0);
+  });
+
+  it('gate ON + テキスト「解約したい」+ 連携済み → 契約カード (intent E2E)', async () => {
+    seedSubFriend('cust-1');
+    const db = createSubscriptionDb({
+      contractsByCustomer: [subContract()],
+      friendRow: { id: `friend-${SUB_USER}`, display_name: 'サブスク太郎', shopify_customer_id: 'cust-1' },
+    });
+    await postAndFlush(makeTextMessageBody(SUB_USER, '解約したい'), undefined, {
+      db,
+      subscriptionMenuEnabled: 'true',
+    });
+    const all = JSON.stringify(capturedReplies);
+    expect(all).toContain('action=teiki_guide');
+  });
+
+  it('gate ON + テキスト「解約したい」+ D1 障害 → 沈黙せず誠実なエラーカード (採点R1 項目9)', async () => {
+    seedSubFriend('cust-1');
+    const db = createSubscriptionDb({
+      throwOnSubscription: true,
+      friendRow: { id: `friend-${SUB_USER}`, display_name: 'サブスク太郎', shopify_customer_id: 'cust-1' },
+    });
+    await postAndFlush(makeTextMessageBody(SUB_USER, '解約したい'), undefined, {
+      db,
+      subscriptionMenuEnabled: 'true',
+    });
+    const all = JSON.stringify(capturedReplies);
+    expect(all).toContain('うまく確認できませんでした');
   });
 });

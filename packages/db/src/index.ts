@@ -29,6 +29,7 @@ export * from './ad-platforms';
 export * from './staff';
 export * from './shopify';
 export * from './shopify-phase2a';
+export * from './subscription-contracts';
 export * from './ab-tests';
 export * from './shopify-products';
 export * from './analytics';

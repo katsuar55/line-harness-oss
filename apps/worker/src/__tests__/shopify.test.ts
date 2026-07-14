@@ -33,6 +33,7 @@ const {
   mockGetShopifyCustomerByShopifyId,
   mockLinkShopifyCustomerToFriend,
   mockFireEvent,
+  mockRebuildContracts,
 } = vi.hoisted(() => ({
   mockUpsertShopifyOrder: vi.fn(),
   mockUpsertShopifyCustomer: vi.fn(),
@@ -43,7 +44,14 @@ const {
   mockGetShopifyCustomerByShopifyId: vi.fn(),
   mockLinkShopifyCustomerToFriend: vi.fn(),
   mockFireEvent: vi.fn(),
+  mockRebuildContracts: vi.fn(),
 }));
+
+// WI-1: rebuild endpoint のルートテスト用 (gate/force 分岐のみ検証、実処理は単体テスト側)
+vi.mock('../services/subscription-contracts.js', async (importOriginal) => {
+  const orig = (await importOriginal()) as typeof import('../services/subscription-contracts.js');
+  return { ...orig, rebuildContractsFromD1: mockRebuildContracts };
+});
 
 // ---------------------------------------------------------------------------
 // Mock @line-crm/db
@@ -186,6 +194,7 @@ function makeOrderWebhookBody(overrides: Record<string, unknown> = {}): Record<s
     financial_status: 'paid',
     fulfillment_status: null,
     tags: 'naturism',
+    created_at: '2026-07-05T10:00:00+09:00',
     line_items: [
       { id: 1, title: 'naturism サプリメント', quantity: 1, price: '3980.00' },
     ],
@@ -353,8 +362,63 @@ describe('Shopify Routes', () => {
           currency: 'JPY',
           financialStatus: 'paid',
           orderNumber: 1001,
+          // WI-1 採点R3: metadata に order_created_at (サブスク rebuild の推定アンカー) が
+          // 保存されること。旧形式 {source, topic} への退行を検出する
+          // 値の配管 (body.created_at → metadata) まで固定する (採点R4 LOW)
+          metadata: expect.stringContaining('"order_created_at":"2026-07-05'),
         }),
       );
+    });
+  });
+
+  // =========================================================================
+  // POST /api/integrations/shopify/subscription-contracts/rebuild (WI-1)
+  // =========================================================================
+
+  describe('POST /api/integrations/shopify/subscription-contracts/rebuild (WI-1)', () => {
+    const REBUILD_PATH = '/api/integrations/shopify/subscription-contracts/rebuild';
+    const authHeaders = { Authorization: `Bearer ${TEST_API_KEY}` };
+
+    beforeEach(() => {
+      mockRebuildContracts.mockReset();
+    });
+
+    it('gate OFF → 200 で実行できる (bootstrap 用、gate 非連動)', async () => {
+      mockRebuildContracts.mockResolvedValueOnce({ ordersScanned: 3, contractsSeen: 1 });
+      const res = await app.request(
+        REBUILD_PATH,
+        { method: 'POST', headers: authHeaders },
+        createMockEnv(),
+      );
+      expect(res.status).toBe(200);
+      expect(mockRebuildContracts).toHaveBeenCalledTimes(1);
+    });
+
+    it('gate ON + force なし → 409 で拒否 (未消化スキップ先送りの恒久消去ガード、採点R2)', async () => {
+      const res = await app.request(
+        REBUILD_PATH,
+        { method: 'POST', headers: authHeaders },
+        createMockEnv({ SUBSCRIPTION_MENU_ENABLED: 'true' }),
+      );
+      expect(res.status).toBe(409);
+      expect(mockRebuildContracts).not.toHaveBeenCalled();
+    });
+
+    it('gate ON + ?force=1 → 200 で実行できる (明示 override)', async () => {
+      mockRebuildContracts.mockResolvedValueOnce({ ordersScanned: 0, contractsSeen: 0 });
+      const res = await app.request(
+        `${REBUILD_PATH}?force=1`,
+        { method: 'POST', headers: authHeaders },
+        createMockEnv({ SUBSCRIPTION_MENU_ENABLED: 'true' }),
+      );
+      expect(res.status).toBe(200);
+      expect(mockRebuildContracts).toHaveBeenCalledTimes(1);
+    });
+
+    it('無認証 → 401 (Bearer 必須)', async () => {
+      const res = await app.request(REBUILD_PATH, { method: 'POST' }, createMockEnv());
+      expect(res.status).toBe(401);
+      expect(mockRebuildContracts).not.toHaveBeenCalled();
     });
   });
 

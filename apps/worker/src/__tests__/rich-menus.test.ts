@@ -459,8 +459,11 @@ describe('Rich Menus Routes', () => {
   // POST /api/rich-menus/setup-naturism
   // =========================================================================
 
-  describe('POST /api/rich-menus/setup-naturism', () => {
-    it('creates 8-button menu v3, uploads image, and sets default — returns 201', async () => {
+  describe('POST /api/rich-menus/setup-naturism (v4, WI-1)', () => {
+    // v4 はサブスク postback ボタンを含むため gate ON が前提 (gate OFF での死ボタン展開を防ぐ)
+    const envV4 = () => ({ ...env, SUBSCRIPTION_MENU_ENABLED: 'true' });
+
+    it('creates 8-button menu v4 (サブスク postback 入り), uploads image, and sets default — returns 201', async () => {
       mockDeleteDefaultRichMenu.mockResolvedValue(undefined);
       mockCreateRichMenu.mockResolvedValue({ richMenuId: 'rm-naturism' });
       mockUploadRichMenuImage.mockResolvedValue(undefined);
@@ -469,7 +472,7 @@ describe('Rich Menus Routes', () => {
       const res = await app.request(
         '/api/rich-menus/setup-naturism',
         { method: 'POST', headers: authHeaders() },
-        env,
+        envV4(),
       );
       const json = (await res.json()) as { success: boolean; data: { richMenuId: string; areas: Array<{ label: string; type: string }>; message: string } };
 
@@ -477,24 +480,67 @@ describe('Rich Menus Routes', () => {
       expect(json.success).toBe(true);
       expect(json.data.richMenuId).toBe('rm-naturism');
       expect(json.data.message).toContain('リッチメニュー');
-      // v3: 8 areas (uri + message types, no postback)
       expect(json.data.areas).toHaveLength(8);
       expect(mockCreateRichMenu).toHaveBeenCalledTimes(1);
       const menuBody = mockCreateRichMenu.mock.calls[0][0];
       expect(menuBody.size).toEqual({ width: 2500, height: 1686 });
       expect(menuBody.areas).toHaveLength(8);
-      // Verify area labels include key buttons
       const labels = menuBody.areas.map((a: { action: { label: string } }) => a.action.label);
       expect(labels).toContain('ホームページ');
       expect(labels).toContain('Q&A お問い合わせ');
+      // v4: SNS 枠 → サブスク postback (displayText 付き)
+      expect(labels).toContain('サブスク');
+      expect(labels).not.toContain('SNS');
+      const subArea = menuBody.areas.find((a: { action: { label: string } }) => a.action.label === 'サブスク') as {
+        action: { type: string; data: string; displayText: string };
+      };
+      expect(subArea.action.type).toBe('postback');
+      expect(subArea.action.data).toBe('action=subscription_menu');
+      expect(subArea.action.displayText).toBe('サブスクリプション');
       expect(mockUploadRichMenuImage).toHaveBeenCalledTimes(1);
-      // R2 配信に切替: JPEG content-type で upload されること
       expect(mockUploadRichMenuImage).toHaveBeenCalledWith('rm-naturism', expect.anything(), 'image/jpeg');
       expect(mockSetDefaultRichMenu).toHaveBeenCalledWith('rm-naturism');
     });
 
-    it('succeeds even if deleteDefaultRichMenu fails (no existing default)', async () => {
-      mockDeleteDefaultRichMenu.mockRejectedValue(new Error('no default'));
+    it('rejects with 400 when SUBSCRIPTION_MENU_ENABLED is off (死ボタン展開防止)', async () => {
+      mockCreateRichMenu.mockResolvedValue({ richMenuId: 'rm-should-not-happen' });
+
+      const res = await app.request(
+        '/api/rich-menus/setup-naturism',
+        { method: 'POST', headers: authHeaders() },
+        env,
+      );
+      const json = (await res.json()) as { success: boolean; error: string };
+
+      expect(res.status).toBe(400);
+      expect(json.success).toBe(false);
+      expect(json.error).toContain('SUBSCRIPTION_MENU_ENABLED');
+      expect(mockCreateRichMenu).not.toHaveBeenCalled();
+      expect(mockDeleteDefaultRichMenu).not.toHaveBeenCalled();
+    });
+
+    it('rejects with 400 when R2 image is missing — BEFORE deleting the current default (採点R1 修正)', async () => {
+      const envNoImage = {
+        ...envV4(),
+        IMAGES: { get: async () => null } as unknown as R2Bucket,
+      };
+
+      const res = await app.request(
+        '/api/rich-menus/setup-naturism',
+        { method: 'POST', headers: authHeaders() },
+        envNoImage,
+      );
+      const json = (await res.json()) as { success: boolean; error: string };
+
+      expect(res.status).toBe(400);
+      expect(json.success).toBe(false);
+      expect(json.error).toContain('image-r2');
+      // 破壊的操作 (デフォルト解除) は画像検証の後 → 呼ばれていないこと
+      expect(mockDeleteDefaultRichMenu).not.toHaveBeenCalled();
+      expect(mockCreateRichMenu).not.toHaveBeenCalled();
+    });
+
+    it('旧デフォルトメニューには一切触れない (setDefault が置換、deleteDefault は不使用 — 採点R2)', async () => {
       mockCreateRichMenu.mockResolvedValue({ richMenuId: 'rm-naturism-2' });
       mockUploadRichMenuImage.mockResolvedValue(undefined);
       mockSetDefaultRichMenu.mockResolvedValue(undefined);
@@ -502,13 +548,15 @@ describe('Rich Menus Routes', () => {
       const res = await app.request(
         '/api/rich-menus/setup-naturism',
         { method: 'POST', headers: authHeaders() },
-        env,
+        envV4(),
       );
       const json = (await res.json()) as { success: boolean; data: { richMenuId: string } };
 
       expect(res.status).toBe(201);
       expect(json.success).toBe(true);
       expect(json.data.richMenuId).toBe('rm-naturism-2');
+      // 途中失敗時に全ユーザーのメニューが消えないよう、事前解除は行わない
+      expect(mockDeleteDefaultRichMenu).not.toHaveBeenCalled();
     });
 
     it('returns 500 if createRichMenu fails', async () => {
@@ -517,7 +565,7 @@ describe('Rich Menus Routes', () => {
       const res = await app.request(
         '/api/rich-menus/setup-naturism',
         { method: 'POST', headers: authHeaders() },
-        env,
+        envV4(),
       );
       const json = (await res.json()) as { success: boolean; error: string };
 
@@ -526,19 +574,23 @@ describe('Rich Menus Routes', () => {
       expect(json.error).toContain('Failed to setup naturism rich menu');
     });
 
-    it('returns 500 if image upload fails', async () => {
-      mockCreateRichMenu.mockResolvedValue({ richMenuId: 'rm-naturism' });
+    it('returns 500 if image upload fails — and cleans up the orphan menu (採点R1 修正)', async () => {
+      mockDeleteDefaultRichMenu.mockResolvedValue(undefined);
+      mockCreateRichMenu.mockResolvedValue({ richMenuId: 'rm-orphan' });
       mockUploadRichMenuImage.mockRejectedValue(new Error('upload failed'));
+      mockDeleteRichMenu.mockResolvedValue(undefined);
 
       const res = await app.request(
         '/api/rich-menus/setup-naturism',
         { method: 'POST', headers: authHeaders() },
-        env,
+        envV4(),
       );
       const json = (await res.json()) as { success: boolean; error: string };
 
       expect(res.status).toBe(500);
       expect(json.success).toBe(false);
+      // 孤児メニューを best-effort で削除する
+      expect(mockDeleteRichMenu).toHaveBeenCalledWith('rm-orphan');
     });
   });
 
