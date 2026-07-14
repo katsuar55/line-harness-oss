@@ -48,6 +48,13 @@ import {
 } from '../services/monthly-broadcast-postback.js';
 import { handleRestockPostback } from '../services/restock.js';
 import {
+  buildSubscriptionMenuMessages,
+  buildGuideMessages,
+  buildConciergeErrorMessages,
+  getContractForFriend,
+  type GuideOp,
+} from '../services/subscription-concierge.js';
+import {
   isQuickQuizPostback,
   isQuickQuizStartPostback,
   handleQuickQuizStart,
@@ -536,6 +543,87 @@ async function handleEvent(
       return;
     }
 
+    // サブスク・コンシェルジュ (WI-1, docs/SUBSCRIPTION_ULTRAPLAN_2026-07-14.md):
+    // リッチメニュー「サブスク」(subscription_menu) と契約カードの操作ボタン (teiki_guide)。
+    if (action === 'subscription_menu' || action === 'teiki_guide') {
+      // gate OFF: 未ローンチ状態ではこの postback は存在しない (リッチメニュー v4 未反映・カード未送信)
+      // ため挙動ゼロ変更。ロールバック時のみ履歴上のボタンから到達しうるので、DB 非接触の
+      // 固定応答で死ボタン化を防ぐ (採点R1 修正)。
+      if (env?.SUBSCRIPTION_MENU_ENABLED !== 'true') {
+        try {
+          await lineClient.replyMessage(event.replyToken, [
+            {
+              type: 'text',
+              text: '申し訳ありません、この機能は現在準備中です🙇\n定期便のお手続きはマイページをご利用ください。\nhttps://naturism-diet.com/account',
+            },
+          ]);
+        } catch {
+          // reply 失敗 (token 期限切れ等) は無視 (gate OFF 中は DB にも触れない)
+        }
+        return;
+      }
+      const friend = await getFriendByLineUserId(db, userId);
+      if (!friend) return;
+      const conciergeFriend = {
+        id: friend.id,
+        display_name: friend.display_name,
+        shopify_customer_id:
+          (friend as { shopify_customer_id?: string | null }).shopify_customer_id ?? null,
+      };
+      try {
+        let messages;
+        let outcome = 'menu';
+        if (action === 'subscription_menu') {
+          messages = await buildSubscriptionMenuMessages(db, conciergeFriend, env?.LIFF_URL);
+        } else {
+          const op = params.get('op');
+          const cid = params.get('cid') ?? '';
+          const validOp = op === 'skip' || op === 'date' || op === 'cancel_pause';
+          // IDOR ガード: cid は改ざん可能入力。所有者検証に失敗したら契約の存在有無を
+          // 漏らさず、一般メニューカードへフォールバックする。
+          // stale ガード: 解約済み/一時停止済み契約への古いカードのボタンも、実行不能な
+          // ガイドを出さず最新状態のメニューカードへ (採点R1 修正)。
+          const contract = validOp ? await getContractForFriend(db, conciergeFriend, cid) : null;
+          const isStale = contract !== null && (contract.cancelled_at !== null || contract.paused_at !== null);
+          if (!validOp || !contract || isStale) {
+            messages = await buildSubscriptionMenuMessages(db, conciergeFriend, env?.LIFF_URL);
+            outcome = isStale ? 'guide_stale' : 'guide_denied';
+          } else {
+            messages = buildGuideMessages(op as GuideOp, contract);
+            outcome = `guide_${op}`;
+          }
+        }
+        await lineClient.replyMessage(event.replyToken, [...messages]);
+        await auditSystem(db, {
+          action: 'subscription_concierge.postback',
+          actorType: 'webhook',
+          targetType: 'friend',
+          targetId: friend.id,
+          lineAccountId,
+          result: 'success',
+          metadata: { outcome, postbackData: data.slice(0, 200) },
+        });
+      } catch (err) {
+        console.error('[webhook] subscription concierge postback failed:', err);
+        try {
+          await lineClient.replyMessage(event.replyToken, [...buildConciergeErrorMessages()]);
+        } catch {
+          // reply 済み / replyToken 期限切れ時はエラーカードを諦める (audit には残す)
+        }
+        await auditSystem(db, {
+          action: 'subscription_concierge.handler_threw',
+          actorType: 'webhook',
+          targetType: 'friend',
+          targetId: friend.id,
+          lineAccountId,
+          result: 'failure',
+          errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown',
+          metadata: { postbackData: data.slice(0, 200) },
+        });
+      }
+      return;
+    }
+
     if (action === 'daily_tip') {
       const friend = await getFriendByLineUserId(db, userId);
       if (!friend) return;
@@ -893,7 +981,12 @@ async function handleEvent(
     //   - feature_unavailable: 「紹介プログラム」 等 未実装機能 → 「近日リリース」 固定 text
     //   matched 後は Layer 2 (= AI) を skip
     if (!matched && !replyTokenConsumed) {
-      const intentResult = detectIntent(incomingText);
+      // サブスク intent は gate 連動 (WI-1): OFF ならパターン自体を skip して後続パターン →
+      // AI へ従来どおり流す (事後 null 化だと後続パターンを遮蔽するため disabledIntents 方式)。
+      const intentResult = detectIntent(
+        incomingText,
+        env?.SUBSCRIPTION_MENU_ENABLED !== 'true' ? { disabledIntents: ['subscription'] } : undefined,
+      );
       if (intentResult) {
         // deterministic intent が確定した時点で matched=true (= reply 失敗でも Layer2 AI に
         // 上書きさせない)。 auto_replies パス (matched を try 外で立てる) と対称にする。
@@ -925,6 +1018,16 @@ async function handleEvent(
           });
         } catch (err) {
           console.error('[intent-router] reply failed:', err);
+          // WI-1 (採点R1 修正): subscription intent の build 失敗 (D1 障害/migration 未適用) は
+          // 完全沈黙にせず、replyToken 未消費なら誠実なエラーカードを返す (postback 経路と対称)。
+          if (intentResult.intent.type === 'subscription' && !replyTokenConsumed) {
+            try {
+              await lineClient.replyMessage(event.replyToken, [...buildConciergeErrorMessages()]);
+              replyTokenConsumed = true;
+            } catch {
+              // reply 自体の失敗 (token 期限切れ等) は audit のみに委ねる
+            }
+          }
           await auditSystem(db, {
             action: 'intent_router.reply_failed',
             actorType: 'webhook',

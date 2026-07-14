@@ -338,3 +338,102 @@ describe('intent-router — constants', () => {
     }
   });
 });
+
+// WI-1 (2026-07-14): サブスク・コンシェルジュ intent (docs/SUBSCRIPTION_ULTRAPLAN_2026-07-14.md)
+describe('intent-router — subscription (= サブスク・コンシェルジュ)', () => {
+  it.each([
+    'サブスクリプション',
+    'サブスクの解約したい',
+    '定期便を変更したい',
+    '定期購入について',
+    'スキップしたいです',
+    '解約方法を教えて',
+    '定期をやめたい',
+  ])('detects subscription for "%s"', (text) => {
+    const r = detectIntent(text);
+    expect(r?.intent.type).toBe('subscription');
+  });
+
+  it('sync build はマイページ誘導 text (= async 経由で契約カードを期待)', () => {
+    const r = detectIntent('サブスク');
+    expect(r?.intent.type).toBe('subscription');
+    const text = JSON.stringify(r?.messages);
+    expect(text).toContain('マイページ');
+    expect(text).toContain('naturism-diet.com/account');
+  });
+
+  it('async build は friend 行を引いて契約カードを返す (未連携 friend はメール登録導線)', async () => {
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind() {
+            return {
+              async first() {
+                if (sql.includes('FROM friends')) {
+                  return { id: 'f1', display_name: 'x', shopify_customer_id: null };
+                }
+                throw new Error(`unsupported: ${sql}`);
+              },
+              async all() {
+                return { results: [] };
+              },
+            };
+          },
+        };
+      },
+    } as unknown as D1Database;
+    const messages = await buildMessagesForIntentAsync(
+      { type: 'subscription', reason: 'test' },
+      { db, friendId: 'f1', liffUrl: 'https://liff.line.me/xxxx' },
+    );
+    const s = JSON.stringify(messages);
+    expect(s).toContain('メールアドレスの登録');
+    expect(s).toContain('https://liff.line.me/xxxx#account');
+  });
+});
+
+describe('intent-router — subscription 負例 (誤発火防止、採点R1 HIGH)', () => {
+  it.each([
+    'サプリは定期的に飲んだ方がいいですか？',
+    '不定期ですが飲んでいます',
+    'メルマガの解約',
+    '朝食をスキップしてもいいですか？',
+    '解約',
+    '定期健診に行ってきました',
+  ])('returns null for "%s" (bare 定期/解約/スキップ を採用しない)', (text) => {
+    expect(detectIntent(text)).toBeNull();
+  });
+
+  it('disabledIntents (gate OFF) は subscription パターンを skip して後続へ fall-through する', () => {
+    // 有効時は subscription が先勝ち
+    const enabled = detectIntent('アンバサダー解約したい');
+    expect(enabled?.intent.type).toBe('subscription');
+    // gate OFF では従来どおり feature_unavailable (アンバサダー) に落ちる = 挙動ゼロ変更
+    const disabled = detectIntent('アンバサダー解約したい', { disabledIntents: ['subscription'] });
+    expect(disabled?.intent.type).toBe('feature_unavailable');
+  });
+
+  it('async build: friend 行が引けない場合は sync のマイページ誘導 text に落ちる', async () => {
+    const db = {
+      prepare() {
+        return {
+          bind() {
+            return {
+              async first() {
+                return null;
+              },
+              async all() {
+                return { results: [] };
+              },
+            };
+          },
+        };
+      },
+    } as unknown as D1Database;
+    const messages = await buildMessagesForIntentAsync(
+      { type: 'subscription', reason: 'test' },
+      { db, friendId: 'ghost', liffUrl: 'https://liff.line.me/xxxx' },
+    );
+    expect(JSON.stringify(messages)).toContain('naturism-diet.com/account');
+  });
+});

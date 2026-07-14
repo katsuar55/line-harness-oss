@@ -195,6 +195,11 @@ export type Env = {
     //   'true' で issueReferralCoupon が本番 Shopify に書込 (= 未設定なら no-op、 本番未書込)。
     //   ⚠️ 有効化前に migration 068 (line_referral_coupons) 適用が必要。
     REFERRAL_REWARD_ENABLED?: string;
+    // サブスク・コンシェルジュ gate (WI-1 2026-07-14, docs/SUBSCRIPTION_ULTRAPLAN_2026-07-14.md):
+    //   'true' でリッチメニュー「サブスク」postback / サブスク intent / 契約 read-model 導出が有効。
+    //   ⚠️ 有効化手順 (順番厳守): ①migration 069 適用 → ②rebuild endpoint 実行 (gate 非連動、
+    //     read-model を温める) → ③本 gate ON → ④実機確認 → ⑤リッチメニュー v4 反映 (setup-naturism)。
+    SUBSCRIPTION_MENU_ENABLED?: string;
     // 新規ユーザー限定 welcome クーポン用の顧客セグメント gid (2026-07-10):
     //   例 gid://shopify/Segment/xxx (= Shopify Admin で「注文回数 0」segment を作成)。
     //   設定時、 welcome クーポンはこのセグメントのみ対象 (= 既存客の複数アカウント farming 防止)。

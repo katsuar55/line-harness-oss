@@ -31,6 +31,7 @@ import { buildPriceTableMessage } from './ai-message-builder.js';
 import { buildQuickQuizInviteMessage } from './quick-quiz.js';
 import { buildProductCompareFlex, buildMyCouponFlex } from './welcome-postback.js';
 import { getFriendActiveCoupon } from './ai-fact-context.js';
+import { buildSubscriptionMenuMessages } from './subscription-concierge.js';
 
 export type Intent =
   | { readonly type: 'quiz_invite'; readonly reason: string }
@@ -39,6 +40,7 @@ export type Intent =
   | { readonly type: 'my_coupon'; readonly reason: string }
   | { readonly type: 'my_rank'; readonly reason: string }
   | { readonly type: 'referral'; readonly reason: string }
+  | { readonly type: 'subscription'; readonly reason: string }
   | { readonly type: 'feature_unavailable'; readonly feature: string; readonly reason: string };
 
 export interface IntentRouteResult {
@@ -135,6 +137,24 @@ const PATTERNS: ReadonlyArray<PatternRule> = [
     keywords: ['紹介プログラム', '紹介制度', 'リファラル', '友だち紹介', '友達紹介', '紹介して', '紹介の', '紹介コード'],
     intent: { type: 'referral', reason: 'referral LIFF is live' },
   },
+  // ========= subscription (= サブスク・コンシェルジュ、 WI-1 2026-07-14) =========
+  // リッチメニュー「サブスク」postback と同じカードへ。gate (SUBSCRIPTION_MENU_ENABLED) OFF の間は
+  // webhook 側が detectIntent の disabledIntents でこのパターンを skip する (= 後続パターンへ
+  // fall-through、gate OFF で挙動が厳密にゼロ変更)。
+  // **bare の「定期」「解約」「スキップ」は入れない** (採点R1 HIGH): includes 部分一致のため
+  // 「定期的に飲む」「メルマガの解約」「朝食をスキップ」等の無関係な相談を乗っ取り、
+  // matched=true で AI 応答まで封じてしまう。複合形 + 意図形のみ列挙する。
+  // (Layer 1 auto_replies が先に走るため、既存 FAQ「定期解約」等の応答は温存される)
+  {
+    keywords: [
+      'サブスクリプション', 'サブスクの解約', 'サブスク解約', 'サブスク',
+      '定期便の解約', '定期の解約', '定期解約', '定期便の変更', '定期便',
+      '定期購入', '定期購買', '定期コース', '定期をやめ', '定期便をやめ',
+      'スキップしたい', 'スキップの方法', 'スキップする方法', 'スキップできます',
+      '解約したい', '解約方法', '解約手続き', '解約の仕方', '解約したく',
+    ],
+    intent: { type: 'subscription', reason: 'subscription concierge is live' },
+  },
   // アンバサダー
   {
     keywords: ['アンバサダー'],
@@ -151,13 +171,20 @@ const PATTERNS: ReadonlyArray<PatternRule> = [
  * text を intent に分類。 match なし → null (= AI flow に流れる)。
  *
  * @param text user message (= LINE で受信、 sanitize 済前提)
+ * @param opts.disabledIntents 無効化する intent 種別 (= gate OFF の feature)。
+ *   該当パターンを **skip して後続パターンの走査を続ける** (事後 null 化だと後続パターンを
+ *   遮蔽して gate OFF でも挙動が変わってしまうため。採点R1 shadowing 修正)
  * @returns matched intent + messages、 nothing なら null
  */
-export function detectIntent(text: string): IntentRouteResult | null {
+export function detectIntent(
+  text: string,
+  opts?: { readonly disabledIntents?: ReadonlyArray<Intent['type']> },
+): IntentRouteResult | null {
   const normalized = text.trim();
   if (normalized.length === 0) return null;
 
   for (const pattern of PATTERNS) {
+    if (opts?.disabledIntents?.includes(pattern.intent.type)) continue;
     for (const keyword of pattern.keywords) {
       if (normalized.includes(keyword)) {
         return {
@@ -207,6 +234,14 @@ function buildMessagesForIntent(intent: Intent): ReadonlyArray<Message> {
         {
           type: 'text',
           text: '🌿 友だち紹介は、トーク画面下のメニュー「友達紹介」からリンクを送れます💝\nご紹介でお互いにおトクなクーポンをプレゼント🎁',
+        },
+      ];
+    case 'subscription':
+      // sync build では D1 不明 → マイページ誘導 fallback、 実 reply は async 経由 (= 契約カード) を期待
+      return [
+        {
+          type: 'text',
+          text: '🌿 定期便の確認・スキップ・解約はマイページからお手続きいただけます💝\nhttps://naturism-diet.com/account',
         },
       ];
     case 'feature_unavailable':
@@ -259,6 +294,18 @@ export async function buildMessagesForIntentAsync(
         text: `🌿 現在の会員ランクは「マイランク」ページでご確認いただけます💝\n\n↓ こちらをタップ\n${ctx.liffUrl}#rank`,
       },
     ];
+  }
+  if (intent.type === 'subscription') {
+    // サブスク・コンシェルジュ (WI-1): postback「サブスク」と同じ契約カードを返す。
+    // friend の shopify_customer_id が必要なため D1 から直接引く (IntentBuildContext は friendId のみ)。
+    const friend = await ctx.db
+      .prepare(`SELECT id, display_name, shopify_customer_id FROM friends WHERE id = ?`)
+      .bind(ctx.friendId)
+      .first<{ id: string; display_name: string | null; shopify_customer_id: string | null }>();
+    if (friend) {
+      return buildSubscriptionMenuMessages(ctx.db, friend, ctx.liffUrl);
+    }
+    return buildMessagesForIntent(intent);
   }
   if (intent.type === 'referral' && ctx.liffUrl) {
     // rich-menus.ts「友達紹介」ボタンと同じ `${liffUrl}#referral` 規約

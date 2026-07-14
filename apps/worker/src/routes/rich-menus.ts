@@ -222,6 +222,29 @@ richMenus.post('/api/rich-menus/setup-naturism', async (c) => {
     const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
     const liffUrl = c.env.LIFF_URL || 'https://liff.line.me/2009713578-NbdHyFZf';
 
+    // v4 ガード (WI-1 採点R1 修正): サブスクボタンは gate ON でのみ機能するため、
+    // gate OFF での展開 (= 全ユーザーに死にボタンを晒す) をコードレベルで拒否する。
+    if (c.env.SUBSCRIPTION_MENU_ENABLED !== 'true') {
+      return c.json({
+        success: false,
+        error: 'リッチメニュー v4 はサブスクボタンを含みます。SUBSCRIPTION_MENU_ENABLED=true を投入してから実行してください。',
+      }, 400);
+    }
+
+    // 破壊的操作 (デフォルト解除) の前に画像の存在を検証する (WI-1 採点R1 修正:
+    // 旧実装は解除後に画像 fetch が失敗すると全ユーザーのメニューが消えたままになった)。
+    if (!c.env.IMAGES) {
+      throw new Error('IMAGES (R2) binding が未設定です');
+    }
+    const imgObj = await c.env.IMAGES.get(RICH_MENU_IMAGE_KEY);
+    if (!imgObj) {
+      return c.json({
+        success: false,
+        error: `リッチメニュー画像が R2 にありません: ${RICH_MENU_IMAGE_KEY}。先に PUT /api/rich-menus/image-r2 で配置してください。`,
+      }, 400);
+    }
+    const imgData = await imgObj.arrayBuffer();
+
     // Step 0: 既存デフォルトリッチメニューを解除（新規設定のため）
     try {
       await lineClient.deleteDefaultRichMenu();
@@ -240,7 +263,7 @@ richMenus.post('/api/rich-menus/setup-naturism', async (c) => {
     const richMenuBody = {
       size: { width: 2500, height: 1686 },
       selected: true,
-      name: 'naturism メインメニュー v3',
+      name: 'naturism メインメニュー v4',
       chatBarText: 'メニュー',
       areas: [
         // 上段左: ホームページ
@@ -273,10 +296,18 @@ richMenus.post('/api/rich-menus/setup-naturism', async (c) => {
           bounds: { x: colW, y: rowH, width: colW, height: rowH },
           action: { type: 'uri' as const, label: '購入履歴・再購入', uri: `${liffUrl}#reorder` },
         },
-        // 下段右上: SNS
+        // 下段右上: サブスク (WI-1 2026-07-14: 旧 SNS 枠を差し替え。間引き対象はデフォルト提案=SNS、
+        // Katsu の最終確認前に setup-naturism を実行しないこと)
+        // postback + displayText: タップするとトークに「サブスクリプション」と表示され、
+        // webhook.ts の action=subscription_menu → 契約カード reply (gate: SUBSCRIPTION_MENU_ENABLED)
         {
           bounds: { x: colW * 2, y: rowH, width: colWR, height: halfH },
-          action: { type: 'uri' as const, label: 'SNS', uri: 'https://www.instagram.com/naturism_supplement/' },
+          action: {
+            type: 'postback' as const,
+            label: 'サブスク',
+            data: 'action=subscription_menu',
+            displayText: 'サブスクリプション',
+          },
         },
         // 下段右下: Q&A お問い合わせ
         {
@@ -290,26 +321,27 @@ richMenus.post('/api/rich-menus/setup-naturism', async (c) => {
     const createResult = await lineClient.createRichMenu(richMenuBody);
     const richMenuId = createResult.richMenuId;
 
-    // Step 2: 画像アップロード（R2 に保存した本番デザイン画像 2500×1686 JPEG）
-    if (!c.env.IMAGES) {
-      throw new Error('IMAGES (R2) binding が未設定です');
+    // Step 2: 画像アップロード（事前検証済みの R2 画像 2500×1686 JPEG）。
+    // 失敗時は孤児メニューを残さないよう best-effort で削除してから throw する。
+    try {
+      await lineClient.uploadRichMenuImage(richMenuId, imgData, 'image/jpeg');
+      // Step 3: デフォルトに設定
+      await lineClient.setDefaultRichMenu(richMenuId);
+    } catch (uploadErr) {
+      try {
+        await lineClient.deleteRichMenu(richMenuId);
+      } catch {
+        // クリーンアップ失敗は握りつぶす (本エラーの方を報告する)
+      }
+      throw uploadErr;
     }
-    const imgObj = await c.env.IMAGES.get(RICH_MENU_IMAGE_KEY);
-    if (!imgObj) {
-      throw new Error(`リッチメニュー画像が R2 に見つかりません: ${RICH_MENU_IMAGE_KEY}`);
-    }
-    const imgData = await imgObj.arrayBuffer();
-    await lineClient.uploadRichMenuImage(richMenuId, imgData, 'image/jpeg');
-
-    // Step 3: デフォルトに設定
-    await lineClient.setDefaultRichMenu(richMenuId);
 
     return c.json({
       success: true,
       data: {
         richMenuId,
         areas: richMenuBody.areas.map((a) => ({ label: a.action.label, type: a.action.type })),
-        message: 'リッチメニュー v3（8ボタン）を作成・画像アップロード・デフォルト設定まで完了。',
+        message: 'リッチメニュー v4（8ボタン、サブスク postback 入り）を作成・画像アップロード・デフォルト設定まで完了。',
       },
     }, 201);
   } catch (err) {
@@ -326,7 +358,39 @@ richMenus.post('/api/rich-menus/setup-naturism', async (c) => {
  * 差し替え時は `wrangler r2 object put naturism-line-crm-images/<新key> --file <img> --remote`
  * で別 key にアップロードしこの定数を更新（R2 GET は immutable cache のため同名上書き非推奨）。
  */
-const RICH_MENU_IMAGE_KEY = 'richmenu-v3.jpg';
+const RICH_MENU_IMAGE_KEY = 'richmenu-v4.jpg';
+
+// PUT /api/rich-menus/image-r2 — リッチメニュー画像を R2 にだけ保存する (LINE には触れない)。
+// setup-naturism 実行前に v4 画像を配置する用途。key は richmenu- prefix のみ許可。
+// (既存の /api/rich-menus/:id/image は LINE への upload + menu clone まで行うため本番反映用)
+richMenus.put('/api/rich-menus/image-r2', async (c) => {
+  try {
+    const key = c.req.query('key') ?? RICH_MENU_IMAGE_KEY;
+    if (!/^richmenu-[\w.-]+\.(jpg|jpeg|png)$/.test(key)) {
+      return c.json({ success: false, error: 'key は richmenu-*.jpg|png のみ許可されます' }, 400);
+    }
+    if (!c.env.IMAGES) {
+      return c.json({ success: false, error: 'IMAGES (R2) binding が未設定です' }, 500);
+    }
+    // LINE 仕様: リッチメニュー画像は 1MB 以下。読み込み前に Content-Length で早期拒否し、
+    // 読み込み後にも実サイズを検証する (採点R1 修正: 上限を LINE 制限と揃える)。
+    const declaredLength = Number(c.req.header('content-length') ?? '0');
+    if (declaredLength > 1024 * 1024) {
+      return c.json({ success: false, error: `画像が LINE の上限 1MB を超えています: ${declaredLength} bytes` }, 413);
+    }
+    const body = await c.req.arrayBuffer();
+    if (body.byteLength < 1024 || body.byteLength > 1024 * 1024) {
+      return c.json({ success: false, error: `画像サイズが不正です (1KB〜1MB): ${body.byteLength} bytes` }, 400);
+    }
+    const contentType = key.endsWith('.png') ? 'image/png' : 'image/jpeg';
+    await c.env.IMAGES.put(key, body, { httpMetadata: { contentType } });
+    return c.json({ success: true, data: { key, bytes: body.byteLength } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('PUT /api/rich-menus/image-r2 error:', message);
+    return c.json({ success: false, error: 'R2 への画像保存に失敗しました' }, 500);
+  }
+});
 
 // GET /api/rich-menus/image-guide — リッチメニュー画像テンプレートHTML v3
 // 8ボタン・シルバーアクセント付き豪華デザイン

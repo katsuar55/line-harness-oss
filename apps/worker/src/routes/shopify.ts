@@ -18,9 +18,30 @@ import { getShopifyAccessToken } from '../services/shopify-token.js';
 // (vi.mock + dynamic import 干渉トラップ回避、 CLAUDE.md テストルール準拠)。
 import { processOrderCouponRedemption } from '../services/coupon-redemption.js';
 import { processReferralRewardOnPurchase } from '../services/referral-reward.js';
+import {
+  deriveContractFromOrder,
+  applyCustomerTagsToContracts,
+  rebuildContractsFromD1,
+} from '../services/subscription-contracts.js';
 import { LineClient } from '@line-crm/line-sdk';
 
 const shopify = new Hono<Env>();
+
+// サブスク契約 read-model の一括再構築 (WI-1 バックフィル)。
+// 既存 D1 (shopify_orders / shopify_customers) のタグから導出するだけで Shopify API は叩かない。
+// 冪等 (何度実行しても同じ結果に収束)。認可は /api 共通 Bearer。
+// **gate 非連動** (採点R1 修正): 有効化手順は migration 069 → rebuild → gate ON の順であり、
+// gate ON 前に read-model を温めておく必要がある (gate ON 直後に空カードを出さないため)。
+// read-model への書込は gate OFF 中の本番挙動に一切影響しない (読む経路が全て gate 内)。
+shopify.post('/api/integrations/shopify/subscription-contracts/rebuild', async (c) => {
+  try {
+    const result = await rebuildContractsFromD1(c.env.DB);
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    console.error('POST subscription-contracts/rebuild error:', err);
+    return c.json({ success: false, error: 'rebuild failed' }, 500);
+  }
+});
 
 // ========== ヘルパー: Webhookログ ==========
 
@@ -225,6 +246,22 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
 
       await logWebhook(db, topic, shopifyOrderId, 'processed', `saved as ${order.id}`);
 
+      // サブスク契約 read-model 導出 (WI-1, docs/SUBSCRIPTION_ULTRAPLAN_2026-07-14.md)。
+      // gate OFF なら完全 no-op (= migration 069 未適用でも安全)。失敗しても注文処理は継続。
+      if (c.env.SUBSCRIPTION_MENU_ENABLED === 'true') {
+        try {
+          await deriveContractFromOrder(db, {
+            tags: (body.tags as string) ?? null,
+            lineItemsJson: lineItemsRaw ? JSON.stringify(lineItemsRaw) : null,
+            shopifyOrderId,
+            shopifyCustomerId: shopifyCustomerId ?? null,
+            orderCreatedAt: (body.created_at as string) ?? null,
+          });
+        } catch (err) {
+          console.error('subscription contract derive (order) failed:', err);
+        }
+      }
+
       // 非同期処理: フレンドマッチング・タグ付け・イベント発火
       const orderAsyncWork = (async () => {
           try {
@@ -369,6 +406,16 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
       });
 
       await logWebhook(db, topic, shopifyCustomerId, 'processed', `saved as ${customer.id}`);
+
+      // サブスク契約状態の反映 (WI-1): 顧客タグ subscription-{ID}-cancel/-pause/-skip-count/-plan。
+      // 解約・一時停止・スキップの検知経路。gate OFF なら完全 no-op。
+      if (c.env.SUBSCRIPTION_MENU_ENABLED === 'true') {
+        try {
+          await applyCustomerTagsToContracts(db, shopifyCustomerId, (body.tags as string) ?? null);
+        } catch (err) {
+          console.error('subscription contract derive (customer) failed:', err);
+        }
+      }
 
       // 非同期処理: フレンドマッチング (Round 4 PR-0: 共通ヘルパー化)
       const customerAsyncWork = (async () => {
