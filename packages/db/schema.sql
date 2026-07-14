@@ -703,8 +703,17 @@ CREATE TABLE IF NOT EXISTS ref_tracking (
   friend_id       TEXT REFERENCES friends (id) ON DELETE CASCADE,
   entry_route_id  TEXT REFERENCES entry_routes (id) ON DELETE SET NULL,
   source_url      TEXT,
-  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
-);
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+
+  fbclid               TEXT,
+  gclid                TEXT,
+  twclid               TEXT,
+  ttclid               TEXT,
+  utm_source           TEXT,
+  utm_medium           TEXT,
+  utm_campaign         TEXT,
+  user_agent           TEXT,
+  ip_address           TEXT);
 
 -- from 006_tracked_links.sql
 CREATE TABLE IF NOT EXISTS tracked_links (
@@ -832,8 +841,9 @@ CREATE TABLE IF NOT EXISTS restock_requests (
   cancelled_at         TEXT,
   metadata             TEXT DEFAULT '{}',
   created_at           TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at           TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+  updated_at           TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+
+  inventory_item_id    TEXT);
 
 -- from 015_shopify_phase2a.sql
 CREATE TABLE IF NOT EXISTS shopify_fulfillments (
@@ -1077,8 +1087,9 @@ CREATE TABLE IF NOT EXISTS intake_logs (
   streak_count INTEGER NOT NULL DEFAULT 1,
   note TEXT,
   logged_at TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours'))
-);
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours')),
+
+  meal_type            TEXT);
 
 -- from 019_liff_portal.sql
 CREATE TABLE IF NOT EXISTS intake_reminders (
@@ -1139,8 +1150,11 @@ CREATE TABLE IF NOT EXISTS health_logs (
   meals TEXT DEFAULT '{}',
   sleep_hours REAL,
   note TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours'))
-);
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+09:00', 'now', '+9 hours')),
+
+  bowel_form           TEXT CHECK(bowel_form IN ('hard', 'normal', 'soft')),
+  bowel_count          INTEGER,
+  mood                 TEXT CHECK(mood IN ('great', 'good', 'normal', 'bad', 'terrible')));
 
 -- from 019_liff_portal.sql
 CREATE TABLE IF NOT EXISTS ambassadors (
@@ -1352,8 +1366,11 @@ CREATE TABLE IF NOT EXISTS subscription_reminders (
   is_active INTEGER DEFAULT 1,
   source_order_id TEXT,                       -- 元の注文ID
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
+  updated_at TEXT NOT NULL,
+
+  shopify_product_id   TEXT,
+  interval_source      TEXT NOT NULL DEFAULT 'manual',
+  sample_size          INTEGER NOT NULL DEFAULT 0);
 
 -- from 029_notification_prefs_and_subscriptions.sql
 CREATE TABLE IF NOT EXISTS faq_items (
@@ -1601,8 +1618,9 @@ CREATE TABLE IF NOT EXISTS email_templates (
   preheader     TEXT,
   is_active     INTEGER NOT NULL DEFAULT 1,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+
+  brand_id             TEXT REFERENCES brand_config(id) ON DELETE SET NULL);
 
 -- from 042_email_channel.sql
 CREATE TABLE IF NOT EXISTS email_messages_log (
@@ -1841,8 +1859,9 @@ CREATE TABLE IF NOT EXISTS member_purchase_events (
   source            TEXT NOT NULL DEFAULT 'webhook', -- 'webhook' | 'backfill' | 'manual'
   metadata          TEXT,                            -- JSON: raw fields for debug
   created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+
+  occurred_at          TEXT);
 
 -- from 061_loyalty_rank_snapshots.sql
 CREATE TABLE IF NOT EXISTS loyalty_rank_snapshots (
@@ -1937,8 +1956,10 @@ CREATE TABLE IF NOT EXISTS subscription_contracts (
   estimate_source TEXT NOT NULL DEFAULT 'derived', -- derived | flow (WI-2 で Shopify Flow 実測に昇格)
   reminded_for_estimate TEXT,                 -- WI-2 リマインド冪等キー (この推定日に送信済み)
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+
+  recovery_pending_at  TEXT,
+  recovery_notified_at TEXT);
 
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);

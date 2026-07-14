@@ -21,6 +21,11 @@ import {
   resolveRebuildAnchor,
 } from '../services/subscription-contracts.js';
 import { getContractForFriend } from '../services/subscription-concierge.js';
+import {
+  upsertSubscriptionContract,
+  listContractsDueForReminder,
+  listContractsPendingRecovery,
+} from '@line-crm/db';
 
 // ===== fake D1 =====
 
@@ -40,6 +45,8 @@ interface ContractRow {
   next_billing_estimate: string | null;
   estimate_source: string;
   reminded_for_estimate: string | null;
+  recovery_pending_at: string | null;
+  recovery_notified_at: string | null;
   created_at: string;
   updated_at: string;
   [key: string]: unknown;
@@ -73,6 +80,50 @@ function createFakeDb(seed?: {
                 (r) => r.skip_count_at_last_order !== r.skip_count,
               ),
             };
+          }
+          if (sql.includes('next_billing_estimate >= ?')) {
+            // WI-2 リマインド対象 list (採点R4 MEDIUM): 範囲述語は claim SQL に重複がなく
+            // 無防備だったため、SQL 文字列の実在検証 + 実評価の両方で退行を fail させる
+            for (const p of [
+              'next_billing_estimate >= ?',
+              'next_billing_estimate <= ?',
+              'cancelled_at IS NULL',
+              'paused_at IS NULL',
+              '(reminded_for_estimate IS NULL OR reminded_for_estimate != next_billing_estimate)',
+            ]) {
+              if (!sql.includes(p)) throw new Error(`list SQL から述語が消えている: ${p}`);
+            }
+            const [from, to, limit] = binds as [string, string, number];
+            const rows = [...contracts.values()].filter(
+              (r) =>
+                r.next_billing_estimate !== null &&
+                r.next_billing_estimate >= from &&
+                r.next_billing_estimate <= to &&
+                r.cancelled_at === null &&
+                r.paused_at === null &&
+                (r.reminded_for_estimate === null ||
+                  r.reminded_for_estimate !== r.next_billing_estimate),
+            );
+            return { results: rows.slice(0, limit) };
+          }
+          if (sql.includes('recovery_pending_at IS NOT NULL')) {
+            for (const p of [
+              'recovery_pending_at IS NOT NULL',
+              'recovery_notified_at IS NULL',
+              'paused_at IS NOT NULL',
+              'cancelled_at IS NULL',
+            ]) {
+              if (!sql.includes(p)) throw new Error(`list SQL から述語が消えている: ${p}`);
+            }
+            const limit = binds[0] as number;
+            const rows = [...contracts.values()].filter(
+              (r) =>
+                r.recovery_pending_at !== null &&
+                r.recovery_notified_at === null &&
+                r.paused_at !== null &&
+                r.cancelled_at === null,
+            );
+            return { results: rows.slice(0, limit) };
           }
           if (sql.includes('FROM subscription_contracts')) {
             const cid = binds[0] as string;
@@ -139,8 +190,10 @@ function createFakeDb(seed?: {
                 next_billing_estimate: binds[12] as string | null,
                 estimate_source: (binds[13] as string) ?? 'derived',
                 reminded_for_estimate: binds[14] as string | null,
-                created_at: binds[15] as string,
-                updated_at: binds[16] as string,
+                recovery_pending_at: binds[15] as string | null,
+                recovery_notified_at: binds[16] as string | null,
+                created_at: binds[17] as string,
+                updated_at: binds[18] as string,
               };
               contracts.set(contractId, row);
             } else {
@@ -148,7 +201,7 @@ function createFakeDb(seed?: {
               const setPart = sql.split('DO UPDATE SET')[1];
               if (!setPart) throw new Error('fake: DO UPDATE SET missing');
               const cols = setPart.split(',').map((s) => s.trim().split(' ')[0]);
-              const setBinds = binds.slice(17);
+              const setBinds = binds.slice(19);
               cols.forEach((col, i) => {
                 (existing as Record<string, unknown>)[col] = setBinds[i];
               });
@@ -444,12 +497,12 @@ describe('applyCustomerTagsToContracts', () => {
 
   it('注文が先に無くても顧客タグだけで契約行を作れる (周期は plan タグから)', async () => {
     const db = createFakeDb();
-    const applied = await applyCustomerTagsToContracts(
+    const result = await applyCustomerTagsToContracts(
       db,
       'cust-9',
       `subscription-500-plan:${PLAN_30}`,
     );
-    expect(applied).toBe(1);
+    expect(result.applied).toBe(1);
     const row = db.contracts.get('500')!;
     expect(row.shopify_customer_id).toBe('cust-9');
     expect(row.interval_days).toBe(30);
@@ -471,6 +524,114 @@ describe('applyCustomerTagsToContracts', () => {
     const row = db.contracts.get('100')!;
     expect(row.plan_name).toBe(PLAN_30);
     expect(row.interval_days).toBe(30);
+  });
+
+  it('WI-2: pause 遷移は初回のみ transitions に載り、pending マーカーが pause 書込と原子的に立つ', async () => {
+    const db = createFakeDb();
+    await deriveContractFromOrder(db, {
+      tags: 'subscription-id:100, subscription-count:1',
+      lineItemsJson: ITEMS_30,
+      shopifyOrderId: 'ord-1',
+      shopifyCustomerId: 'cust-1',
+      orderCreatedAt: '2026-07-05T10:00:00+09:00',
+    });
+    const first = await applyCustomerTagsToContracts(
+      db,
+      'cust-1',
+      `subscription-100-plan:${PLAN_30}, subscription-100-pause:2026-07-12`,
+    );
+    expect(first.transitions).toEqual([
+      { contractId: '100', becamePaused: true, becameCancelled: false, becameResumed: false },
+    ]);
+    expect(db.contracts.get('100')!.recovery_pending_at).not.toBeNull();
+    // 同一タグの再受信 (customers/update は高頻度) → 遷移なし
+    const again = await applyCustomerTagsToContracts(
+      db,
+      'cust-1',
+      `subscription-100-plan:${PLAN_30}, subscription-100-pause:2026-07-12`,
+    );
+    expect(again.transitions).toEqual([]);
+  });
+
+  it('🚨採点R2: resume 遷移で両マーカーがリセットされ、2回目の決済失敗も通知可能 (永久ラッチ防止)', async () => {
+    const db = createFakeDb();
+    await deriveContractFromOrder(db, {
+      tags: 'subscription-id:100, subscription-count:1',
+      lineItemsJson: ITEMS_30,
+      shopifyOrderId: 'ord-1',
+      shopifyCustomerId: 'cust-1',
+      orderCreatedAt: '2026-07-05T10:00:00+09:00',
+    });
+    // 1回目の失敗 → pause → 通知済み相当 (notified を疑似セット)
+    await applyCustomerTagsToContracts(db, 'cust-1', `subscription-100-plan:${PLAN_30}, subscription-100-pause:2026-07-12`);
+    const row1 = db.contracts.get('100')!;
+    row1.recovery_notified_at = '2026-07-13 10:00:00';
+    // 顧客が支払方法を更新して再開 → 両マーカーがリセットされる
+    const resumed = await applyCustomerTagsToContracts(db, 'cust-1', `subscription-100-plan:${PLAN_30}`);
+    expect(resumed.transitions[0]?.becameResumed).toBe(true);
+    expect(db.contracts.get('100')!.recovery_pending_at).toBeNull();
+    expect(db.contracts.get('100')!.recovery_notified_at).toBeNull();
+    // 数ヶ月後の 2 回目の失敗 → pending が再度立つ (契約生涯1回のラッチにならない)
+    await applyCustomerTagsToContracts(db, 'cust-1', `subscription-100-plan:${PLAN_30}, subscription-100-pause:2026-12-01`);
+    expect(db.contracts.get('100')!.recovery_pending_at).not.toBeNull();
+    expect(db.contracts.get('100')!.recovery_notified_at).toBeNull();
+  });
+
+  it('🚨採点R3: suppressRecoveryMarkers で pause 遷移してもマーカーを立てない (rebuild 用)', async () => {
+    const db = createFakeDb();
+    await deriveContractFromOrder(db, {
+      tags: 'subscription-id:100, subscription-count:1',
+      lineItemsJson: ITEMS_30,
+      shopifyOrderId: 'ord-1',
+      shopifyCustomerId: 'cust-1',
+      orderCreatedAt: '2026-07-05T10:00:00+09:00',
+    });
+    const r = await applyCustomerTagsToContracts(
+      db,
+      'cust-1',
+      `subscription-100-plan:${PLAN_30}, subscription-100-pause:2026-07-12`,
+      { suppressRecoveryMarkers: true },
+    );
+    // 状態 (paused_at) は反映されるが、リカバリ通知の検知マーカーは立たない
+    expect(r.transitions[0]?.becamePaused).toBe(true);
+    expect(db.contracts.get('100')!.paused_at).toBe('2026-07-12');
+    expect(db.contracts.get('100')!.recovery_pending_at ?? null).toBeNull();
+  });
+
+  it('🚨採点R2: 初見行 (read-model 未登録) の pause タグは遷移扱いしない (過去の停止に通知しない)', async () => {
+    const db = createFakeDb();
+    const r = await applyCustomerTagsToContracts(
+      db,
+      'cust-new',
+      `subscription-900-plan:${PLAN_30}, subscription-900-pause:2026-01-01`,
+    );
+    expect(r.applied).toBe(1);
+    expect(r.transitions).toEqual([]);
+    expect(db.contracts.get('900')!.recovery_pending_at ?? null).toBeNull();
+  });
+
+  it('WI-2: 新しい実注文 (決済成功) で両マーカーが掃除される', async () => {
+    const db = createFakeDb();
+    await deriveContractFromOrder(db, {
+      tags: 'subscription-id:100, subscription-count:1',
+      lineItemsJson: ITEMS_30,
+      shopifyOrderId: 'ord-1',
+      shopifyCustomerId: 'cust-1',
+      orderCreatedAt: '2026-07-05T10:00:00+09:00',
+    });
+    await applyCustomerTagsToContracts(db, 'cust-1', `subscription-100-plan:${PLAN_30}, subscription-100-pause:2026-07-12`);
+    // 再開タグ + 新注文 (次サイクル決済成功)
+    await applyCustomerTagsToContracts(db, 'cust-1', `subscription-100-plan:${PLAN_30}`);
+    db.contracts.get('100')!.recovery_pending_at = '2026-07-12 09:00:00'; // 残骸を疑似再現
+    await deriveContractFromOrder(db, {
+      tags: 'subscription-id:100, subscription-count:2',
+      lineItemsJson: ITEMS_30,
+      shopifyOrderId: 'ord-2',
+      shopifyCustomerId: 'cust-1',
+      orderCreatedAt: '2026-08-04T10:00:00+09:00',
+    });
+    expect(db.contracts.get('100')!.recovery_pending_at).toBeNull();
+    expect(db.contracts.get('100')!.recovery_notified_at).toBeNull();
   });
 });
 
@@ -541,6 +702,34 @@ describe('rebuildContractsFromD1', () => {
     expect(db.contracts.get('200')!.cancelled_at).toBe('2026-07-01');
   });
 
+  it('🚨採点R3: rebuild 経由では recovery_pending_at が立たない (歴史的 pause への一斉通知防止)', async () => {
+    // pass1 が契約行を paused_at=null で先に作る → pass2 の pause タグが「遷移」に見える
+    // 迂回路。ここでマーカーが立つと gate ON 直後に stale な「一時停止しました」が一斉送信される。
+    const db = createFakeDb({
+      orders: [
+        {
+          shopify_order_id: 'o1',
+          shopify_customer_id: 'c1',
+          tags: 'subscription-id:100, subscription-count:1',
+          line_items: ITEMS_30,
+          created_at: '2026-07-01 10:00:00',
+          metadata: WEBHOOK_META,
+        },
+      ],
+      customers: [
+        {
+          shopify_customer_id: 'c1',
+          tags: `subscription-100-plan:${PLAN_30}, subscription-100-pause:2026-05-01`,
+        },
+      ],
+    });
+    await rebuildContractsFromD1(db);
+    const row = db.contracts.get('100')!;
+    expect(row.paused_at).toBe('2026-05-01'); // 状態は正しく反映
+    expect(row.recovery_pending_at ?? null).toBeNull(); // マーカーは立たない
+    expect(row.recovery_notified_at ?? null).toBeNull();
+  });
+
   it('🚨採点R1: rebuild は冪等 (2回実行しても同じ結果)', async () => {
     const db = createFakeDb(seed());
     await rebuildContractsFromD1(db);
@@ -553,6 +742,54 @@ describe('rebuildContractsFromD1', () => {
     );
     expect(snapshot2).toBe(snapshot1);
     expect(result2.baselinesNormalized).toBe(0);
+  });
+});
+
+describe('listContractsDueForReminder / listContractsPendingRecovery — 実 SQL を exercise (採点R4)', () => {
+  it('リマインド対象: 日付範囲 [from, to] 両端含む + 安全述語 (cancelled/paused/reminded) を実評価', async () => {
+    const db = createFakeDb();
+    const seed = (id: string, patch: Record<string, unknown>) =>
+      upsertSubscriptionContract(db, { contractId: id, shopifyCustomerId: 'c1', ...patch });
+    await seed('in-from', { nextBillingEstimate: '2026-07-17' }); // 下限ちょうど → 対象
+    await seed('in-to', { nextBillingEstimate: '2026-07-18' }); // 上限ちょうど → 対象
+    await seed('below', { nextBillingEstimate: '2026-07-16' }); // 範囲外 (下)
+    await seed('above', { nextBillingEstimate: '2026-07-19' }); // 範囲外 (上) — 上限述語喪失なら混入
+    await seed('cancelled', { nextBillingEstimate: '2026-07-18', cancelledAt: '2026-07-01' });
+    await seed('paused', { nextBillingEstimate: '2026-07-18', pausedAt: '2026-07-01' });
+    await seed('reminded', {
+      nextBillingEstimate: '2026-07-18',
+      remindedForEstimate: '2026-07-18', // 同一推定日は送信済み
+    });
+    await seed('re-remind', {
+      nextBillingEstimate: '2026-07-18',
+      remindedForEstimate: '2026-07-10', // 推定日が変わっていれば再対象
+    });
+    await seed('no-estimate', { nextBillingEstimate: null });
+
+    const due = await listContractsDueForReminder(db, '2026-07-17', '2026-07-18');
+    expect(due.map((r) => r.contract_id).sort()).toEqual(['in-from', 'in-to', 're-remind']);
+  });
+
+  it('リカバリ対象: pending 有り・未送信・一時停止中・未解約のみ', async () => {
+    const db = createFakeDb();
+    const seed = (id: string, patch: Record<string, unknown>) =>
+      upsertSubscriptionContract(db, { contractId: id, shopifyCustomerId: 'c1', ...patch });
+    await seed('target', { pausedAt: '2026-07-14', recoveryPendingAt: '2026-07-14 03:00:00' });
+    await seed('no-pending', { pausedAt: '2026-07-14' });
+    await seed('notified', {
+      pausedAt: '2026-07-14',
+      recoveryPendingAt: '2026-07-14 03:00:00',
+      recoveryNotifiedAt: '2026-07-14 12:00:00',
+    });
+    await seed('resumed', { recoveryPendingAt: '2026-07-14 03:00:00' }); // paused_at null
+    await seed('cancelled', {
+      pausedAt: '2026-07-14',
+      recoveryPendingAt: '2026-07-14 03:00:00',
+      cancelledAt: '2026-07-14',
+    });
+
+    const pending = await listContractsPendingRecovery(db);
+    expect(pending.map((r) => r.contract_id)).toEqual(['target']);
   });
 });
 
@@ -595,5 +832,90 @@ describe('resolveRebuildAnchor (採点R2: metadata 化け対策)', () => {
     expect(resolveRebuildAnchor('{"source":"manual_sync"}', '2026-07-31 10:00:00')).toBeNull();
     expect(resolveRebuildAnchor('{broken', '2026-07-31 10:00:00')).toBeNull();
     expect(resolveRebuildAnchor(null, '2026-07-31 10:00:00')).toBeNull();
+  });
+});
+
+describe('toJstDate — 和文/暦バリデーション (WI-2 採点R1)', () => {
+  it('Flow 既定の和文形式 YYYY年M月D日 [hh:mm頃] を受理する', () => {
+    expect(toJstDate('2026年8月4日 10:00頃')).toBe('2026-08-04');
+    expect(toJstDate('2026年12月31日')).toBe('2026-12-31');
+  });
+
+  it('暦として不正な日付は素通しせず null (99月99日 表示の防止)', () => {
+    expect(toJstDate('2026-99-99')).toBeNull();
+    expect(toJstDate('2026-02-30 10:00:00')).toBeNull();
+    expect(toJstDate('2026年13月1日')).toBeNull();
+  });
+});
+
+describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
+  const seedOrder = async (db: Parameters<typeof deriveContractFromOrder>[0]) =>
+    deriveContractFromOrder(db, {
+      tags: 'subscription-id:100, subscription-count:1',
+      lineItemsJson: ITEMS_30,
+      shopifyOrderId: 'ord-1',
+      shopifyCustomerId: 'cust-1',
+      orderCreatedAt: '2026-07-05T10:00:00+09:00',
+    });
+  const promoteToFlow = async (db: Parameters<typeof deriveContractFromOrder>[0]) =>
+    upsertSubscriptionContract(db, {
+      contractId: '100',
+      nextBillingEstimate: '2026-08-10',
+      estimateSource: 'flow',
+    });
+
+  it('ルール1: Flow 実測値は導出 (顧客タグ由来の再計算) で上書きされない', async () => {
+    const db = createFakeDb();
+    await seedOrder(db);
+    await promoteToFlow(db);
+    // skip-count 変化で refreshEstimate が走っても flow 値は不変
+    await applyCustomerTagsToContracts(db, 'cust-1', 'subscription-100-skip-count:1');
+    const row = db.contracts.get('100')!;
+    expect(row.next_billing_estimate).toBe('2026-08-10');
+    expect(row.estimate_source).toBe('flow');
+  });
+
+  it('ルール2: pause/cancel は flow でも null を強制 (停止中にリマインドしない)', async () => {
+    const db = createFakeDb();
+    await seedOrder(db);
+    await promoteToFlow(db);
+    await applyCustomerTagsToContracts(
+      db,
+      'cust-1',
+      `subscription-100-plan:${PLAN_30}, subscription-100-pause:2026-07-12`,
+    );
+    expect(db.contracts.get('100')!.next_billing_estimate).toBeNull();
+  });
+
+  it('ルール2b: resume 後は null 固着せず derived で推定が復活する', async () => {
+    const db = createFakeDb();
+    await seedOrder(db);
+    await promoteToFlow(db);
+    await applyCustomerTagsToContracts(
+      db,
+      'cust-1',
+      `subscription-100-plan:${PLAN_30}, subscription-100-pause:2026-07-12`,
+    );
+    // 再開 (pause タグ消滅)
+    await applyCustomerTagsToContracts(db, 'cust-1', `subscription-100-plan:${PLAN_30}`);
+    const row = db.contracts.get('100')!;
+    expect(row.next_billing_estimate).toBe('2026-08-04'); // 7/5 + 30 (derived 再計算)
+    expect(row.estimate_source).toBe('derived');
+  });
+
+  it('ルール3: 次の実注文 (決済成功) で derived に復帰し通常の推定が再開する', async () => {
+    const db = createFakeDb();
+    await seedOrder(db);
+    await promoteToFlow(db);
+    await deriveContractFromOrder(db, {
+      tags: 'subscription-id:100, subscription-count:2',
+      lineItemsJson: ITEMS_30,
+      shopifyOrderId: 'ord-2',
+      shopifyCustomerId: 'cust-1',
+      orderCreatedAt: '2026-08-10T10:00:00+09:00',
+    });
+    const row = db.contracts.get('100')!;
+    expect(row.estimate_source).toBe('derived');
+    expect(row.next_billing_estimate).toBe('2026-09-09'); // 8/10 + 30
   });
 });

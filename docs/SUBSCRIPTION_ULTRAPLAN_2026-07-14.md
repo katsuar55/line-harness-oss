@@ -98,3 +98,12 @@ LINE トーク内で定期便のすべて (確認・スキップ・日付変更�
 ## 8. 進捗ログ
 
 - 2026-07-14: Ultraplan 策定。WI-1 着手。
+- 2026-07-14: WI-1 完了 — PR #195 merge (gated off、本番挙動変化ゼロ)。採点4ラウンドで
+  全8→6次元 90+ (最終 98/96/90/92/98/95)。read-model (migration 069)・コンシェルジュカード・
+  intent Layer-1.5・rich menu v4 定義・teiki-flow 受信口・rebuild endpoint。
+- 2026-07-14: WI-2 実装 — 決済リマインド (4日前+catch-up 3日前) + 決済失敗リカバリ cron
+  (migration 070)。採点 R1 (66-75 全fail) → R2 (68-87 全fail) → R3 (96/90/89/86/86/88、
+  timing・estimation-safety pass) → R4 修正: rebuild の初見 pause ガード迂回 (歴史的一時停止への
+  一斉 stale 通知) を suppressRecoveryMarkers で遮断、recovery claim に pending 述語追加、
+  409=配信済み扱い、cron-monitor DEFAULT_RULES 登録 (gate OFF でも heartbeat)、
+  teiki-flow 未設定 503→401、INSERT/UPDATE 列同期。

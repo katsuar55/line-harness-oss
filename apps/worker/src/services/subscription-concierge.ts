@@ -153,6 +153,52 @@ export function buildConciergeErrorMessages(): ReadonlyArray<Message> {
   ];
 }
 
+/**
+ * 決済4日前リマインド push (WI-2)。「変更・スキップの締切は明日」を、締切前に届く
+ * 唯一の事前通知として送る (既存の事前案内メールはお届け3日前 ≈ 決済後で間に合わない)。
+ * リード文 + 操作ボタンつき契約カードの 2 メッセージ。
+ */
+export function buildBillingReminderMessages(
+  contract: SubscriptionContractRow,
+  daysUntilBilling?: number,
+): ReadonlyArray<Message> {
+  const estimate = formatJpDate(contract.next_billing_estimate);
+  // 締切 = 決済3日前。4日前送信なら「明日まで」、catch-up の3日前送信なら「本日中」。
+  // 推定値なので断定を避け「お手続きの目安」として案内する (採点R1: 推定ズレ時の誤誘導防止)。
+  const deadlinePhrase =
+    daysUntilBilling !== undefined && daysUntilBilling <= 3
+      ? '本日中のお手続きをおすすめします'
+      : '明日までのお手続きをおすすめします';
+  const lead = estimate
+    ? `📦 まもなく定期便の次回お届け準備が始まります (${estimate}ごろ決済予定)。\n変更・スキップ・解約をご希望の場合は、${deadlinePhrase}🌿\n※正確な締切はマイページでご確認いただけます`
+    : `📦 まもなく定期便の次回お届け準備が始まります。\n変更・スキップ・解約をご希望の場合は、お早めにお手続きください🌿`;
+  return [
+    { type: 'text', text: lead },
+    {
+      type: 'flex',
+      altText: '📦 定期便 次回お届けのご案内',
+      contents: buildContractBubble(contract) as unknown as FlexContainer,
+    },
+  ];
+}
+
+/**
+ * 一時停止リカバリ push (WI-2)。Huckleberry は決済失敗時に自動一時停止 (再決済なし) するため、
+ * 気づかず実質解約になるのを LINE 通知で防ぐ。顧客タグ -pause の出現 (遷移) で 1 回だけ送る。
+ * ⚠️ pause タグは原因 (決済失敗 vs 手動一時停止) を運ばないため、文言は**原因を断定しない**
+ * (採点R1: 手動停止の顧客に「お支払いが確認できなかった」と虚偽通知しない)。
+ */
+export function buildPaymentRecoveryMessages(): ReadonlyArray<Message> {
+  return [
+    {
+      type: 'text',
+      text:
+        '📦 定期便のお届けを一時停止しました。\nお心当たりがない場合は、お支払い方法に問題があった可能性があります。マイページからご確認・更新をお願いします🌿\n再開もマイページからいつでも可能です。\n' +
+        MYPAGE_URL,
+    },
+  ];
+}
+
 // ===== カードビルダー =====
 
 function buildContractBubble(contract: SubscriptionContractRow): object {

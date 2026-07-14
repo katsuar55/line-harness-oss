@@ -35,6 +35,7 @@ export class LineClient {
     path: string,
     body: object,
     method: 'GET' | 'POST' | 'DELETE' = 'POST',
+    extraHeaders: Record<string, string> = {},
   ): Promise<{ data: T; headers: Headers }> {
     const url = `${LINE_API_BASE}${path}`;
 
@@ -43,6 +44,7 @@ export class LineClient {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.channelAccessToken}`,
+        ...extraHeaders,
       },
     };
 
@@ -109,9 +111,18 @@ export class LineClient {
 
   // ─── Messaging ───────────────────────────────────────────────────────────
 
-  async pushMessage(to: string, messages: Message[]): Promise<void> {
+  /**
+   * @param retryKey X-Line-Retry-Key (UUID)。LINE 公式の冪等キー。timeout 後の再送でも
+   *   同一キーなら二重配信されない (WI-2: リマインドの at-least-once 再試行と併用)。
+   */
+  async pushMessage(to: string, messages: Message[], retryKey?: string): Promise<void> {
     const body: PushMessageRequest = { to, messages };
-    await this.request('/message/push', body);
+    await this.requestWithHeaders(
+      '/message/push',
+      body,
+      'POST',
+      retryKey ? { 'X-Line-Retry-Key': retryKey } : {},
+    );
   }
 
   async multicast(to: string[], messages: Message[]): Promise<void> {

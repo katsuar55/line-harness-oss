@@ -20,6 +20,10 @@ export interface SubscriptionContractRow {
   next_billing_estimate: string | null;
   estimate_source: string;
   reminded_for_estimate: string | null;
+  /** WI-2 (migration 070): 決済失敗リカバリ通知の検知マーカー (送信は cron が担当) */
+  recovery_pending_at: string | null;
+  /** WI-2 (migration 070): リカバリ通知の送信済みマーカー (CAS claim 対象) */
+  recovery_notified_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -40,6 +44,9 @@ export interface SubscriptionContractPatch {
   nextBillingEstimate?: string | null;
   estimateSource?: string;
   remindedForEstimate?: string | null;
+  /** WI-2: pause 遷移の検知と同一 upsert で原子的に設定/解除する (別 UPDATE に分けない) */
+  recoveryPendingAt?: string | null;
+  recoveryNotifiedAt?: string | null;
 }
 
 /**
@@ -71,6 +78,8 @@ export async function upsertSubscriptionContract(
     patch.nextBillingEstimate ?? null,
     patch.estimateSource ?? 'derived',
     patch.remindedForEstimate ?? null,
+    patch.recoveryPendingAt ?? null,
+    patch.recoveryNotifiedAt ?? null,
     now,
     now,
   ];
@@ -95,6 +104,8 @@ export async function upsertSubscriptionContract(
   if (patch.nextBillingEstimate !== undefined) set('next_billing_estimate', patch.nextBillingEstimate);
   if (patch.estimateSource !== undefined) set('estimate_source', patch.estimateSource);
   if (patch.remindedForEstimate !== undefined) set('reminded_for_estimate', patch.remindedForEstimate);
+  if (patch.recoveryPendingAt !== undefined) set('recovery_pending_at', patch.recoveryPendingAt);
+  if (patch.recoveryNotifiedAt !== undefined) set('recovery_notified_at', patch.recoveryNotifiedAt);
   set('updated_at', now);
 
   await db
@@ -104,8 +115,9 @@ export async function upsertSubscriptionContract(
          last_order_id, last_order_at, last_delivery_date,
          skip_count, skip_count_at_last_order, paused_at, cancelled_at,
          next_billing_estimate, estimate_source, reminded_for_estimate,
+         recovery_pending_at, recovery_notified_at,
          created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(contract_id) DO UPDATE SET ${sets.join(', ')}`,
     )
     .bind(...insertBinds, ...setBinds)
@@ -143,24 +155,53 @@ export async function getSubscriptionContractsByCustomerId(
 }
 
 /**
- * WI-2 リマインド対象: 推定次回決済日が targetDate (YYYY-MM-DD) と一致し、
- * 未解約・未一時停止・この推定日にまだ送っていない契約。
+ * WI-2 リマインド対象: 推定次回決済日が [fromDate, toDate] (YYYY-MM-DD, 両端含む) にあり、
+ * 未解約・未一時停止・その推定日にまだ送っていない契約。
+ * 範囲照会なのは catch-up のため (採点R1: 4日前の送信窓を障害等で丸ごと逃しても、
+ * 締切当日 = 3日前まではまだ通知価値が残る。claim が推定日単位なので二重送信はない)。
  */
 export async function listContractsDueForReminder(
   db: D1Database,
-  targetDate: string,
+  fromDate: string,
+  toDate: string,
   limit = 100,
 ): Promise<SubscriptionContractRow[]> {
   const result = await db
     .prepare(
       `SELECT * FROM subscription_contracts
-       WHERE next_billing_estimate = ?
+       WHERE next_billing_estimate >= ? AND next_billing_estimate <= ?
          AND cancelled_at IS NULL
          AND paused_at IS NULL
          AND (reminded_for_estimate IS NULL OR reminded_for_estimate != next_billing_estimate)
        LIMIT ?`,
     )
-    .bind(targetDate, limit)
+    .bind(fromDate, toDate, limit)
+    .all<SubscriptionContractRow>();
+  return result.results;
+}
+
+/**
+ * WI-2 決済失敗リカバリ通知の送信対象: 検知済み (pending)・未送信・**今も一時停止中**。
+ * 検知は customers/update の pause 遷移 (applyCustomerTagsToContracts が同一 upsert で
+ * pending を原子設定)、送信は cron の JST 送信窓 + CAS claim。
+ * paused/cancelled 述語により、検知〜送信の窓 (最大14時間) 内に再開/解約した顧客へ
+ * stale な「一時停止しました」を送らない (採点R2)。マーカーは resume 遷移・新規決済成功で
+ * リセットされるため、2回目以降の決済失敗も通知される (永久ラッチしない)。
+ */
+export async function listContractsPendingRecovery(
+  db: D1Database,
+  limit = 50,
+): Promise<SubscriptionContractRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT * FROM subscription_contracts
+       WHERE recovery_pending_at IS NOT NULL
+         AND recovery_notified_at IS NULL
+         AND paused_at IS NOT NULL
+         AND cancelled_at IS NULL
+       LIMIT ?`,
+    )
+    .bind(limit)
     .all<SubscriptionContractRow>();
   return result.results;
 }
