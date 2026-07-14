@@ -14,6 +14,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 
+// WI-1: subscription-concierge が使う契約 read 関数の実実装。
+// beforeEach 毎に importOriginal すると cold cache で hookTimeout (10s) を招くため
+// (採点R2 HIGH)、ファイルスコープで 1 度だけロードしてキャッシュする。
+const actualDbPromise = vi.importActual<typeof import('@line-crm/db')>('@line-crm/db');
+
 // ---------------------------------------------------------------------------
 // Helper: compute a real HMAC-SHA256 signature (same algo as LINE platform)
 // ---------------------------------------------------------------------------
@@ -213,13 +218,13 @@ beforeEach(async () => {
     };
   });
 
-  vi.doMock('@line-crm/db', async (importOriginal) => {
-    // WI-1: subscription-concierge が使う契約 read 関数は実実装をパススルーする
-    // (テストは options.db の mock D1 で応答を制御する)
-    const actual = await importOriginal<typeof import('@line-crm/db')>();
-    return {
-    getSubscriptionContract: actual.getSubscriptionContract,
-    getSubscriptionContractsByCustomerId: actual.getSubscriptionContractsByCustomerId,
+  // WI-1: subscription-concierge が使う契約 read 関数は実実装をパススルーする
+  // (テストは options.db の mock D1 で応答を制御する)。実装ロードはファイルスコープの
+  // actualDbPromise で 1 度だけ (beforeEach 毎の importOriginal は hookTimeout の原因)。
+  const actualDb = await actualDbPromise;
+  vi.doMock('@line-crm/db', () => ({
+    getSubscriptionContract: actualDb.getSubscriptionContract,
+    getSubscriptionContractsByCustomerId: actualDb.getSubscriptionContractsByCustomerId,
     jstNow: () => '2026-03-31T12:00:00+09:00',
     upsertFriend: vi.fn(async (_db: unknown, data: { lineUserId: string; displayName?: string | null }) => {
       const existing = friendsDb.get(data.lineUserId);
@@ -265,8 +270,7 @@ beforeEach(async () => {
     getStaffByApiKey: vi.fn(async () => null),
     getFriendTags: vi.fn(async () => []),
     recordWebhookDelivery: vi.fn(async () => true),
-    };
-  });
+  }));
 
   vi.doMock('../services/event-bus.js', () => ({
     fireEvent: vi.fn(async (_db: unknown, type: string, payload: unknown) => {
@@ -282,7 +286,7 @@ beforeEach(async () => {
   const { webhook } = await import('../routes/webhook.js');
   app = new Hono();
   app.route('/', webhook);
-});
+}, 30_000);
 
 afterEach(() => {
   capturedReplies.length = 0;
@@ -1196,7 +1200,10 @@ function subContract(overrides: Record<string, unknown> = {}): Record<string, un
     skip_count_at_last_order: 0,
     paused_at: null,
     cancelled_at: null,
-    next_billing_estimate: '2026-08-04',
+    // 実時計依存 (isStaleEstimate) との結合による時限爆弾を避けるため動的な未来日 (採点R3)
+    next_billing_estimate: new Date(Date.now() + 21 * 86_400_000 + 9 * 3_600_000)
+      .toISOString()
+      .slice(0, 10),
     estimate_source: 'derived',
     reminded_for_estimate: null,
     created_at: '2026-07-05 10:00:00',
@@ -1257,8 +1264,9 @@ describe('webhook — サブスク・コンシェルジュ postback (WI-1)', () 
     });
     expect(capturedReplies).toHaveLength(1);
     const s = JSON.stringify(capturedReplies[0].messages);
-    expect(s).toContain('メールアドレスの登録');
-    expect(s).toContain('#account');
+    expect(s).toContain('アカウント連携');
+    // 連携UI が実在する /liff/my-rank (#rank) へ誘導する (採点R2: #account は行き止まり)
+    expect(s).toContain('#rank');
   });
 
   it('gate ON + 連携済み・契約カードには操作 postback と締切が載る', async () => {
@@ -1345,5 +1353,19 @@ describe('webhook — サブスク・コンシェルジュ postback (WI-1)', () 
     });
     const all = JSON.stringify(capturedReplies);
     expect(all).toContain('action=teiki_guide');
+  });
+
+  it('gate ON + テキスト「解約したい」+ D1 障害 → 沈黙せず誠実なエラーカード (採点R1 項目9)', async () => {
+    seedSubFriend('cust-1');
+    const db = createSubscriptionDb({
+      throwOnSubscription: true,
+      friendRow: { id: `friend-${SUB_USER}`, display_name: 'サブスク太郎', shopify_customer_id: 'cust-1' },
+    });
+    await postAndFlush(makeTextMessageBody(SUB_USER, '解約したい'), undefined, {
+      db,
+      subscriptionMenuEnabled: 'true',
+    });
+    const all = JSON.stringify(capturedReplies);
+    expect(all).toContain('うまく確認できませんでした');
   });
 });

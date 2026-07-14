@@ -198,7 +198,8 @@ export type Env = {
     // サブスク・コンシェルジュ gate (WI-1 2026-07-14, docs/SUBSCRIPTION_ULTRAPLAN_2026-07-14.md):
     //   'true' でリッチメニュー「サブスク」postback / サブスク intent / 契約 read-model 導出が有効。
     //   ⚠️ 有効化手順 (順番厳守): ①migration 069 適用 → ②rebuild endpoint 実行 (gate 非連動、
-    //     read-model を温める) → ③本 gate ON → ④実機確認 → ⑤リッチメニュー v4 反映 (setup-naturism)。
+    //     read-model を温める。gate ON 後の再実行は ?force=1 必須 = スキップ先送りを消しうる) →
+    //     ③本 gate ON → ④実機確認 → ⑤リッチメニュー v4 反映 (setup-naturism)。
     SUBSCRIPTION_MENU_ENABLED?: string;
     // 新規ユーザー限定 welcome クーポン用の顧客セグメント gid (2026-07-10):
     //   例 gid://shopify/Segment/xxx (= Shopify Admin で「注文回数 0」segment を作成)。

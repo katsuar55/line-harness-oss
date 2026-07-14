@@ -540,8 +540,7 @@ describe('Rich Menus Routes', () => {
       expect(mockCreateRichMenu).not.toHaveBeenCalled();
     });
 
-    it('succeeds even if deleteDefaultRichMenu fails (no existing default)', async () => {
-      mockDeleteDefaultRichMenu.mockRejectedValue(new Error('no default'));
+    it('旧デフォルトメニューには一切触れない (setDefault が置換、deleteDefault は不使用 — 採点R2)', async () => {
       mockCreateRichMenu.mockResolvedValue({ richMenuId: 'rm-naturism-2' });
       mockUploadRichMenuImage.mockResolvedValue(undefined);
       mockSetDefaultRichMenu.mockResolvedValue(undefined);
@@ -556,6 +555,8 @@ describe('Rich Menus Routes', () => {
       expect(res.status).toBe(201);
       expect(json.success).toBe(true);
       expect(json.data.richMenuId).toBe('rm-naturism-2');
+      // 途中失敗時に全ユーザーのメニューが消えないよう、事前解除は行わない
+      expect(mockDeleteDefaultRichMenu).not.toHaveBeenCalled();
     });
 
     it('returns 500 if createRichMenu fails', async () => {

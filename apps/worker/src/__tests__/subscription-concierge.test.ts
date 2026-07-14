@@ -13,8 +13,17 @@ import {
   MYPAGE_URL,
 } from '../services/subscription-concierge.js';
 import type { SubscriptionContractRow } from '@line-crm/db';
+import { addDays } from '../services/subscription-contracts.js';
 
 const LIFF = 'https://liff.line.me/xxxx';
+
+// isStaleEstimate (実時計 Date.now 依存) と固定日付フィクスチャの結合は時限爆弾になる
+// (採点R3: 固定 '2026-08-04' は 2026-08-05 から stale 化し CI が確定 red)。
+// 推定日は「今日(JST)+21日」で動的生成し、期待文字列も同じ材料から計算する。
+const TODAY_JST = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
+const FUTURE_ESTIMATE = addDays(TODAY_JST, 21);
+const FUTURE_ESTIMATE_JP = formatJpDate(FUTURE_ESTIMATE) as string;
+const FUTURE_DEADLINE_JP = formatJpDate(addDays(FUTURE_ESTIMATE, -3)) as string;
 
 function contract(overrides: Partial<SubscriptionContractRow> = {}): SubscriptionContractRow {
   return {
@@ -30,7 +39,7 @@ function contract(overrides: Partial<SubscriptionContractRow> = {}): Subscriptio
     skip_count_at_last_order: 0,
     paused_at: null,
     cancelled_at: null,
-    next_billing_estimate: '2026-08-04',
+    next_billing_estimate: FUTURE_ESTIMATE,
     estimate_source: 'derived',
     reminded_for_estimate: null,
     created_at: '2026-07-05 10:00:00',
@@ -63,15 +72,18 @@ function dbWithContracts(rows: SubscriptionContractRow[]) {
 const json = (m: unknown) => JSON.stringify(m);
 
 describe('buildSubscriptionMenuMessages', () => {
-  it('未連携 → メール登録導線 (LIFF #account) + マイページ直行の 2 択', async () => {
+  it('未連携 → アカウント連携導線 (LIFF #rank = 連携UIの実在ページ) + マイページ直行の 2 択', async () => {
     const messages = await buildSubscriptionMenuMessages(
       dbWithContracts([]),
       { id: 'f1', display_name: 'x', shopify_customer_id: null },
       LIFF,
     );
     const s = json(messages);
-    expect(s).toContain('メールアドレスの登録');
-    expect(s).toContain(`${LIFF}#account`);
+    expect(s).toContain('アカウント連携');
+    // 連携フロー (email OTP) は /liff/my-rank 側にある。#account はメール配信設定のみで
+    // 連携できない行き止まり (採点R2 HIGH) — 誘導先に連携UIが実在することを固定する
+    expect(s).toContain(`${LIFF}#rank`);
+    expect(s).not.toContain('#account');
     expect(s).toContain(MYPAGE_URL);
   });
 
@@ -93,15 +105,43 @@ describe('buildSubscriptionMenuMessages', () => {
       LIFF,
     );
     const s = json(messages);
-    expect(s).toContain('8月4日ごろ');
+    expect(s).toContain(`${FUTURE_ESTIMATE_JP}ごろ`);
     expect(s).toContain('次回決済の3日前');
-    expect(s).toContain('8月1日ごろまで'); // 締切 = 推定 - 3日
+    expect(s).toContain(`${FUTURE_DEADLINE_JP}ごろまで`); // 締切 = 推定 - 3日
     expect(s).toContain('action=teiki_guide&op=skip&cid=100');
     expect(s).toContain('action=teiki_guide&op=date&cid=100');
     expect(s).toContain('action=teiki_guide&op=cancel_pause&cid=100');
     expect(s).toContain('商品・数量の変更');
     // 許可されていない操作 (周期変更) を案内しない
     expect(s).not.toContain('周期変更');
+  });
+
+  it('stale 推定 (過去日) → 過去の日付・締切を出さず一般則へ (採点R2/R3 回帰テスト)', async () => {
+    const messages = await buildSubscriptionMenuMessages(
+      dbWithContracts([contract({ next_billing_estimate: '2020-01-01' })]),
+      { id: 'f1', display_name: 'x', shopify_customer_id: 'cust-1' },
+      LIFF,
+    );
+    const s = json(messages);
+    expect(s).toContain('マイページでご確認ください');
+    expect(s).not.toContain('1月1日ごろ');
+    expect(s).not.toContain('12月29日'); // 締切 (推定-3日) も出さない
+    expect(s).toContain('次回決済日の3日前まで受付');
+    // ガイドカード側も同様に一般則へ落ちる
+    const g = json(buildGuideMessages('skip', contract({ next_billing_estimate: '2020-01-01' })));
+    expect(g).toContain('次回決済日の3日前まで受付');
+    expect(g).not.toContain('1月1日');
+  });
+
+  it('推定が直近すぎて締切が過去 (今日〜2日後) → 「締め切られている可能性」に切替 (採点R3)', async () => {
+    const messages = await buildSubscriptionMenuMessages(
+      dbWithContracts([contract({ next_billing_estimate: addDays(TODAY_JST, 1) })]),
+      { id: 'f1', display_name: 'x', shopify_customer_id: 'cust-1' },
+      LIFF,
+    );
+    const s = json(messages);
+    expect(s).toContain('締め切られている可能性');
+    expect(s).not.toContain('ごろまで (次回決済の3日前)');
   });
 
   it('推定不能 (周期不明) → 日付をでっち上げずマイページ確認へ', async () => {
@@ -189,7 +229,7 @@ describe('buildSubscriptionMenuMessages — 複数契約の上限 (採点R1)', (
       contract({ contract_id: 'a3' }),
       contract({ contract_id: 'a4' }),
       contract({ contract_id: 'a5' }),
-      contract({ contract_id: 'x6', cancelled_at: '2026-07-01', next_billing_estimate: null }),
+      contract({ contract_id: 'a6' }), // アクティブ6件目 = slice(0,5) で切り落とされる
     ];
     const messages = await buildSubscriptionMenuMessages(
       dbWithContracts(rows),
@@ -201,6 +241,8 @@ describe('buildSubscriptionMenuMessages — 複数契約の上限 (採点R1)', (
     expect(flex.contents.contents).toHaveLength(5);
     const s = json(messages);
     expect(s).toContain('cid=a1');
-    expect(s).not.toContain('x6');
+    expect(s).toContain('cid=a5');
+    // 6件目はアクティブ (= postback ボタンを持つはず) だが 5 件で切られる
+    expect(s).not.toContain('cid=a6');
   });
 });

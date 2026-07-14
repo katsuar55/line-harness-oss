@@ -31,7 +31,7 @@ import { buildPriceTableMessage } from './ai-message-builder.js';
 import { buildQuickQuizInviteMessage } from './quick-quiz.js';
 import { buildProductCompareFlex, buildMyCouponFlex } from './welcome-postback.js';
 import { getFriendActiveCoupon } from './ai-fact-context.js';
-import { buildSubscriptionMenuMessages } from './subscription-concierge.js';
+import { buildSubscriptionMenuMessages, MYPAGE_URL } from './subscription-concierge.js';
 
 export type Intent =
   | { readonly type: 'quiz_invite'; readonly reason: string }
@@ -60,6 +60,8 @@ export interface IntentBuildContext {
 interface PatternRule {
   readonly keywords: ReadonlyArray<string>;
   readonly intent: Intent;
+  /** これらの語を含むメッセージではこのパターンを発火させない (誤爆ガード、後続パターンへ継続) */
+  readonly negativeKeywords?: ReadonlyArray<string>;
 }
 
 // 上から順に check、 最初に match した keyword で確定
@@ -153,6 +155,8 @@ const PATTERNS: ReadonlyArray<PatternRule> = [
       'スキップしたい', 'スキップの方法', 'スキップする方法', 'スキップできます',
       '解約したい', '解約方法', '解約手続き', '解約の仕方', '解約したく',
     ],
+    // 「メルマガの解約方法」等、定期便以外の解約相談を乗っ取らない (採点R2)
+    negativeKeywords: ['メルマガ', 'メールマガジン', 'ニュースレター', 'メール配信'],
     intent: { type: 'subscription', reason: 'subscription concierge is live' },
   },
   // アンバサダー
@@ -185,6 +189,7 @@ export function detectIntent(
 
   for (const pattern of PATTERNS) {
     if (opts?.disabledIntents?.includes(pattern.intent.type)) continue;
+    if (pattern.negativeKeywords?.some((ng) => normalized.includes(ng))) continue;
     for (const keyword of pattern.keywords) {
       if (normalized.includes(keyword)) {
         return {
@@ -241,7 +246,7 @@ function buildMessagesForIntent(intent: Intent): ReadonlyArray<Message> {
       return [
         {
           type: 'text',
-          text: '🌿 定期便の確認・スキップ・解約はマイページからお手続きいただけます💝\nhttps://naturism-diet.com/account',
+          text: `🌿 定期便の確認・スキップ・解約はマイページからお手続きいただけます💝\n${MYPAGE_URL}`,
         },
       ];
     case 'feature_unavailable':

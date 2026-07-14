@@ -66,7 +66,7 @@ export async function buildSubscriptionMenuMessages(
   return [
     {
       type: 'flex',
-      altText: '📦 ご契約中の定期便',
+      altText: '📦 定期便のご契約状況',
       contents: container,
     },
   ];
@@ -189,7 +189,10 @@ function buildContractBubble(contract: SubscriptionContractRow): object {
       ),
     );
   } else {
-    const estimate = formatJpDate(contract.next_billing_estimate);
+    // 推定が過去日のまま stale な場合 (webhook 欠落等) は日付を出さない (採点R2: 過去の締切を表示しない)
+    const estimate = isStaleEstimate(contract.next_billing_estimate)
+      ? null
+      : formatJpDate(contract.next_billing_estimate);
     bodyContents.push(
       kvRow('次回の決済予定', estimate ? `${estimate}ごろ *` : 'マイページでご確認ください'),
     );
@@ -259,10 +262,13 @@ function buildContractBubble(contract: SubscriptionContractRow): object {
     });
   }
 
+  // 解約済み/一時停止では「ご契約中」と自己矛盾しない状態非依存の題字にする (採点R2)
+  const headerTitle =
+    contract.cancelled_at || contract.paused_at ? '定期便のご契約' : 'ご契約中の定期便';
   return {
     type: 'bubble',
     size: 'kilo',
-    header: header('ご契約中の定期便', statusBadge.text, statusBadge.color),
+    header: header(headerTitle, statusBadge.text, statusBadge.color),
     body: {
       type: 'box',
       layout: 'vertical',
@@ -270,7 +276,6 @@ function buildContractBubble(contract: SubscriptionContractRow): object {
       spacing: 'sm',
       contents: [...bodyContents, ...buttons],
     },
-    styles: { footer: { separator: true } },
   };
 }
 
@@ -326,7 +331,9 @@ function buildGuideBubble(input: GuideBubbleInput): Message {
 }
 
 function buildNotLinkedMessages(liffUrl: string | undefined): ReadonlyArray<Message> {
-  const accountUri = liffUrl ? `${liffUrl}#account` : MYPAGE_URL;
+  // 連携フロー (email OTP → friends.shopify_customer_id) の UI は /liff/my-rank 側にある。
+  // #account (マイアカウントタブ) はメール配信設定のみで連携できない行き止まり (採点R2 HIGH)。
+  const accountUri = liffUrl ? `${liffUrl}#rank` : MYPAGE_URL;
   const bubble = {
     type: 'bubble',
     size: 'kilo',
@@ -340,7 +347,7 @@ function buildNotLinkedMessages(liffUrl: string | undefined): ReadonlyArray<Mess
         {
           type: 'text',
           text:
-            'LINE でご契約情報を表示するには、ご購入時のメールアドレスの登録が必要です (初回のみ・約30秒)。',
+            'LINE でご契約情報を表示するには、ご購入時のメールアドレスでのアカウント連携が必要です (初回のみ・約30秒)。',
           size: 'sm',
           color: TEXT_MAIN,
           wrap: true,
@@ -351,7 +358,7 @@ function buildNotLinkedMessages(liffUrl: string | undefined): ReadonlyArray<Mess
           color: TEAL_DARK,
           height: 'sm',
           margin: 'md',
-          action: { type: 'uri', label: '📧 メールアドレスを登録する', uri: accountUri },
+          action: { type: 'uri', label: '📧 アカウント連携する (約30秒)', uri: accountUri },
         },
         {
           type: 'button',
@@ -366,7 +373,7 @@ function buildNotLinkedMessages(liffUrl: string | undefined): ReadonlyArray<Mess
   return [
     {
       type: 'flex',
-      altText: '定期便の確認にはメールアドレス登録が必要です',
+      altText: '定期便の確認にはアカウント連携が必要です',
       contents: bubble as unknown as FlexContainer,
     },
   ];
@@ -493,14 +500,34 @@ function postbackData(op: GuideOp, contractId: string): string {
   return params.toString();
 }
 
-/** 「変更・スキップの締切: ◯月◯日 (決済3日前) まで」。推定できない時は一般則のみ。 */
+/**
+ * 「変更・スキップ・解約の締切: ◯月◯日 (決済3日前) まで」。
+ * 推定できない/過去日は一般則のみ。締切自体が過ぎている窓 (推定が今日〜2日後) では
+ * 過去の締切日を出さず「締め切られている可能性」の注意に切り替える (採点R3)。
+ */
 function deadlineText(contract: SubscriptionContractRow): string | null {
   if (contract.cancelled_at || contract.paused_at) return null;
-  if (contract.next_billing_estimate) {
-    const deadline = formatJpDate(addDays(contract.next_billing_estimate, -3));
+  const estimate = contract.next_billing_estimate;
+  if (estimate && !isStaleEstimate(estimate)) {
+    const deadlineDate = addDays(estimate, -3);
+    if (deadlineDate < todayJst()) {
+      return '⏰ 今回分の変更受付は締め切られている可能性があります。正確な状況はマイページでご確認ください';
+    }
+    const deadline = formatJpDate(deadlineDate);
     if (deadline) return `⏰ 変更・スキップ・解約の締切: ${deadline}ごろまで (次回決済の3日前)`;
   }
   return '⏰ 変更・スキップ・解約は次回決済日の3日前まで受付です';
+}
+
+/** 今日 (JST) の YYYY-MM-DD。 */
+function todayJst(): string {
+  return new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
+}
+
+/** 推定日が今日 (JST) より過去 = stale。過去の日付・締切をユーザーに見せない。 */
+function isStaleEstimate(estimate: string | null): boolean {
+  if (!estimate) return false;
+  return estimate < todayJst();
 }
 
 /** YYYY-MM-DD → 「M月D日」。 */

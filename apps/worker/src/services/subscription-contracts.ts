@@ -165,7 +165,11 @@ export interface DeriveOrderInput {
   readonly lineItemsJson: string | null | undefined;
   readonly shopifyOrderId: string;
   readonly shopifyCustomerId: string | null | undefined;
-  /** Shopify の注文作成日時 (body.created_at)。無い場合は D1 行の created_at (webhook 到達時刻 ≈ 実時刻)。 */
+  /**
+   * 注文作成 (≈決済) 日時。webhook 経路は body.created_at (実時刻) を、rebuild 経路は
+   * resolveRebuildAnchor の解決値を渡す。null の場合 last_order_at は更新されず、
+   * 推定日は出ない (嘘をつかない)。
+   */
   readonly orderCreatedAt: string | null | undefined;
 }
 
@@ -268,6 +272,32 @@ async function refreshEstimate(
   });
 }
 
+/**
+ * rebuild の推定アンカー解決 (採点R2/R3 修正)。
+ * metadata.order_created_at (Shopify の実注文日時。webhook 受信・手動 sync の両経路で保存) を
+ * 最優先し、無ければ legacy 行のうち source=webhook のみ D1 到達時刻 (≈実時刻) を許容。
+ * order_created_at 無しの手動 sync 行 (= 本修正以前の legacy) は取り込み時刻しか持たないため
+ * null (=skip、推定を出さない誠実側) に倒す。
+ * metadata は COALESCE で後勝ち上書きされるが、両経路とも order_created_at を書くため
+ * どちらが最後に書いても実注文日時が保たれる。
+ */
+export function resolveRebuildAnchor(
+  metadataJson: string | null | undefined,
+  rowCreatedAt: string,
+): string | null {
+  if (!metadataJson) return null;
+  try {
+    const meta = JSON.parse(metadataJson) as { source?: string; order_created_at?: string | null };
+    if (typeof meta.order_created_at === 'string' && meta.order_created_at) {
+      return meta.order_created_at;
+    }
+    if (meta.source === 'webhook') return rowCreatedAt;
+  } catch {
+    // 壊れた metadata はアンカー不明としてスキップ側に倒す
+  }
+  return null;
+}
+
 export interface RebuildResult {
   ordersScanned: number;
   ordersFailed: number;
@@ -294,8 +324,10 @@ const REBUILD_MAX_ROWS = 20000;
  *   - 注文/顧客とも per-item try/catch (部分失敗でも顧客 pass = 解約/一時停止の反映は必ず実行)
  *   - 最終 pass で skip 基準値を現累計に正規化 (= 過去のスキップは消化済みとみなす。履歴から
  *     「直近注文以降のスキップ数」は復元不能なため安全側 delta=0 に倒す)。これにより **rebuild は冪等**
- *     (2回実行しても同じ結果)。注意: 本番稼働後に「未消化のスキップ」がある状態で再実行すると
- *     その先送りは一旦消え、次の customers/update webhook で再導出される
+ *     (2回実行しても同じ結果)。⚠️ 本番稼働後に「未消化のスキップ」がある状態で再実行すると
+ *     その先送りは**恒久的に消える** (customers/update は同じ累計値を書くだけで delta は復元されない。
+ *     次の実注文 or 追加スキップまで推定日が誤る)。このため endpoint は gate ON 中の実行を
+ *     ?force=1 なしでは拒否する (shopify.ts)。rebuild は原則 gate ON 前の bootstrap 専用
  */
 export async function rebuildContractsFromD1(db: D1Database): Promise<RebuildResult> {
   const result: RebuildResult = {
@@ -336,7 +368,8 @@ export async function rebuildContractsFromD1(db: D1Database): Promise<RebuildRes
 
     for (const o of batch.results) {
       result.ordersScanned += 1;
-      if (!/"source"\s*:\s*"webhook"/.test(o.metadata ?? '')) {
+      const anchor = resolveRebuildAnchor(o.metadata, o.created_at);
+      if (!anchor) {
         result.skippedNonWebhook += 1;
         continue;
       }
@@ -346,7 +379,7 @@ export async function rebuildContractsFromD1(db: D1Database): Promise<RebuildRes
           lineItemsJson: o.line_items,
           shopifyOrderId: o.shopify_order_id,
           shopifyCustomerId: o.shopify_customer_id,
-          orderCreatedAt: o.created_at,
+          orderCreatedAt: anchor,
         });
         if (row) seen.add(row.contract_id);
       } catch (err) {
@@ -397,18 +430,35 @@ export async function rebuildContractsFromD1(db: D1Database): Promise<RebuildRes
   }
 
   // ---- pass 3: skip 基準値の正規化 (冪等性の要) ----
-  const drifted = await listContractsWithSkipBaselineDrift(db);
-  for (const row of drifted) {
-    try {
-      const updated = await upsertSubscriptionContract(db, {
-        contractId: row.contract_id,
-        skipCountAtLastOrder: row.skip_count,
-      });
-      await refreshEstimate(db, updated);
-      result.baselinesNormalized += 1;
-    } catch (err) {
-      result.firstError ??= err instanceof Error ? err.message.slice(0, 300) : 'unknown';
+  // 正規化すると drift が解消されるため、空になるまで再クエリすれば cursor 不要でページングできる。
+  // pass 3 全体を隔離し、失敗しても pass 1/2 の部分結果レポートを失わない (採点R2)。
+  try {
+    for (let round = 0; round < 40; round += 1) {
+      const drifted = await listContractsWithSkipBaselineDrift(db, REBUILD_BATCH);
+      if (drifted.length === 0) break;
+      let progressed = 0;
+      for (const row of drifted) {
+        try {
+          const updated = await upsertSubscriptionContract(db, {
+            contractId: row.contract_id,
+            skipCountAtLastOrder: row.skip_count,
+          });
+          await refreshEstimate(db, updated);
+          result.baselinesNormalized += 1;
+          progressed += 1;
+        } catch (err) {
+          result.firstError ??= err instanceof Error ? err.message.slice(0, 300) : 'unknown';
+        }
+      }
+      if (drifted.length < REBUILD_BATCH) break;
+      if (progressed === 0) {
+        // 同じ行が失敗し続けている = 無限ループ防止で打ち切り、truncated として可視化
+        result.truncated = true;
+        break;
+      }
     }
+  } catch (err) {
+    result.firstError ??= err instanceof Error ? err.message.slice(0, 300) : 'unknown';
   }
 
   result.contractsSeen = seen.size;

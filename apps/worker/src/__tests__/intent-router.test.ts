@@ -387,8 +387,9 @@ describe('intent-router — subscription (= サブスク・コンシェルジュ
       { db, friendId: 'f1', liffUrl: 'https://liff.line.me/xxxx' },
     );
     const s = JSON.stringify(messages);
-    expect(s).toContain('メールアドレスの登録');
-    expect(s).toContain('https://liff.line.me/xxxx#account');
+    expect(s).toContain('アカウント連携');
+    // 連携UI が実在する /liff/my-rank (#rank) へ (採点R2: #account は行き止まり)
+    expect(s).toContain('https://liff.line.me/xxxx#rank');
   });
 });
 
@@ -437,3 +438,18 @@ describe('intent-router — subscription 負例 (誤発火防止、採点R1 HIGH
     expect(JSON.stringify(messages)).toContain('naturism-diet.com/account');
   });
 });
+
+describe('intent-router — subscription negativeKeywords (採点R2)', () => {
+  it.each([
+    'メルマガの解約方法を教えて',
+    'メールマガジンを解約したい',
+    'ニュースレターの解約手続き',
+  ])('returns null for "%s" (メルマガ系解約は乗っ取らない → AI へ)', (text) => {
+    expect(detectIntent(text)).toBeNull();
+  });
+
+  it('定期文脈の解約は引き続き subscription', () => {
+    expect(detectIntent('定期便の解約方法を教えて')?.intent.type).toBe('subscription');
+  });
+});
+

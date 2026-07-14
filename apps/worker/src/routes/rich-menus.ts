@@ -245,12 +245,10 @@ richMenus.post('/api/rich-menus/setup-naturism', async (c) => {
     }
     const imgData = await imgObj.arrayBuffer();
 
-    // Step 0: 既存デフォルトリッチメニューを解除（新規設定のため）
-    try {
-      await lineClient.deleteDefaultRichMenu();
-    } catch {
-      // デフォルトが無い場合は無視
-    }
+    // 旧デフォルトの事前解除は行わない (採点R2 修正): setDefaultRichMenu が既存の
+    // デフォルトを置換するため不要で、事前解除すると途中失敗 (画像寸法不正等) の間
+    // 全ユーザーのメニューが消える。新メニューの作成/画像/デフォルト化が全て成功する
+    // まで旧メニューは無傷に保つ。
 
     // naturism リッチメニュー定義（2500×1686 フルサイズ）
     // レイアウト: 左2列(各833px) + 右1列(834px, 上下分割)

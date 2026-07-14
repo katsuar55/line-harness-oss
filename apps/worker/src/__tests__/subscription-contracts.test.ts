@@ -18,6 +18,7 @@ import {
   deriveContractFromOrder,
   applyCustomerTagsToContracts,
   rebuildContractsFromD1,
+  resolveRebuildAnchor,
 } from '../services/subscription-contracts.js';
 import { getContractForFriend } from '../services/subscription-concierge.js';
 
@@ -571,5 +572,28 @@ describe('getContractForFriend (IDOR ガード)', () => {
     expect(await getContractForFriend(db, unlinked, '100')).toBeNull();
     const owner = { id: 'f1', display_name: 'o', shopify_customer_id: 'cust-A' };
     expect((await getContractForFriend(db, owner, '100'))?.contract_id).toBe('100');
+  });
+});
+
+describe('resolveRebuildAnchor (採点R2: metadata 化け対策)', () => {
+  it('order_created_at (実注文日時) があれば出所に関わらず最優先', () => {
+    expect(
+      resolveRebuildAnchor(
+        '{"source":"manual_sync","order_created_at":"2026-07-05T10:00:00+09:00"}',
+        '2026-07-31 10:00:00',
+      ),
+    ).toBe('2026-07-05T10:00:00+09:00');
+  });
+
+  it('order_created_at 無し + source=webhook → D1 到達時刻 (≈実時刻) を許容', () => {
+    expect(resolveRebuildAnchor('{"source":"webhook","topic":"orders/create"}', '2026-07-31 10:00:00')).toBe(
+      '2026-07-31 10:00:00',
+    );
+  });
+
+  it('手動 sync 行 (order_created_at 無し)・壊れた JSON・null は skip (null)', () => {
+    expect(resolveRebuildAnchor('{"source":"manual_sync"}', '2026-07-31 10:00:00')).toBeNull();
+    expect(resolveRebuildAnchor('{broken', '2026-07-31 10:00:00')).toBeNull();
+    expect(resolveRebuildAnchor(null, '2026-07-31 10:00:00')).toBeNull();
   });
 });

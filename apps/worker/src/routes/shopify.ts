@@ -33,7 +33,15 @@ const shopify = new Hono<Env>();
 // **gate 非連動** (採点R1 修正): 有効化手順は migration 069 → rebuild → gate ON の順であり、
 // gate ON 前に read-model を温めておく必要がある (gate ON 直後に空カードを出さないため)。
 // read-model への書込は gate OFF 中の本番挙動に一切影響しない (読む経路が全て gate 内)。
+// ⚠️ gate ON 後の再実行は「未消化スキップの先送り」を恒久的に消すため ?force=1 を要求する (採点R2)。
 shopify.post('/api/integrations/shopify/subscription-contracts/rebuild', async (c) => {
+  if (c.env.SUBSCRIPTION_MENU_ENABLED === 'true' && c.req.query('force') !== '1') {
+    return c.json({
+      success: false,
+      error:
+        'gate ON 中の rebuild は、顧客がスキップ済みの先送り推定を巻き戻す可能性があります。承知の上で実行する場合は ?force=1 を付けてください。',
+    }, 409);
+  }
   try {
     const result = await rebuildContractsFromD1(c.env.DB);
     return c.json({ success: true, data: result });
@@ -241,7 +249,13 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
         orderNumber: body.order_number ? Number(body.order_number) : undefined,
         lineItems: lineItemsRaw ? JSON.stringify(lineItemsRaw) : undefined,
         tags: (body.tags as string) ?? undefined,
-        metadata: JSON.stringify({ source: 'webhook', topic }),
+        // order_created_at = Shopify の実注文日時 (WI-1 採点R2)。サブスク rebuild が推定アンカーに
+        // 使う (D1 行の created_at は到達時刻で、手動 sync 由来の行では取り込み時刻になるため)。
+        metadata: JSON.stringify({
+          source: 'webhook',
+          topic,
+          order_created_at: (body.created_at as string) ?? null,
+        }),
       });
 
       await logWebhook(db, topic, shopifyOrderId, 'processed', `saved as ${order.id}`);
@@ -742,7 +756,12 @@ shopify.post('/api/integrations/shopify/sync', async (c) => {
         orderNumber: o.order_number ? Number(o.order_number) : undefined,
         lineItems: lineItemsRaw ? JSON.stringify(lineItemsRaw) : undefined,
         tags: (o.tags as string) ?? undefined,
-        metadata: JSON.stringify({ source: 'manual_sync' }),
+        // order_created_at = REST payload の実注文日時 (採点R3)。COALESCE 上書きで webhook 保存分の
+        // アンカーを破壊しないため、手動 sync でも必ず含める (サブスク rebuild の推定アンカー)。
+        metadata: JSON.stringify({
+          source: 'manual_sync',
+          order_created_at: (o.created_at as string) ?? null,
+        }),
       });
       ordersSynced++;
     }

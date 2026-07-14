@@ -52,6 +52,7 @@ import {
   buildGuideMessages,
   buildConciergeErrorMessages,
   getContractForFriend,
+  MYPAGE_URL,
   type GuideOp,
 } from '../services/subscription-concierge.js';
 import {
@@ -554,7 +555,7 @@ async function handleEvent(
           await lineClient.replyMessage(event.replyToken, [
             {
               type: 'text',
-              text: '申し訳ありません、この機能は現在準備中です🙇\n定期便のお手続きはマイページをご利用ください。\nhttps://naturism-diet.com/account',
+              text: `申し訳ありません、この機能は現在準備中です🙇\n定期便のお手続きはマイページをご利用ください。\n${MYPAGE_URL}`,
             },
           ]);
         } catch {
