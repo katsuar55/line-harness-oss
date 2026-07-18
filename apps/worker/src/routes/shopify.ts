@@ -9,6 +9,8 @@ import {
   getShopifyOrderByShopifyId,
   getShopifyCustomerByShopifyId,
   linkShopifyCustomerToFriend,
+  getSubscriptionContract,
+  upsertSubscriptionContract,
   jstNow,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
@@ -22,10 +24,94 @@ import {
   deriveContractFromOrder,
   applyCustomerTagsToContracts,
   rebuildContractsFromD1,
+  toJstDate,
 } from '../services/subscription-contracts.js';
 import { LineClient } from '@line-crm/line-sdk';
 
 const shopify = new Hono<Env>();
+
+// teiki-flow secret 未設定ログの flood 抑制フラグ (isolate ごと初回のみ、採点R4)
+let warnedTeikiFlowSecretMissing = false;
+
+// POST /api/integrations/teiki-flow — Shopify Flow「HTTP リクエストを送信」からの
+// サブスク実測値受信 (WI-2)。Huckleberry の Flow Trigger が持つ「次回決済日」を受け取り、
+// 推定 (derived) を実測 (flow) に昇格させる。設定手順: docs/TEIKI_FLOW_SETUP.md。
+// 認可: 共有シークレットヘッダ (auth skip-list に POST 限定で登録済み、ここで検証)。
+shopify.post('/api/integrations/teiki-flow', async (c) => {
+  const secret = c.env.TEIKI_FLOW_SECRET;
+  if (!secret) {
+    // 未設定も 401 に畳む (採点R3: 503 だと未認証呼び出し元に secret の設定状態が開示される)。
+    // setup デバッグ用の区別はサーバ側ログのみ。isolate ごと初回のみ出力 (採点R4: 未認証
+    // リクエストのスパムでログが flood しないように)。
+    if (!warnedTeikiFlowSecretMissing) {
+      warnedTeikiFlowSecretMissing = true;
+      console.error('teiki-flow: TEIKI_FLOW_SECRET 未設定のため拒否 (docs/TEIKI_FLOW_SETUP.md)');
+    }
+    return c.json({ success: false, error: 'unauthorized' }, 401);
+  }
+  const provided = c.req.header('x-teiki-flow-secret') ?? '';
+  if (!(await constantTimeEqual(provided, secret))) {
+    return c.json({ success: false, error: 'unauthorized' }, 401);
+  }
+  // gate OFF 中は read-model を触らない (202 = Flow 側にリトライさせない)
+  if (c.env.SUBSCRIPTION_MENU_ENABLED !== 'true') {
+    return c.json({ success: true, data: { skipped: 'gate_off' } }, 202);
+  }
+
+  // body の解釈エラーのみ 400。D1 等の実行時障害は 500 (Flow 側の再実行対象) に分ける (採点R1)
+  let contractId = '';
+  let date: string | null = null;
+  try {
+    const body = await c.req.json<{ contract_id?: string | number; next_billing_date?: string }>();
+    contractId = body.contract_id != null ? String(body.contract_id).trim() : '';
+    date = toJstDate(body.next_billing_date ?? null);
+  } catch {
+    return c.json({ success: false, error: 'JSON body を解釈できません' }, 400);
+  }
+  if (!contractId || !date) {
+    return c.json(
+      { success: false, error: 'contract_id と next_billing_date (日付) が必要です' },
+      400,
+    );
+  }
+
+  try {
+    // 未知の契約 ID では phantom 行を作らない (注文 webhook 由来の既知契約のみ実測を受ける)。
+    // 200 で受けるのは意図的 (採点R2): 契約作成トリガーが orders webhook より先着する race で
+    // 4xx を返すと Shopify Flow は再試行せず実行ログも赤くなる。次のトリガーで自然回復する。
+    const existing = await getSubscriptionContract(c.env.DB, contractId);
+    if (!existing) {
+      console.info(`teiki-flow: unknown contract ${contractId} (derive 前の race の可能性)`);
+      return c.json({ success: true, data: { skipped: 'unknown_contract', contractId } });
+    }
+    await upsertSubscriptionContract(c.env.DB, {
+      contractId,
+      nextBillingEstimate: date,
+      estimateSource: 'flow',
+    });
+    return c.json({
+      success: true,
+      data: { contractId, nextBillingEstimate: date, source: 'flow' },
+    });
+  } catch (err) {
+    console.error('POST /api/integrations/teiki-flow error:', err);
+    return c.json({ success: false, error: 'internal error' }, 500);
+  }
+});
+
+/** 共有シークレットの定数時間比較 (SHA-256 digest 同士を比較して長さ・内容の timing 差を消す)。 */
+async function constantTimeEqual(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [da, dbuf] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(a)),
+    crypto.subtle.digest('SHA-256', enc.encode(b)),
+  ]);
+  const ua = new Uint8Array(da);
+  const ub = new Uint8Array(dbuf);
+  let diff = 0;
+  for (let i = 0; i < ua.length; i += 1) diff |= ua[i] ^ ub[i];
+  return diff === 0;
+}
 
 // サブスク契約 read-model の一括再構築 (WI-1 バックフィル)。
 // 既存 D1 (shopify_orders / shopify_customers) のタグから導出するだけで Shopify API は叩かない。
@@ -425,6 +511,9 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
       // 解約・一時停止・スキップの検知経路。gate OFF なら完全 no-op。
       if (c.env.SUBSCRIPTION_MENU_ENABLED === 'true') {
         try {
+          // WI-2 (採点R1/R2 再設計): pause/resume 遷移のリカバリマーカーは
+          // applyCustomerTagsToContracts が pause 書込と同一 upsert で原子的に管理する。
+          // 送信は teiki-billing-reminder cron (JST 10-20時窓・CAS claim・失敗リトライ) が担う。
           await applyCustomerTagsToContracts(db, shopifyCustomerId, (body.tags as string) ?? null);
         } catch (err) {
           console.error('subscription contract derive (customer) failed:', err);

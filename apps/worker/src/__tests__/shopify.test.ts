@@ -34,6 +34,11 @@ const {
   mockLinkShopifyCustomerToFriend,
   mockFireEvent,
   mockRebuildContracts,
+  mockApplyCustomerTags,
+  mockGetSubContract,
+  mockUpsertSubContract,
+  mockGetFriendByCustomer,
+  mockChannelDispatch,
 } = vi.hoisted(() => ({
   mockUpsertShopifyOrder: vi.fn(),
   mockUpsertShopifyCustomer: vi.fn(),
@@ -45,13 +50,28 @@ const {
   mockLinkShopifyCustomerToFriend: vi.fn(),
   mockFireEvent: vi.fn(),
   mockRebuildContracts: vi.fn(),
+  mockApplyCustomerTags: vi.fn(),
+  mockGetSubContract: vi.fn(),
+  mockUpsertSubContract: vi.fn(),
+  mockGetFriendByCustomer: vi.fn(),
+  mockChannelDispatch: vi.fn(),
 }));
 
-// WI-1: rebuild endpoint のルートテスト用 (gate/force 分岐のみ検証、実処理は単体テスト側)
+// WI-1/WI-2: rebuild endpoint / customers タグ反映のルートテスト用
+// (gate・遷移分岐のみ検証、実処理は subscription-contracts.test.ts 側)
 vi.mock('../services/subscription-contracts.js', async (importOriginal) => {
   const orig = (await importOriginal()) as typeof import('../services/subscription-contracts.js');
-  return { ...orig, rebuildContractsFromD1: mockRebuildContracts };
+  return {
+    ...orig,
+    rebuildContractsFromD1: mockRebuildContracts,
+    applyCustomerTagsToContracts: mockApplyCustomerTags,
+  };
 });
+
+// WI-2: 決済失敗リカバリ push の検証用
+vi.mock('../services/channel-dispatcher.js', () => ({
+  dispatch: mockChannelDispatch,
+}));
 
 // ---------------------------------------------------------------------------
 // Mock @line-crm/db
@@ -73,6 +93,9 @@ vi.mock('@line-crm/db', async (importOriginal) => {
     getShopifyOrderByShopifyId: mockGetShopifyOrderByShopifyId,
     getShopifyCustomerByShopifyId: mockGetShopifyCustomerByShopifyId,
     linkShopifyCustomerToFriend: mockLinkShopifyCustomerToFriend,
+    getSubscriptionContract: mockGetSubContract,
+    upsertSubscriptionContract: mockUpsertSubContract,
+    getFriendByShopifyCustomerId: mockGetFriendByCustomer,
     jstNow: vi.fn(() => '2026-01-01T00:00:00+09:00'),
     // Stubs needed by other mounted routes
     getLineAccounts: vi.fn(async () => []),
@@ -419,6 +442,188 @@ describe('Shopify Routes', () => {
       const res = await app.request(REBUILD_PATH, { method: 'POST' }, createMockEnv());
       expect(res.status).toBe(401);
       expect(mockRebuildContracts).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // POST /api/integrations/teiki-flow (WI-2: Shopify Flow 実測値受信)
+  // =========================================================================
+
+  describe('POST /api/integrations/teiki-flow (WI-2)', () => {
+    const FLOW_PATH = '/api/integrations/teiki-flow';
+    const FLOW_SECRET = 'flow-secret-xyz';
+
+    function flowEnv(overrides: Record<string, unknown> = {}) {
+      return createMockEnv({
+        TEIKI_FLOW_SECRET: FLOW_SECRET,
+        SUBSCRIPTION_MENU_ENABLED: 'true',
+        ...overrides,
+      });
+    }
+
+    function postFlow(body: object, secret: string | null, env = flowEnv()) {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (secret !== null) headers['X-Teiki-Flow-Secret'] = secret;
+      return app.request(
+        FLOW_PATH,
+        { method: 'POST', headers, body: JSON.stringify(body) },
+        env,
+      );
+    }
+
+    it('TEIKI_FLOW_SECRET 未設定 → 401 (採点R3: 503 だと設定状態が外部に開示される)', async () => {
+      const res = await postFlow({}, FLOW_SECRET, flowEnv({ TEIKI_FLOW_SECRET: undefined }));
+      expect(res.status).toBe(401);
+    });
+
+    it('シークレット不一致 → 401 / ヘッダ無し → 401', async () => {
+      expect((await postFlow({}, 'wrong')).status).toBe(401);
+      expect((await postFlow({}, null)).status).toBe(401);
+    });
+
+    it('gate OFF → 202 skipped (read-model 非接触・Flow にリトライさせない)', async () => {
+      const res = await postFlow(
+        { contract_id: '100', next_billing_date: '2026-08-04' },
+        FLOW_SECRET,
+        flowEnv({ SUBSCRIPTION_MENU_ENABLED: undefined }),
+      );
+      expect(res.status).toBe(202);
+      expect(mockGetSubContract).not.toHaveBeenCalled();
+      expect(mockUpsertSubContract).not.toHaveBeenCalled();
+    });
+
+    it('既知契約 + 有効な日付 → estimate_source=flow で実測に昇格 (日本語日付フォーマットも受理)', async () => {
+      mockGetSubContract.mockResolvedValueOnce({ contract_id: '100' });
+      mockUpsertSubContract.mockResolvedValueOnce({ contract_id: '100' });
+      const res = await postFlow(
+        { contract_id: 100, next_billing_date: '2026-08-04T10:00:00+09:00' },
+        FLOW_SECRET,
+      );
+      expect(res.status).toBe(200);
+      expect(mockUpsertSubContract).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          contractId: '100',
+          nextBillingEstimate: '2026-08-04',
+          estimateSource: 'flow',
+        }),
+      );
+    });
+
+    it('未知契約 → 200 + skipped (phantom 行は作らず、Flow の実行ログを green に保つ — 採点R2)', async () => {
+      mockGetSubContract.mockResolvedValueOnce(null);
+      const res = await postFlow(
+        { contract_id: '999', next_billing_date: '2026-08-04' },
+        FLOW_SECRET,
+      );
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { success: boolean; data: { skipped: string } };
+      expect(json.data.skipped).toBe('unknown_contract');
+      expect(mockUpsertSubContract).not.toHaveBeenCalled();
+    });
+
+    it('contract_id / 日付の欠落・解釈不能・暦不正 → 400', async () => {
+      expect((await postFlow({ next_billing_date: '2026-08-04' }, FLOW_SECRET)).status).toBe(400);
+      expect(
+        (await postFlow({ contract_id: '100', next_billing_date: 'garbage' }, FLOW_SECRET)).status,
+      ).toBe(400);
+      // 暦として不正な日付を素通ししない (採点R1: 「99月99日ごろ」表示の防止)
+      expect(
+        (await postFlow({ contract_id: '100', next_billing_date: '2026-99-99' }, FLOW_SECRET)).status,
+      ).toBe(400);
+    });
+
+    it('🚨採点R1: Flow 既定の日本語日付フォーマット (YYYY年M月D日 hh:mm頃) を受理する', async () => {
+      mockGetSubContract.mockResolvedValueOnce({ contract_id: '100' });
+      mockUpsertSubContract.mockResolvedValueOnce({ contract_id: '100' });
+      const res = await postFlow(
+        { contract_id: '100', next_billing_date: '2026年8月4日 10:00頃' },
+        FLOW_SECRET,
+      );
+      expect(res.status).toBe(200);
+      expect(mockUpsertSubContract).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ nextBillingEstimate: '2026-08-04', estimateSource: 'flow' }),
+      );
+    });
+
+    it('非 POST は auth skip 対象外 → 401 (method 非依存 skip 穴の回帰ガード)', async () => {
+      const res = await app.request(FLOW_PATH, { method: 'GET' }, flowEnv());
+      expect(res.status).toBe(401);
+    });
+
+    it('D1 実行時障害は 400 でなく 500 (Flow 側の再実行対象にする)', async () => {
+      mockGetSubContract.mockRejectedValueOnce(new Error('D1 down'));
+      const res = await postFlow(
+        { contract_id: '100', next_billing_date: '2026-08-04' },
+        FLOW_SECRET,
+      );
+      expect(res.status).toBe(500);
+    });
+  });
+
+  // =========================================================================
+  // customers/update — 決済失敗リカバリ push (WI-2)
+  // =========================================================================
+
+  describe('customers/update — 決済失敗リカバリの検知 (WI-2 採点R1: 即時 push 廃止 → pending マーカー方式)', () => {
+    const SECRET = 'recovery_hmac_secret';
+
+    function recoveryEnv(overrides: Record<string, unknown> = {}) {
+      return createMockEnv({
+        SHOPIFY_WEBHOOK_SECRET: SECRET,
+        SUBSCRIPTION_MENU_ENABLED: 'true',
+        ...overrides,
+      });
+    }
+
+    async function postCustomerUpdate(env: ReturnType<typeof createMockEnv>) {
+      const rawBody = JSON.stringify(
+        makeCustomerWebhookBody({ tags: 'subscription-100-pause:2026-07-14' }),
+      );
+      const hmac = await generateShopifyHmac(SECRET, rawBody);
+      return app.request(
+        '/api/integrations/shopify/webhook',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Shopify-Topic': 'customers/update',
+            'X-Shopify-Hmac-Sha256': hmac,
+          },
+          body: rawBody,
+        },
+        env,
+      );
+    }
+
+    it('gate ON → applyCustomerTagsToContracts が呼ばれる (マーカーは apply 内で原子管理、即時 push なし)', async () => {
+      mockUpsertShopifyCustomer.mockResolvedValueOnce({ id: 'sc-1', shopify_customer_id: '7771234567890' });
+      mockApplyCustomerTags.mockResolvedValueOnce({
+        applied: 1,
+        transitions: [
+          { contractId: '100', becamePaused: true, becameCancelled: false, becameResumed: false },
+        ],
+      });
+
+      const res = await postCustomerUpdate(recoveryEnv());
+      expect(res.status).toBe(200);
+      expect(mockApplyCustomerTags).toHaveBeenCalledWith(
+        expect.anything(),
+        '7771234567890',
+        'subscription-100-pause:2026-07-14',
+      );
+      // 深夜送信・送信失敗での喪失・二重送信を避けるため、webhook 経路では push しない
+      // (pending マーカー設定は applyCustomerTagsToContracts 内で pause 書込と原子 —
+      //  実 SQL の検証は subscription-contracts.test.ts 側)
+      expect(mockChannelDispatch).not.toHaveBeenCalled();
+    });
+
+    it('MENU gate OFF → タグ反映を行わない (挙動ゼロ変更)', async () => {
+      mockUpsertShopifyCustomer.mockResolvedValueOnce({ id: 'sc-1', shopify_customer_id: '7771234567890' });
+
+      await postCustomerUpdate(recoveryEnv({ SUBSCRIPTION_MENU_ENABLED: undefined }));
+      expect(mockApplyCustomerTags).not.toHaveBeenCalled();
     });
   });
 

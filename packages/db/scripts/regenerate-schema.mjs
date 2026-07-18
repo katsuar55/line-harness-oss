@@ -121,28 +121,16 @@ function injectColumn(createTableSql, column, def) {
 
 function main() {
   let schemaSql = readFileSync(SCHEMA_FILE, 'utf8');
-
-  // 1) migrations を順番に読み、 ALTER TABLE ADD COLUMN を CREATE TABLE に merge
   const migrationFiles = listMigrations();
-  let columnsAdded = 0;
 
-  for (const f of migrationFiles) {
-    const content = readFileSync(join(MIGRATIONS_DIR, f), 'utf8');
-    const { alters } = extractStatements(content);
-    for (const { table, column, def } of alters) {
-      // schema.sql にその CREATE TABLE があるか
-      const ctRe = new RegExp(`CREATE TABLE IF NOT EXISTS\\s+${table}\\s*\\([\\s\\S]*?\\)\\s*;`, 'i');
-      const match = schemaSql.match(ctRe);
-      if (!match) continue; // あとで追記される分には columns が migration CREATE TABLE に含まれている
-      const existingColumns = extractColumnNames(match[0]);
-      if (existingColumns.has(column.toLowerCase())) continue; // 既に存在
-      const newCreate = injectColumn(match[0], column, def);
-      schemaSql = schemaSql.replace(match[0], newCreate);
-      columnsAdded++;
-    }
-  }
+  // ⚠️ 実行順序が本質 (2026-07-14 採点R2 で発覚した構造バグの修正):
+  //   旧実装は「①ALTER マージ → ②AUTO-APPENDED セクション破棄 → ③素の CREATE TABLE 再追記」
+  //   の順だったため、migration 由来テーブル (AUTO-APPENDED 内) への ALTER マージが
+  //   毎回②で破棄→③で素に戻り、schema.sql に永遠に反映されなかった
+  //   (例: 040→subscription_reminders、070→subscription_contracts)。
+  //   正順 =「①破棄 → ②再追記 → ③最終テキストへ ALTER マージ」。
 
-  // 2) AUTO-APPENDED セクションを差し替え（既存があれば削除して作り直し）
+  // 1) AUTO-APPENDED セクションを差し替え（既存があれば削除して作り直し）
   const autoMarker = '-- AUTO-APPENDED from migrations';
   if (schemaSql.includes(autoMarker)) {
     const markerIdx = schemaSql.indexOf(autoMarker);
@@ -150,7 +138,7 @@ function main() {
     schemaSql = schemaSql.slice(0, precedingSectionStart).trimEnd() + '\n';
   }
 
-  // 3) schema.sql に無い CREATE TABLE と未知の CREATE INDEX を追記
+  // 2) schema.sql に無い CREATE TABLE と未知の CREATE INDEX を追記
   const { tables: schemaTables, indexes: schemaIndexes } = extractStatements(schemaSql);
   const existingIndexNames = new Set(schemaIndexes.map((i) => i.name));
   const covered = new Set(schemaTables.keys());
@@ -193,6 +181,23 @@ function main() {
       }
     }
     schemaSql = schemaSql.trimEnd() + '\n' + additions;
+  }
+
+  // 3) migrations の ALTER TABLE ADD COLUMN を「最終テキスト」(再追記済みテーブル含む) へ merge
+  let columnsAdded = 0;
+  for (const f of migrationFiles) {
+    const content = readFileSync(join(MIGRATIONS_DIR, f), 'utf8');
+    const { alters } = extractStatements(content);
+    for (const { table, column, def } of alters) {
+      const ctRe = new RegExp(`CREATE TABLE IF NOT EXISTS\\s+${table}\\s*\\([\\s\\S]*?\\)\\s*;`, 'i');
+      const match = schemaSql.match(ctRe);
+      if (!match) continue;
+      const existingColumns = extractColumnNames(match[0]);
+      if (existingColumns.has(column.toLowerCase())) continue; // 既に存在
+      const newCreate = injectColumn(match[0], column, def);
+      schemaSql = schemaSql.replace(match[0], newCreate);
+      columnsAdded++;
+    }
   }
 
   writeFileSync(SCHEMA_FILE, schemaSql);

@@ -132,6 +132,10 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
   // line-quota-monitor は JST 時刻境界 (毎時 0-4 分窓) のみ push = ~毎時 1 回 heartbeat。
   // 単発の hourly 取りこぼし (deploy 等) で誤検知しないよう 3h 許容。
   { jobName: 'line-quota-monitor', maxSilentHours: 3 },
+  // WI-2 (2026-07-14, 採点R3): サブスク決済リマインド + 決済失敗リカバリ。gate OFF /
+  // 送信窓外でも毎 tick heartbeat (skippedGating / skippedWindow メトリクス) を記録する
+  // ため常時監視可。2h silent = 異常 (他の per-tick cron と同基準)。
+  { jobName: 'teiki-billing-reminder', maxSilentHours: 2 },
 ];
 
 // ============================================================

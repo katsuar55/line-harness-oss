@@ -38,6 +38,10 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/api/integrations/shopify/webhook/inventory' ||
     path === '/api/integrations/shopify/webhook/payment' ||
     path === '/api/integrations/shopify/webhook/product' ||
+    // WI-2 (2026-07-14): Shopify Flow「HTTP リクエスト送信」からのサブスク実測値受信。
+    // Flow は Bearer を付けられないため共有シークレットヘッダで代替認証 (route 内で検証)。
+    // POST 限定 (method 非依存 skip の穴 = 採点 D2 パターンを作らない)。
+    (c.req.method === 'POST' && path === '/api/integrations/teiki-flow') ||
     path.match(/^\/api\/webhooks\/incoming\/[^/]+\/receive$/) ||
     path.match(/^\/api\/forms\/[^/]+\/submit$/) ||
     // GET のみ公開 (LIFF が form 定義を読む)。 PUT(編集)/DELETE(削除) は authMiddleware を

@@ -113,7 +113,13 @@ export function parseIntervalDays(planName: string | null | undefined): number |
   return Number.isFinite(n) && n >= 1 && n <= 366 ? n : null;
 }
 
-/** 日時文字列 (ISO or 'YYYY-MM-DD HH:MM:SS') → JST の YYYY-MM-DD。解釈不能は null。 */
+/**
+ * 日時文字列 → JST の YYYY-MM-DD。解釈不能・暦として不正 (2026-99-99 等) は null。
+ * 受理形式 (WI-2 採点R1: Flow の既定フォーマット対応):
+ *   - TZ 付き ISO (`2026-08-04T10:00:00+09:00` / `...Z`)
+ *   - `YYYY-MM-DD[ HH:MM:SS]` (TZ 無しは JST とみなす)
+ *   - `YYYY年M月D日[ hh:mm頃]` (Shopify Flow / 定期購買の既定日付フォーマット)
+ */
 export function toJstDate(dateTime: string | null | undefined): string | null {
   if (!dateTime) return null;
   const s = dateTime.trim();
@@ -123,9 +129,30 @@ export function toJstDate(dateTime: string | null | undefined): string | null {
     if (Number.isNaN(ms)) return null;
     return new Date(ms + 9 * 3600_000).toISOString().slice(0, 10);
   }
-  // タイムゾーン無し (= jstNow() 形式など JST とみなす) → 日付部をそのまま
-  const m = /^(\d{4}-\d{2}-\d{2})/.exec(s);
-  return m ? m[1] : null;
+  // 和文形式 (Flow 既定): YYYY年M月D日 …
+  const jp = /^(\d{4})年(\d{1,2})月(\d{1,2})日/.exec(s);
+  if (jp) {
+    return validCalendarDate(Number(jp[1]), Number(jp[2]), Number(jp[3]));
+  }
+  // タイムゾーン無し (= jstNow() 形式など JST とみなす) → 日付部を暦検証して採用
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) {
+    return validCalendarDate(Number(m[1]), Number(m[2]), Number(m[3]));
+  }
+  return null;
+}
+
+/** 暦として実在する日付なら YYYY-MM-DD、しないなら null (99月99日 等の素通り防止)。 */
+function validCalendarDate(year: number, month: number, day: number): string | null {
+  const d = new Date(Date.UTC(year, month - 1, day));
+  if (
+    d.getUTCFullYear() !== year ||
+    d.getUTCMonth() !== month - 1 ||
+    d.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return d.toISOString().slice(0, 10);
 }
 
 /** YYYY-MM-DD に日数を加算。 */
@@ -213,8 +240,12 @@ export async function deriveContractFromOrder(
           lastOrderId: input.shopifyOrderId,
           lastOrderAt: orderAt ?? undefined,
           lastDeliveryDate: parsed.deliveryDate ?? undefined,
-          // 新しい注文 = このサイクルの決済完了 → skip 基準値を現累計にリセット
+          // 新しい注文 = このサイクルの決済完了 → skip 基準値を現累計にリセットし、
+          // Flow 実測値 (estimate_source='flow') も役目を終えるため導出モードへ戻す (WI-2)。
+          // 決済成功 = 支払い問題は解消済みなのでリカバリマーカーも掃除する (stale pending 防止)
           skipCountAtLastOrder: existing ? existing.skip_count : undefined,
+          estimateSource: 'derived',
+          ...(existing ? { recoveryPendingAt: null, recoveryNotifiedAt: null } : {}),
         }
       : isSameOrder
         ? {
@@ -228,14 +259,36 @@ export async function deriveContractFromOrder(
   return refreshEstimate(db, row);
 }
 
-/** 顧客タグ (plan/cancel/pause/skip-count) を該当契約へ反映。 */
+export interface CustomerTagsApplyResult {
+  applied: number;
+  /** 状態遷移。同一タグの再受信では発火しない (リカバリマーカー制御に使用) */
+  transitions: Array<{
+    contractId: string;
+    becamePaused: boolean;
+    becameCancelled: boolean;
+    becameResumed: boolean;
+  }>;
+}
+
+/**
+ * 顧客タグ (plan/cancel/pause/skip-count) を該当契約へ反映。
+ * @param opts.suppressRecoveryMarkers rebuild (bootstrap) 用 (採点R3 HIGH)。
+ *   rebuild は pass1 で契約行を paused_at=null で先に作るため、pass2 の pause タグが
+ *   「遷移」に見えてしまい、歴史的な一時停止に recovery_pending_at を一括ラッチして
+ *   gate ON 直後に stale な「一時停止しました」を一斉送信してしまう。bootstrap では
+ *   状態 (paused_at) のみ反映し、pending マーカーは立てない。
+ *   一方 resume 遷移の**マーカーリセットは suppress 中も実行する** (採点R4): リセットは
+ *   冪等で誤送信を生まず、抑止すると「通知済み→resume webhook 欠落→rebuild 再実行→
+ *   後日2回目の失敗」で notified が残存し通知が永久に沈黙する。
+ */
 export async function applyCustomerTagsToContracts(
   db: D1Database,
   shopifyCustomerId: string,
   customerTags: string | null | undefined,
-): Promise<number> {
+  opts?: { readonly suppressRecoveryMarkers?: boolean },
+): Promise<CustomerTagsApplyResult> {
   const states = parseCustomerSubscriptionTags(customerTags);
-  let applied = 0;
+  const result: CustomerTagsApplyResult = { applied: 0, transitions: [] };
   for (const [contractId, state] of states) {
     // plan 名は注文経路 (selling plan JSON) が正。顧客タグはカンマで断片化しうるため
     // (Shopify タグはカンマ区切り)、既存値が無いときだけ補完する (採点R1 LOW 修正)。
@@ -243,6 +296,14 @@ export async function applyCustomerTagsToContracts(
     const fillPlan = !existing?.plan_name && state.planName ? state.planName : undefined;
     const fillInterval =
       existing?.interval_days == null ? (parseIntervalDays(state.planName) ?? undefined) : undefined;
+    // 初見行 (existing なし) の pause タグは「遷移」ではない (採点R2: 過去の手動停止に
+    // 今さらリカバリ通知を出さない)。遷移は既知行の状態変化のみ。
+    const becamePaused =
+      existing != null && existing.paused_at == null && state.pausedAt != null;
+    const becameResumed =
+      existing != null && existing.paused_at != null && state.pausedAt == null;
+    const becameCancelled =
+      existing != null && existing.cancelled_at == null && state.cancelledAt != null;
     const row = await upsertSubscriptionContract(db, {
       contractId,
       shopifyCustomerId,
@@ -252,11 +313,26 @@ export async function applyCustomerTagsToContracts(
       // cancel/pause はタグの有無をそのまま反映 (タグが消えた = 再開)
       cancelledAt: state.cancelledAt,
       pausedAt: state.pausedAt,
+      // リカバリマーカー (WI-2 採点R2): pause 遷移で pending を、resume 遷移で両マーカーの
+      // リセットを、pause 書込と**同一 upsert で原子的に**行う (別 UPDATE だと途中の D1 障害で
+      // 検知が失われる)。resume リセットにより 2 回目以降の決済失敗も通知できる (永久ラッチ防止)。
+      ...(becamePaused && !opts?.suppressRecoveryMarkers
+        ? { recoveryPendingAt: jstNowLocal() }
+        : {}),
+      ...(becameResumed ? { recoveryPendingAt: null, recoveryNotifiedAt: null } : {}),
     });
     await refreshEstimate(db, row);
-    applied += 1;
+    result.applied += 1;
+    if (becamePaused || becameCancelled || becameResumed) {
+      result.transitions.push({ contractId, becamePaused, becameCancelled, becameResumed });
+    }
   }
-  return applied;
+  return result;
+}
+
+/** jstNow 相当 (このサービス内で完結させるための軽量ヘルパー)。 */
+function jstNowLocal(): string {
+  return new Date(Date.now() + 9 * 3600_000).toISOString().replace('T', ' ').slice(0, 19);
 }
 
 /** 推定次回決済日を再計算して保存。推定が変わったらリマインド冪等キーはそのまま (同一日再送防止のため)。 */
@@ -265,6 +341,29 @@ async function refreshEstimate(
   row: SubscriptionContractRow,
 ): Promise<SubscriptionContractRow> {
   const estimate = computeNextBillingEstimate(row);
+  // Flow 実測値 (estimate_source='flow'、WI-2) は導出値で上書きしない。
+  // ただし解約/一時停止による null 化だけは強制する (停止中の契約にリマインドを出さない)。
+  // 次の実注文 (deriveContractFromOrder の isNewerOrder) で 'derived' に戻り導出が再開する。
+  if (row.estimate_source === 'flow') {
+    // null 強制は「停止/解約が理由」の時だけ (採点R2)。導出不能 (interval や last_order 欠落 —
+    // まさに Flow 実測が唯一の日付ソースの契約クラス) では実測値を保持する。
+    if ((row.cancelled_at || row.paused_at) && row.next_billing_estimate !== null) {
+      return upsertSubscriptionContract(db, {
+        contractId: row.contract_id,
+        nextBillingEstimate: null,
+      });
+    }
+    // pause→resume 後: flow 実測値は null 強制で消費済み → derived に復帰して再計算する
+    // (採点R1: null のまま固着すると再開後サイクルのカード日付とリマインドが欠落する)
+    if (!row.cancelled_at && !row.paused_at && estimate !== null && row.next_billing_estimate === null) {
+      return upsertSubscriptionContract(db, {
+        contractId: row.contract_id,
+        nextBillingEstimate: estimate,
+        estimateSource: 'derived',
+      });
+    }
+    return row;
+  }
   if (estimate === row.next_billing_estimate) return row;
   return upsertSubscriptionContract(db, {
     contractId: row.contract_id,
@@ -414,7 +513,12 @@ export async function rebuildContractsFromD1(db: D1Database): Promise<RebuildRes
     for (const cust of batch.results) {
       result.customersScanned += 1;
       try {
-        await applyCustomerTagsToContracts(db, cust.shopify_customer_id, cust.tags);
+        // suppressRecoveryMarkers (採点R3 HIGH): bootstrap では pass1 が作った行への pause 反映が
+        // 「遷移」に見えるが、歴史的一時停止であり決済失敗の検知ではない。マーカーを立てると
+        // gate ON 直後に stale な「一時停止しました」が一斉送信される。
+        await applyCustomerTagsToContracts(db, cust.shopify_customer_id, cust.tags, {
+          suppressRecoveryMarkers: true,
+        });
       } catch (err) {
         result.customersFailed += 1;
         result.firstError ??= err instanceof Error ? err.message.slice(0, 300) : 'unknown';

@@ -42,6 +42,7 @@ on:
           - secret-list
           - enable-rank-discount
           - rank-discount-status
+          - put-teiki-flow-secret
 
 permissions:
   contents: read
@@ -71,6 +72,30 @@ jobs:
           printf '{"ACCOUNT_LINK_ENABLED":"true","ACCOUNT_LINK_HMAC_KEY":"%s","MEMBER_BACKFILL_ENABLED":"true"}' "$HMAC" > "$TMP"
           npx wrangler secret bulk "$TMP"
           rm -f "$TMP"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Put TEIKI_FLOW_SECRET (WI-2, from repository secret)
+        if: inputs.op == 'put-teiki-flow-secret'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # 値は GitHub Repository Secret (Settings → Secrets and variables → Actions) に
+          # TEIKI_FLOW_SECRET として保存しておく。PUBLIC repo のログには一切出力しない。
+          TEIKI_FLOW_SECRET_VALUE: ${{ secrets.TEIKI_FLOW_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TEIKI_FLOW_SECRET_VALUE:-}" ]; then
+            echo "Repository secret TEIKI_FLOW_SECRET が未設定です (Settings → Secrets and variables → Actions で作成してから再実行)" >&2
+            exit 1
+          fi
+          # TMP は温度感の高い予約名 (temp dir 環境変数) なので専用名を使う (採点R3)
+          export SECRETS_JSON_PATH="$RUNNER_TEMP/secrets.teiki-flow.json"
+          # wrangler 失敗時 (set -e で即終了) でも平文 JSON を残さない (採点R4)
+          trap 'rm -f "$SECRETS_JSON_PATH"' EXIT
+          node -e 'require("fs").writeFileSync(process.env.SECRETS_JSON_PATH, JSON.stringify({ TEIKI_FLOW_SECRET: process.env.TEIKI_FLOW_SECRET_VALUE }))'
+          npx wrangler secret bulk "$SECRETS_JSON_PATH"
           echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
 

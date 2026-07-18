@@ -60,6 +60,8 @@ export interface DispatchRecipient {
 /** LINE message オブジェクト (Flex/Text/etc) */
 export interface LinePayload {
   messages: unknown[];
+  /** X-Line-Retry-Key (UUID)。冪等キー — timeout 後の再試行でも二重配信しない (WI-2) */
+  retryKey?: string;
 }
 
 /** Email テンプレートと変数 (EmailRenderer 入力前段) */
@@ -192,6 +194,7 @@ async function sendLine(
     await deps.lineClient.pushMessage(
       input.recipient.friend.lineUserId,
       input.linePayload.messages as Parameters<LineClient['pushMessage']>[1],
+      input.linePayload.retryKey,
     );
     return { channel: 'line', status: 'sent' };
   } catch (err) {

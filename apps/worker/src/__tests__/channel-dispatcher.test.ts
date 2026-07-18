@@ -183,9 +183,12 @@ describe('dispatch (LINE)', () => {
 
     expect(r.results).toHaveLength(1);
     expect(r.results[0]).toEqual({ channel: 'line', status: 'sent' });
-    expect(lineClient.pushMessage).toHaveBeenCalledWith('U123', [
-      { type: 'text', text: 'hi' },
-    ]);
+    // 第3引数 = retryKey (WI-2: X-Line-Retry-Key 冪等キー。未指定は undefined)
+    expect(lineClient.pushMessage).toHaveBeenCalledWith(
+      'U123',
+      [{ type: 'text', text: 'hi' }],
+      undefined,
+    );
   });
 
   it('channel=line + is_following=0 で skipped:not_following', async () => {
