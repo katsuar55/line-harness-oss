@@ -22,6 +22,15 @@ name: Admin Ops
 #   rank-discount-status:
 #     read-only。loyalty_rank_discounts の status 別件数のみ (PII なし) をサマリに出す。
 #     発行の定点観測用 (repo は public のため件数以外は出さない)。
+#   put-teiki-flow-secret:
+#     WI-2。TEIKI_FLOW_SECRET を GitHub Repository Secret から wrangler secret へ投入。
+#   switch-link-metafield / rollback-link-metafield:
+#     WI-6 (CRM PLUS 撤去)。friend↔customer 連携 metafield の ns/key secret を
+#     lineharness/line_user_id へ切替 / 移行前の実効状態へ復元。
+#     ⚠️ 実行順序は docs/CRMPLUS_UNINSTALL_RUNBOOK.md 厳守 (migration+verify green が前提)。
+#   put-worker-api-key:
+#     API_KEY (管理 API Bearer) を GitHub Repository Secret WORKER_API_KEY から再投入。
+#     cutover-apikey.txt が 401 になった時の復旧用。
 #
 # ⚠️ repo は PUBLIC = workflow ログ/サマリは公開される。secret の値・顧客データ (PII) を
 #    echo/サマリ出力する op を追加してはならない (名前・件数のみ可)。
@@ -43,6 +52,9 @@ on:
           - enable-rank-discount
           - rank-discount-status
           - put-teiki-flow-secret
+          - switch-link-metafield
+          - rollback-link-metafield
+          - put-worker-api-key
 
 permissions:
   contents: read
@@ -95,6 +107,69 @@ jobs:
           # wrangler 失敗時 (set -e で即終了) でも平文 JSON を残さない (採点R4)
           trap 'rm -f "$SECRETS_JSON_PATH"' EXIT
           node -e 'require("fs").writeFileSync(process.env.SECRETS_JSON_PATH, JSON.stringify({ TEIKI_FLOW_SECRET: process.env.TEIKI_FLOW_SECRET_VALUE }))'
+          npx wrangler secret bulk "$SECRETS_JSON_PATH"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Switch link metafield to lineharness.line_user_id (WI-6)
+        if: inputs.op == 'switch-link-metafield'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # 値は非機密 (metafield の ns/key 名) だが、secret が hardcoded default を上書きする
+          # 構成のため secret として投入する (feedback_secret_overrides_hardcoded_default)。
+          # 前提: migration endpoint + verify で lineharness.line_user_id のパリティ確認済み
+          # (docs/CRMPLUS_UNINSTALL_RUNBOOK.md)。
+          echo '⚠️ 前提確認: runbook 手順2-3 (migration remaining=0 + verify resolved==candidatesTotal) を' >> "$GITHUB_STEP_SUMMARY"
+          echo '   完了してから実行すること。未完なら rollback-link-metafield で即復旧できる。' >> "$GITHUB_STEP_SUMMARY"
+          SECRETS_JSON_PATH="$RUNNER_TEMP/secrets.link-metafield.json"
+          trap 'rm -f "$SECRETS_JSON_PATH"' EXIT
+          printf '{"FRIEND_LINK_METAFIELD_NAMESPACE":"lineharness","FRIEND_LINK_METAFIELD_KEY":"line_user_id","ACCOUNT_LINK_METAFIELD_NAMESPACE":"lineharness","ACCOUNT_LINK_METAFIELD_KEY":"line_user_id"}' > "$SECRETS_JSON_PATH"
+          npx wrangler secret bulk "$SECRETS_JSON_PATH"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Rollback link metafield to socialplus.line (WI-6 rollback)
+        if: inputs.op == 'rollback-link-metafield'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # ロールバック = 移行前の実効状態を復元:
+          #   - FRIEND_LINK (reverse 読取) = socialplus/line (CRM PLUS の metafield。
+          #     アンインストール前なら残存しているため即復旧可、アンインストール後は不可)
+          #   - ACCOUNT_LINK (forward 書込) = naturism/line_user_id (移行前は secret 未設定で
+          #     コードデフォルト naturism が実効値だった。2026-07-19 secret-list で確認)
+          SECRETS_JSON_PATH="$RUNNER_TEMP/secrets.link-metafield-rollback.json"
+          trap 'rm -f "$SECRETS_JSON_PATH"' EXIT
+          printf '{"FRIEND_LINK_METAFIELD_NAMESPACE":"socialplus","FRIEND_LINK_METAFIELD_KEY":"line","ACCOUNT_LINK_METAFIELD_NAMESPACE":"naturism","ACCOUNT_LINK_METAFIELD_KEY":"line_user_id"}' > "$SECRETS_JSON_PATH"
+          npx wrangler secret bulk "$SECRETS_JSON_PATH"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Put API_KEY from repository secret (WORKER_API_KEY)
+        if: inputs.op == 'put-worker-api-key'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # 値は GitHub Repository Secret WORKER_API_KEY に保存しておく (PUBLIC repo のログには
+          # 一切出力しない)。ローカルの apps/worker/cutover-apikey.txt にも同値を保存すること。
+          WORKER_API_KEY_VALUE: ${{ secrets.WORKER_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WORKER_API_KEY_VALUE:-}" ]; then
+            echo "Repository secret WORKER_API_KEY が未設定です (Settings → Secrets and variables → Actions で作成してから再実行)" >&2
+            exit 1
+          fi
+          export SECRETS_JSON_PATH="$RUNNER_TEMP/secrets.worker-api-key.json"
+          trap 'rm -f "$SECRETS_JSON_PATH"' EXIT
+          node -e 'require("fs").writeFileSync(process.env.SECRETS_JSON_PATH, JSON.stringify({ API_KEY: process.env.WORKER_API_KEY_VALUE }))'
           npx wrangler secret bulk "$SECRETS_JSON_PATH"
           echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
