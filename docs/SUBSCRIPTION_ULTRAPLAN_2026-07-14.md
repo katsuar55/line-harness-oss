@@ -107,3 +107,13 @@ LINE トーク内で定期便のすべて (確認・スキップ・日付変更�
   一斉 stale 通知) を suppressRecoveryMarkers で遮断、recovery claim に pending 述語追加、
   409=配信済み扱い、cron-monitor DEFAULT_RULES 登録 (gate OFF でも heartbeat)、
   teiki-flow 未設定 503→401、INSERT/UPDATE 列同期。
+- 2026-07-19: WI-2 完了 — R4 全次元 pass (compliance 98 / security 97 / tests 95 / ux 97)。
+  PR #196 merge (main=b7e9e49)、3,484 テスト green、Deploy Worker success (gated off)。
+- 2026-07-19: WI-6 実装 — lineharness.line_user_id 移行 (service+endpoint+admin-ops
+  switch/rollback op+runbook)。secret-list 実査で判明: CRM PLUS 依存は reverse 経路
+  (FRIEND_LINK_METAFIELD_*=socialplus/line) のみ、forward は secret 未設定で
+  naturism.line_user_id が実効値。検証は直読 (即時)+検索経路 (インデックス非同期) の2段。
+- 2026-07-19: WI-6 採点完了 — R1 (85/88/95✅/86/81) → R2 修正 (Free プラン subrequest 上限
+  →チャンク化、verify useSecret、legacy-audit 棚卸し新設、jq 除去、put-worker-api-key op)
+  → R2 (95✅/87/91✅/94✅) → R3 修正 (matchFailed+算術閉包、予算前判定+再開cursor、
+  audit 記録) → R3 data-correctness **98 ✅ = 全5次元 90+**。
