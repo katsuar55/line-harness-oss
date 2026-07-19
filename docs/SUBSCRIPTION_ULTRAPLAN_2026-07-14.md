@@ -116,4 +116,12 @@ LINE トーク内で定期便のすべて (確認・スキップ・日付変更�
 - 2026-07-19: WI-6 採点完了 — R1 (85/88/95✅/86/81) → R2 修正 (Free プラン subrequest 上限
   →チャンク化、verify useSecret、legacy-audit 棚卸し新設、jq 除去、put-worker-api-key op)
   → R2 (95✅/87/91✅/94✅) → R3 修正 (matchFailed+算術閉包、予算前判定+再開cursor、
-  audit 記録) → R3 data-correctness **98 ✅ = 全5次元 90+**。
+  audit 記録) → R3 data-correctness **98 ✅ = 全5次元 90+**。PR #197 merge (main=04f82d3)。
+- 2026-07-19: WI-3 設計書 — v1 R1 (31-48 全fail、58 findings、CRITICAL: 課金座標系の誤り
+  [billingAttemptExpectedDate が正]/claim デッドロック/移行サイクル単位二重課金) → v2 R2
+  (35-70) → v3 (resolveBillableCycle 一本化 + cadence-by-scheduleEdit) R3 (59-71) → v4
+  R4 (**dunning 92✅ / verifiability 92✅**、83/76/78) → v5 (no-parallel-attempt 原則・
+  pending_new_card 待機・catch-up=scheduleEdit当日化・HB in-flight 受容+14日監視隔離 等)
+  R5 (**migration-safety 93✅ / ops-killswitch 96✅**、state-machine 84)。
+  **残 = state-machine のみ (84→90)。findings と FIX は docs/WI3_R5_FINDINGS.md に保存済み** —
+  v6 で 5 件反映 → state-machine 単独再採点で WI-3 完了予定。
