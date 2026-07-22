@@ -125,3 +125,11 @@ LINE トーク内で定期便のすべて (確認・スキップ・日付変更�
   R5 (**migration-safety 93✅ / ops-killswitch 96✅**、state-machine 84)。
   **残 = state-machine のみ (84→90)。findings と FIX は docs/WI3_R5_FINDINGS.md に保存済み** —
   v6 で 5 件反映 → state-machine 単独再採点で WI-3 完了予定。
+- 2026-07-22: v6 = R5 findings 全 14 反映 → R6 再採点 state-machine **90/92 PASS**
+  (独立2グレーダー: 閉包性/liveness + race/ordering) + pass済み4次元回帰 96 PASS →
+  R6 findings (MED5+LOW4: await_card sweep in-flightガード/pending_new_card 第3ordering/
+  ops_hold 滞留検出/activated 順序の webhook 再同期迂回/§7.0 intent crash-resume 等) 反映 →
+  R7 確認採点 **94 PASS** (MED1+LOW3 反映済み) = **WI-3 完了 (全5次元 90+: dunning 92/
+  verifiability 92/migration-safety 93/ops-killswitch 96/state-machine 94)**。
+  次 = scope 申請 (read_customer_payment_methods + write_own_subscription_contracts、
+  前例 #177) + WI-4 実装 (設計書 §13 の順)。
