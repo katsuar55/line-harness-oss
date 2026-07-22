@@ -53,7 +53,10 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/admin/friend-coupon' ||
     // FAQ 管理ページ (公開 HTML shell のみ skip。/api/admin/faq* は API_KEY 保護のまま。
     // exact-match なので /api/admin/faq を素通りさせない = 採点 D2 の method 非依存 skip 穴を作らない)。
-    path === '/admin/faq'
+    path === '/admin/faq' ||
+    // 管理ダッシュボード (公開 HTML shell のみ・GET 限定。集約 API /api/admin/dashboard は
+    // API_KEY 保護のまま = 数字・未回答質問は無認証で読めない)。/admin/ は 301 → /admin。
+    (c.req.method === 'GET' && (path === '/admin' || path === '/admin/'))
   ) {
     return next();
   }

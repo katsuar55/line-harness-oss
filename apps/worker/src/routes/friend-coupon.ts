@@ -74,13 +74,14 @@ const ADMIN_PAGE_HTML = `<!DOCTYPE html>
 </head>
 <body>
   <div class="wrap">
+    <p style="margin:0 0 8px"><a href="/admin" style="font-size:12px;color:#059669;text-decoration:none;font-weight:700">← ダッシュボードに戻る</a></p>
     <h1>🎁 LINE友だち限定クーポン</h1>
-    <p class="sub">ランク不問・全友だち向けの一律割引。ON にすると LIFF ホームにクーポンカードが表示されます。</p>
+    <p class="sub">全友だち向けのキャンペーンクーポンです。ON にすると、お客様の LINE ポータル (ホーム画面) にクーポンカードが表示されます。OFF に戻すと非表示になります。</p>
 
     <div class="card">
-      <label>管理APIキー (Bearer)</label>
-      <input type="password" id="apikey" placeholder="API_KEY を貼り付け" autocomplete="off">
-      <p class="hint">この端末にのみ保存されます (localStorage)。読み込み/保存に使用。</p>
+      <label>管理APIキー</label>
+      <input type="password" id="apikey" placeholder="管理者から受け取ったキーを貼り付け" autocomplete="off">
+      <p class="hint">この端末にのみ保存されます。ダッシュボード (/admin) で入力済みなら自動で引き継がれます。</p>
     </div>
 
     <div class="card">
@@ -104,27 +105,31 @@ const ADMIN_PAGE_HTML = `<!DOCTYPE html>
   <script>
     var $ = function(id){ return document.getElementById(id); };
     var KEY = 'fc_admin_apikey';
-    $('apikey').value = localStorage.getItem(KEY) || '';
+    // ダッシュボード (/admin) で保存した共通キーがあれば引き継ぐ
+    $('apikey').value = localStorage.getItem(KEY) || localStorage.getItem('lh_admin_apikey') || '';
     function setStatus(msg, ok){ var s=$('status'); s.textContent=msg; s.className= ok?'ok':'err'; }
     function headers(){ var k=$('apikey').value.trim(); return { 'Content-Type':'application/json', 'Authorization':'Bearer '+k }; }
     function load(){
       var k=$('apikey').value.trim(); if(!k) return;
-      localStorage.setItem(KEY,k);
       fetch('/api/admin/friend-coupon',{ headers: headers() })
         .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
-        .then(function(j){ var d=j.data||{}; $('enabled').checked=!!d.enabled; $('percent').value=d.percent||5; $('code').value=d.code||''; $('label').value=d.label||''; $('note').value=d.note||''; setStatus('読み込みました', true); })
+        .then(function(j){
+          // 正しいキーと確認できてから保存 (誤キーで共有キーを潰さない)
+          localStorage.setItem(KEY,k); localStorage.setItem('lh_admin_apikey',k);
+          var d=j.data||{}; $('enabled').checked=!!d.enabled; $('percent').value=d.percent||5; $('code').value=d.code||''; $('label').value=d.label||''; $('note').value=d.note||''; setStatus('読み込みました', true); })
         .catch(function(e){ setStatus('読み込み失敗: '+e.message+' (APIキーをご確認ください)', false); });
     }
     $('apikey').addEventListener('change', load);
     if($('apikey').value) load();
     $('save').addEventListener('click', function(){
       var k=$('apikey').value.trim(); if(!k){ setStatus('APIキーを入力してください', false); return; }
-      localStorage.setItem(KEY,k);
       var body = { enabled: $('enabled').checked, percent: Number($('percent').value), code: $('code').value.trim(), label: $('label').value.trim(), note: $('note').value };
       $('save').disabled=true; setStatus('保存中…', true);
       fetch('/api/admin/friend-coupon',{ method:'PUT', headers: headers(), body: JSON.stringify(body) })
         .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
-        .then(function(j){ var d=j.data||{}; setStatus(d.enabled?('✅ 表示ON / '+d.percent+'%OFF / コード: '+(d.code||'(未設定)')):'⏸ 表示OFF にしました', true); })
+        .then(function(j){
+          localStorage.setItem(KEY,k); localStorage.setItem('lh_admin_apikey',k);
+          var d=j.data||{}; setStatus(d.enabled?('✅ 表示ON / '+d.percent+'%OFF / コード: '+(d.code||'(未設定)')):'⏸ 表示OFF にしました', true); })
         .catch(function(e){ setStatus('保存失敗: '+e.message, false); })
         .finally(function(){ $('save').disabled=false; });
     });
