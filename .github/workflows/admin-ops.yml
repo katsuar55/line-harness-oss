@@ -31,6 +31,19 @@ name: Admin Ops
 #   put-worker-api-key:
 #     API_KEY (管理 API Bearer) を GitHub Repository Secret WORKER_API_KEY から再投入。
 #     cutover-apikey.txt が 401 になった時の復旧用。
+#   billing-kill:
+#     WI-4 (Phase 3 課金基盤) の緊急停止。SELF_BILLING_ENABLED + SUB_MIGRATION_ENABLED を
+#     同時 'false' 投入 (docs/PHASE3_BILLING_DESIGN_2026-07-19.md §8。Katsu 単独実行可)。
+#     解除は同 §8 の解除 runbook (stuck claim 0 / overdue レビュー / バックログ分散 /
+#     突合 green / 原因 PR merge 済み) を満たしてから手動で secret を戻す。
+#   billing-status:
+#     read-only。own_sub_contracts / billing_cycle_claims の status 別件数・breaker 状態・
+#     quarantine 件数・own-billing heartbeat 直近1行 (いずれも件数/状態のみ、PII なし)。
+#     ⚠️ migration 071 適用前はテーブル不在でクエリが fail する (適用後に使用)。
+#   apply-migration-071:
+#     migration 071 (Phase 3 課金基盤テーブル群) を wrangler d1 execute --file で直接適用。
+#     CREATE TABLE IF NOT EXISTS のみで冪等・additive (既存テーブル無改変・データ破壊なし)。
+#     d1_migrations state drift があるため migrations apply は使わない (メモリ: 全再実行 trap)。
 #
 # ⚠️ repo は PUBLIC = workflow ログ/サマリは公開される。secret の値・顧客データ (PII) を
 #    echo/サマリ出力する op を追加してはならない (名前・件数のみ可)。
@@ -55,6 +68,9 @@ on:
           - switch-link-metafield
           - rollback-link-metafield
           - put-worker-api-key
+          - billing-kill
+          - billing-status
+          - apply-migration-071
 
 permissions:
   contents: read
@@ -232,6 +248,69 @@ jobs:
           rm -f "$TMP"
           echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler secret list | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Billing kill (WI-4 emergency stop)
+        if: inputs.op == 'billing-kill'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # §8: 発行 + 期限 sweep + 移行 phase 自動遷移を同時停止。受信・同期・結果回収は継続。
+          TMP="$RUNNER_TEMP/secrets.billing-kill.json"
+          trap 'rm -f "$TMP"' EXIT
+          printf '{"SELF_BILLING_ENABLED":"false","SUB_MIGRATION_ENABLED":"false"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          echo '### billing-kill applied (SELF_BILLING_ENABLED=false, SUB_MIGRATION_ENABLED=false)' >> "$GITHUB_STEP_SUMMARY"
+          echo '確認: 5-10分後 (実行中 tick は旧 env のまま完走するため) に billing-status を実行し、own-billing heartbeat が skippedGating=true になっていること' >> "$GITHUB_STEP_SUMMARY"
+          echo '解除は設計書 §8 の解除 runbook を満たしてから (stuck claim 0 / overdue レビュー / バックログ分散 / 突合 green / 原因 PR merge 済み)' >> "$GITHUB_STEP_SUMMARY"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Billing status (counts only, read-only)
+        if: inputs.op == 'billing-status'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # migration 071 未適用なら fail せず案内を出して終了 (review LOW: 実行順ミスの ergonomics)
+          HAS=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='own_sub_contracts'")
+          if ! echo "$HAS" | grep -Eq '"n": *1'; then
+            echo 'migration 071 not applied yet — run apply-migration-071 first' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo '### own_sub_contracts (counts by status, no PII)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT status, COUNT(*) AS n FROM own_sub_contracts GROUP BY status" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '### billing_cycle_claims (counts by status)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT status, COUNT(*) AS n FROM billing_cycle_claims GROUP BY status" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '### breaker / quarantine' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT key, updated_at FROM own_billing_state" | tee -a "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS quarantined FROM own_billing_quarantine" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '### own-billing heartbeat (latest 1)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT ran_at, status, metrics_json FROM cron_run_logs WHERE job_name='own-billing' ORDER BY ran_at DESC LIMIT 1" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply migration 071 (own-billing foundation, idempotent)
+        if: inputs.op == 'apply-migration-071'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute naturism-line-crm --remote \
+            --file ../../packages/db/migrations/071_own_billing_foundation.sql
+          echo '### Verification (new tables)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('own_sub_contracts','billing_cycle_claims','sub_migration_snapshots','own_billing_notices','own_billing_state','own_billing_quarantine') ORDER BY name" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Rank discount status (counts only, read-only)
         if: inputs.op == 'rank-discount-status'

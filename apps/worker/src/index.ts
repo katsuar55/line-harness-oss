@@ -97,6 +97,7 @@ import { processScheduledAbTests } from './services/ab-test.js';
 import { processWeeklyReports } from './services/weekly-report.js';
 import { processSubscriptionReminders } from './services/subscription-reminder.js';
 import { processBillingReminders } from './services/subscription-billing-reminder.js';
+import { processOwnBilling } from './services/own-billing.js';
 import { processMonthlyFoodReports } from './services/monthly-food-report.js';
 import { processWeeklyCoachPush } from './services/weekly-coach-push.js';
 import { processCronMonitor } from './services/cron-monitor.js';
@@ -211,6 +212,16 @@ export type Env = {
     //   未設定なら受信口は 401 (実質無効。503 にしない — 設定状態を外部に開示しないため、
     //   区別はサーバログのみ)。設定手順: docs/TEIKI_FLOW_SETUP.md
     TEIKI_FLOW_SECRET?: string;
+    // Phase 3 自社課金基盤 gate 群 (WI-4, docs/PHASE3_BILLING_DESIGN_2026-07-19.md §8):
+    //   canIssueAttempt() = ENABLED='true' ∧ ARMED_AT 設定済 ∧ ¬breaker(D1) ∧ allowlist match
+    //   ∧ ¬excludelist match。全て未設定 (既定) = own-billing は heartbeat のみの dormant。
+    //   緊急停止 = Admin Ops「billing-kill」op (ENABLED + SUB_MIGRATION を同時 'false')。
+    SELF_BILLING_ENABLED?: string;
+    SELF_BILLING_ARMED_AT?: string;            // arming インターロック (ISO 日時。未設定 = 発行不可)
+    SELF_BILLING_ALLOWLIST?: string;           // 契約 gid CSV or 'ALL'。fail-closed (空/parse不能=ゼロ)
+    SELF_BILLING_EXCLUDELIST?: string;         // 契約単位の緊急除外 (実効 = secret ∪ D1 quarantine)
+    SUB_MIGRATION_ENABLED?: string;            // 移行 phase 機械の自動遷移 gate (§7)
+    SELF_BILLING_UI_ENABLED?: string;          // WI-1 カードの実 API 化 gate (§8)
     // 新規ユーザー限定 welcome クーポン用の顧客セグメント gid (2026-07-10):
     //   例 gid://shopify/Segment/xxx (= Shopify Admin で「注文回数 0」segment を作成)。
     //   設定時、 welcome クーポンはこのセグメントのみ対象 (= 既存客の複数アカウント farming 防止)。
@@ -537,6 +548,10 @@ async function scheduled(
   }
   jobs.push(withHeartbeat(env.DB, 'ban-monitor', () => checkAccountHealth(env.DB)));
   jobs.push(withHeartbeat(env.DB, 'token-refresh', () => refreshLineAccessTokens(env.DB)));
+  // WI-4 (Phase 3 自社課金基盤) own-billing 5分 tick。account 非依存のため token loop の外で 1 回。
+  // gate OFF (既定) = skippedGating heartbeat のみ・071 新テーブル非アクセス (migration 未適用でも安全)。
+  // 内部で insertCronRunLog を呼ぶため wrap しない。
+  jobs.push(processOwnBilling(env));
 
   // Phase 5β-1d-2f-followup-2: audit_logs failure spike monitoring (= Discord alert via logger)
   // 直近 5 min で failure 3 件以上 → alert (cooldown 1h で重複防止)

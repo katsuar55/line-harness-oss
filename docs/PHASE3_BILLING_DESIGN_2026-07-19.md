@@ -110,6 +110,8 @@ CREATE TABLE sub_migration_snapshots (
       -- snapshotted|pending_card|own_created_paused|hb_stop_requested|
       -- huckleberry_stopped|billing_aligned|activated|rolled_back
   target_first_billing_date TEXT,             -- billing_aligned が確定する絶対日付
+  pending_intent TEXT,                        -- NULL|'pause'|'cancel' (§7.0 窓中の顧客意思)
+  pending_intent_done INTEGER NOT NULL DEFAULT 0, -- §7.0 実行済みマーク (intent 実行 → 本列 → phase 確定)
   phase_updated_at TEXT NOT NULL, created_at TEXT NOT NULL
 );
 ```
