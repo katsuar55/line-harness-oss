@@ -1,6 +1,10 @@
-# Phase 3 自社課金基盤 設計書 v5 (WI-3) — Huckleberry 卒業
+# Phase 3 自社課金基盤 設計書 v6 (WI-3) — Huckleberry 卒業
 
-2026-07-19: R1 (58 findings) → v2 → R2 (55) → v3 → R3 (51) → v4 → R4 (28) → **v5**。
+2026-07-19: R1 (58 findings) → v2 → R2 (55) → v3 → R3 (51) → v4 → R4 (28) → v5 →
+R5 (state-machine 5 findings + pass 済み次元残 9) → v6 (2026-07-22、14 findings 反映) →
+R6 再採点 state-machine **90/92 PASS** (独立2グレーダー) + 回帰 96 PASS → MED5+LOW4 反映 →
+R7 確認採点 **94 PASS** (MED1+LOW3 反映済み) = **WI-3 完了: 全5次元 90+**
+(dunning 92 / verifiability 92 / migration-safety 93 / ops-killswitch 96 / state-machine 94)。
 Ultraplan (docs/SUBSCRIPTION_ULTRAPLAN_2026-07-14.md) WI-3 成果物。WI-4 (実装)・WI-5 (移行) の正。
 
 ## 0. 目的と非スコープ
@@ -39,7 +43,10 @@ own-billing cron (5分 tick、§5) ────────┘        │
 ```
 
 - **サイクルの正は Shopify**。D1 は現在サイクル (cycle_index + scheduled_date) のキャッシュ。
-  日次 + 全 webhook + 全操作後に照会再同期 (self-heal 可能)
+  日次 + 全 webhook + 全操作後に照会再同期 (self-heal 可能)。**例外: 移行窓中 (phase が
+  activated 未確定) の契約は再同期で status 列を昇格させない (cycle キャッシュのみ更新)** —
+  contracts/activate webhook が §7 activated の順序制約 (scheduleEdit 成功確認後に active 化)
+  を迂回して D1 status を先行 active 化する穴の封鎖 (§5.1 の phase 除外と二重の網)
 - **WI-1/WI-2 接続 (責務分界)**:
   - リマインド (4日前): WI-2 cron が旧 read-model の `migrated_to` 列で own_sub_contracts に
     切替して読む。**印字は hb_stop_requested 時** (activated まで待つと停止〜activate の窓で
@@ -114,16 +121,16 @@ challenge_link / pause_notice / **resume_notice / delivery_notice** (全通知�
 
 | 遷移 | 手段 / 条件 |
 |---|---|
-| (無/CAS対象) → attempting | INSERT、または CAS `WHERE status IN ('failed','failed_no_attempt','abandoned')` (attempt_no++・key 再計算)。resolveBillableCycle が当該 cycle を返した時のみ。**【no-parallel-attempt 原則】attempt_gid を持つ行からの全ての CAS 再入 (failed/failed_no_attempt/abandoned を問わず) は、旧 attempt の最終状態を照会してから: 非 terminal (pending/challenged) → 再入不可 / succeeded → succeeded 昇格 / failed 確定のみ CAS 可**。同一サイクルに非 terminal な attempt が 2 本存在する状態はどの経路からも作らない (二重課金の構造封鎖) |
+| (無/CAS対象) → attempting | INSERT、または CAS `WHERE status IN ('failed','failed_no_attempt','abandoned')` (attempt_no++・key 再計算。**例外: THROTTLED の next_tick 再入のみ attempt_no 据え置き・同一 key** §6.5)。resolveBillableCycle が当該 cycle を返した時のみ。**【no-parallel-attempt 原則】attempt_gid を持つ行からの全ての CAS 再入 (failed/failed_no_attempt/abandoned を問わず) は、旧 attempt の最終状態を照会してから: 非 terminal (pending/challenged) → 再入不可 / succeeded → succeeded 昇格 / failed 確定のみ CAS 可**。同一サイクルに非 terminal な attempt が 2 本存在する状態はどの経路からも作らない (二重課金の構造封鎖) |
 | attempting → succeeded | success webhook / reconciliation。order_id 記録 |
 | attempting → failed | failure webhook / reconciliation。**failure webhook 経由で challenged になった場合は failed 化せず attempting 維持 (§6.3 レーン管轄)** |
 | attempting → failed_no_attempt | 同期 userError。retry_policy: THROTTLED → next_tick (attempt_no 据え置き・同一 key で再発行)、BCCBED/未知 → hold (自動再発行なし + alert、ops 解除 op で復帰) |
-| attempting/failed → abandoned | pause/cancel/skip/対象サイクル変更 (I-3) |
+| attempting/failed → abandoned | pause/cancel/skip/対象サイクル変更 (I-3)、challenged pending 14日放棄 (§5.2 失効 sweep が I-6 と同一規則で実施) |
 | failed → succeeded | 遅延 success (3DS 等)。無条件昇格 + I-4 |
 | attempting → failed | challenged 72h 失効 sweep (attempt 最終照会後。**照会が success なら succeeded 処理**) |
 | (無) → skipped | skip 操作 (cron を永久ブロック) |
 | skipped → abandoned | unskip (行は残す。未claim 定義により due 復帰可能) |
-| abandoned → skipped | §6.7 S6 再開の過去サイクル skip 処理 (**前提: 旧 attempt が非 terminal なら §6.3 レーンの決着を待ってから**) |
+| abandoned → skipped | §6.7 S6 再開の過去サイクル skip 処理 (**前提: 旧 attempt が非 terminal なら再開全体を保留 — §6.7 の待機 vehicle で決着後に実行**) |
 | abandoned → succeeded | 遅延 success (§6.6 規則) / CAS 再入時の照会昇格 |
 | failed_no_attempt → abandoned | pause/cancel/skip (I-3。hold 中の claim も対象) |
 
@@ -149,7 +156,11 @@ challenge_link / pause_notice / **resume_notice / delivery_notice** (全通知�
 1. Shopify billing cycles 照会 → 最古の未解決 (未 billed・未 skipped) サイクル C
 2. C.scheduledDate > today → 対象なし
 3. today − C.scheduledDate > 14日 (I-6) → 対象なし。claim abandoned 化 + C を
-   scheduleEdit(skip) + 次アンカーへ + Discord alert
+   scheduleEdit(skip) + 次アンカーへ + Discord alert。**発動時に当該契約の dunning_state も
+   解放する** (放棄後の契約状態を全経路で対称に): challenged は §5.2 の放棄規則 (S5 化)、
+   retry_wait/none は dunning_state='none' へ戻して次アンカーから通常再開 (放棄済み
+   サイクルの dunning は cycle とともに閉じる — カード不良が持続するなら次サイクルの失敗が
+   新規に matrix へ入る。滞留検出器の恒常ノイズも残さない)
 4. それ以外 → C が対象。claim は C の cycle_key で INSERT/CAS (旧サイクルの未解決 claim は
    abandoned 化してから)
 
@@ -162,7 +173,7 @@ canIssueAttempt() (§8) 通過後のみ** (kill 中に Shopify を mutate しな
 |---|---|---|
 | S1 | active/none | 失敗分類 → **matrix が決める先 (S2/S3/S4h/S4o/S5 いずれも)**、S6/S7、S8 |
 | S2 | active/retry_wait | S1 (成功)・matrix 再分類・S6/S7 |
-| S3 | active/challenged | S1 (認証成功)・matrix 再分類 (decline)・S5 (72h 失効)・S6/S7 |
+| S3 | active/challenged | S1 (認証成功)・matrix 再分類 (decline、pending_new_card=1 は §6.4 再試行を先行)・S5 (失効 sweep: 72h 失効 / pending 14日放棄 §5.2)・S6/S7 |
 | S4h | active/await_card | S1 (差替→成功)・matrix 再分類・S5 (deadline)・S6/S7 |
 | S4o | active/ops_hold | S1 (ops 解除 op → resolveBillableCycle 経由再試行)・S6/S7 |
 | S5 | paused/exhausted | S1 (§6.4 復旧)・S7 |
@@ -173,6 +184,9 @@ canIssueAttempt() (§8) 通過後のみ** (kill 中に Shopify を mutate しな
 **適用条件: attempting claim を failed 化した failure webhook のみ。resolved 済み claim への
 遅延/再配送 failure は audit のみ** (S5 後の遅延 decline が表外状態を生まない)。
 resolved 済みへの遅延 success は §6.3/§6.6 の明示規則が処理。
+**明示例外: `pending_new_card=1` の契約は matrix 適用前に §6.4 手順による自動再試行を
+1 回挟み、その失敗で初めて matrix 分類する** (§6.3 — 失効 sweep 経路と failure webhook
+経路のどちらが先に決着しても「新カードで再試行」の回収約束が成立する)。
 
 不変条件:
 - **I-1**: attempt 発行 = status=active ∧ canIssueAttempt() ∧ resolveBillableCycle の対象 cycle の
@@ -191,19 +205,44 @@ resolved 済みへの遅延 success は §6.3/§6.6 の明示規則が処理。
 ## 5. own-billing cron (5分 tick 内のジョブ)
 
 1. **due 発行** (JST 05:00-07:59): active ∧ dunning∈{none} ∧ 未claim ∧ scheduled<=today、
-   および retry_wait ∧ next_retry_date<=today。順序は I-2 (gate false なら claim を作らず
-   resolve も呼ばない — §10.1⑨ の「claim 0 件」assert と整合)
+   および retry_wait ∧ next_retry_date<=today。**∧ sub_migration_snapshots の phase が
+   own_created_paused〜billing_aligned でない** (§7.0 顧客操作ブロックの cron 版 — webhook
+   再同期等で status が先行 active 化しても phase 確定前は発行対象にしない)。順序は I-2
+   (gate false なら claim を作らず resolve も呼ばない — §10.1⑨ の「claim 0 件」assert と整合)
 2. **期限 sweep**: await_card/challenged の deadline 超過 → 処置。
+   - **await_card deadline 超過**: 当該サイクル claim が attempting (deadline 直前のカード更新で
+     §6.4 が発行済み等) なら **S5 化を保留し attempt の決着 (webhook / 照会) に委ねる**
+     (challenged 側と同型の in-flight ガード — 支払成功直後に S5 化する競合窓を塞ぐ。決着が
+     success なら §6.1 / failed なら matrix 再分類)。attempting claim が無ければ S5 化 +
+     pause_notice
    - challenged 失効: attempt 最終照会 → success なら succeeded 処理 / **failed 確定していれば**
      pending_new_card の有無で分岐: あり → §6.4 の 4 手順で自動再試行 (no-parallel-attempt
      原則を満たす) / なし → claim failed 化 + S5。
      **照会が依然 pending の場合は新 attempt を発行しない** (no-parallel-attempt 原則。
-     契約は challenged のまま維持し deadline を +24h 延長して毎日再照会。scheduledDate+14日で
-     I-6 がサイクルを放棄 (skip+abandoned+alert) — その後に旧 attempt が成功したら
-     「resolved への遅延 success」規則 (昇格+delivery_notice+人間判断) が受ける。
-     3DS pending の自然失効有無は §10.1⑪ で実測し、失効が確認できればこの待機は短縮できる)
+     契約は challenged のまま維持し deadline を +24h 延長して毎日再照会)。
+     **scheduledDate+14日の放棄判定と処置は失効 sweep 自身が I-6 と同一規則で実施する**
+     (pending 待機中の契約は due 発行から除外され resolveBillableCycle が呼ばれないため、
+     executor を sweep に明示): サイクル放棄 (scheduleEdit(skip) + claim abandoned +
+     次アンカー scheduleEdit + Discord alert) と**同時に契約を S5 化 (pause + exhausted +
+     pause_notice) し dunning_state='challenged' を解放する** (§6.4 カード更新で回復可能な
+     定義済み状態に置く — challenged 永久残留と 14日毎の放棄連鎖を構造排除)。
+     放棄後に旧 attempt の failed が確定した場合: claim は abandoned 維持 (audit のみ) だが、
+     **pending_new_card=1 なら §6.4 の S5 復旧手順 (contractUpdate 済みのため activate →
+     I-2 → 新カードで発行 — 放棄済みサイクルは請求せず resolveBillableCycle は次アンカーを
+     返す) を自動実行しフラグを消費する** (回収約束は第 3 の ordering — 旧 attempt が terminal
+     に到達しないまま 14日放棄に至る経路 — でも成立。failed 確定の検出は webhook 着弾または
+     §5.4 job4 の能動照会)。フラグ無しなら contract 状態は遷移しない。
+     放棄後に旧 attempt が成功したら abandoned×遅延 success 規則 (§6.6:
+     succeeded 昇格 + delivery_notice) が受け、**この S5 はシステム起因のため §6.3 の
+     S5 遅延 success 規則を優先適用して自動 activate + resume_notice** (§6.6 の「pause 維持」
+     は顧客都合停止に限る。pending_new_card はこの決着でも消費)。
+     3DS pending の自然失効有無は §10.1⑪ で実測し、失効が確認できればこの待機は短縮できる
    - **billing-kill / breaker 中は sweep 停止。deadline は凍結し、解除時に「解除時刻+残余時間」で
-     再設定** (kill 中にカード更新した顧客を解除直後に S5 化しない)。
+     再設定** (kill 中にカード更新した顧客を解除直後に S5 化しない)。**excludelist match の
+     契約も同規則** (sweep の発行系処置 — §6.4 再試行等 — をスキップし deadline 凍結、除外
+     解除時に「解除時刻+残余時間」で再設定。契約単位 gate と全体 gate で凍結規則を共通化 —
+     canIssueAttempt 却下の毎 tick 再評価ループを作らない)。**凍結中も attempt 最終照会
+     (結果回収) は継続する — 凍結対象は +24h 延長を含む deadline 演算と発行系処置のみ**。
      **kill 中のカード更新イベントは pending_new_card / pending_card 系フラグとして必ず記録され
      (contractUpdate まで実施、発行のみ保留)、解除後の sweep/tick が §6.4 を評価する** —
      トリガの永久喪失を防ぐ (S4h 含む)
@@ -212,7 +251,8 @@ resolved 済みへの遅延 success は §6.3/§6.6 の明示規則が処理。
    不在なら **I-2 の順序 (canIssueAttempt 通過時のみ) で同一 key 再発行**。kill 中は再発行せず
    stuck alert に委ねる。**stuck claim の手動 DELETE は禁止**
 4. **サイクル再同期** (日次): 全 active 契約の current cycle 照会更新 +
-   cadence_repair_needed の scheduleEdit 再試行
+   cadence_repair_needed の scheduleEdit 再試行 + **pending attempt を持つ abandoned claim の
+   最終状態照会 (§6.7 再開保留の能動駆動)**
 5. **監視** (§8)
 6. **通知キュー配送** (JST 10:00-19:59)。**challenged の 72h deadline 起点はリンク送付時刻**
    (配送窓の遅延を顧客の持ち時間から差し引かない)
@@ -221,6 +261,12 @@ resolved 済みへの遅延 success は §6.3/§6.6 の明示規則が処理。
 
 ### 6.1 success
 claim succeeded + order_id。I-4 (dunning リセット・次サイクル scheduleEdit・cache 前進)。
+**システム起因 pause 中 (dunning 起因の S5、および sweep 競合で S5 化直後) に claim が
+succeeded 化した場合 — attempting/failed/abandoned を問わず — 自動 activate + resume_notice**
+— §6.3 の 3DS 限定規則を dunning 起因 pause 全般へ一般化 (「支払済みなのに停止のまま」を
+全経路で残さない。非 3DS の遅延 success — 例: PROVIDER_TIMEOUT で failed 化後の遅延着弾 —
+も本規則が受ける)。顧客都合の S6 は §6.6 の pause 維持規則が優先 (顧客都合停止では claim は
+I-3 で abandoned 化済みで、その遅延 success は §6.6 が delivery_notice + 人間判断で処理)。
 
 ### 6.2 dunning matrix (6 クラス、WI-4 で 55 code 全列挙)
 
@@ -242,19 +288,40 @@ claim succeeded + order_id。I-4 (dunning リセット・次サイクル schedul
 - dunning_state='challenged'。次 tick で attempt 照会 → nextActionUrl 取得 → LINE (fallback
   email) で送付。deadline = 送付時刻 + 72h
 - **S3 中のカード更新**: contractUpdate + `pending_new_card=1` (claim は attempting のため発行
-  しない)。失効 sweep がフラグを見て S5 化の代わりに §6.4 の 4 手順で自動再試行
-- success → S1 / decline failure → matrix 再分類 / 失効 → §5.2 の処置
-- **S5 後の遅延 3DS success**: succeeded 昇格 + I-4 + **自動 activate + resume_notice**
-  (支払済みなのに停止のまま、を残さない)
+  しない)。失効 sweep がフラグを見て S5 化の代わりに §6.4 の 4 手順で自動再試行。
+  **failure webhook 経路でも同フラグを評価する**: failure webhook が attempting claim を
+  failed 化する際、`pending_new_card=1` なら **matrix 適用前に** §6.4 手順 (claim CAS 再入
+  attempt_no++ → 新カードで 1 回自動再試行、フラグ消費) を実施し、その失敗で初めて matrix
+  分類する (§4.1 閉包規則の明示例外。sweep より先に decline が着弾する webhook-first
+  ordering でも回収約束が成立 — B/E クラス直行による自動再試行トリガの永久喪失を防ぐ)
+- success → S1 / decline failure → matrix 再分類 (pending_new_card=1 は上記例外) / 失効 →
+  §5.2 の処置
+- **レーン起動は attempting claim を持つ場合のみ**。resolved/abandoned claim への challenged
+  webhook は audit のみ (後続の遅延 success/failure 規則が受ける — paused/challenged 等の
+  状態表 (§4.1) 外の組合せを作らない)
+- **S5 後の遅延 success (3DS に限らず)**: succeeded 昇格 + I-4 + **自動 activate +
+  resume_notice** (支払済みなのに停止のまま、を残さない — §6.1 の一般化規則と同一)
 
-### 6.4 支払方法更新 (create/update webhook)
+### 6.4 支払方法更新
+
+**起動トリガ (3 系統)**:
+1. **支払方法の contractUpdate を伴う全 UI 操作の完了時** (§9 マイページの既存 vault 切替 /
+   WI-1 LINE カード) — **既存 vault の選択は customer_payment_methods webhook を発生させない**
+   (新規作成でも更新でもない) ため、UI 完了時に本手順を直接起動する (これが主経路)
+2. customer_payment_methods/{create,update} webhook (新カード追加経路の補完)
+3. **防御 fallback**: contracts/update webhook 受信時、失敗中契約 (S2/S3/S4h/S5) で
+   payment_method_gid が変化していれば本手順を評価 (①の実装漏れ・外部起点の差替を回収。
+   **S3 該当時は発行せず pending_new_card=1 の記録のみ** — §6.3 経路に統一)
+
 対象 = 該当顧客の S2/S3/S4h/S5 契約 + 移行 pending_card の snapshot 行。
-手順: contractUpdate(paymentMethodId) → (S5 なら activate) → **I-2 の順序
-(canIssueAttempt → resync → resolveBillableCycle → claim → 発行)**。
+手順: contractUpdate(paymentMethodId) (UI 起点では実施済み・冪等) → (S5 なら activate) →
+**I-2 の順序 (canIssueAttempt → resync → resolveBillableCycle → claim → 発行)**。
 S3 は pending_new_card 経路 (§6.3)。複数契約顧客は失敗中 (S2/S3/S4h/S5) の契約のみ。
 
 ### 6.5 同期 userError / orphan
-- THROTTLED: failed_no_attempt + retry_policy=next_tick (同一 key・attempt_no 据え置き)
+- THROTTLED: failed_no_attempt + retry_policy=next_tick (同一 key・attempt_no 据え置き —
+  claim 表 CAS 一般規則の明示例外。**再発行の実行体は次回 due 発行窓 (§5.1、最遅で翌日
+  JST 05:00) — 名称は policy 値であり即時再試行を意味しない**)
 - BCCBED / 未知同期エラー: failed_no_attempt + retry_policy=hold + Discord (連打しない。
   hold は resolveBillableCycle の対象からも除外。**ops 解除 op は retry_policy→none と
   dunning_state→none の戻し + resolveBillableCycle 再評価までを op 内で実施** — 戻し忘れの
@@ -273,6 +340,9 @@ S3 は pending_new_card 経路 (§6.3)。複数契約顧客は失敗中 (S2/S3/S
   failure = audit のみ」となり、skip 済みサイクル起点の誤 dunning→誤 S5 が構造的に起きない)
 - **日付変更**: `scheduleEdit(billingDate=指定日)` の**単発変更。anchor_date は変更しない**
   (次々回以降は従来カデンツ — 現行 Huckleberry マイページの「お届け日変更」と同一挙動)。
+  **変更可能範囲 = 明日〜次アンカー日の前日** (次アンカーを越える後ろ倒しは、当該サイクル
+  success 時の次サイクル scheduleEdit が過去日発行となり §7 の設計原則「過去日 scheduleEdit
+  に依存しない」に反するため受理しない。WI-1 カード/マイページの選択肢生成もこの範囲に拘束)。
   受理時に **date_override マーカー (サイクル単位)** を記録し、乖離検出器 (§8) は override
   済みサイクルを除外する (正当な単発変更が scheduleEdit 故障検出を恒常ノイズ化しない)。
   締切ガードにより未 claim の将来サイクルにのみ作用 = I-3 対象外。WI-1 カードに
@@ -284,8 +354,13 @@ S3 は pending_new_card 経路 (§6.3)。複数契約顧客は失敗中 (S2/S3/S
 ### 6.7 再開 (S6→S1)
 I-5: 過去未解決サイクルを scheduleEdit(skip) + claim skipped 化 → 次アンカーを scheduleEdit →
 以後 resolveBillableCycle は将来日を返す (過去サイクル非請求の一意化)。
-**前提条件: 当該 claim の旧 attempt が非 terminal (pending/challenged) なら skip 処理を保留し
-§6.3 レーンの決着後に実行** (no-parallel-attempt 原則と管轄の一意化)。
+**前提条件: 当該 claim の旧 attempt が非 terminal (pending/challenged) なら再開全体を保留する**
+(no-parallel-attempt 原則と管轄の一意化)。**保留の待機 vehicle**: 契約は **S6 のまま**
+(activate も保留)、顧客へ「直前のお支払いを確認中です。確認でき次第再開します」を応答。
+決着の駆動 = ①webhook 自然着弾 ②顧客の再操作時の再照会 ③**日次サイクル再同期ジョブ
+(§5.4) が pending attempt を持つ abandoned claim を最終状態照会する** (能動駆動)。
+**保留 48h 超で Discord alert** (§8 dunning 滞留検出器に含める)。決着 (terminal 確定) 後に
+skip 処理 → activate の順で再開を完了する。
 
 ## 7. 移行 — サイクル単位 exactly-once
 
@@ -313,7 +388,11 @@ billing_aligned    サイクル所有権ハンドオフ (**単一の決定手順
                    ① まず**差分検査**: 承継課金日の基準値 = この時点の再取得値 (Flow 実測最新 +
                      顧客タグ再取得)。snapshot 値と不一致 → phase hold + Discord +
                      Katsu 承認で基準値を再確定してから②へ (①と②の二重加算はしない —
-                     基準値はこの 1 箇所でのみ確定する)
+                     基準値はこの 1 箇所でのみ確定する)。**hold 時の判定規則**: 不一致が
+                     snapshot 以後の HB Order で説明できる場合 (in-flight 課金が HB 側タグを
+                     前進させた等) は**基準値 = snapshot 値のまま**②へ委ねる (② が +interval
+                     を担当 — 旧+2×interval の二重加算を規則で排除)。Order で説明できない
+                     不一致のみ再取得値を採用する
                    ② Shopify Orders **ライブ照会** (local キャッシュ不使用) で snapshot 以後の
                      subscription-id:{ID} 注文の有無を確認 →
                      target_first_billing_date = 基準値 (Order 無し) / 基準値+interval (有り、
@@ -327,15 +406,39 @@ billing_aligned    サイクル所有権ハンドオフ (**単一の決定手順
   ↓ 自動 (**前提: canIssueAttempt() が真を返せる構成であること** — ALLOWLIST 収載 (or ALL) に
      加え SELF_BILLING_ENABLED / ARMED / EXCLUDELIST 非該当も検査。「誰も課金しない契約」を
      作らないという主張を canIssueAttempt 全要素で担保)
-activated          activate → own_sub_contracts 更新 (anchor_date = target)。
+activated          activate → scheduleEdit (下記) → **scheduleEdit 成功を確認してから
+                   own_sub_contracts を更新 (status active 化 + anchor_date = target)** —
+                   D1 status は §5.1 due 発行述語の読み先であるため、この順序制約により
+                   activate〜scheduleEdit 間の crash で旧予定日のまま発行対象になる窓を塞ぐ
+                   (scheduleEdit 失敗時は phase を activated に確定せず次 tick で再実行 —
+                   activate は冪等。phase 滞留 48h alert が第二網)。
                    - target が未来: 最古未解決 cycle に scheduleEdit(target)
                    - **target が過去 (遅延 catch-up): scheduleEdit(当該 cycle → 本日)** を発行し、
                      当日の発行窓で I-2 の順序により attempt (予定日=本日なので BCCBED は
                      発生せず、resolveBillableCycle の「scheduledDate <= today」も自然に成立 —
                      過去日 scheduleEdit という未検証挙動にも、resolve との矛盾にも依存しない)。
-                     anchor_date は target のままなので次サイクル以降は target+k×interval
+                     anchor_date は target のままなので次サイクル以降は target+k×interval。
+                     (運用注: catch-up 当日から次アンカーまでが interval の 1/3 未満に迫る
+                     長期 stall 後は課金が近接圧縮するため、次サイクル skip か顧客への事前
+                     通知を WI-5 runbook の判断基準として置く — 設計機構は不変)
 rolled_back        own cancel + gid クリア + **migrated_to 消印**。再入は snapshotted から
 ```
+
+### 7.0 移行窓中の顧客操作
+sub_migration_snapshots の phase が **own_created_paused〜billing_aligned** の契約は、WI-1
+カード/マイページの操作 (§6.6 skip・日付変更 / §6.7 再開 / 支払方法変更 UI) を**ブロック**し
+「お切り替え手続き中です。完了後にあらためてご案内します」を表示する
+(SELF_BILLING_UI_ENABLED ON のバッチ運用時、窓中の顧客操作が billing_aligned 確定前に
+activate / scheduleEdit を発行して phase 機械と競合する穴の封鎖)。
+**窓中の pause/cancel 意思は受理して snapshot の pending_intent として永続化し、activated
+step が phase 確定前に実行する**: cancel 意思 → activate せず own 契約を直接 cancel +
+own_sub_contracts.status='cancelled' を intent 実行 step 内で直接記録 (§2 の移行窓中
+status 非昇格例外の対象外。課金可能状態を一瞬も作らない) / pause 意思 → activate せず
+own_sub_contracts を S6 (paused/none) として確定。**順序 = intent 実行 → 実行済みマーク → phase=activated 確定**
+(crash-resume は phase 未確定により step 再実行 — intent 実行は §6.6 と同じく冪等。
+「直後に実行」という時間的仮定に依存せず、intent の無言喪失を構造排除)。
+「pause/cancel 常時受理」原則は意思の受理として維持、own 契約への実行のみ phase 確定と
+同一 step に一意化 (窓は最大でも 5 日実行窓+48h 整合の数日間)。
 
 ### 7.1 支払方法引き当て
 候補1件→自動。複数→brand+last4 突合で一意なら自動、他は保留 (Katsu)。0件→pending_card →
@@ -362,7 +465,7 @@ allowlist match ∧ ¬excludelist match`
 |---|---|---|
 | SELF_BILLING_ENABLED | canIssueAttempt 経由で全発行停止。OFF でも受信・同期・結果回収は継続。**期限 sweep は停止 (deadline 凍結 §5.2)** | OFF |
 | SELF_BILLING_ALLOWLIST | fail-closed (未設定/空/parse 不能 = ゼロ + alert)。sentinel `ALL`。trim (\r)。日次サマリに **parse 件数と matched 件数の両方** | 未設定 |
-| SELF_BILLING_EXCLUDELIST | 契約単位の緊急除外。**allowlist と同一 parser。parse 不能 = 全契約除外 (fail-closed 側) + alert** | 未設定 |
+| SELF_BILLING_EXCLUDELIST | 契約単位の緊急除外。**= secret リスト ∪ D1 quarantine テーブルの和集合** (Worker は自身の secret を書き換えられないため、§7③ の自動追加は **D1 側へ INSERT**)。secret 側は allowlist と同一 parser。**parse 不能 = 全契約除外 (fail-closed 側) + alert** | 未設定 |
 | SUB_MIGRATION_ENABLED | phase 自動遷移 | OFF |
 | SELF_BILLING_UI_ENABLED | WI-1 カード実 API 化 | OFF |
 
@@ -371,7 +474,10 @@ allowlist match ∧ ¬excludelist match`
   で分散** / 双方向突合 green / 原因 PR merge 済み
 - **自動サーキットブレーカー**: **trip = billing-kill と同効果** (発行 + sweep + migration 停止。
   canIssueAttempt の breaker_tripped で実現)。条件: 24h 発行 > max(10, 日次 due 予測×3) or
-  24h failed > max(5, 発行の 30%)。**ALL 時の母数 = active な own 契約数**。解除 = kill 解除
+  24h failed > max(5, 発行の 30%)。**日次 due 予測 = 母集団のうち当日 scheduled の契約件数**
+  (母集団 = allowlist match する active own 契約、ALL 時は全 active own 契約。予測は当日 due
+  の**件数カウント**であり母数そのものではない — 76 契約でも当日 due ~2.5 件 → 閾値
+  max(10, ~8)=10 で全契約誤発行 76 件を確実に trip する)。解除 = kill 解除
   runbook と同一 (バックログ分散を含む — 解除直後の一括発行/再 trip 防止)。
   **解除時にカウンタ (24h rolling 窓) をリセット** (旧カウントでの即再 trip 防止)
 - 監視:
@@ -379,8 +485,10 @@ allowlist match ∧ ¬excludelist match`
     (D1 非依存) → expectedDate < today−1 ∧ 解決済み claim なし、**+ 予定日と anchor 列の乖離**。
     tick 毎のキャッシュ版も併走 (速報)
   - dunning 滞留: retry_wait ∧ retry 日超過 / await_card・challenged ∧ deadline+12h 超過 /
-    **challenged ∧ deadline 未設定 ∧ 遷移から 24h 超過** (リンク送付失敗の検出 — 述語の穴埋め)
-    (**kill 中は抑制** — deadline 凍結と整合)
+    **challenged ∧ deadline 未設定 ∧ 遷移から 24h 超過** (リンク送付失敗の検出 — 述語の穴埋め) /
+    **§6.7 再開保留 48h 超過** / **ops_hold ∧ 遷移から 72h 超過・retry_policy=hold の claim ∧
+    72h 超過** (§6.5 の単発 Discord「連打しない」の見落としを日次で回収 — 日次サマリに件数
+    常掲。全待機状態に staleness 網を対称に張る) (**kill 中は抑制** — deadline 凍結と整合)
   - stuck claim (attempting>24h) / skippedGating 24h / 移行 phase 滞留 48h
   - **巻き添え解約検出 (仕様)**: 移行バッチ実行中 (SUB_MIGRATION_ENABLED='true' の間)、
     sub_migration_snapshots に行が無い契約 ID の cancel タグ webhook を検知 → Discord +
@@ -393,7 +501,9 @@ allowlist match ∧ ¬excludelist match`
 ## 9. 非 LINE 顧客マイページ (卒業の前提条件)
 
 magic link (HMAC+15分+単回) → 契約表示 + skip/日付/停止/解約/**支払方法変更** (vault 一覧から
-選択 → contractUpdate。新カードは新カスタマーアカウントへ誘導)。通知チャネル規則は §2。
+選択 → contractUpdate → **完了時に §6.4 復旧手順を直接起動 (トリガ①)** — 既存 vault 切替は
+webhook を発生させないため。新カードは新カスタマーアカウントへ誘導 = webhook 経路②)。
+通知チャネル規則は §2。移行窓中の操作は §7.0 でブロック。
 
 ## 10. 検証計画
 
@@ -408,7 +518,9 @@ magic link (HMAC+15分+単回) → 契約表示 + skip/日付/停止/解約/**�
 ⑪ **並行 pending attempt** (challenged 相当 pending 中に別 key 発行) の挙動実測 —
 **判定規則: Shopify が拒否するなら「第2防壁あり」と §6 に記録、受理されるなら
 no-parallel-attempt 原則が唯一の防壁であることを確認し §5.2 の待機設計を維持。
-あわせて 3DS pending の自然失効有無も観測** ⑫返金 (手数料実費記録) ⑬ **own 契約のみ**
+あわせて 3DS pending の自然失効有無、および pending attempt 保持サイクルへの
+scheduleEdit(skip) の受理/拒否も実測** (skip 拒否なら §5.2/§4.0 step 3 の放棄手順を
+「attempt terminal 確定後に skip」へ並べ替える — backstop は I-6 再放棄で自己修復) ⑫返金 (手数料実費記録) ⑬ **own 契約のみ**
 cancel (HB 契約は 10.2 の被験として温存)
 
 ### 10.2 移行リハーサル (本物の信号経路)
@@ -419,7 +531,9 @@ negative: (a) 停止遅延で HB に課金させ target が +interval される 
 rolled_back (c) billing_aligned の 2 回実行で絶対日付不変 (d) **窓中に顧客操作で HB 側 skip を
 発生させ、差分検査が hold + Katsu 承認に落ちる** (e) 48h 猶予未経過の強制実行が進まない
 (f) 5日窓・複数 vault/0 件レーン分岐 (g) **allowlist 非収載のまま activated 前提が reject する**
-(h) **atomicCreate の二重実行 (crash-resume) で own 契約が 1 件に留まる (customAttribute 冪等)**。
+(h) **atomicCreate の二重実行 (crash-resume) で own 契約が 1 件に留まる (customAttribute 冪等)**
+(i) **窓中 (own_created_paused〜billing_aligned) の §6.7 再開試行が reject され
+「お切り替え手続き中」応答になる (§7.0)**。
 **§7 phase 機械の unit** (全遷移 + catch-up claim 経由 + activate 直後 tick の二重発行なし) を
 10.3 と独立に列挙。
 
@@ -427,22 +541,30 @@ rolled_back (c) billing_aligned の 2 回実行で絶対日付不変 (d) **窓�
 - claim 全遷移 + 正方向 (失敗→リトライ発行 / S5→§6.4 4 手順→発行→成功 / unskip→due 復帰課金)
 - **CAS 再入前提条件** (pending 照会→不可 / succeeded 昇格 / failed 後のみ)
 - resolveBillableCycle: 14日境界・最古選択・hold 除外・**副作用の gate 後実行**
-- **I-5 両側**: S6 再開 = skip 処理 (非請求 + overdue 残骸なし) / S5 復旧 = 14日回収
+- **I-5 両側**: S6 再開 = skip 処理 (非請求 + overdue 残骸なし) / **再開保留 (旧 attempt 非
+  terminal → S6 維持 + 日次再照会 + 48h alert → 決着後 skip→activate)** / S5 復旧 = 14日回収
 - webhook 順列 × claim 状態 (遅延 success / abandoned×success / failed→succeeded /
   検算不一致 failure 非適用 / challenged 失効→照会 success 分岐 / →failed→遅延 success→自動
-  activate) + **閉包規則の適用条件** (resolved への遅延 failure = audit のみ)
-- matrix 6 クラス + 同期エラーレーン + **await_card deadline の I-6 clamp**
+  activate / **非3DS failed→succeeded × システム起因 S5 → 自動 activate (§6.1)**) +
+  **閉包規則の適用条件** (resolved への遅延 failure = audit のみ)
+- matrix 6 クラス + 同期エラーレーン + **await_card deadline の I-6 clamp** +
+  **await_card deadline 直前のカード更新 × sweep 競合 (attempting claim → S5 化保留)**
 - **reconciliation 再発行レーン** (NULL gid→逆引き→不在→gate 通過時のみ再発行 / kill 中 alert)
 - **scheduleEdit 失敗 → repair フラグ → 日次回復 / 乖離検出**
-- 締切ガード境界 + **日付変更の単発性 (anchor 不変)** + skip 後の次サイクル schedule
-- **並行競合**: cron due × §6.4 webhook 復旧の同一サイクル claim (勝者 1)
+- 締切ガード境界 + **日付変更の単発性 (anchor 不変) + 変更可能範囲の上限側境界
+  (次アンカー日の前日 / 当日 / 翌日)** + skip 後の次サイクル schedule
+- **並行競合**: cron due × §6.4 webhook 復旧の同一サイクル claim (勝者 1) / **UI 起点
+  contractUpdate (§6.4 トリガ①) × 同一サイクル claim**
 - ops: EXCLUDELIST parser (fail-closed) / **arming インターロック** / breaker trip 時に
   attempting claim を作らない / kill 中 deadline 凍結→解除再設定 / ops_hold 解除 op の後処理
 - **監視 7 検出器の検出ロジック** (独立 overdue+乖離 [date_override 除外含む] / dunning 滞留
   [deadline 未設定 challenged 含む] / stuck claim / skippedGating / 移行 phase 滞留 /
   巻き添え解約 / 双方向突合 [HB 遅延 Order 監視含む])
 - **pending_new_card レーン**: 失効 sweep の pending 待機 (+24h 延長・新 attempt 不発行) /
-  failed 確定後の自動再試行 / I-6 放棄後の遅延 success 受け
+  failed 確定後の自動再試行 / **webhook-first ordering (sweep 前の decline 着弾) で matrix 前に
+  §6.4 再試行が起動する (§4.1 明示例外)** / **14日放棄時の S5 化 + dunning_state 解放 +
+  放棄後の遅延 success で自動 activate (§5.2)** / **14日放棄×フラグ残留 → 旧 attempt failed
+  確定で §6.4 復旧が自動起動 (第 3 ordering)** / I-6 放棄後の遅延 success 受け
 - サーキットブレーカーの **trip 条件算術** (境界値) + 解除時カウンタリセット
 - reconciliation 三値照会の **challenged 検出 fallback** (§6.3 レーン起動)
 - **email fallback 分岐** (未連携 / 連携済み dispatch failed) + 実機 1 回

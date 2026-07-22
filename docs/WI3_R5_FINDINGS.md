@@ -1,10 +1,14 @@
-# WI-3 設計書 v5 採点 R5 残 findings (2026-07-19)
+# WI-3 設計書 v5 採点 R5 残 findings (2026-07-19) — ✅ 全件 v6 反映済み (2026-07-22)
 
-次セッションで v6 修正に使う作業メモ。
+**処理済み**: 本ファイルの全 14 findings (state-machine 5 + pass 済み次元残 9) は
+設計書 v6 に反映済み。R6 再採点 = state-machine **90 / 92 PASS** (独立 2 グレーダー) +
+pass 済み 4 次元回帰チェック **96 PASS**。R6 の新規 findings (MED5+LOW4) も追加反映 →
+R7 確認採点 **94 PASS (MED1+LOW3 も反映済み) = WI-3 完了 (全 5 次元 90+)**。
+以下は R5 時点の記録 (アーカイブ)。
+
+(以下、R5 時点の原文)
 **スコア: state-machine 84 (唯一の未達) / migration-safety 93 ✅ / ops-killswitch 96 ✅**。
-dunning 92 / verifiability 92 は R4 で pass 済み → **v6 は state-machine の 5 findings
-(HIGH 1 + MEDIUM 2 + LOW 2、各 FIX 具体記載済み) を反映して state-machine のみ再採点すれば完了**。
-pass 済み次元の MEDIUM/LOW (下記 migration 93 / ops 96 の findings) も v6 で安価に畳めるなら畳む。
+dunning 92 / verifiability 92 は R4 で pass 済み。
 
 ### [MEDIUM] 移行窓中 (own_created_paused〜activated) の顧客操作と phase 機械の相互作用が未規定
 migrated_to は hb_stop_requested で印字され、own_sub_contracts には paused 行が先行採録される。SELF_BILLING_UI_ENABLED が ON のバッチ運用時 (2バッチ目以降)、窓中の顧客が WI-1 カード/マイページで自分の own 契約を「一時停止中」と見て §6.7 再開を実行すると、billing_aligned の確定前に activate + 次アンカー scheduleEdit が走り得る。5日実行窓+48h整合の時系列により実課金前に activated の scheduleEdit(target) が上書きするため通常は自己修復するが、billing_aligned ① hold で数日停滞した場合は 承継日 に own が課金し HB in-flight と重複し得る (14日監視+返金で補償される事後レーン)。同様に窓中の顧客 cancel を phase 機械が受けた際の遷移 (activate 失敗時の終端化) も未規定。破綻には UI enable 中×窓中操作×hold 長期停滞×HB in-flight の重畳が必要で、補償レーンが受けるため MEDIUM。
