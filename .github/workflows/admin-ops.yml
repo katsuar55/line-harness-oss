@@ -71,6 +71,11 @@ on:
           - billing-kill
           - billing-status
           - apply-migration-071
+          - release-billing-hold
+      contract_gid:
+        description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -297,6 +302,35 @@ jobs:
           echo '### own-billing heartbeat (latest 1)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT ran_at, status, metrics_json FROM cron_run_logs WHERE job_name='own-billing' ORDER BY ran_at DESC LIMIT 1" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Release billing hold (WI-4 §6.5 ops 解除 op — claim と契約を単一 op で戻す)
+        if: inputs.op == 'release-billing-hold'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CONTRACT_GID: ${{ inputs.contract_gid }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONTRACT_GID:-}" ]; then
+            echo "contract_gid 入力が必要です (例 gid://shopify/SubscriptionContract/123)" >&2
+            exit 1
+          fi
+          # gid 形式の簡易検証 (SQL に渡す前の防御。単一引用符等は拒否)
+          if ! printf '%s' "$CONTRACT_GID" | grep -Eq '^gid://shopify/SubscriptionContract/[0-9]+$'; then
+            echo "contract_gid の形式が不正です: gid://shopify/SubscriptionContract/<数値> のみ受け付けます" >&2
+            exit 1
+          fi
+          # §6.5: 解除は retry_policy→none と dunning_state→none (+dunning 系列のリセット =
+          # I-6 解放句と対称) を単一コマンドで実施 (戻し忘れ・部分適用の構造排除)。
+          # 再評価は次 tick の due 発行に委譲。本 op は冪等 — 失敗時はそのまま再実行してよい。
+          npx wrangler d1 execute naturism-line-crm --remote \
+            --command "UPDATE billing_cycle_claims SET retry_policy='none' WHERE contract_gid='$CONTRACT_GID' AND retry_policy='hold'; UPDATE own_sub_contracts SET dunning_state='none', dunning_attempts=0, next_retry_date=NULL, dunning_deadline_at=NULL WHERE contract_gid='$CONTRACT_GID' AND dunning_state='ops_hold'"
+          echo '### release-billing-hold applied (counts only)' >> "$GITHUB_STEP_SUMMARY"
+          echo '⚠️ 注意: 当該サイクルの予定日から 14 日を超えている場合、解除しても次の発行時に I-6 が' >> "$GITHUB_STEP_SUMMARY"
+          echo '   サイクルを放棄します (skip + 次アンカーへ。当該回は課金されません)。billing-status で予定日を確認のこと。' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT (SELECT COUNT(*) FROM billing_cycle_claims WHERE contract_gid='$CONTRACT_GID' AND retry_policy='hold') AS holds_left, (SELECT COUNT(*) FROM own_sub_contracts WHERE contract_gid='$CONTRACT_GID' AND dunning_state='ops_hold') AS ops_hold_left" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Apply migration 071 (own-billing foundation, idempotent)
         if: inputs.op == 'apply-migration-071'
