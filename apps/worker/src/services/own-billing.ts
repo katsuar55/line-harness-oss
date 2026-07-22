@@ -18,8 +18,20 @@
  *     全契約除外 (fail-closed 側)
  */
 import { insertCronRunLog } from '@line-crm/db';
+import {
+  listDueContracts,
+  issueForContract,
+  type ShopifyBillingApi,
+} from './own-billing-engine.js';
 
 export const OWN_BILLING_JOB_NAME = 'own-billing';
+
+/**
+ * 1 tick の発行予算 (issueForContract 実行数)。1 契約 ≈ Shopify 2 fetch + D1 ~7 query。
+ * 同一 invocation を他 cron job と共有するため保守的に 3 (発行窓は 36 tick あるので
+ * 76 契約の通常運用 ~2.5 due/日には十分。catch-up 時も窓内で捌ける)。
+ */
+export const MAX_ISSUE_PER_TICK = 3;
 
 export interface OwnBillingEnv {
   DB: D1Database;
@@ -141,13 +153,27 @@ export interface OwnBillingResult {
   excludelistKind?: ContractListParse['kind'];
   quarantineCount?: number;
   d1Error?: string;
+  dueContracts?: number;
+  processedContracts?: number;
+  issueOutcomes?: Record<string, number>;
+}
+
+/** due 発行窓 (§5.1): JST 05:00-07:59 */
+export function isIssueWindow(nowMs: number): boolean {
+  const jstHour = new Date(nowMs + 9 * 3600_000).getUTCHours();
+  return jstHour >= 5 && jstHour < 8;
 }
 
 /**
- * 5分 tick 骨格 (§5)。step 1 では heartbeat + gate 状態の可視化のみ。
+ * 5分 tick (§5)。step 2 = due 発行 (I-2 順序) まで実装。
+ * sweep / reconciliation / 監視 / 通知は step 3-4。
  * gate OFF の間は 071 新テーブルに一切アクセスしない (migration 未適用でも安全)。
+ * api 未注入 (本番 adapter は step 3 で接続) の間は発行系を実行しない。
  */
-export async function processOwnBilling(env: OwnBillingEnv): Promise<OwnBillingResult> {
+export async function processOwnBilling(
+  env: OwnBillingEnv,
+  deps: { api?: ShopifyBillingApi; nowMs?: number; alert?: (m: string) => void } = {},
+): Promise<OwnBillingResult> {
   const statics = readStaticGates(env);
 
   if (!statics.enabled) {
@@ -157,7 +183,6 @@ export async function processOwnBilling(env: OwnBillingEnv): Promise<OwnBillingR
   }
 
   // gate ON: D1 側 gate を読み、状態を heartbeat metrics へ可視化する。
-  // 課金ロジック (due 発行 / sweep / reconciliation / 再同期 / 監視 / 通知) は step 2 以降。
   const d1 = await readD1Gates(env.DB);
   const result: OwnBillingResult = {
     armed: statics.armed,
@@ -168,7 +193,52 @@ export async function processOwnBilling(env: OwnBillingEnv): Promise<OwnBillingR
     quarantineCount: d1.quarantine.size,
   };
   if (d1.error !== undefined) result.d1Error = d1.error;
-  await logRun(env.DB, d1.error === undefined ? 'success' : 'partial', result, d1.error);
+
+  // ── due 発行 (§5.1、step 2)。I-2: gate false の契約は claim を作らず resolve も呼ばない
+  const nowMs = deps.nowMs ?? Date.now();
+  if (deps.api && d1.error === undefined && isIssueWindow(nowMs)) {
+    const todayJst = new Date(nowMs + 9 * 3600_000).toISOString().slice(0, 10);
+    const nowIso = new Date(nowMs + 9 * 3600_000).toISOString().replace('Z', '+09:00');
+    const alert = deps.alert ?? ((m: string) => console.error(m));
+    try {
+      const due = await listDueContracts(env.DB, todayJst);
+      const outcomes: Record<string, number> = {};
+      // 発行予算 = issueForContract を実際に実行した件数 (Workers Free 50 subrequests 対策。
+      // gate_denied は予算を消費しない — 候補スロット占有による allowlist 契約の飢餓を防ぐ)
+      let processed = 0;
+      for (const contract of due) {
+        if (processed >= MAX_ISSUE_PER_TICK) break;
+        if (!canIssueAttempt(statics, d1, contract.contract_gid)) {
+          outcomes.gate_denied = (outcomes.gate_denied ?? 0) + 1;
+          continue;
+        }
+        // ゼロコスト分岐は予算非消費 (R3): 非 DAY 契約が毎 tick 予算を食い潰して
+        // 正常契約を飢餓させない (エンジン側の同ガードは防衛として残置)
+        if (contract.interval_unit !== 'DAY') {
+          outcomes.unsupported_interval = (outcomes.unsupported_interval ?? 0) + 1;
+          continue;
+        }
+        processed++;
+        // 契約単位のエラー隔離: 1 契約の決定的失敗が後続契約の発行を阻止しない
+        try {
+          const outcome = await issueForContract(env.DB, deps.api, contract, todayJst, nowIso, alert);
+          outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
+        } catch (e: unknown) {
+          outcomes.error = (outcomes.error ?? 0) + 1;
+          alert(
+            `own-billing: 契約 ${contract.contract_gid} の発行処理が失敗: ${e instanceof Error ? e.message : e}`,
+          );
+        }
+      }
+      result.dueContracts = due.length;
+      result.processedContracts = processed;
+      result.issueOutcomes = outcomes;
+    } catch (e: unknown) {
+      result.d1Error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  await logRun(env.DB, result.d1Error === undefined ? 'success' : 'partial', result, result.d1Error);
   return result;
 }
 
