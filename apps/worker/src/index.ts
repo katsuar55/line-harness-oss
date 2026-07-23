@@ -57,6 +57,7 @@ import { analyticsRoutes } from './routes/analytics.js';
 import { liffPortal } from './routes/liff-portal.js';
 import { friendCoupon } from './routes/friend-coupon.js';
 import { faqAdmin } from './routes/faq-admin.js';
+import { adminStaff } from './routes/admin-staff.js';
 import { adminDashboard } from './routes/admin-dashboard.js';
 import { liffPages } from './routes/liff-pages.js';
 import { liffFoodGraph } from './routes/liff-food-graph.js';
@@ -243,6 +244,9 @@ const app = new Hono<Env>();
 const CORS_ALLOWED_ORIGINS = [
   'https://naturism-admin.pages.dev',
   'https://liff.line.me',
+  // 独自ドメイン (Custom Domain。DNS 接続前でも allowlist に入れておくのは無害 —
+  // 未接続の間はこの Origin のリクエスト自体が存在しない)。docs/CUSTOM_DOMAIN_RUNBOOK.md
+  'https://crm.naturism-diet.com',
   'http://localhost:3001',
   'http://localhost:3000',
 ];
@@ -303,6 +307,7 @@ app.route('/', richMenus);
 app.route('/', friendCoupon);
 app.route('/', faqAdmin);
 app.route('/', adminDashboard);
+app.route('/', adminStaff);
 app.route('/', trackedLinks);
 app.route('/', forms);
 app.route('/', autoReplies);

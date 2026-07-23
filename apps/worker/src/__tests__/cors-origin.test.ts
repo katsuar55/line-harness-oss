@@ -13,11 +13,19 @@ describe('resolveCorsOrigin', () => {
     for (const o of [
       'https://naturism-admin.pages.dev',
       'https://liff.line.me',
+      // 独自ドメイン (docs/CUSTOM_DOMAIN_RUNBOOK.md)
+      'https://crm.naturism-diet.com',
       'http://localhost:3001',
       'http://localhost:3000',
     ]) {
       expect(resolveCorsOrigin(o)).toBe(o);
     }
+  });
+
+  it('独自ドメインの類似ホストは拒否する (サフィックス一致の穴を作らない)', () => {
+    expect(resolveCorsOrigin('https://crm.naturism-diet.com.evil.com')).toBeNull();
+    expect(resolveCorsOrigin('http://crm.naturism-diet.com')).toBeNull(); // http は不可
+    expect(resolveCorsOrigin('https://naturism-diet.com')).toBeNull(); // apex は Shopify
   });
 
   it('returns "*" when there is no Origin header', () => {

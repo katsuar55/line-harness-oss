@@ -71,6 +71,8 @@ function createApp() {
   app.use('/api/*', async (c, next) => {
     const auth = c.req.header('Authorization');
     if (!auth || auth !== `Bearer ${API_KEY}`) return c.json({ error: 'Unauthorized' }, 401);
+    // 一斉配信ガード (denyUnlessRole) 用に staff context を張る (env-owner 相当)
+    (c as unknown as { set: (k: string, v: unknown) => void }).set('staff', { id: 'test-owner', name: 'Owner', role: 'owner' });
     return next();
   });
   app.route('/', surveys);

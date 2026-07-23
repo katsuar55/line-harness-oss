@@ -6,14 +6,29 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
 import { auditLogs } from '../routes/audit-logs.js';
+import type { Env } from '../index.js';
 
 const API_KEY = 'test-api-key';
 
 function createApp() {
-  const app = new Hono();
+  const app = new Hono<Env>();
   app.use('/api/*', async (c, next) => {
     const auth = c.req.header('Authorization');
     if (!auth || auth !== `Bearer ${API_KEY}`) return c.json({ error: 'Unauthorized' }, 401);
+    // 監査ログ閲覧は owner/admin 限定 (staff からスタッフ名簿を迂回閲覧させない)。
+    // 実 authMiddleware と同じく staff context を張る。
+    c.set('staff', { id: 'test-owner', name: 'Owner', role: 'owner' });
+    return next();
+  });
+  app.route('/', auditLogs);
+  return app;
+}
+
+/** staff ロール (= 閲覧権限なし) のアプリ。403 の回帰用 */
+function createStaffRoleApp() {
+  const app = new Hono<Env>();
+  app.use('/api/*', async (c, next) => {
+    c.set('staff', { id: 's1', name: '佐藤', role: 'staff' });
     return next();
   });
   app.route('/', auditLogs);
@@ -224,5 +239,17 @@ describe('GET /api/audit-logs', () => {
     expect(res.status).toBe(500);
     const json = (await res.json()) as { success: boolean; error: string };
     expect(json.success).toBe(false);
+  });
+});
+
+describe('GET /api/audit-logs — 権限ガード', () => {
+  it('staff ロールは 403 (スタッフ名簿の迂回閲覧を封鎖)', async () => {
+    const app = createStaffRoleApp();
+    const res = await app.request(
+      'http://localhost/api/audit-logs?actionPrefix=admin.staff.',
+      { method: 'GET' },
+      { DB: mockD1() },
+    );
+    expect(res.status).toBe(403);
   });
 });

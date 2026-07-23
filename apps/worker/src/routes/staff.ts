@@ -10,6 +10,7 @@ import {
 } from '@line-crm/db';
 import type { StaffMember } from '@line-crm/db';
 import { requireRole } from '../middleware/role-guard.js';
+import { auditAdminAction } from '../services/admin-audit.js';
 import type { Env } from '../index.js';
 
 const staff = new Hono<Env>();
@@ -28,6 +29,20 @@ function serializeStaff(row: StaffMember, masked = true) {
     isActive: Boolean(row.is_active),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * 監査ログ用の最小スナップショット (append-only な audit_logs に PII を残さない)。
+ * email と API キー末尾は意図的に含めない — 誰が誰を操作したかの識別には id/name/role で足りる
+ * (2026-07-23 採点: 「PII 最小化」の宣言と実装の乖離を解消)。
+ */
+function auditSnapshot(row: StaffMember) {
+  return {
+    id: row.id,
+    name: row.name,
+    role: row.role,
+    isActive: Boolean(row.is_active),
   };
 }
 
@@ -115,6 +130,14 @@ staff.post('/api/staff', requireRole('owner'), async (c) => {
       role: body.role as 'owner' | 'admin' | 'staff',
     });
 
+    // 監査記録 (API キーの値は残さない = masked 版のみ)
+    await auditAdminAction(c, {
+      action: 'admin.staff.create',
+      targetType: 'staff_member',
+      targetId: member.id,
+      after: auditSnapshot(member),
+    });
+
     // Return full (unmasked) API key one-time
     return c.json({ success: true, data: serializeStaff(member, false) }, 201);
   } catch (err) {
@@ -167,6 +190,14 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
       return c.json({ success: false, error: 'Staff member not found' }, 404);
     }
 
+    await auditAdminAction(c, {
+      action: 'admin.staff.update',
+      targetType: 'staff_member',
+      targetId: id,
+      before: auditSnapshot(target),
+      after: auditSnapshot(updated),
+    });
+
     return c.json({ success: true, data: serializeStaff(updated, true) });
   } catch (err) {
     console.error('PATCH /api/staff/:id error:', err);
@@ -197,6 +228,12 @@ staff.delete('/api/staff/:id', requireRole('owner'), async (c) => {
     }
 
     await deleteStaffMember(c.env.DB, id);
+    await auditAdminAction(c, {
+      action: 'admin.staff.delete',
+      targetType: 'staff_member',
+      targetId: id,
+      before: auditSnapshot(target),
+    });
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/staff/:id error:', err);
@@ -213,6 +250,13 @@ staff.post('/api/staff/:id/regenerate-key', requireRole('owner'), async (c) => {
       return c.json({ success: false, error: 'Staff member not found' }, 404);
     }
     const newKey = await regenerateStaffApiKey(c.env.DB, id);
+    // 新旧いずれのキー値も監査には残さない (誰の・いつ再発行したかのみ)
+    await auditAdminAction(c, {
+      action: 'admin.staff.regenerate_key',
+      targetType: 'staff_member',
+      targetId: id,
+      metadata: { targetName: exists.name, targetRole: exists.role },
+    });
     return c.json({ success: true, data: { apiKey: newKey } });
   } catch (err) {
     console.error('POST /api/staff/:id/regenerate-key error:', err);

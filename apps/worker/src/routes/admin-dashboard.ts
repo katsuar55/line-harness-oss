@@ -184,6 +184,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <header>
     <h1>🌿 naturism 管理ダッシュボード</h1>
     <p class="sub">この画面だけ見ておけば OK。今日の数字の確認と、よく使う操作への入り口です。</p>
+    <p class="sub" id="whoami"></p>
   </header>
 
   <div class="card" id="keycard">
@@ -211,6 +212,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="links">
     <a class="link" href="/admin/faq"><div class="t">FAQ 管理</div><div class="d">AI の回答を追加・修正する (お客様への自動返信が変わります)</div></a>
     <a class="link" href="/admin/friend-coupon"><div class="t">友だち限定クーポン</div><div class="d">キャンペーンクーポンの ON/OFF・割引率の設定</div></a>
+    <a class="link" href="/admin/staff"><div class="t">スタッフ管理</div><div class="d">個人ごとのログインキーを発行・停止する (オーナーのみ)</div></a>
+    <a class="link" href="/admin/logs"><div class="t">操作履歴</div><div class="d">いつ・誰が・何を変更したかの記録</div></a>
     <a class="link" href="https://manager.line.biz/" target="_blank" rel="noopener"><div class="t">LINE公式アカウントマネージャー ↗</div><div class="d">1:1 チャットの手動返信・友だち数の公式統計</div></a>
     <a class="link" href="https://admin.shopify.com/store/xn-0ckn0a9fxa4a" target="_blank" rel="noopener"><div class="t">Shopify 管理画面 ↗</div><div class="d">注文・顧客・在庫・割引コードの作成</div></a>
     <a class="link" href="https://liff.line.me/2009713578-NbdHyFZf" target="_blank" rel="noopener"><div class="t">お客様ポータル (LIFF) ↗</div><div class="d">お客様が見ているマイページを確認する</div></a>
@@ -227,6 +230,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="card" style="font-size:13px">
     自動処理 (5分ごと) の最終稼働: <strong id="v-cron" class="skeleton">—</strong><br>
     <span class="hint">1時間以上前の場合はシステム異常の可能性 — 開発者に連絡してください。ポータル障害時の一次確認: <a href="/" target="_blank">トップページ</a> が表示されるか。</span>
+  </div>
+
+  <div class="card" style="margin-top:18px">
+    <strong>この端末からログアウト</strong>
+    <p class="hint" style="margin-top:4px">共有パソコンを使ったあとや席を離れるときに押してください。保存されたキーをこの端末から消します。</p>
+    <div style="margin-top:8px"><button id="logout" style="background:#fff;color:#b84a2e;border:1.5px solid #eaa588">キーを消して終了する</button></div>
   </div>
 
   <footer>社内限り ・ 運営: 株式会社ケンコーエクスプレス ・ お客様向け窓口: info@naturism-diet.com ・ 使い方の詳細は運用ガイド (スタッフ共有) を参照</footer>
@@ -252,6 +261,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         localStorage.setItem('fc_admin_apikey', k);
         var d = j.data || {};
         render(d);
+        loadWhoami(k);
         if(d.sectionErrors && Object.keys(d.sectionErrors).length){
           setStatus('⚠️ 一部の数字が取得できませんでした — 時間をおいて再読み込みしてください', false);
         } else {
@@ -259,6 +269,20 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         }
       })
       .catch(function(e){ setStatus('読み込み失敗: ' + e.message, false); });
+  }
+  function loadWhoami(k){
+    fetch('/api/staff/me', { headers: { 'Authorization': 'Bearer ' + k } })
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(j){
+        if(!j || !j.data) return;
+        var d = j.data;
+        var role = d.role === 'owner' ? 'オーナー' : (d.role === 'admin' ? '管理者' : 'スタッフ');
+        var shared = d.id === 'env-owner'
+          ? ' — 共有キーでログイン中です。<a href="/admin/staff">スタッフ管理</a>で個人キーを発行すると、誰の操作か記録に残ります'
+          : '';
+        $('whoami').innerHTML = 'ログイン中: ' + esc(d.name) + '（' + esc(role) + '）' + shared;
+      })
+      .catch(function(){});
   }
   function markFailed(valueId, subId){
     $(valueId).textContent = '—';
@@ -319,6 +343,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       $('v-cron').classList.remove('skeleton');
     } else { $('v-cron').textContent = '取得できませんでした'; }
   }
+  $('logout').addEventListener('click', function(){
+    if(!window.confirm('この端末に保存されたキーを消します。次に使うときは再度貼り付けが必要です。よろしいですか？')) return;
+    ['lh_admin_apikey','faq_admin_apikey','fc_admin_apikey'].forEach(function(k){ localStorage.removeItem(k); });
+    $('apikey').value = '';
+    $('whoami').textContent = '';
+    setStatus('✅ この端末からキーを消しました', true);
+  });
+
   $('reload').addEventListener('click', load);
   $('apikey').addEventListener('change', load);
   if($('apikey').value) load();

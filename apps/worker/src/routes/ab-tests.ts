@@ -10,6 +10,7 @@ import type { AbTest as DbAbTest, AbTestMessageType, AbTestTargetType } from '@l
 import { LineClient } from '@line-crm/line-sdk';
 import { processAbTestSend, processAbTestWinnerSend, getAbTestStats } from '../services/ab-test.js';
 import type { Env } from '../index.js';
+import { denyUnlessRole } from '../middleware/role-guard.js';
 
 const abTests = new Hono<Env>();
 
@@ -117,6 +118,12 @@ abTests.post('/api/ab-tests', async (c) => {
       return c.json({ success: false, error: 'splitRatio must be between 1 and 99' }, 400);
     }
 
+    // 予約 = cron が実送信するため「一斉配信の実行」と同等に owner/admin 限定
+    if (body.scheduledAt) {
+      const denied = await denyUnlessRole(c, 'A/Bテストの予約', 'owner', 'admin');
+      if (denied) return denied;
+    }
+
     const abTest = await createAbTest(c.env.DB, {
       title: body.title,
       variantA: {
@@ -172,6 +179,13 @@ abTests.put('/api/ab-tests/:id', async (c) => {
       statusUpdate = body.scheduledAt ? 'scheduled' : 'draft';
     }
 
+    // 予約への変更、または既にスケジュール済みの一斉配信の編集は owner/admin 限定
+    // (予約済みへの本文差し替えで cron が staff の文面を送るのを防ぐ)
+    if (body.scheduledAt || existing.status === 'scheduled') {
+      const denied = await denyUnlessRole(c, 'A/Bテストの予約', 'owner', 'admin');
+      if (denied) return denied;
+    }
+
     const updated = await updateAbTest(c.env.DB, id, {
       title: body.title,
       variant_a_message_type: body.variantA?.messageType,
@@ -208,6 +222,11 @@ abTests.delete('/api/ab-tests/:id', async (c) => {
 
 // POST /api/ab-tests/:id/send — send the A/B split now
 abTests.post('/api/ab-tests/:id/send', async (c) => {
+  // 一斉配信に相当するため owner/admin 限定 (採点 R2 HIGH)
+  {
+    const denied = await denyUnlessRole(c, 'A/Bテストの配信', 'owner', 'admin');
+    if (denied) return denied;
+  }
   try {
     const id = c.req.param('id');
     const existing = await getAbTestById(c.env.DB, id);
@@ -251,6 +270,11 @@ abTests.post('/api/ab-tests/:id/stats', async (c) => {
 
 // POST /api/ab-tests/:id/send-winner — send winning variant to remaining users
 abTests.post('/api/ab-tests/:id/send-winner', async (c) => {
+  // 一斉配信に相当するため owner/admin 限定 (採点 R2 HIGH)
+  {
+    const denied = await denyUnlessRole(c, 'A/Bテスト勝者の配信', 'owner', 'admin');
+    if (denied) return denied;
+  }
   try {
     const id = c.req.param('id');
     const existing = await getAbTestById(c.env.DB, id);

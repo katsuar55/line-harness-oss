@@ -21,6 +21,7 @@ import {
 } from '@line-crm/db';
 
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const auditLogs = new Hono<Env>();
 
@@ -39,7 +40,9 @@ function parseIntOr(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-auditLogs.get('/api/audit-logs', async (c) => {
+// 監査ログには staff スナップショット (氏名・役割) が入るため owner/admin 限定。
+// staff ロールから ?actionPrefix=admin.staff. で名簿を迂回閲覧できる穴を塞ぐ (採点 HIGH)。
+auditLogs.get('/api/audit-logs', requireRole('owner', 'admin'), async (c) => {
   try {
     const action = c.req.query('action') || undefined;
     const actionPrefix = c.req.query('actionPrefix') || undefined;

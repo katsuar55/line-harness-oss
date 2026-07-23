@@ -30,6 +30,7 @@ import {
   type BulkInvitationRecipient,
 } from '../services/bulk-opt-in-invitation.js';
 import { buildEmailDispatchConfig } from '../services/email-dispatch-config.js';
+import { requireRole } from '../middleware/role-guard.js';
 import type { Env } from '../index.js';
 
 const emailAdmin = new Hono<Env>();
@@ -697,7 +698,7 @@ emailAdmin.get('/api/admin/email/opt-in/candidates', async (c) => {
 
 const MAX_BATCH_SIZE = 200;
 
-emailAdmin.post('/api/admin/email/opt-in/send-invitations', async (c) => {
+emailAdmin.post('/api/admin/email/opt-in/send-invitations', requireRole('owner', 'admin'), async (c) => {
   const hmacKey = c.env.EMAIL_OPTIN_HMAC_KEY;
   if (!hmacKey) {
     return c.json({ success: false, error: 'EMAIL_OPTIN_HMAC_KEY not configured' }, 503);
