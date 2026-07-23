@@ -19,6 +19,7 @@ import {
   buildBirthdayCollectionMessage,
 } from '../services/birthday-collection.js';
 import type { Env } from '../index.js';
+import { denyUnlessRole } from '../middleware/role-guard.js';
 
 const birthdayCollection = new Hono<Env>();
 
@@ -88,6 +89,11 @@ birthdayCollection.post('/api/birthday-collection/preview', async (c) => {
 });
 
 birthdayCollection.post('/api/birthday-collection/send', async (c) => {
+  // 一斉配信に相当するため owner/admin 限定 (採点 R2 HIGH)
+  {
+    const denied = await denyUnlessRole(c, '誕生日一斉配信', 'owner', 'admin');
+    if (denied) return denied;
+  }
   try {
     const body: SendBody = await c.req
       .json<SendBody>()

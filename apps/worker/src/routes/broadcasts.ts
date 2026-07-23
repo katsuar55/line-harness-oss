@@ -17,6 +17,7 @@ import { processBroadcastSend } from '../services/broadcast.js';
 import { processSegmentSend } from '../services/segment-send.js';
 import { buildEmailDispatchConfig } from '../services/email-dispatch-config.js';
 import { auditAdmin } from '../services/audit-logger.js';
+import { requireRole, denyUnlessRole } from '../middleware/role-guard.js';
 import type { SegmentCondition } from '../services/segment-query.js';
 import type { Env } from '../index.js';
 
@@ -88,6 +89,8 @@ broadcasts.get('/api/broadcasts/:id', async (c) => {
 });
 
 // POST /api/broadcasts - create
+// 下書き作成は staff でも可。ただし scheduledAt 付き = cron が拾って実送信するため
+// 「一斉配信の実行」と同等に owner/admin を要求する (採点 R2 HIGH のバイパス封鎖)。
 broadcasts.post('/api/broadcasts', async (c) => {
   try {
     const body = await c.req.json<{
@@ -130,6 +133,12 @@ broadcasts.post('/api/broadcasts', async (c) => {
         { success: false, error: 'emailTemplateId is required when channel is "email" or "both"' },
         400,
       );
+    }
+
+    // 予約送信は cron が拾って実送信するため「一斉配信の実行」と同等に扱う
+    if (body.scheduledAt) {
+      const denied = await denyUnlessRole(c, '一斉配信の予約', 'owner', 'admin');
+      if (denied) return denied;
     }
 
     const broadcast = await createBroadcast(c.env.DB, {
@@ -212,6 +221,13 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
     let statusUpdate: 'draft' | 'scheduled' | undefined;
     if (body.scheduledAt !== undefined) {
       statusUpdate = body.scheduledAt ? 'scheduled' : 'draft';
+    }
+
+    // 予約への変更、または既にスケジュール済みの配信の編集は owner/admin 限定
+    // (予約済みへ本文だけ差し替えると cron が staff の文面を一斉送信するため)
+    if (body.scheduledAt || existing.status === 'scheduled') {
+      const denied = await denyUnlessRole(c, '一斉配信の予約', 'owner', 'admin');
+      if (denied) return denied;
     }
 
     const updated = await updateBroadcast(c.env.DB, id, {
@@ -321,8 +337,12 @@ broadcasts.get('/api/broadcasts/:id/insights', async (c) => {
 });
 
 // POST /api/broadcasts/:id/send - send now
-broadcasts.post('/api/broadcasts/:id/send', async (c) => {
-  const id = c.req.param('id');
+// 一斉配信は取り消し不可・LINE 配信数を消費するため owner/admin 限定
+// (/admin/staff の権限表と実装を一致させる。2026-07-23 採点 HIGH)
+broadcasts.post('/api/broadcasts/:id/send', requireRole('owner', 'admin'), async (c) => {
+  // middleware を挟むと Hono の param 推論が string|undefined になるため ! で確定
+  // (routes/staff.ts の既存パターンと同じ。ルート定義上 :id は必ず存在する)
+  const id = c.req.param('id')!;
   try {
     const existing = await getBroadcastById(c.env.DB, id);
 
@@ -370,9 +390,9 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
 });
 
 // POST /api/broadcasts/:id/send-segment - send to a filtered segment
-broadcasts.post('/api/broadcasts/:id/send-segment', async (c) => {
+broadcasts.post('/api/broadcasts/:id/send-segment', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const existing = await getBroadcastById(c.env.DB, id);
 
     if (!existing) {

@@ -31,6 +31,13 @@ name: Admin Ops
 #   put-worker-api-key:
 #     API_KEY (管理 API Bearer) を GitHub Repository Secret WORKER_API_KEY から再投入。
 #     cutover-apikey.txt が 401 になった時の復旧用。
+#   billing-kill / billing-status / apply-migration-071 / release-billing-hold:
+#     WI-4 (Phase 3 自社課金基盤)。緊急停止 / 状態確認 (件数のみ) / migration 適用 /
+#     §6.5 ops hold 解除 (claim と契約を単一 op で戻す)。
+#   custom-domain-status / attach-custom-domain:
+#     独自ドメイン crm.naturism-diet.com の接続。status は read-only の事前確認
+#     (zone が同一アカウントにあるか)、attach は追加のみ・冪等。
+#     ⚠️ 実行順序と後続手順は docs/CUSTOM_DOMAIN_RUNBOOK.md 厳守。
 #   billing-kill:
 #     WI-4 (Phase 3 課金基盤) の緊急停止。SELF_BILLING_ENABLED + SUB_MIGRATION_ENABLED を
 #     同時 'false' 投入 (docs/PHASE3_BILLING_DESIGN_2026-07-19.md §8。Katsu 単独実行可)。
@@ -72,6 +79,8 @@ on:
           - billing-status
           - apply-migration-071
           - release-billing-hold
+          - custom-domain-status
+          - attach-custom-domain
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
         required: false
@@ -302,6 +311,100 @@ jobs:
           echo '### own-billing heartbeat (latest 1)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT ran_at, status, metrics_json FROM cron_run_logs WHERE job_name='own-billing' ORDER BY ran_at DESC LIMIT 1" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Custom domain status (read-only — zone とアタッチ状況の確認)
+        if: inputs.op == 'custom-domain-status'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TARGET_HOSTNAME: crm.naturism-diet.com
+          TARGET_ZONE: naturism-diet.com
+          WORKER_NAME: naturism-line-crm
+        run: |
+          set -euo pipefail
+          # 独自ドメイン接続の事前確認 (docs/CUSTOM_DOMAIN_RUNBOOK.md 手順1)。
+          # attach 前に「zone が同一 Cloudflare アカウントにあるか」を必ずここで確認する
+          # (無い状態で attach すると失敗するため)。出力は zone 名/有無のみ (トークンは出さない)。
+          ZONES=$(curl -sS -X GET "https://api.cloudflare.com/client/v4/zones?name=$TARGET_ZONE" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+          DOMAINS=$(curl -sS -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+          ZONES="$ZONES" DOMAINS="$DOMAINS" TARGET_HOSTNAME="$TARGET_HOSTNAME" \
+            WORKER_NAME="$WORKER_NAME" node -e '
+              const z = JSON.parse(process.env.ZONES || "{}");
+              const d = JSON.parse(process.env.DOMAINS || "{}");
+              const zone = (z.result || [])[0];
+              const attached = (d.result || []).find((x) => x.hostname === process.env.TARGET_HOSTNAME);
+              const lines = [];
+              lines.push("### Custom domain status");
+              lines.push("- zone_api_ok: " + (z.success === true));
+              lines.push("- zone_found_in_this_account: " + (zone ? "YES" : "NO"));
+              if (zone) lines.push("- zone_status: " + zone.status);
+              lines.push("- domains_api_ok: " + (d.success === true));
+              lines.push("- already_attached: " + (attached ? "YES (service=" + attached.service + ")" : "NO"));
+              lines.push("");
+              const wrongService = attached && attached.service !== process.env.WORKER_NAME;
+              lines.push(!zone
+                ? "→ zone が見つかりません。naturism-diet.com が別の Cloudflare アカウントにあるか、API トークンに Zone 読取権限がありません。attach は実行しないでください。"
+                : wrongService
+                  ? "→ このホスト名は別の worker (service=" + attached.service + ") にアタッチ済みです。先にそちらの解除が必要です。attach は失敗します。"
+                  : attached
+                    ? "→ 既に本 worker にアタッチ済みです。追加の作業は不要です (attach を実行しても no-op)。"
+                    : "→ zone は同一アカウントにあります。attach-custom-domain を実行できます。");
+              console.log(lines.join("\n"));
+            ' | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Attach custom domain (crm.naturism-diet.com → worker)
+        if: inputs.op == 'attach-custom-domain'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TARGET_HOSTNAME: crm.naturism-diet.com
+          TARGET_ZONE: naturism-diet.com
+          WORKER_NAME: naturism-line-crm
+        run: |
+          set -euo pipefail
+          # 追加のみ (workers.dev の既存 URL は併存して生き続ける)。冪等: 既にアタッチ済みなら成功扱い。
+          # 前提: custom-domain-status で zone_found_in_this_account=YES を確認済みであること。
+          ZONES=$(curl -sS -X GET "https://api.cloudflare.com/client/v4/zones?name=$TARGET_ZONE" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+          ZONE_ID=$(ZONES="$ZONES" node -e 'const z=JSON.parse(process.env.ZONES||"{}");const r=(z.result||[])[0];process.stdout.write(r?r.id:"")')
+          if [ -z "$ZONE_ID" ]; then
+            echo "zone $TARGET_ZONE が見つかりません。custom-domain-status を先に実行して確認してください。" >&2
+            exit 1
+          fi
+          # 冪等性: 既に本 worker にアタッチ済みなら no-op で正常終了、別 worker なら明示エラー
+          EXIST=$(curl -sS -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+          PRECHECK=$(EXIST="$EXIST" TARGET_HOSTNAME="$TARGET_HOSTNAME" WORKER_NAME="$WORKER_NAME" node -e '
+            const d = JSON.parse(process.env.EXIST || "{}");
+            const a = (d.result || []).find((x) => x.hostname === process.env.TARGET_HOSTNAME);
+            if (!a) { process.stdout.write("PROCEED"); }
+            else if (a.service === process.env.WORKER_NAME) { process.stdout.write("ALREADY"); }
+            else { process.stdout.write("CONFLICT:" + a.service); }
+          ')
+          case "$PRECHECK" in
+            ALREADY)
+              echo "### attach-custom-domain: 既にアタッチ済み (no-op)" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0 ;;
+            CONFLICT:*)
+              echo "$TARGET_HOSTNAME は別の worker (${PRECHECK#CONFLICT:}) にアタッチ済みです。先に解除してください。" >&2
+              exit 1 ;;
+          esac
+          RESP=$(curl -sS -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "{\"environment\":\"production\",\"hostname\":\"$TARGET_HOSTNAME\",\"service\":\"$WORKER_NAME\",\"zone_id\":\"$ZONE_ID\"}")
+          RESP="$RESP" TARGET_HOSTNAME="$TARGET_HOSTNAME" node -e '
+            const r = JSON.parse(process.env.RESP || "{}");
+            const ok = r.success === true;
+            console.log("### attach-custom-domain: " + (ok ? "OK" : "FAILED"));
+            console.log("- hostname: " + process.env.TARGET_HOSTNAME);
+            if (!ok) console.log("- errors: " + JSON.stringify(r.errors || []));
+            else console.log("→ 数分で https://" + process.env.TARGET_HOSTNAME + " が有効になります (SSL 証明書の発行待ち)。workers.dev の URL も引き続き使えます。");
+            if (!ok) process.exit(1);
+          ' | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '⚠️ 次の手順: docs/CUSTOM_DOMAIN_RUNBOOK.md の「手順3以降」(LINE/Shopify のコールバック URL 追加・secret 切替) を実施するまで、LIFF や OAuth は旧 URL のままにしておくこと。' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Release billing hold (WI-4 §6.5 ops 解除 op — claim と契約を単一 op で戻す)
         if: inputs.op == 'release-billing-hold'

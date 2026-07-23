@@ -15,6 +15,7 @@ import {
   setFriendCouponConfig,
   type FriendCouponConfig,
 } from '../services/friend-coupon-config.js';
+import { auditAdminAction } from '../services/admin-audit.js';
 
 export const friendCoupon = new Hono<Env>();
 
@@ -26,12 +27,20 @@ friendCoupon.get('/api/admin/friend-coupon', async (c) => {
 
 friendCoupon.put('/api/admin/friend-coupon', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Partial<FriendCouponConfig>;
+  const before = await getFriendCouponConfig(c.env.DB);
   const cfg = await setFriendCouponConfig(c.env.DB, {
     enabled: body.enabled,
     percent: body.percent,
     code: body.code,
     label: body.label,
     note: body.note,
+  });
+  // 「誰がいつクーポンを ON/OFF したか」は景表法・原価影響の観点で必ず残す
+  await auditAdminAction(c, {
+    action: 'admin.friend_coupon.update',
+    targetType: 'friend_coupon_config',
+    before: { enabled: before.enabled, percent: before.percent, code: before.code },
+    after: { enabled: cfg.enabled, percent: cfg.percent, code: cfg.code },
   });
   return c.json({ success: true, data: cfg });
 });

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { LineClient } from '@line-crm/line-sdk';
 import { getFriendById } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const richMenus = new Hono<Env>();
 
@@ -47,9 +48,9 @@ richMenus.delete('/api/rich-menus/:id', async (c) => {
 });
 
 // POST /api/rich-menus/:id/default — set rich menu as default for all users
-richMenus.post('/api/rich-menus/:id/default', async (c) => {
+richMenus.post('/api/rich-menus/:id/default', requireRole('owner', 'admin'), async (c) => {
   try {
-    const richMenuId = c.req.param('id');
+    const richMenuId = c.req.param('id')!;
     const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
     await lineClient.setDefaultRichMenu(richMenuId);
     return c.json({ success: true, data: null });
@@ -217,7 +218,7 @@ richMenus.get('/api/rich-menus/status', async (c) => {
 // POST /api/rich-menus/setup-naturism — naturism用リッチメニュー一括セットアップ v3
 // 8ボタン（本番同等レイアウト）: 左2列大 + 右1列上下分割×4
 // フロー: 1. 既存デフォルト削除 → 2. 構造作成 → 3. 画像アップロード → 4. デフォルト設定
-richMenus.post('/api/rich-menus/setup-naturism', async (c) => {
+richMenus.post('/api/rich-menus/setup-naturism', requireRole('owner', 'admin'), async (c) => {
   try {
     const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
     const liffUrl = c.env.LIFF_URL || 'https://liff.line.me/2009713578-NbdHyFZf';

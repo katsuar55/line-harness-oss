@@ -15,6 +15,7 @@ import type { SurveyQuestion } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
 import { flexMessage } from '@line-crm/line-sdk';
 import type { Env } from '../index.js';
+import { denyUnlessRole } from '../middleware/role-guard.js';
 
 const surveys = new Hono<Env>();
 
@@ -193,6 +194,11 @@ surveys.delete('/api/surveys/:id', async (c) => {
  * POST /api/surveys/:id/send — アンケートをアンバサダーに配信
  */
 surveys.post('/api/surveys/:id/send', async (c) => {
+  // 一斉配信に相当するため owner/admin 限定 (採点 R2 HIGH)
+  {
+    const denied = await denyUnlessRole(c, 'アンケート一斉配信', 'owner', 'admin');
+    if (denied) return denied;
+  }
   try {
     const id = c.req.param('id');
     const survey = await getSurveyById(c.env.DB, id);

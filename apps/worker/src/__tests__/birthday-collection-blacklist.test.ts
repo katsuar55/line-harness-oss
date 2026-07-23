@@ -43,6 +43,11 @@ function makeRecordingDb(): { db: D1Database; sqls: string[] } {
 
 function createApp(): InstanceType<typeof Hono<Env>> {
   const app = new Hono<Env>();
+  // 一斉配信ガード (denyUnlessRole) 用に owner context を張る
+  app.use('*', async (c, next) => {
+    c.set('staff', { id: 'test-owner', name: 'Owner', role: 'owner' });
+    return next();
+  });
   app.route('/', birthdayCollection);
   return app;
 }
