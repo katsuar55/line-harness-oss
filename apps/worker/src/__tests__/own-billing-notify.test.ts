@@ -48,12 +48,21 @@ interface QueueRow {
   sent_at: string | null;
 }
 
+interface SubscriberRow {
+  id: string;
+  email: string;
+  is_active: number;
+  transactional_only: number;
+  consent_source: string | null;
+}
+
 interface State {
   queue: QueueRow[];
   notices: Set<string>;
   customerEmail: string | null;
   friend: { id: string; line_user_id: string } | null;
   contracts: Map<string, { dunning_state: string; dunning_deadline_at: string | null }>;
+  subscribers: SubscriberRow[];
   seq: number;
 }
 
@@ -64,6 +73,7 @@ function freshState(): State {
     customerEmail: 'buyer@example.com',
     friend: { id: 'f1', line_user_id: 'U1' },
     contracts: new Map([[GID, { dunning_state: 'challenged', dunning_deadline_at: null }]]),
+    subscribers: [],
     seq: 0,
   };
 }
@@ -86,6 +96,12 @@ function createFakeDb(state: State): D1Database {
                 return state.friend
                   ? { id: state.friend.id, line_user_id: state.friend.line_user_id }
                   : null;
+              }
+              if (sql.includes('FROM email_subscribers WHERE email')) {
+                return state.subscribers.find((s) => s.email === args[0]) ?? null;
+              }
+              if (sql.includes('FROM email_subscribers WHERE id')) {
+                return state.subscribers.find((s) => s.id === args[0]) ?? null;
               }
               throw new Error(`unexpected first(): ${sql}`);
             },
@@ -145,6 +161,19 @@ function createFakeDb(state: State): D1Database {
                   row.channel = String(args[0]);
                   row.sent_at = String(args[1]);
                 }
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes('INSERT INTO email_subscribers')) {
+                state.subscribers.push({
+                  id: String(args[0]),
+                  email: String(args[2]),
+                  is_active: Number(args[3]),
+                  transactional_only: Number(args[4]),
+                  consent_source: args[5] === null ? null : String(args[5]),
+                });
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes('UPDATE email_subscribers')) {
                 return { meta: { changes: 1 } };
               }
               if (sql.includes('INSERT OR IGNORE INTO own_billing_notices')) {
@@ -307,6 +336,45 @@ describe('dispatchQueuedNotices — チャネル規則 (§2)', () => {
     expect(res.sentEmail).toBe(1);
     expect(dispatchMock).toHaveBeenCalledTimes(1);
     expect((dispatchMock.mock.calls[0][1] as { channel: string }).channel).toBe('email');
+  });
+
+  it('subscriber 行が無い顧客にも事務連絡が届く (transactional_only 行を自動作成)', async () => {
+    // 本番の email_subscribers は 2 行しかなく、定期便顧客は全員未登録。
+    // 行を作らないと dispatcher が no_subscriber で skip し、課金失敗通知が誰にも届かない。
+    const state = freshState();
+    state.friend = null;
+    await seed(state);
+    dispatchMock.mockResolvedValue({
+      results: [{ channel: 'email', status: 'sent', providerMessageId: 'm', subscriberId: 's' }],
+    });
+    await dispatchQueuedNotices(createFakeDb(state), bothDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(state.subscribers).toHaveLength(1);
+    expect(state.subscribers[0]).toMatchObject({
+      email: 'buyer@example.com',
+      // marketing 許諾は絶対に与えない (広告配信は is_active=1 が要る)
+      is_active: 0,
+      transactional_only: 1,
+      consent_source: 'own_billing_transactional',
+    });
+  });
+
+  it('既存 subscriber がいれば行を作らない (配信停止済みを復活させない)', async () => {
+    const state = freshState();
+    state.friend = null;
+    state.subscribers.push({
+      id: 'existing',
+      email: 'buyer@example.com',
+      is_active: 0,
+      transactional_only: 0,
+      consent_source: 'opt_in_form',
+    });
+    await seed(state);
+    dispatchMock.mockResolvedValue({
+      results: [{ channel: 'email', status: 'skipped', reason: 'inactive_transactional' }],
+    });
+    await dispatchQueuedNotices(createFakeDb(state), bothDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(state.subscribers).toHaveLength(1);
+    expect(state.subscribers[0].transactional_only).toBe(0);
   });
 
   it('LINE も email も到達不能なら即 abandoned (無限リトライを作らない)', async () => {

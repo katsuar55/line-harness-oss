@@ -18,7 +18,11 @@
  *   本ファイルの文面に効能効果の表現を入れないこと。事務連絡 (金額・日付・手続き) に限る。
  */
 import type { LineClient } from '@line-crm/line-sdk';
-import { getFriendByShopifyCustomerId } from '@line-crm/db';
+import {
+  getFriendByShopifyCustomerId,
+  getEmailSubscriberByEmail,
+  upsertEmailSubscriber,
+} from '@line-crm/db';
 import { dispatch, type ChannelDispatcherDeps } from './channel-dispatcher.js';
 import type { NoticeKind } from './own-billing-dunning.js';
 
@@ -243,6 +247,14 @@ async function deliverOne(
 
   // ── ② email fallback (未連携 / LINE 不達)
   if (email && deps.emailProvider && deps.emailRenderer) {
+    // ChannelDispatcher は email_subscribers 行が無いと `skipped:no_subscriber` で落とす。
+    // 本番の email_subscribers はメルマガ opt-in 由来の数件しか無く、定期便顧客はほぼ全員
+    // 行を持たない = このままだと課金失敗通知が **誰にも届かない**。
+    // 事務連絡 (課金・配送) は既存顧客への通知であり opt-in を要さないため、行が無い場合のみ
+    // **transactional_only=1 / is_active=0** で作成する (= marketing 配信許諾は一切与えない。
+    // 既存行があれば upsert は consent フラグに触らないので、配信停止済みの顧客を
+    // 復活させることもない)。
+    await ensureTransactionalSubscriber(db, email);
     const sent = await tryDispatch(db, deps, {
       recipient: { email },
       channel: 'email',
@@ -299,6 +311,34 @@ async function tryDispatch(
         }),
   });
   return res.results.some((r) => r.status === 'sent');
+}
+
+/**
+ * 事務連絡を届けるための最小限の subscriber 行を保証する。
+ *
+ * **やること**: 行が無いときだけ `transactional_only=1 / is_active=0` で作成する。
+ * **やらないこと**: 既存行の consent フラグ変更 (upsertEmailSubscriber は既存行では
+ * friend_id / consent_source しか触らない = 配信停止済みを復活させない)。
+ *
+ * 法令上の位置づけ: 特定電子メール法のオプトイン規制は広告宣伝メールが対象で、
+ * 取引条件・決済・配送の通知 (取引関係にある顧客への事務連絡) は対象外。
+ * marketing 側は is_active=0 のままなので、この行が広告配信に使われることはない。
+ */
+async function ensureTransactionalSubscriber(db: D1Database, email: string): Promise<void> {
+  try {
+    const existing = await getEmailSubscriberByEmail(db, email);
+    if (existing) return;
+    await upsertEmailSubscriber(db, {
+      email,
+      marketingOptIn: false, // → is_active=0 / transactional_only=1
+      consentSource: 'own_billing_transactional',
+    });
+  } catch (e: unknown) {
+    // 作成に失敗しても送信自体は試みる (dispatcher が no_subscriber で skip → 通常の失敗経路)
+    console.error(
+      `own-billing: transactional subscriber の作成に失敗: ${e instanceof Error ? e.message : e}`,
+    );
+  }
 }
 
 async function lookupCustomerEmail(db: D1Database, shopifyCustomerId: string): Promise<string | null> {

@@ -26,7 +26,11 @@ export type ConsentSource =
   | 'shopify_checkout'
   | 'liff_signup'
   | 'manual_import'
-  | 'opt_in_form';
+  | 'opt_in_form'
+  // WI-4 step3: 課金・配送の事務連絡を届けるための自動作成 (marketingOptIn=false で
+  // 必ず is_active=0 / transactional_only=1 になる)。**広告配信の許諾ではない** ことを
+  // 出所として記録し、後から棚卸し・除外できるようにするための独立値。
+  | 'own_billing_transactional';
 
 export interface UpsertEmailSubscriberInput {
   email: string;
