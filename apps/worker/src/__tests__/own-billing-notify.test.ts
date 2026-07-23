@@ -63,6 +63,8 @@ interface State {
   friend: { id: string; line_user_id: string } | null;
   contracts: Map<string, { dunning_state: string; dunning_deadline_at: string | null }>;
   subscribers: SubscriberRow[];
+  /** 配送直前に読まれる claim の状態。'succeeded' なら失敗通知は破棄される */
+  claimStatus: string | null;
   seq: number;
 }
 
@@ -74,6 +76,7 @@ function freshState(): State {
     friend: { id: 'f1', line_user_id: 'U1' },
     contracts: new Map([[GID, { dunning_state: 'challenged', dunning_deadline_at: null }]]),
     subscribers: [],
+    claimStatus: 'failed',
     seq: 0,
   };
 }
@@ -89,13 +92,19 @@ function createFakeDb(state: State): D1Database {
                 const k = `${args[0]}|${args[1]}|${args[2]}|${args[3]}`;
                 return state.notices.has(k) ? { x: 1 } : null;
               }
+              // 宛先解決は **WHERE 述語を尊重する** (顧客 ID 取り違えを検出できるように)
               if (sql.includes('FROM shopify_customers')) {
-                return { email: state.customerEmail };
+                return args[0] === CUSTOMER ? { email: state.customerEmail } : { email: null };
               }
               if (sql.includes('FROM friends')) {
+                if (args[0] !== CUSTOMER) return null;
                 return state.friend
                   ? { id: state.friend.id, line_user_id: state.friend.line_user_id }
                   : null;
+              }
+              // 配送直前の再検証 (支払済みなら失敗通知を破棄する)
+              if (sql.includes('SELECT status FROM billing_cycle_claims')) {
+                return state.claimStatus === null ? null : { status: state.claimStatus };
               }
               if (sql.includes('FROM email_subscribers WHERE email')) {
                 return state.subscribers.find((s) => s.email === args[0]) ?? null;
@@ -185,6 +194,22 @@ function createFakeDb(state: State): D1Database {
                 // 条件付き UPDATE: dunning_state='challenged' のときだけ書く
                 if (c && c.dunning_state === 'challenged') c.dunning_deadline_at = String(args[0]);
                 return { meta: { changes: c ? 1 : 0 } };
+              }
+              if (sql.includes("last_error = 'stale'")) {
+                const row = state.queue.find((r) => r.id === args[1] && r.status === 'sending');
+                if (row) {
+                  row.status = 'abandoned';
+                  row.last_error = 'stale';
+                }
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes("last_error = 'superseded_by_success'")) {
+                const row = state.queue.find((r) => r.id === args[1] && r.status === 'sending');
+                if (row) {
+                  row.status = 'abandoned';
+                  row.last_error = 'superseded_by_success';
+                }
+                return { meta: { changes: 1 } };
               }
               if (sql.includes("last_error = 'no_reachable_channel'")) {
                 const row = state.queue.find((r) => r.id === args[1] && r.status === 'sending');
@@ -415,6 +440,123 @@ describe('dispatchQueuedNotices — チャネル規則 (§2)', () => {
     dispatchMock.mockResolvedValue({ results: [{ channel: 'line', status: 'sent' }] });
     await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
     expect((dispatchMock.mock.calls[0][1] as { category: string }).category).toBe('transactional');
+  });
+});
+
+describe('採点 R1 回帰 — 通知が消える/届いてはいけない経路', () => {
+  async function seedOne(state: State, kind = 'fail_notice') {
+    await enqueueNotice(
+      createFakeDb(state),
+      { contractGid: GID, cycleKey: '2', attemptNo: 1, kind: kind as never, shopifyCustomerId: CUSTOMER, payload: {} },
+      NOW_ISO,
+    );
+  }
+
+  it('MEDIUM: LINE 一時障害 + email 無し は abandoned にせず再試行に回す', async () => {
+    // abandoned にすると queue の UNIQUE で以後の enqueue が duplicate になり通知が永久に消える
+    const state = freshState();
+    state.customerEmail = null;
+    await seedOne(state);
+    dispatchMock.mockResolvedValue({ results: [{ channel: 'line', status: 'failed', error: 'LINE API error: 500' }] });
+    const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(res.noRecipient).toBe(0);
+    expect(state.queue[0].status).toBe('queued');
+    expect(state.queue[0].last_error).toBe('all_channels_failed');
+  });
+
+  it('MEDIUM: 契約単位 gate (excludelist/quarantine) 中は配送せずキューに残す', async () => {
+    const state = freshState();
+    await seedOne(state);
+    const res = await dispatchQueuedNotices(
+      createFakeDb(state),
+      { ...lineDeps, canDispatch: () => false },
+      NOW_IN_WINDOW,
+      NOW_ISO,
+    );
+    expect(res.gateFrozen).toBe(1);
+    expect(res.picked).toBe(0);
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(state.queue[0].status).toBe('queued');
+  });
+
+  it('HIGH: 配送直前に支払済みと判明したら失敗通知を破棄する', async () => {
+    const state = freshState();
+    await seedOne(state, 'card_request');
+    state.claimStatus = 'succeeded'; // enqueue 後・配送前に決済が通った
+    const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(res.superseded).toBe(1);
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(state.queue[0]).toMatchObject({ status: 'abandoned', last_error: 'superseded_by_success' });
+  });
+
+  it('成功を伝える通知 (delivery_notice) は支払済みでも破棄しない', async () => {
+    const state = freshState();
+    await seedOne(state, 'delivery_notice');
+    state.claimStatus = 'succeeded';
+    dispatchMock.mockResolvedValue({ results: [{ channel: 'line', status: 'sent' }] });
+    const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(res.superseded).toBe(0);
+    expect(res.sentLine).toBe(1);
+  });
+
+  it('MEDIUM: email 送信先はあるが provider 未注入なら再試行に回す (設定漏れを abandon しない)', async () => {
+    const state = freshState();
+    state.friend = null;
+    await seedOne(state);
+    const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(res.noRecipient).toBe(0);
+    expect(state.queue[0]).toMatchObject({ status: 'queued', last_error: 'email_provider_not_configured' });
+  });
+
+  it('LINE 送信には決定的 retryKey が付く (再試行での二重配信防止)', async () => {
+    const state = freshState();
+    await seedOne(state);
+    dispatchMock.mockResolvedValue({ results: [{ channel: 'line', status: 'sent' }] });
+    await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    const payload = dispatchMock.mock.calls[0][1] as { linePayload?: { retryKey?: string } };
+    expect(payload.linePayload?.retryKey).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it('宛先解決は queue 行の shopify_customer_id で引く (他人に送らない)', async () => {
+    const state = freshState();
+    await enqueueNotice(
+      createFakeDb(state),
+      {
+        contractGid: GID, cycleKey: '2', attemptNo: 1, kind: 'fail_notice',
+        shopifyCustomerId: 'someone-else', payload: {},
+      },
+      NOW_ISO,
+    );
+    const res = await dispatchQueuedNotices(createFakeDb(state), bothDeps, NOW_IN_WINDOW, NOW_ISO);
+    // 別顧客なので friend も email も引けない = 誰にも送らない
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(res.noRecipient).toBe(1);
+  });
+
+  it('MEDIUM: 凍結明けの古い通知は破棄する (過去日の締切を案内しない)', async () => {
+    const state = freshState();
+    await seedOne(state);
+    state.queue[0].queued_at = '2026-08-01T11:00:00.000+09:00'; // 4 日前
+    const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(res.stale).toBe(1);
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(state.queue[0]).toMatchObject({ status: 'abandoned', last_error: 'stale' });
+  });
+
+  it('LOW: failed と abandoned は排他カウント (heartbeat の二重計上を防ぐ)', async () => {
+    const state = freshState();
+    state.friend = null;
+    await seedOne(state);
+    dispatchMock.mockResolvedValue({ results: [{ channel: 'email', status: 'failed', error: 'x' }] });
+    let last = await dispatchQueuedNotices(createFakeDb(state), bothDeps, NOW_IN_WINDOW, NOW_ISO);
+    for (let i = 1; i < MAX_DISPATCH_ATTEMPTS; i += 1) {
+      last = await dispatchQueuedNotices(createFakeDb(state), bothDeps, NOW_IN_WINDOW, NOW_ISO);
+    }
+    // 最終回は abandoned のみに計上され failed には入らない
+    expect(last.abandoned).toBe(1);
+    expect(last.failed).toBe(0);
   });
 });
 

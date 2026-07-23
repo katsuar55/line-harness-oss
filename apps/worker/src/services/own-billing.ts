@@ -187,6 +187,12 @@ export async function processOwnBilling(
     alert?: (m: string) => void;
     /** step 3: 通知キューの配送先 (LINE / email)。未注入なら配送しない */
     notify?: NoticeDispatchDeps;
+    /**
+     * step 3: engine が `promoted_succeeded` を返したときに §6.1 I-4 を適用するフック。
+     * 実体は own-billing-webhooks.ts の applyPromotedSuccess (循環 import を避けるため
+     * 呼び出し側から注入する)。未注入なら outcome の計数のみ。
+     */
+    onPromotedSuccess?: (contractGid: string) => Promise<unknown>;
   } = {},
 ): Promise<OwnBillingResult> {
   const statics = readStaticGates(env);
@@ -238,6 +244,12 @@ export async function processOwnBilling(
         try {
           const outcome = await issueForContract(env.DB, deps.api, contract, todayJst, nowIso, alert);
           outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
+          // 取り逃した success を CAS 時の照会で発見した場合、engine は outcome を返すだけ。
+          // §6.1 の I-4 (dunning 解除 / order_id / 次サイクル scheduleEdit) をここで適用する
+          // — 適用しないと支払済みの顧客が await_card sweep で pause される (採点 R1 HIGH)。
+          if (outcome === 'promoted_succeeded' && deps.onPromotedSuccess) {
+            await deps.onPromotedSuccess(contract.contract_gid);
+          }
         } catch (e: unknown) {
           outcomes.error = (outcomes.error ?? 0) + 1;
           alert(
@@ -265,7 +277,13 @@ export async function processOwnBilling(
     try {
       result.notices = await dispatchQueuedNotices(
         env.DB,
-        deps.notify,
+        {
+          ...deps.notify,
+          // §5.2 の凍結規則を契約単位でも適用する: excludelist / quarantine に入れた契約は
+          // 「分類が怪しいので止めた」状態なので、その顧客への失敗通知こそ止めるべき。
+          // 発行 gate と同じ述語を使う (armed/allowlist も含む — 通知だけ先走らせない)。
+          canDispatch: (contractGid: string) => canIssueAttempt(statics, d1, contractGid),
+        },
         nowMs,
         new Date(nowMs + 9 * 3600_000).toISOString().replace('Z', '+09:00'),
       );

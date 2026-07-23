@@ -184,7 +184,14 @@ const CLASS_BY_CODE: Record<BillingErrorCode, DunningClass> = {
   PAYPAL_ERROR_GENERAL: 'F',
 };
 
-/** class A のリトライ間隔 (日)。§6.2「+3日, +7日 (計3)」= 初回 + リトライ 2 回 */
+/**
+ * class A のリトライ間隔 (日)。§6.2「+3日, +7日 (計3)」= 初回 + リトライ 2 回。
+ *
+ * **解釈の明示**: オフセットは「各失敗日からの相対」で数える (失敗 → +3日 → その失敗から +7日
+ * = 初回予定日から通算 +10 日)。「初回予定日から +3 / +7」と読むこともできるが、その場合
+ * 2 回目と 3 回目の間隔が 4 日しかなく、給与日跨ぎ (INSUFFICIENT_FUNDS の主因) を挟めない。
+ * 通算 +10 日は I-6 の 14 日以内に収まる (テストで境界を固定)。
+ */
 export const SOFT_RETRY_OFFSET_DAYS = [3, 7] as const;
 /** class A の最大 attempt 数 (初回含む) */
 export const SOFT_MAX_ATTEMPTS = SOFT_RETRY_OFFSET_DAYS.length + 1;

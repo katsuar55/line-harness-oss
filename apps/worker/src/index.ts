@@ -100,6 +100,8 @@ import { processWeeklyReports } from './services/weekly-report.js';
 import { processSubscriptionReminders } from './services/subscription-reminder.js';
 import { processBillingReminders } from './services/subscription-billing-reminder.js';
 import { processOwnBilling } from './services/own-billing.js';
+import { canIssueAttempt, readStaticGates, readD1Gates } from './services/own-billing.js';
+import { applyPromotedSuccess } from './services/own-billing-webhooks.js';
 import { ownBillingWebhook, buildAdapter } from './routes/own-billing-webhook.js';
 import { buildEmailDispatcherDeps } from './services/email-dispatch-config.js';
 import type { NoticeDispatchDeps } from './services/own-billing-notify.js';
@@ -583,6 +585,23 @@ async function scheduled(
         };
         if (emailConfig) Object.assign(notify, buildEmailDispatcherDeps(emailConfig));
         ownBillingDeps.notify = notify;
+        // engine の promoted_succeeded に §6.1 I-4 を適用するフック
+        // (webhooks 側の実装を注入 = 循環 import を作らない)
+        if (billingApi) {
+          const statics = readStaticGates(env);
+          const d1 = await readD1Gates(env.DB);
+          ownBillingDeps.onPromotedSuccess = (contractGid: string) =>
+            applyPromotedSuccess(
+              {
+                db: env.DB,
+                api: billingApi,
+                canIssue: (gid: string) => d1.error === undefined && canIssueAttempt(statics, d1, gid),
+                alert: (m: string) => console.error(m),
+                nowMs: Date.now(),
+              },
+              contractGid,
+            );
+        }
       }
       return processOwnBilling(env, ownBillingDeps);
     })(),

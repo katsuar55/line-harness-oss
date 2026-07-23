@@ -31,6 +31,9 @@ import { getShopifyAccessToken } from '../services/shopify-token.js';
 
 export const ownBillingWebhook = new Hono<Env>();
 
+/** Discord alert の timeout。webhook のリクエストパス上なので短く切る */
+const ALERT_TIMEOUT_MS = 3_000;
+
 export const OWN_BILLING_WEBHOOK_PATH = '/api/integrations/shopify/webhook/subscription';
 
 /** 本 route が処理する topic の接頭辞 (これ以外は noop で 200) */
@@ -57,6 +60,14 @@ ownBillingWebhook.post(OWN_BILLING_WEBHOOK_PATH, async (c) => {
     return c.json({ success: false, error: 'signature verification failed' }, 401);
   }
 
+  // 署名鍵はアプリ単位なので、鍵が一致しても別ストア宛の配信を受け取りうる。
+  // ストアが判っているときは shop domain も突き合わせる (多層防御)。
+  const shopDomain = (c.req.header('X-Shopify-Shop-Domain') ?? '').trim().toLowerCase();
+  if (env.SHOPIFY_STORE_DOMAIN && shopDomain && shopDomain !== env.SHOPIFY_STORE_DOMAIN.toLowerCase()) {
+    console.error(`own-billing webhook rejected: unexpected shop domain ${shopDomain}`);
+    return c.json({ success: false, error: 'unexpected shop' }, 401);
+  }
+
   const topic = (c.req.header('X-Shopify-Topic') ?? '').trim();
   if (!HANDLED_TOPIC_PREFIXES.some((p) => topic.toLowerCase().startsWith(p))) {
     // 想定外 topic は受理だけして無視 (Shopify に再送させない)
@@ -74,15 +85,22 @@ ownBillingWebhook.post(OWN_BILLING_WEBHOOK_PATH, async (c) => {
   const alert = async (message: string): Promise<void> => {
     console.error(message);
     if (!env.DISCORD_WEBHOOK_URL) return;
+    // 公開 webhook のリクエストパス上なので **必ず timeout を付ける** (repo 方針 #123)。
+    // Discord が無応答だと Shopify 側がタイムアウトして再送ストームになる。
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ALERT_TIMEOUT_MS);
     try {
       await fetch(env.DISCORD_WEBHOOK_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         // Discord の 2000 文字制限内に収める (message は code/gid のみで PII を含まない)
         body: JSON.stringify({ content: `[own-billing] ${message}`.slice(0, 1900) }),
+        signal: controller.signal,
       });
     } catch {
-      /* 通知先障害で webhook 処理を落とさない */
+      /* 通知先障害・timeout で webhook 処理を落とさない */
+    } finally {
+      clearTimeout(timer);
     }
   };
 
@@ -100,8 +118,16 @@ ownBillingWebhook.post(OWN_BILLING_WEBHOOK_PATH, async (c) => {
       nowMs: Date.now(),
     };
     // adapter は認証情報が揃っているときだけ注入する。未注入でも記録系は動く。
-    const api = await buildAdapter(env.DB, env);
-    if (api) deps.api = api;
+    // own 契約が 1 件も無い間は adapter を作らない (採点 R1 LOW): buildAdapter は D1 読み +
+    // token 期限切れなら Shopify への subrequest を伴うため、契約 0 件の現在は
+    // webhook 1 本ごとに無駄な往復が発生してしまう。
+    const anyContract = await env.DB.prepare(
+      `SELECT 1 AS x FROM own_sub_contracts LIMIT 1`,
+    ).first<{ x: number }>();
+    if (anyContract) {
+      const api = await buildAdapter(env.DB, env);
+      if (api) deps.api = api;
+    }
 
     const outcome = await routeBillingWebhook(deps, topic, body);
     return c.json({ success: true, data: { outcome } });

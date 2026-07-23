@@ -24,6 +24,7 @@ import {
   upsertEmailSubscriber,
 } from '@line-crm/db';
 import { dispatch, type ChannelDispatcherDeps } from './channel-dispatcher.js';
+import { MYPAGE_URL } from './subscription-concierge.js';
 import type { NoticeKind } from './own-billing-dunning.js';
 
 /**
@@ -38,6 +39,9 @@ export const NOTICE_WINDOW_END_HOUR = 20;
 
 /** 1 tick の配送予算 (Workers Free の subrequest 予算。1 通 = LINE 1 + email 1 が上限) */
 export const MAX_NOTICE_PER_TICK = 5;
+
+/** 候補取得の倍率。凍結行がキュー先頭を占有しても後続が配送されるようにする */
+export const NOTICE_CANDIDATE_FACTOR = 4;
 
 /** 配送失敗時の最大再試行回数。超過で abandoned (無限ループ防止) */
 export const MAX_DISPATCH_ATTEMPTS = 3;
@@ -125,6 +129,7 @@ interface QueueRow {
   shopify_customer_id: string;
   payload_json: string;
   dispatch_attempts: number;
+  queued_at: string;
 }
 
 export interface NoticeDispatchDeps {
@@ -133,6 +138,13 @@ export interface NoticeDispatchDeps {
   emailRenderer?: ChannelDispatcherDeps['emailRenderer'];
   emailFrom?: string;
   emailReplyTo?: string;
+  /**
+   * 契約単位の配送可否 (§5.2 の凍結規則を通知にも適用する)。
+   * excludelist / quarantine に入れた契約は「分類が怪しいので止めた」状態なので、
+   * その顧客へ「お支払いを確認できませんでした」を送るのが最大の事故になる。
+   * 未注入なら全件配送 (テスト・既存挙動互換)。
+   */
+  canDispatch?: (contractGid: string) => boolean;
 }
 
 export interface NoticeDispatchResult {
@@ -143,6 +155,12 @@ export interface NoticeDispatchResult {
   failed: number;
   abandoned: number;
   noRecipient: number;
+  /** 契約単位 gate (excludelist / quarantine) で配送を見送った件数 */
+  gateFrozen: number;
+  /** 配送直前の再検証で「既に支払済み」と判明し破棄した件数 */
+  superseded: number;
+  /** 古すぎて (日付が陳腐化して) 破棄した件数 */
+  stale: number;
 }
 
 /**
@@ -163,22 +181,35 @@ export async function dispatchQueuedNotices(
     failed: 0,
     abandoned: 0,
     noRecipient: 0,
+    gateFrozen: 0,
+    superseded: 0,
+    stale: 0,
   };
   if (!result.window) return result;
 
+  // 候補は予算より多めに取り、**実際に配送を試みた件数**だけを予算として数える。
+  // LIMIT を予算と同じにすると、キュー先頭に凍結対象 (excludelist / quarantine) が並んだ瞬間に
+  // 候補枠を占有され、他の契約の通知が永久に配送されない (採点 R1 HIGH の飢餓)。
   const rows = await db
     .prepare(
       `SELECT id, contract_gid, cycle_key, attempt_no, kind, shopify_customer_id,
-              payload_json, dispatch_attempts
+              payload_json, dispatch_attempts, queued_at
          FROM own_billing_notice_queue
         WHERE status = 'queued'
         ORDER BY queued_at ASC, id ASC
         LIMIT ?`,
     )
-    .bind(MAX_NOTICE_PER_TICK)
+    .bind(MAX_NOTICE_PER_TICK * NOTICE_CANDIDATE_FACTOR)
     .all<QueueRow>();
 
   for (const row of rows.results ?? []) {
+    if (result.picked >= MAX_NOTICE_PER_TICK) break;
+    // 契約単位の凍結 (§5.2): 'queued' のまま残し、除外解除後の tick が届ける。
+    // 凍結は予算を消費しない。
+    if (deps.canDispatch && !deps.canDispatch(row.contract_gid)) {
+      result.gateFrozen += 1;
+      continue;
+    }
     // CAS: 'queued' を取れた 1 プロセスだけが送信権を持つ
     const claimed = await db
       .prepare(
@@ -195,11 +226,12 @@ export async function dispatchQueuedNotices(
       const outcome = await deliverOne(db, deps, row, nowIso);
       if (outcome === 'line') result.sentLine += 1;
       else if (outcome === 'email') result.sentEmail += 1;
+      else if (outcome === 'superseded') result.superseded += 1;
+      else if (outcome === 'stale') result.stale += 1;
       else if (outcome === 'no_recipient') result.noRecipient += 1;
+      // failed と abandoned は排他 (同一行を両方に数えると heartbeat の件数が二重計上になる)
+      else if (row.dispatch_attempts + 1 >= MAX_DISPATCH_ATTEMPTS) result.abandoned += 1;
       else result.failed += 1;
-      if (outcome === 'failed' && row.dispatch_attempts + 1 >= MAX_DISPATCH_ATTEMPTS) {
-        result.abandoned += 1;
-      }
     } catch (e: unknown) {
       // deliverOne 内で状態を戻せなかった場合の最終防波堤 (行が 'sending' で固着しない)
       await markFailed(db, row, e instanceof Error ? e.message : String(e), nowIso);
@@ -209,7 +241,14 @@ export async function dispatchQueuedNotices(
   return result;
 }
 
-type DeliverOutcome = 'line' | 'email' | 'failed' | 'no_recipient';
+type DeliverOutcome = 'line' | 'email' | 'failed' | 'no_recipient' | 'superseded' | 'stale';
+
+/**
+ * enqueue からこの時間を超えた通知は送らない。
+ * 36h = 「配送窓 (1日1回、最大 ~14h 待ち) を 1 回逃しても届く」が「凍結明けの過去日案内は
+ * 送らない」境界。日付を含む案内 (締切・リトライ日) の陳腐化を防ぐ。
+ */
+export const NOTICE_MAX_AGE_MS = 36 * 3600_000;
 
 async function deliverOne(
   db: D1Database,
@@ -218,6 +257,26 @@ async function deliverOne(
   nowIso: string,
 ): Promise<DeliverOutcome> {
   const kind = row.kind as NoticeKind;
+
+  // ── 鮮度チェック (採点 R1 MEDIUM)。
+  // billing-kill / breaker で数日凍結したあと解除すると、キューには「もう過ぎた締切日」を
+  // 含む通知が残っている。過去日を案内するのは誤情報なので、古い通知は送らず破棄する。
+  const ageMs = Date.parse(nowIso) - Date.parse(row.queued_at);
+  if (Number.isFinite(ageMs) && ageMs > NOTICE_MAX_AGE_MS) {
+    await db
+      .prepare(
+        `UPDATE own_billing_notice_queue
+            SET status = 'abandoned', last_error = 'stale', sent_at = ?, payload_json = '{}'
+          WHERE id = ? AND status = 'sending'`,
+      )
+      .bind(nowIso, row.id)
+      .run();
+    console.error(
+      `own-billing: 通知 ${row.kind} (contract=${row.contract_gid} cycle=${row.cycle_key}) が古すぎるため破棄しました`,
+    );
+    return 'stale';
+  }
+
   let payload: NoticePayload;
   try {
     payload = JSON.parse(row.payload_json) as NoticePayload;
@@ -225,24 +284,70 @@ async function deliverOne(
     payload = {};
   }
 
+  // ── 配送直前の再検証 (採点 R1 HIGH)。
+  // enqueue から配送窓まで最大 十数時間 空くため、その間に支払いが通っている可能性がある。
+  // 支払済みの顧客へ「お支払いを確認できませんでした」「本人確認をお願いします」を送るのは
+  // 本機能で最も避けたい事故なので、失敗起因の通知は claim が succeeded なら破棄する。
+  // (delivery_notice / resume_notice は「成功したこと」を伝える通知なので対象外)
+  const FAILURE_KINDS: NoticeKind[] = ['fail_notice', 'card_request', 'challenge_link'];
+  if (FAILURE_KINDS.includes(kind)) {
+    const claim = await db
+      .prepare(
+        `SELECT status FROM billing_cycle_claims WHERE contract_gid = ? AND cycle_key = ?`,
+      )
+      .bind(row.contract_gid, row.cycle_key)
+      .first<{ status: string }>();
+    if (claim?.status === 'succeeded') {
+      await db
+        .prepare(
+          `UPDATE own_billing_notice_queue
+              SET status = 'abandoned', last_error = 'superseded_by_success', sent_at = ?
+            WHERE id = ? AND status = 'sending'`,
+        )
+        .bind(nowIso, row.id)
+        .run();
+      return 'superseded';
+    }
+  }
+
   const friend = await getFriendByShopifyCustomerId(db, row.shopify_customer_id);
   const email = await lookupCustomerEmail(db, row.shopify_customer_id);
   const text = buildNoticeText(kind, payload);
   const subject = buildNoticeSubject(kind);
+  // 「到達手段が存在しない」と「存在するチャネルが全部失敗した」を区別する (採点 R1 MEDIUM)。
+  // 区別しないと、LINE の一時障害 + email 未登録の顧客で 1 回目の失敗が即 abandoned になり、
+  // queue 行の UNIQUE 制約により以後の enqueue が 'duplicate' で弾かれて **通知が永久に消える**。
+  let anyChannelTried = false;
 
   // ── ① LINE (連携済みのみ)
   if (friend?.line_user_id && deps.lineClient) {
+    anyChannelTried = true;
     const sent = await tryDispatch(db, deps, {
       recipient: { friend: { id: friend.id, lineUserId: friend.line_user_id } },
       channel: 'line',
       text,
       subject,
+      // X-Line-Retry-Key: キュー側で最大 MAX_DISPATCH_ATTEMPTS 回まで再試行するため、
+      // 冪等キーが無いと「送信は成功したがレスポンスを取り逃した」ケースで同じ
+      // 課金失敗通知が複数回届く (WI-2 の deterministicRetryKey と同じ理由)。
+      retryKey: await noticeRetryKey(row),
     });
     if (sent) {
       await markSent(db, row, 'line', nowIso);
       return 'line';
     }
     // failed/skipped (ブロック・未フォロー・LINE 障害) → email fallback (§2)
+  }
+
+  // email が判っているのに provider/renderer が未注入 = **設定漏れ**。到達手段なしと同一視して
+  // abandoned にすると、設定を直しても通知が復活せず alert も出ない (採点 R1 MEDIUM)。
+  // 再試行に回して人間に見えるようにする。
+  if (email && (!deps.emailProvider || !deps.emailRenderer)) {
+    await markFailed(db, row, 'email_provider_not_configured', nowIso);
+    console.error(
+      `own-billing: email 送信先はあるが provider/renderer が未注入 (contract=${row.contract_gid} kind=${row.kind})`,
+    );
+    return 'failed';
   }
 
   // ── ② email fallback (未連携 / LINE 不達)
@@ -254,6 +359,7 @@ async function deliverOne(
     // **transactional_only=1 / is_active=0** で作成する (= marketing 配信許諾は一切与えない。
     // 既存行があれば upsert は consent フラグに触らないので、配信停止済みの顧客を
     // 復活させることもない)。
+    anyChannelTried = true;
     await ensureTransactionalSubscriber(db, email);
     const sent = await tryDispatch(db, deps, {
       recipient: { email },
@@ -269,7 +375,13 @@ async function deliverOne(
     return 'failed';
   }
 
-  // ── ③ 到達手段なし。再試行しても結果は同じなので即 abandoned にして滞留を作らない
+  // ── ③ チャネルは存在したが全部失敗 → 再試行に回す (MAX_DISPATCH_ATTEMPTS まで)
+  if (anyChannelTried) {
+    await markFailed(db, row, 'all_channels_failed', nowIso);
+    return 'failed';
+  }
+
+  // ── ④ そもそも到達手段が無い。再試行しても結果は同じなので即 abandoned にして滞留を作らない
   //     (§8 の監視は「通知できなかった契約」を件数で可視化する)
   await markNoRecipient(db, row, nowIso);
   return 'no_recipient';
@@ -283,6 +395,7 @@ async function tryDispatch(
     channel: 'line' | 'email';
     text: string;
     subject: string;
+    retryKey?: string;
   },
 ): Promise<boolean> {
   const dispatcherDeps: ChannelDispatcherDeps = { db };
@@ -299,7 +412,12 @@ async function tryDispatch(
     category: 'transactional',
     sourceKind: 'transactional',
     ...(args.channel === 'line'
-      ? { linePayload: { messages: [{ type: 'text', text: args.text }] } }
+      ? {
+          linePayload: {
+            messages: [{ type: 'text', text: args.text }],
+            ...(args.retryKey ? { retryKey: args.retryKey } : {}),
+          },
+        }
       : {
           emailPayload: {
             subjectTemplate: args.subject,
@@ -341,6 +459,23 @@ async function ensureTransactionalSubscriber(db: D1Database, email: string): Pro
   }
 }
 
+/**
+ * 通知単位の決定的 UUID (X-Line-Retry-Key)。同じ (contract, cycle, attempt, kind) の
+ * 再試行は LINE 側でも同一リクエストとして扱われ、二重配信にならない。
+ */
+export async function noticeRetryKey(row: {
+  contract_gid: string;
+  cycle_key: string;
+  attempt_no: number;
+  kind: string;
+}): Promise<string> {
+  const seed = `own-billing-notice:${row.contract_gid}:${row.cycle_key}:${row.attempt_no}:${row.kind}`;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(seed));
+  const h = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  // RFC 4122 v4 形式に整形 (LINE は UUID 形式を要求する)
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
 async function lookupCustomerEmail(db: D1Database, shopifyCustomerId: string): Promise<string | null> {
   const row = await db
     .prepare(`SELECT email FROM shopify_customers WHERE shopify_customer_id = ?`)
@@ -358,8 +493,10 @@ async function markSent(
 ): Promise<void> {
   await db
     .prepare(
+      // 送信後は payload を落とす: challenge_link の 3DS URL (capability link) を
+      // D1 に無期限保持しないため (再送は不要 — 冪等マーカーで二度と送らない)。
       `UPDATE own_billing_notice_queue
-          SET status = 'sent', channel = ?, sent_at = ?, last_error = NULL
+          SET status = 'sent', channel = ?, sent_at = ?, last_error = NULL, payload_json = '{}'
         WHERE id = ?`,
     )
     .bind(channel, nowIso, row.id)
@@ -382,9 +519,12 @@ async function markSent(
   // dunning_state='challenged' 条件付き = 送信までに状態が変わっていたら期限を書かない。
   if (row.kind === 'challenge_link') {
     try {
-      const deadline = new Date(Date.parse(nowIso) + CHALLENGE_DEADLINE_HOURS * 3600_000)
+      // 期限は **JST (+09:00) 表記に統一**する (採点 R1 LOW)。decideDunning の await_card 期限も
+      // `...T23:59:59+09:00` で書くため、表記が混ざると step4 の sweep が
+      // `WHERE dunning_deadline_at <= ?` の文字列比較で最大 9 時間ずれる。
+      const deadline = new Date(Date.parse(nowIso) + CHALLENGE_DEADLINE_HOURS * 3600_000 + 9 * 3600_000)
         .toISOString()
-        .replace('Z', '+00:00');
+        .replace('Z', '+09:00');
       await db
         .prepare(
           `UPDATE own_sub_contracts SET dunning_deadline_at = ?, updated_at = ?
@@ -407,6 +547,11 @@ async function markFailed(
 ): Promise<void> {
   // 再試行上限に達したら abandoned (queued に戻さない = 無限ループ防止)
   const exhausted = row.dispatch_attempts + 1 >= MAX_DISPATCH_ATTEMPTS;
+  if (exhausted) {
+    console.error(
+      `own-billing: 通知 ${row.kind} が ${MAX_DISPATCH_ATTEMPTS} 回失敗したため断念しました (contract=${row.contract_gid} cycle=${row.cycle_key} reason=${reason})`,
+    );
+  }
   await db
     .prepare(
       `UPDATE own_billing_notice_queue
@@ -426,6 +571,11 @@ async function markNoRecipient(db: D1Database, row: QueueRow, nowIso: string): P
     )
     .bind(nowIso, row.id)
     .run();
+  // 沈黙させない (採点 R1 MEDIUM): 到達手段が無い顧客は §8 の監視対象。特に challenge_link が
+  // 送れないと deadline が設定されず、契約が challenged のまま固着する。
+  console.error(
+    `own-billing: 通知 ${row.kind} を届けられる手段がありません (contract=${row.contract_gid} cycle=${row.cycle_key}) — LINE 未連携かつ email 不明`,
+  );
 }
 
 function escapeHtml(s: string): string {
@@ -439,7 +589,10 @@ function escapeHtml(s: string): string {
 
 // ─── 文面 (事務連絡のみ。薬機法 NG 表現を入れない) ───
 
-const MYPAGE_HINT = 'お手続きはマイページからお願いします。';
+// email 受信者 (現状 112 名中 109 名) は LINE のリッチメニューを持たないため、
+// **文面に必ず URL を載せる**。載せないと「マイページから」と言われて到達できない
+// (採点 R1 HIGH)。移行前は Huckleberry の顧客マイページが正 (WI-2 と同一 URL)。
+const MYPAGE_HINT = `お手続きはマイページからお願いします。\n${MYPAGE_URL}`;
 
 export function buildNoticeSubject(kind: NoticeKind): string {
   switch (kind) {
@@ -490,7 +643,7 @@ export function buildNoticeText(kind: NoticeKind, p: NoticePayload): string {
       return (
         `📦 定期便のお支払いを確認できませんでした。${scheduled ? `(お手続き予定日 ${scheduled})` : ''}` +
         retryLine +
-        '\nお心当たりがない場合や、お支払い方法を変更される場合はマイページからご確認ください。'
+        `\nお心当たりがない場合や、お支払い方法を変更される場合は下記からご確認ください。\n${MYPAGE_URL}`
       );
     }
     case 'card_request': {
@@ -520,12 +673,15 @@ export function buildNoticeText(kind: NoticeKind, p: NoticePayload): string {
     case 'resume_notice':
       return (
         '📦 お支払いを確認できたため、定期便のお届けを再開しました。\n' +
-        '次回のお届け予定はマイページからご確認いただけます。'
+        `次回のお届け予定は下記からご確認いただけます。\n${MYPAGE_URL}`
       );
     case 'delivery_notice':
+      // スキップ済みサイクルへの遅延成功もこの通知で受ける。「頼んでいないのに届く」と
+      // 受け取られないよう、行き違いである旨と問い合わせ導線を明示する。
       return (
-        '📦 直前のお支払いが完了していたため、今回分をお届けします。\n' +
-        'ご不明な点がありましたらお問い合わせください。'
+        '📦 お手続きの行き違いにより、直前のお支払いが完了していたため今回分をお届けします。\n' +
+        'お休み(スキップ)のお手続きをされていた場合は、次回分から反映されます。\n' +
+        `ご不明な点・キャンセルのご希望は下記からご連絡ください。\n${MYPAGE_URL}`
       );
   }
 }

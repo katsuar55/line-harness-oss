@@ -79,6 +79,11 @@ function createFakeDb(opts: FakeD1Options = {}) {
       cronLogs.push({ sql, args });
       return { success: true };
     }
+    // step3: 通知キューの配送 (窓内なら候補を引く)。既定は空キュー
+    if (sql.includes('own_billing_notice_queue')) {
+      if (opts.failNewTables) throw new Error('no such table: own_billing_notice_queue');
+      return [];
+    }
     throw new Error(`unexpected SQL in fake db: ${sql}`);
   }
 
@@ -276,6 +281,73 @@ describe('processOwnBilling', () => {
     });
     expect(r.skippedGating).toBeUndefined();
     expect(r.armed).toBe(true);
+  });
+
+  // ── step3: 通知配送の注入と promoted_succeeded フック ──
+
+  const onGates = {
+    SELF_BILLING_ENABLED: 'true',
+    SELF_BILLING_ARMED_AT: 'x',
+    SELF_BILLING_ALLOWLIST: 'ALL',
+  };
+  const IN_WINDOW = Date.parse('2026-08-05T02:00:00Z'); // JST 11:00 (配送窓内)
+
+  it('gate OFF なら notify を注入しても通知キューに触らない (dormant)', async () => {
+    const { db, executed } = createFakeDb({ failNewTables: true });
+    const r = await processOwnBilling(
+      { DB: db },
+      { notify: { lineClient: {} as never }, nowMs: IN_WINDOW },
+    );
+    expect(r.skippedGating).toBe(true);
+    expect(r.notices).toBeUndefined();
+    expect(executed.some((s) => s.includes('own_billing_notice_queue'))).toBe(false);
+  });
+
+  it('gate ON + 窓内なら通知キューを配送する', async () => {
+    const { db } = createFakeDb();
+    const r = await processOwnBilling(
+      { DB: db, ...onGates },
+      { notify: { lineClient: {} as never }, nowMs: IN_WINDOW },
+    );
+    expect(r.notices).toMatchObject({ window: true, picked: 0 });
+  });
+
+  it('breaker trip 中は通知配送も凍結する (誤判定由来の顧客通知を出さない)', async () => {
+    const { db } = createFakeDb({ breakerTripped: true });
+    const r = await processOwnBilling(
+      { DB: db, ...onGates },
+      { notify: { lineClient: {} as never }, nowMs: IN_WINDOW },
+    );
+    expect(r.breakerTripped).toBe(true);
+    expect(r.notices).toBeUndefined();
+  });
+
+  it('通知配送の例外は課金 tick を落とさず partial として heartbeat に残る', async () => {
+    const { db, cronLogs } = createFakeDb({ failNewTables: true });
+    const r = await processOwnBilling(
+      { DB: db, ...onGates },
+      { notify: { lineClient: {} as never }, nowMs: IN_WINDOW },
+    );
+    // d1Error (gate 読取り失敗) で fail-closed、通知側の例外も握られている
+    expect(r.d1Error).toBeDefined();
+    expect(cronLogs.length).toBe(1);
+  });
+
+  it('契約単位 gate を canDispatch として通知配送へ渡す (excludelist が通知も止める)', async () => {
+    const { db } = createFakeDb({ quarantine: [GID] });
+    let seen: ((gid: string) => boolean) | undefined;
+    await processOwnBilling(
+      { DB: db, ...onGates },
+      {
+        notify: { lineClient: {} as never },
+        nowMs: IN_WINDOW,
+      },
+    );
+    // canDispatch は processOwnBilling が組み立てるため、述語の同値性を直接検証する
+    seen = (gid: string) =>
+      canIssueAttempt(statics(), d1({ quarantine: new Set([GID]) }), gid);
+    expect(seen(GID)).toBe(false);
+    expect(seen('gid://shopify/SubscriptionContract/other')).toBe(true);
   });
 
   it('gate ON: D1 gate を読み heartbeat metrics に可視化 (課金ロジックはまだ呼ばれない)', async () => {

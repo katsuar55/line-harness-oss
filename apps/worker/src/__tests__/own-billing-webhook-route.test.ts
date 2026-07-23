@@ -19,7 +19,11 @@ const SECRET = 'shpss_test_secret';
 function fakeDb() {
   return {
     prepare(sql: string) {
-      return {
+      const stmt = {
+        // bind なしで first() を呼ぶ経路 (own 契約の存在チェック) にも応える
+        async first() {
+          return null;
+        },
         bind: () => ({
           async first() {
             // gate: own_billing_state (breaker) / own_sub_contracts (契約不在)
@@ -36,6 +40,7 @@ function fakeDb() {
           },
         }),
       };
+      return stmt;
     },
   } as unknown as D1Database;
 }
