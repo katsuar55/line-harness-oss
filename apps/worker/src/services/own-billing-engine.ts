@@ -60,6 +60,12 @@ export interface OwnContractRow {
   interval_count: number;
   dunning_state: string;
   next_retry_date: string | null;
+  // step 3 (webhook レーン) が読む列。step 2 の SELECT c.* には元から含まれている
+  // (型に無いだけだった) ため、追加は型の穴埋めであって挙動変更ではない。
+  payment_method_gid?: string | null;
+  pending_new_card?: number;
+  dunning_attempts?: number;
+  dunning_deadline_at?: string | null;
 }
 
 export interface ClaimRow {

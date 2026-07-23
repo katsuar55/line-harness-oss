@@ -2041,6 +2041,26 @@ CREATE TABLE IF NOT EXISTS own_billing_quarantine (
   added_at     TEXT NOT NULL
 );
 
+-- from 072_own_billing_notice_queue.sql
+CREATE TABLE IF NOT EXISTS own_billing_notice_queue (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  contract_gid      TEXT NOT NULL,
+  cycle_key         TEXT NOT NULL,
+  attempt_no        INTEGER NOT NULL,
+  kind              TEXT NOT NULL,
+      -- fail_notice|card_request|challenge_link|pause_notice|resume_notice|delivery_notice
+  shopify_customer_id TEXT NOT NULL,
+  payload_json      TEXT NOT NULL,   -- 文面組立パラメータ (PII 最小: 金額/日付/URL のみ)
+  status            TEXT NOT NULL DEFAULT 'queued',
+      -- queued|sending|sent|failed|abandoned
+  channel           TEXT,            -- line|email (確定時に記録)
+  dispatch_attempts INTEGER NOT NULL DEFAULT 0,
+  last_error        TEXT,            -- 分類済みの短い理由のみ (PII なし)
+  queued_at         TEXT NOT NULL,
+  sent_at           TEXT,
+  UNIQUE (contract_gid, cycle_key, attempt_no, kind)
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -2307,3 +2327,5 @@ CREATE INDEX IF NOT EXISTS idx_sub_migration_snapshots_phase
   ON sub_migration_snapshots(phase);
 CREATE INDEX IF NOT EXISTS idx_sub_migration_snapshots_own_gid
   ON sub_migration_snapshots(own_contract_gid);
+CREATE INDEX IF NOT EXISTS idx_own_billing_notice_queue_pending
+  ON own_billing_notice_queue(status, queued_at);

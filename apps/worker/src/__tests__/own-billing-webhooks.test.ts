@@ -1,0 +1,824 @@
+/**
+ * own-billing-webhooks (WI-4 step 3) — 設計書 §6.1/§6.2/§6.3/§6.4/§6.6 + §4.1 閉包規則の unit。
+ * §10.3「webhook 順列 × claim 状態」該当。
+ *
+ * 重点 (どれも「二重課金」または「支払えたのに止まったまま」を作らないための不変条件):
+ *   - claim 照合: idempotency_key 一次 / attempt_gid 検算 / **不一致 failure は適用しない**
+ *   - §4.1 適用条件: resolved 済み claim への遅延 failure は audit のみ (S5 後の遅延 decline)
+ *   - success は無条件昇格 (attempting/failed/abandoned) + I-4 + 起因別の pause 取り扱い
+ *   - §6.3 pending_new_card: matrix より先に 1 回だけ自動再試行 (webhook-first ordering)
+ *   - §6.6 skip: in-flight attempting も I-3 で abandoned → skipped
+ *   - 移行窓中の contracts/activate は D1 status を先行昇格させない (§2)
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+/** enqueueNotice の観測用。引数を型付けして mock.calls をキャストなしで読めるようにする */
+interface EnqueuedNotice {
+  kind: string;
+  payload: Record<string, unknown>;
+  contractGid: string;
+  cycleKey: string;
+  attemptNo: number;
+}
+const enqueueMock = vi.fn(
+  async (_db: unknown, _input: EnqueuedNotice, _nowIso: string) => 'enqueued' as const,
+);
+const issueMock = vi.fn(async (..._args: unknown[]) => 'issued' as const);
+
+vi.mock('../services/own-billing-notify.js', async (orig) => {
+  const actual = (await orig()) as Record<string, unknown>;
+  return {
+    ...actual,
+    enqueueNotice: (db: unknown, input: EnqueuedNotice, nowIso: string) =>
+      enqueueMock(db, input, nowIso),
+  };
+});
+vi.mock('../services/own-billing-engine.js', async (orig) => {
+  const actual = (await orig()) as Record<string, unknown>;
+  return { ...actual, issueForContract: (...a: unknown[]) => issueMock(...a) };
+});
+
+/** enqueue された通知のうち kind が一致するものを取り出す */
+function enqueuedOfKind(kind: string): EnqueuedNotice | undefined {
+  return enqueueMock.mock.calls.map((c) => c[1]).find((n) => n.kind === kind);
+}
+
+import {
+  routeBillingWebhook,
+  parseAttemptPayload,
+  matchClaim,
+  type BillingWebhookDeps,
+} from '../services/own-billing-webhooks.js';
+import type { ShopifyBillingApiExt } from '../services/own-billing-shopify-adapter.js';
+
+const GID = 'gid://shopify/SubscriptionContract/111';
+const ATTEMPT = 'gid://shopify/SubscriptionBillingAttempt/900';
+const NOW = Date.parse('2026-08-05T02:00:00Z'); // JST 11:00
+
+interface ContractRow {
+  contract_gid: string;
+  shopify_customer_id: string;
+  status: string;
+  current_cycle_index: number | null;
+  current_cycle_scheduled_date: string | null;
+  anchor_date: string;
+  interval_unit: string;
+  interval_count: number;
+  dunning_state: string;
+  dunning_attempts: number;
+  next_retry_date: string | null;
+  dunning_deadline_at: string | null;
+  payment_method_gid: string | null;
+  pending_new_card: number;
+  cadence_repair_needed: number;
+  last_attempt_error: string | null;
+}
+
+interface ClaimRec {
+  contract_gid: string;
+  cycle_key: string;
+  status: string;
+  retry_policy: string;
+  attempt_no: number;
+  attempt_gid: string | null;
+  idempotency_key: string;
+  order_id: string | null;
+  resolved_at: string | null;
+}
+
+interface State {
+  contracts: Map<string, ContractRow>;
+  claims: Map<string, ClaimRec>;
+  snapshots: Array<{ own_contract_gid: string; phase: string }>;
+}
+
+function contract(over: Partial<ContractRow> = {}): ContractRow {
+  return {
+    contract_gid: GID,
+    shopify_customer_id: '555',
+    status: 'active',
+    current_cycle_index: 2,
+    current_cycle_scheduled_date: '2026-08-05',
+    anchor_date: '2026-07-06',
+    interval_unit: 'DAY',
+    interval_count: 30,
+    dunning_state: 'none',
+    dunning_attempts: 0,
+    next_retry_date: null,
+    dunning_deadline_at: null,
+    payment_method_gid: 'gid://shopify/CustomerPaymentMethod/1',
+    pending_new_card: 0,
+    cadence_repair_needed: 0,
+    last_attempt_error: null,
+    ...over,
+  };
+}
+
+function claim(over: Partial<ClaimRec> = {}): ClaimRec {
+  return {
+    contract_gid: GID,
+    cycle_key: '2',
+    status: 'attempting',
+    retry_policy: 'none',
+    attempt_no: 1,
+    attempt_gid: ATTEMPT,
+    idempotency_key: 'idem-1',
+    order_id: null,
+    resolved_at: null,
+    ...over,
+  };
+}
+
+function freshState(over: { contract?: Partial<ContractRow>; claim?: Partial<ClaimRec> | null } = {}): State {
+  const c = contract(over.contract);
+  const claims = new Map<string, ClaimRec>();
+  if (over.claim !== null) {
+    const cl = claim(over.claim ?? {});
+    claims.set(`${cl.contract_gid}|${cl.cycle_key}`, cl);
+  }
+  return { contracts: new Map([[GID, c]]), claims, snapshots: [] };
+}
+
+function createFakeDb(state: State): D1Database {
+  const clone = <T>(v: T | null | undefined): T | null => (v ? ({ ...v } as T) : null);
+  return {
+    prepare(sql: string) {
+      return {
+        bind(...args: unknown[]) {
+          return {
+            async first() {
+              if (sql.includes('FROM own_sub_contracts WHERE contract_gid')) {
+                return clone(state.contracts.get(String(args[0])));
+              }
+              if (sql.includes('FROM sub_migration_snapshots')) {
+                const phases = args.slice(1).map(String);
+                return state.snapshots.some(
+                  (s) => s.own_contract_gid === String(args[0]) && phases.includes(s.phase),
+                )
+                  ? { x: 1 }
+                  : null;
+              }
+              if (sql.includes('idempotency_key = ?')) {
+                for (const c of state.claims.values()) {
+                  if (c.contract_gid === args[0] && c.idempotency_key === args[1]) return clone(c);
+                }
+                return null;
+              }
+              if (sql.includes('attempt_gid = ?')) {
+                for (const c of state.claims.values()) {
+                  if (c.contract_gid === args[0] && c.attempt_gid === args[1]) return clone(c);
+                }
+                return null;
+              }
+              if (sql.includes('FROM billing_cycle_claims WHERE contract_gid = ? AND cycle_key = ?')) {
+                return clone(state.claims.get(`${args[0]}|${args[1]}`));
+              }
+              throw new Error(`unexpected first(): ${sql}`);
+            },
+            async all() {
+              if (sql.includes("dunning_state IN ('retry_wait', 'challenged', 'await_card', 'exhausted')")) {
+                return {
+                  results: [...state.contracts.values()]
+                    .filter(
+                      (c) =>
+                        c.shopify_customer_id === args[0] &&
+                        ['retry_wait', 'challenged', 'await_card', 'exhausted'].includes(c.dunning_state),
+                    )
+                    .map((c) => ({ ...c })),
+                };
+              }
+              throw new Error(`unexpected all(): ${sql}`);
+            },
+            async run() {
+              // ── claims
+              if (sql.includes("SET status = 'succeeded'")) {
+                const c = state.claims.get(`${args[2]}|${args[3]}`);
+                if (c) {
+                  c.status = 'succeeded';
+                  c.retry_policy = 'none';
+                  if (args[0]) c.order_id = String(args[0]);
+                  c.resolved_at = String(args[1]);
+                }
+                return { meta: { changes: c ? 1 : 0 } };
+              }
+              if (sql.includes("SET status = 'failed'")) {
+                const c = state.claims.get(`${args[1]}|${args[2]}`);
+                if (c && c.status === 'attempting') {
+                  c.status = 'failed';
+                  c.resolved_at = String(args[0]);
+                  return { meta: { changes: 1 } };
+                }
+                return { meta: { changes: 0 } };
+              }
+              // cycle 指定の abandoned 化は 2 種類ある。WHERE 述語で厳密に分岐する
+              // (混同すると unskip (skipped→abandoned) が黙って no-op になり、
+              //  「unskip しても due に戻らない」本番バグを検出できなくなる)。
+              if (sql.includes("SET status = 'abandoned'") && sql.includes('AND cycle_key = ?')) {
+                const c = state.claims.get(`${args[1]}|${args[2]}`);
+                const allowed = sql.includes("status = 'skipped'")
+                  ? ['skipped']
+                  : ['attempting', 'failed', 'failed_no_attempt'];
+                if (c && allowed.includes(c.status)) {
+                  c.status = 'abandoned';
+                  c.resolved_at = String(args[0]);
+                  return { meta: { changes: 1 } };
+                }
+                return { meta: { changes: 0 } };
+              }
+              if (sql.includes("SET status = 'abandoned'")) {
+                let n = 0;
+                for (const c of state.claims.values()) {
+                  if (
+                    c.contract_gid === args[1] &&
+                    ['attempting', 'failed', 'failed_no_attempt'].includes(c.status)
+                  ) {
+                    c.status = 'abandoned';
+                    c.resolved_at = String(args[0]);
+                    n += 1;
+                  }
+                }
+                return { meta: { changes: n } };
+              }
+              if (sql.includes('INSERT OR IGNORE INTO billing_cycle_claims')) {
+                const k = `${args[0]}|${args[1]}`;
+                if (!state.claims.has(k)) {
+                  state.claims.set(k, claim({
+                    contract_gid: String(args[0]),
+                    cycle_key: String(args[1]),
+                    status: 'skipped',
+                    attempt_gid: null,
+                    idempotency_key: String(args[2]),
+                  }));
+                }
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes("SET status = 'skipped'")) {
+                const c = state.claims.get(`${args[1]}|${args[2]}`);
+                if (c && c.status === 'abandoned') c.status = 'skipped';
+                return { meta: { changes: 1 } };
+              }
+              // ── contracts
+              if (sql.includes("SET dunning_state = 'none'")) {
+                const c = state.contracts.get(String(args[1]));
+                if (c) {
+                  c.dunning_state = 'none';
+                  c.dunning_attempts = 0;
+                  c.next_retry_date = null;
+                  c.dunning_deadline_at = null;
+                  c.pending_new_card = 0;
+                  c.last_attempt_error = null;
+                }
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes("SET dunning_state = 'challenged'")) {
+                const c = state.contracts.get(String(args[1]));
+                if (c) {
+                  c.dunning_state = 'challenged';
+                  c.dunning_deadline_at = null;
+                }
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes('SET dunning_state = ?, dunning_attempts = ?')) {
+                const c = state.contracts.get(String(args[7]));
+                if (c) {
+                  c.dunning_state = String(args[0]);
+                  c.dunning_attempts = Number(args[1]);
+                  c.next_retry_date = args[2] === null ? null : String(args[2]);
+                  c.dunning_deadline_at = args[3] === null ? null : String(args[3]);
+                  c.last_attempt_error = args[4] === null ? null : String(args[4]);
+                  if (Number(args[5]) === 1) c.status = 'paused';
+                }
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes("SET dunning_state = 'retry_wait'")) {
+                const c = state.contracts.get(String(args[2]));
+                if (c) {
+                  c.dunning_state = 'retry_wait';
+                  c.next_retry_date = String(args[0]);
+                }
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes("SET status = 'active', dunning_state = 'none'")) {
+                const c = state.contracts.get(String(args[1]));
+                if (c) {
+                  c.status = 'active';
+                  c.dunning_state = 'none';
+                }
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes("SET status = 'active'")) {
+                const c = state.contracts.get(String(args[1]));
+                if (c) c.status = 'active';
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes('SET pending_new_card = 0')) {
+                const c = state.contracts.get(String(args[1]));
+                if (c) c.pending_new_card = 0;
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes('SET pending_new_card = 1')) {
+                const c = state.contracts.get(String(args[1]));
+                if (c) c.pending_new_card = 1;
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes('SET payment_method_gid = ?')) {
+                const c = state.contracts.get(String(args[2]));
+                if (c) c.payment_method_gid = String(args[0]);
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes('SET cadence_repair_needed = 1')) {
+                const c = state.contracts.get(String(args[1]));
+                if (c) c.cadence_repair_needed = 1;
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes('SET status = ?, updated_at = ?')) {
+                const c = state.contracts.get(String(args[2]));
+                if (c) c.status = String(args[0]);
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes('SET current_cycle_index = ?')) {
+                const c = state.contracts.get(String(args[3]));
+                if (c) {
+                  c.current_cycle_index = args[0] === null ? null : Number(args[0]);
+                  c.current_cycle_scheduled_date = args[1] === null ? null : String(args[1]);
+                }
+                return { meta: { changes: 1 } };
+              }
+              throw new Error(`unexpected run(): ${sql}`);
+            },
+          };
+        },
+      } as unknown as D1PreparedStatement;
+    },
+  } as unknown as D1Database;
+}
+
+function fakeApi(over: Partial<ShopifyBillingApiExt> = {}): ShopifyBillingApiExt {
+  return {
+    listCycles: async () => [
+      { cycleIndex: 2, expectedDate: '2026-08-05T03:00:00Z', billed: false, skipped: false },
+      { cycleIndex: 3, expectedDate: '2026-09-04T03:00:00Z', billed: false, skipped: false },
+    ],
+    scheduleCycleDate: async () => ({ ok: true }),
+    setCycleSkip: async () => ({ ok: true }),
+    createAttempt: async () => ({ ok: true, attemptGid: ATTEMPT }),
+    getAttemptStatus: async () => 'failed',
+    getAttemptDetail: async () => null,
+    ...over,
+  };
+}
+
+function makeDeps(state: State, over: Partial<BillingWebhookDeps> = {}): BillingWebhookDeps {
+  return {
+    db: createFakeDb(state),
+    api: fakeApi(),
+    canIssue: () => true,
+    alert: alertMock,
+    nowMs: NOW,
+    ...over,
+  };
+}
+
+const alertMock = vi.fn(async () => {});
+
+beforeEach(() => {
+  alertMock.mockClear();
+  enqueueMock.mockClear();
+  issueMock.mockClear();
+});
+
+const successBody = {
+  admin_graphql_api_id: ATTEMPT,
+  admin_graphql_api_subscription_contract_id: GID,
+  idempotency_key: 'idem-1',
+  admin_graphql_api_order_id: 'gid://shopify/Order/77',
+};
+
+describe('parseAttemptPayload', () => {
+  it('gid 形式と数値 ID の両方を gid へ正規化する', () => {
+    const p = parseAttemptPayload({
+      id: 900,
+      subscription_contract_id: 111,
+      order_id: 77,
+      idempotency_key: 'k',
+      error_code: 'expired_card',
+    });
+    expect(p.attemptGid).toBe(ATTEMPT);
+    expect(p.contractGid).toBe(GID);
+    expect(p.orderGid).toBe('gid://shopify/Order/77');
+    expect(p.errorCode).toBe('EXPIRED_CARD');
+  });
+
+  it('入れ子の processing_error / subscription_contract からも拾う', () => {
+    const p = parseAttemptPayload({
+      admin_graphql_api_id: ATTEMPT,
+      subscription_contract: { admin_graphql_api_id: GID },
+      processing_error: { code: 'INSUFFICIENT_FUNDS', next_action_url: 'https://3ds/x' },
+    });
+    expect(p.contractGid).toBe(GID);
+    expect(p.errorCode).toBe('INSUFFICIENT_FUNDS');
+    expect(p.nextActionUrl).toBe('https://3ds/x');
+  });
+
+  it('空 body でも throw せず null 群を返す', () => {
+    expect(parseAttemptPayload(null).contractGid).toBeNull();
+    expect(parseAttemptPayload('nonsense').attemptGid).toBeNull();
+  });
+});
+
+describe('matchClaim (§3 照合)', () => {
+  it('idempotency_key で一次照合する', async () => {
+    const state = freshState();
+    const r = await matchClaim(createFakeDb(state), GID, parseAttemptPayload(successBody));
+    expect(r.mismatch).toBe(false);
+    expect(r.claim?.cycle_key).toBe('2');
+  });
+
+  it('key と gid が別サイクルを指したら mismatch', async () => {
+    const state = freshState();
+    // idempotency_key は cycle 2 を、attempt_gid は cycle 3 を指す状態
+    // (= 旧 attempt の再配送が現行サイクルを汚しにくる典型)
+    state.claims.set(`${GID}|2`, claim({ attempt_gid: 'gid://shopify/SubscriptionBillingAttempt/other' }));
+    state.claims.set(`${GID}|3`, claim({ cycle_key: '3', idempotency_key: 'idem-3', attempt_gid: ATTEMPT }));
+    const r = await matchClaim(createFakeDb(state), GID, parseAttemptPayload(successBody));
+    expect(r.mismatch).toBe(true);
+    expect(r.claim).toBeNull();
+  });
+});
+
+describe('§6.1 success', () => {
+  it('claim を succeeded にし order_id を記録、I-4 で dunning をリセットする', async () => {
+    const state = freshState({ contract: { dunning_state: 'retry_wait', dunning_attempts: 2, next_retry_date: '2026-08-08' } });
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
+    expect(out).toBe('success_applied');
+    expect(state.claims.get(`${GID}|2`)).toMatchObject({ status: 'succeeded', order_id: 'gid://shopify/Order/77' });
+    expect(state.contracts.get(GID)).toMatchObject({
+      dunning_state: 'none',
+      dunning_attempts: 0,
+      next_retry_date: null,
+      pending_new_card: 0,
+    });
+  });
+
+  it('failed / abandoned claim からも無条件で succeeded へ昇格する (遅延 success)', async () => {
+    for (const from of ['failed', 'abandoned']) {
+      const state = freshState({ claim: { status: from } });
+      await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
+      expect(state.claims.get(`${GID}|2`)?.status).toBe('succeeded');
+    }
+  });
+
+  it('システム起因 pause (dunning≠none) は自動 activate + resume_notice', async () => {
+    const state = freshState({ contract: { status: 'paused', dunning_state: 'exhausted' }, claim: { status: 'failed' } });
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
+    expect(state.contracts.get(GID)?.status).toBe('active');
+    expect(enqueuedOfKind('resume_notice')).toBeDefined();
+  });
+
+  it('顧客都合 pause (dunning=none) は状態維持 + delivery_notice + 人間判断 alert', async () => {
+    const state = freshState({ contract: { status: 'paused', dunning_state: 'none' }, claim: { status: 'abandoned' } });
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
+    expect(state.contracts.get(GID)?.status).toBe('paused');
+    expect(enqueuedOfKind('delivery_notice')).toBeDefined();
+    expect(alertMock).toHaveBeenCalled();
+  });
+
+  it('解約済みも維持 (自動再開しない)', async () => {
+    const state = freshState({ contract: { status: 'cancelled', dunning_state: 'none' }, claim: { status: 'abandoned' } });
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
+    expect(state.contracts.get(GID)?.status).toBe('cancelled');
+  });
+
+  it('claim が特定できない success は必ず alert する (課金済み未計上を黙らせない)', async () => {
+    const state = freshState({ claim: null });
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
+    expect(out).toBe('no_claim');
+    expect(alertMock).toHaveBeenCalled();
+  });
+
+  it('gate 閉塞中は次サイクル scheduleEdit を打たず repair フラグに退避する', async () => {
+    const state = freshState();
+    const sched = vi.fn(async () => ({ ok: true }));
+    await routeBillingWebhook(
+      makeDeps(state, { canIssue: () => false, api: fakeApi({ scheduleCycleDate: sched }) }),
+      'subscription_billing_attempts/success',
+      successBody,
+    );
+    expect(sched).not.toHaveBeenCalled();
+    expect(state.contracts.get(GID)?.cadence_repair_needed).toBe(1);
+  });
+
+  it('未知契約は何もしない', async () => {
+    const state = freshState();
+    state.contracts.clear();
+    await expect(
+      routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody),
+    ).resolves.toBe('unknown_contract');
+  });
+});
+
+describe('§6.2 failure', () => {
+  const failBody = (code: string) => ({ ...successBody, admin_graphql_api_order_id: null, error_code: code });
+
+  it('A クラスは claim failed + retry_wait + 初回通知', async () => {
+    const state = freshState();
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', failBody('INSUFFICIENT_FUNDS'));
+    expect(out).toBe('failure_applied');
+    expect(state.claims.get(`${GID}|2`)?.status).toBe('failed');
+    expect(state.contracts.get(GID)).toMatchObject({
+      dunning_state: 'retry_wait',
+      dunning_attempts: 1,
+      next_retry_date: '2026-08-08',
+      last_attempt_error: 'INSUFFICIENT_FUNDS',
+    });
+    expect(enqueueMock.mock.calls[0][1].kind).toBe('fail_notice');
+  });
+
+  it('B クラスは await_card + card_request、リトライ日を立てない', async () => {
+    const state = freshState();
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', failBody('EXPIRED_CARD'));
+    expect(state.contracts.get(GID)).toMatchObject({ dunning_state: 'await_card', next_retry_date: null });
+    expect(enqueueMock.mock.calls[0][1].kind).toBe('card_request');
+  });
+
+  it('E クラスは即 pause + exhausted', async () => {
+    const state = freshState();
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', failBody('FRAUD_SUSPECTED'));
+    expect(state.contracts.get(GID)).toMatchObject({ status: 'paused', dunning_state: 'exhausted' });
+  });
+
+  it('D クラスは顧客通知なし・pause なし・ops_hold + alert', async () => {
+    const state = freshState();
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', failBody('INSUFFICIENT_INVENTORY'));
+    expect(state.contracts.get(GID)).toMatchObject({ status: 'active', dunning_state: 'ops_hold' });
+    expect(enqueueMock).not.toHaveBeenCalled();
+    expect(alertMock).toHaveBeenCalled();
+  });
+
+  it('C クラス (INVOICE_ALREADY_PAID) は success 経路へ寄せる', async () => {
+    const state = freshState();
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', failBody('INVOICE_ALREADY_PAID'));
+    expect(out).toBe('failure_as_success');
+    expect(state.claims.get(`${GID}|2`)?.status).toBe('succeeded');
+    expect(alertMock).toHaveBeenCalled();
+  });
+
+  it('§4.1 適用条件: resolved 済み claim への遅延 failure は適用しない', async () => {
+    for (const st of ['succeeded', 'abandoned', 'failed', 'skipped']) {
+      const state = freshState({ claim: { status: st } });
+      const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', failBody('DO_NOT_HONOR'));
+      expect(out).toBe('late_ignored');
+      expect(state.contracts.get(GID)?.dunning_state).toBe('none');
+      expect(state.claims.get(`${GID}|2`)?.status).toBe(st);
+    }
+  });
+
+  it('検算不一致の failure は適用せず alert のみ', async () => {
+    const state = freshState();
+    state.claims.set(`${GID}|2`, claim({ attempt_gid: 'gid://shopify/SubscriptionBillingAttempt/other' }));
+    state.claims.set(`${GID}|3`, claim({ cycle_key: '3', idempotency_key: 'idem-3', attempt_gid: ATTEMPT }));
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', failBody('DO_NOT_HONOR'));
+    expect(out).toBe('claim_mismatch');
+    expect(state.contracts.get(GID)?.dunning_state).toBe('none');
+    expect(alertMock).toHaveBeenCalled();
+  });
+
+  it('nextActionUrl 付き failure は failed 化せず challenged レーンへ', async () => {
+    const state = freshState();
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', {
+      ...failBody('AUTHENTICATION_REQUIRED'),
+      next_action_url: 'https://3ds.example/v',
+    });
+    expect(out).toBe('challenged_applied');
+    expect(state.claims.get(`${GID}|2`)?.status).toBe('attempting');
+    expect(state.contracts.get(GID)?.dunning_state).toBe('challenged');
+  });
+
+  it('未知 code は F クラス = ops_hold + alert、顧客通知なし', async () => {
+    const state = freshState();
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', failBody('SOMETHING_NEW'));
+    expect(state.contracts.get(GID)?.dunning_state).toBe('ops_hold');
+    expect(enqueueMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('§6.3 pending_new_card レーン (webhook-first ordering)', () => {
+  it('matrix より先に 1 回だけ自動再試行し、フラグを消費する', async () => {
+    const state = freshState({ contract: { pending_new_card: 1, dunning_state: 'challenged' } });
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', {
+      ...successBody,
+      admin_graphql_api_order_id: null,
+      error_code: 'EXPIRED_CARD', // B クラス直行なら再試行機会を失う ← それを防ぐ
+    });
+    expect(out).toBe('card_retry_issued');
+    expect(issueMock).toHaveBeenCalledTimes(1);
+    expect(state.contracts.get(GID)?.pending_new_card).toBe(0);
+    // matrix は適用されていない (await_card になっていない)
+    expect(state.contracts.get(GID)?.dunning_state).toBe('challenged');
+  });
+
+  it('gate 閉塞中は発行せず retry_wait に置いて次 tick に委ねる', async () => {
+    const state = freshState({ contract: { pending_new_card: 1 } });
+    const out = await routeBillingWebhook(
+      makeDeps(state, { canIssue: () => false }),
+      'subscription_billing_attempts/failure',
+      { ...successBody, admin_graphql_api_order_id: null, error_code: 'EXPIRED_CARD' },
+    );
+    expect(out).toBe('gate_denied');
+    expect(issueMock).not.toHaveBeenCalled();
+    expect(state.contracts.get(GID)?.dunning_state).toBe('retry_wait');
+  });
+});
+
+describe('§6.3 challenged webhook', () => {
+  const chBody = { ...successBody, admin_graphql_api_order_id: null, next_action_url: 'https://3ds.example/v' };
+
+  it('claim は attempting のまま、契約は challenged、リンクを積む', async () => {
+    const state = freshState();
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/challenged', chBody);
+    expect(out).toBe('challenged_applied');
+    expect(state.claims.get(`${GID}|2`)?.status).toBe('attempting');
+    expect(state.contracts.get(GID)).toMatchObject({ dunning_state: 'challenged', dunning_deadline_at: null });
+    expect(enqueueMock.mock.calls[0][1]).toMatchObject({
+      kind: 'challenge_link',
+      payload: { nextActionUrl: 'https://3ds.example/v' },
+    });
+  });
+
+  it('payload に URL が無ければ attempt 照会で補う', async () => {
+    const state = freshState();
+    const api = fakeApi({
+      getAttemptDetail: async () => ({
+        attemptGid: ATTEMPT, idempotencyKey: 'idem-1', status: 'challenged',
+        nextActionUrl: 'https://3ds.example/from-api', errorCode: null, orderGid: null,
+      }),
+    });
+    await routeBillingWebhook(makeDeps(state, { api }), 'subscription_billing_attempts/challenged', {
+      ...successBody, admin_graphql_api_order_id: null,
+    });
+    expect(enqueueMock.mock.calls[0][1].payload.nextActionUrl).toBe(
+      'https://3ds.example/from-api',
+    );
+  });
+
+  it('URL がどうしても取れなければ沈黙せず alert する', async () => {
+    const state = freshState();
+    await routeBillingWebhook(
+      makeDeps(state, { api: fakeApi({ getAttemptDetail: async () => null }) }),
+      'subscription_billing_attempts/challenged',
+      { ...successBody, admin_graphql_api_order_id: null },
+    );
+    expect(enqueueMock).not.toHaveBeenCalled();
+    expect(alertMock).toHaveBeenCalled();
+  });
+
+  it('resolved 済み claim への challenged は記録のみ (表外状態を作らない)', async () => {
+    const state = freshState({ claim: { status: 'succeeded' } });
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/challenged', chBody);
+    expect(out).toBe('late_ignored');
+    expect(state.contracts.get(GID)?.dunning_state).toBe('none');
+  });
+});
+
+describe('contracts/* ライフサイクル', () => {
+  it('pause は status を落とし、未解決 claim を I-3 で abandoned 化する', async () => {
+    const state = freshState();
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_contracts/pause', {
+      admin_graphql_api_id: GID, status: 'paused',
+    });
+    expect(out).toBe('contract_synced');
+    expect(state.contracts.get(GID)?.status).toBe('paused');
+    expect(state.claims.get(`${GID}|2`)?.status).toBe('abandoned');
+  });
+
+  it('cancel も同様に abandoned 化する', async () => {
+    const state = freshState();
+    await routeBillingWebhook(makeDeps(state), 'subscription_contracts/cancel', { admin_graphql_api_id: GID });
+    expect(state.contracts.get(GID)?.status).toBe('cancelled');
+    expect(state.claims.get(`${GID}|2`)?.status).toBe('abandoned');
+  });
+
+  it('移行窓中の activate は D1 status を先行 active 化しない (§2)', async () => {
+    const state = freshState({ contract: { status: 'paused' } });
+    state.snapshots.push({ own_contract_gid: GID, phase: 'own_created_paused' });
+    await routeBillingWebhook(makeDeps(state), 'subscription_contracts/activate', { admin_graphql_api_id: GID });
+    expect(state.contracts.get(GID)?.status).toBe('paused');
+  });
+
+  it('移行窓外の activate は昇格させる', async () => {
+    const state = freshState({ contract: { status: 'paused' } });
+    await routeBillingWebhook(makeDeps(state), 'subscription_contracts/activate', { admin_graphql_api_id: GID });
+    expect(state.contracts.get(GID)?.status).toBe('active');
+  });
+
+  it('update で支払方法が変わり失敗中なら §6.4 復旧を起動する', async () => {
+    const state = freshState({ contract: { dunning_state: 'exhausted', status: 'paused' } });
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_contracts/update', {
+      admin_graphql_api_id: GID,
+      payment_method_id: 'gid://shopify/CustomerPaymentMethod/2',
+    });
+    expect(out).toBe('payment_recovery');
+    expect(state.contracts.get(GID)?.status).toBe('active');
+    expect(issueMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('update で支払方法が変わっても正常契約なら発行しない', async () => {
+    const state = freshState();
+    await routeBillingWebhook(makeDeps(state), 'subscription_contracts/update', {
+      admin_graphql_api_id: GID,
+      payment_method_id: 'gid://shopify/CustomerPaymentMethod/2',
+    });
+    expect(issueMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('§6.4 customer_payment_methods/*', () => {
+  it('challenged 契約は発行せず pending_new_card=1 のみ (no-parallel-attempt)', async () => {
+    const state = freshState({ contract: { dunning_state: 'challenged' } });
+    const out = await routeBillingWebhook(makeDeps(state), 'customer_payment_methods/update', { customer_id: '555' });
+    expect(out).toBe('payment_recovery');
+    expect(issueMock).not.toHaveBeenCalled();
+    expect(state.contracts.get(GID)?.pending_new_card).toBe(1);
+  });
+
+  it('S5 (exhausted) は activate してから発行する', async () => {
+    const state = freshState({ contract: { dunning_state: 'exhausted', status: 'paused' } });
+    await routeBillingWebhook(makeDeps(state), 'customer_payment_methods/create', { customer_id: '555' });
+    expect(state.contracts.get(GID)?.status).toBe('active');
+    expect(issueMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('kill 中はトリガを失わないようフラグに退避する', async () => {
+    const state = freshState({ contract: { dunning_state: 'await_card' } });
+    const out = await routeBillingWebhook(
+      makeDeps(state, { canIssue: () => false }),
+      'customer_payment_methods/update',
+      { customer_id: '555' },
+    );
+    expect(out).toBe('payment_recovery');
+    expect(issueMock).not.toHaveBeenCalled();
+    expect(state.contracts.get(GID)?.pending_new_card).toBe(1);
+  });
+
+  it('失敗中の契約が無ければ何もしない', async () => {
+    const state = freshState();
+    await expect(
+      routeBillingWebhook(makeDeps(state), 'customer_payment_methods/update', { customer_id: '555' }),
+    ).resolves.toBe('noop');
+  });
+});
+
+describe('§6.6 cycles/{skip,unskip}', () => {
+  it('skip は in-flight attempting も abandoned 経由で skipped にする (I-3)', async () => {
+    const state = freshState();
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_cycles/skip', {
+      subscription_contract_id: 111, cycle_index: 2,
+    });
+    expect(out).toBe('cycle_synced');
+    expect(state.claims.get(`${GID}|2`)?.status).toBe('skipped');
+  });
+
+  it('unskip は skipped を abandoned に戻し due 復帰可能にする', async () => {
+    const state = freshState({ claim: { status: 'skipped' } });
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_cycles/unskip', {
+      subscription_contract_id: 111, cycle_index: 2,
+    });
+    expect(state.claims.get(`${GID}|2`)?.status).toBe('abandoned');
+  });
+
+  it('skip 後に次サイクルへ明示 scheduleEdit する (カデンツのデフォルト落ち防止)', async () => {
+    const state = freshState();
+    const sched = vi.fn(async () => ({ ok: true }));
+    await routeBillingWebhook(
+      makeDeps(state, { api: fakeApi({ scheduleCycleDate: sched }) }),
+      'subscription_billing_cycles/skip',
+      { subscription_contract_id: 111, cycle_index: 2 },
+    );
+    expect(sched).toHaveBeenCalled();
+  });
+
+  it('gate 閉塞中は skip 後の scheduleEdit を打たない', async () => {
+    const state = freshState();
+    const sched = vi.fn(async () => ({ ok: true }));
+    await routeBillingWebhook(
+      makeDeps(state, { canIssue: () => false, api: fakeApi({ scheduleCycleDate: sched }) }),
+      'subscription_billing_cycles/skip',
+      { subscription_contract_id: 111, cycle_index: 2 },
+    );
+    expect(sched).not.toHaveBeenCalled();
+  });
+});
+
+describe('ルーティング', () => {
+  it('未知 topic は noop', async () => {
+    const state = freshState();
+    await expect(routeBillingWebhook(makeDeps(state), 'orders/create', {})).resolves.toBe('noop');
+  });
+
+  it('topic の大文字/前後空白を吸収する', async () => {
+    const state = freshState();
+    await expect(
+      routeBillingWebhook(makeDeps(state), '  SUBSCRIPTION_BILLING_ATTEMPTS/SUCCESS  ', successBody),
+    ).resolves.toBe('success_applied');
+  });
+});

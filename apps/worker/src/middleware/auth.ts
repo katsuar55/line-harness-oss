@@ -38,6 +38,10 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/api/integrations/shopify/webhook/inventory' ||
     path === '/api/integrations/shopify/webhook/payment' ||
     path === '/api/integrations/shopify/webhook/product' ||
+    // WI-4 step3 (2026-07-24): Phase 3 自社課金基盤の Shopify サブスク webhook。
+    // HMAC-SHA256 (X-Shopify-Hmac-Sha256) で代替認証する (route 内で検証・不正は 401)。
+    // POST 限定 = path-only skip の穴 ([[feedback_auth_skiplist_method_independent]]) を作らない。
+    (c.req.method === 'POST' && path === '/api/integrations/shopify/webhook/subscription') ||
     // WI-2 (2026-07-14): Shopify Flow「HTTP リクエスト送信」からのサブスク実測値受信。
     // Flow は Bearer を付けられないため共有シークレットヘッダで代替認証 (route 内で検証)。
     // POST 限定 (method 非依存 skip の穴 = 採点 D2 パターンを作らない)。
