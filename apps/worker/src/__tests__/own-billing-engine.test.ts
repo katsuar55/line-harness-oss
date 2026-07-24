@@ -42,6 +42,7 @@ interface FakeState {
   claims: Map<string, ClaimRow & { resolved_at: string | null; claimed_at: string }>;
   contracts: Map<string, OwnContractRow & { dunning_attempts?: number }>;
   snapshots: Array<{ own_contract_gid: string; phase: string }>;
+  quarantine?: string[];
 }
 
 function key(gid: string, cycle: string) {
@@ -70,9 +71,12 @@ function createFakeDb(state: FakeState) {
                     )
                     .map((s) => s.own_contract_gid),
                 );
+                const quarantined = new Set(state.quarantine ?? []);
                 const results = [...state.contracts.values()].filter((c) => {
                   if (c.status !== 'active') return false;
                   if (excluded.has(c.contract_gid)) return false;
+                  // NOT EXISTS (own_billing_quarantine) の SQL 述語をモデルする
+                  if (sql.includes('own_billing_quarantine') && quarantined.has(c.contract_gid)) return false;
                   // 未claim 述語: 現在サイクルにブロック claim (attempting/succeeded/skipped/hold)
                   const cl = state.claims.get(key(c.contract_gid, String(c.current_cycle_index)));
                   if (cl && (['attempting', 'succeeded', 'skipped'].includes(cl.status) || cl.retry_policy === 'hold')) {
@@ -156,7 +160,21 @@ function createFakeDb(state: FakeState) {
                   return { meta: { changes: 1 } };
                 }
                 if (sql.includes(`SET status = 'abandoned'`)) {
-                  if (!sql.includes('status IN') || ['attempting', 'failed', 'failed_no_attempt'].includes(row.status)) {
+                  // real の WHERE 述語に忠実化する (採点 R7 test-integrity):
+                  //  - I-6 放棄: failed 系 OR (attempting AND attempt_gid IS NOT NULL)
+                  //    = attempt_gid 不明の attempting は残す (二重課金防止ガード)
+                  //  - CONTRACT_PAUSED/TERMINATED: status='attempting' 限定
+                  let eligible: boolean;
+                  if (sql.includes('attempt_gid IS NOT NULL')) {
+                    eligible =
+                      ['failed', 'failed_no_attempt'].includes(row.status) ||
+                      (row.status === 'attempting' && row.attempt_gid !== null);
+                  } else if (sql.includes('status IN')) {
+                    eligible = ['attempting', 'failed', 'failed_no_attempt'].includes(row.status);
+                  } else {
+                    eligible = row.status === 'attempting';
+                  }
+                  if (eligible) {
                     row.status = 'abandoned';
                     row.resolved_at = String(args[0]);
                     return { meta: { changes: 1 } };
@@ -202,10 +220,23 @@ function createFakeDb(state: FakeState) {
                   return { meta: { changes: c ? 1 : 0 } };
                 }
                 if (sql.includes('SET status = ?')) {
-                  // 状態再同期 (CONTRACT_PAUSED/TERMINATED): bind(newStatus, now, gid)
-                  const c = state.contracts.get(String(args[2]));
+                  // 状態再同期 (CONTRACT_PAUSED/TERMINATED): bind(newStatus, now, gid)。
+                  // real は dunningSql も書く: CONTRACT_PAUSED は exhausted 保持/他は none、
+                  // CANCELLED (TERMINATED) は dunning 全リセット。fake も忠実に反映する
+                  // (採点 R9 test-integrity)。
+                  const c = state.contracts.get(String(args[2])) as
+                    | (OwnContractRow & { dunning_attempts?: number; dunning_deadline_at?: string | null })
+                    | undefined;
                   if (c && c.status === 'active') {
                     c.status = String(args[0]);
+                    if (sql.includes("CASE WHEN dunning_state = 'exhausted'")) {
+                      if (c.dunning_state !== 'exhausted') c.dunning_state = 'none';
+                    } else {
+                      c.dunning_state = 'none';
+                      c.dunning_attempts = 0;
+                      c.next_retry_date = null;
+                      c.dunning_deadline_at = null;
+                    }
                     return { meta: { changes: 1 } };
                   }
                   return { meta: { changes: 0 } };
@@ -273,7 +304,8 @@ function createFakeApi(opts: FakeApiOpts = {}) {
     },
     async getAttemptStatus(gid) {
       calls.push({ fn: 'getAttemptStatus', args: [gid] });
-      return opts.attemptStatus ?? 'failed';
+      // 'attemptStatus' キーが明示指定 (null 含む) ならそれを返す。未指定なら 'failed'
+      return 'attemptStatus' in opts ? (opts.attemptStatus ?? null) : 'failed';
     },
   };
   return { api, calls };
@@ -346,6 +378,22 @@ describe('acquireClaim', () => {
       const r = await acquireClaim(createFakeDb(state), api, GID, '3', NOW);
       expect(r).toEqual({ acquired: false, reason: 'pending_old_attempt' });
     }
+  });
+
+  it('CAS 再入: 旧 attempt の照会が null (照会不能) なら再入しない (二重課金の最終防壁)', async () => {
+    // getAttemptStatus が null = 「旧 attempt が生きているか不明」。fail-closed で再入せず、
+    // 新 idempotencyKey を発行しない。これが崩れると旧 attempt 生存時に 2 本目が走る。
+    const state = freshState();
+    state.claims.set(key(GID, '3'), {
+      contract_gid: GID, cycle_key: '3', status: 'failed', retry_policy: 'none',
+      attempt_no: 1, attempt_gid: 'att-1', idempotency_key: 'k1', claimed_at: NOW, resolved_at: NOW,
+    });
+    const { api } = createFakeApi({ attemptStatus: null });
+    const r = await acquireClaim(createFakeDb(state), api, GID, '3', NOW);
+    expect(r).toEqual({ acquired: false, reason: 'pending_old_attempt' });
+    // claim は再獲得されず attempt_no も据え置き
+    expect(state.claims.get(key(GID, '3'))!.attempt_no).toBe(1);
+    expect(state.claims.get(key(GID, '3'))!.status).toBe('failed');
   });
 
   it('CAS 再入: 旧 attempt が succeeded なら claim を succeeded 昇格し発行しない', async () => {
@@ -431,11 +479,31 @@ describe('applySyncError (§6.5)', () => {
     }
   });
 
-  it('CONTRACT_PAUSED / TERMINATED → abandoned + 状態再同期区分', async () => {
-    const state = await withAttempting(freshState());
+  it('CONTRACT_PAUSED → abandoned + status=paused。dunning は exhausted 以外 none へ', async () => {
+    const state = await withAttempting(
+      freshState({ contracts: new Map([[GID, contract({ dunning_state: 'retry_wait', next_retry_date: TODAY })]]) }),
+    );
     const lane = await applySyncError(createFakeDb(state), GID, '3', 'CONTRACT_PAUSED', NOW);
     expect(lane).toBe('abandoned_state_resync');
     expect(state.claims.get(key(GID, '3'))!.status).toBe('abandoned');
+    expect(state.contracts.get(GID)).toMatchObject({ status: 'paused', dunning_state: 'none' });
+  });
+
+  it('CONTRACT_PAUSED は exhausted (システム起因 S5) を保持する (§6.4 復旧を残す)', async () => {
+    const state = await withAttempting(
+      freshState({ contracts: new Map([[GID, contract({ dunning_state: 'exhausted' })]]) }),
+    );
+    await applySyncError(createFakeDb(state), GID, '3', 'CONTRACT_PAUSED', NOW);
+    expect(state.contracts.get(GID)).toMatchObject({ status: 'paused', dunning_state: 'exhausted' });
+  });
+
+  it('CONTRACT_TERMINATED → abandoned + status=cancelled + dunning 全リセット', async () => {
+    const state = await withAttempting(
+      freshState({ contracts: new Map([[GID, contract({ dunning_state: 'await_card' })]]) }),
+    );
+    const lane = await applySyncError(createFakeDb(state), GID, '3', 'CONTRACT_TERMINATED', NOW);
+    expect(lane).toBe('abandoned_state_resync');
+    expect(state.contracts.get(GID)).toMatchObject({ status: 'cancelled', dunning_state: 'none' });
   });
 });
 
@@ -484,6 +552,41 @@ describe('resolveBillableCycle (§4.0)', () => {
     expect(calls.some((c2) => c2.fn === 'scheduleCycleDate')).toBe(true);
     expect(state.contracts.get(GID)!.dunning_state).toBe('none');
     expect(alerts.length).toBe(1);
+  });
+
+  it('I-6: attempt_gid 不明の attempting claim は abandoned にしない (二重課金防止・webhooks 側と対称)', async () => {
+    // createAttempt が ok だが gid 欠落 (stuck_unrecorded) の claim。Shopify 側に attempt が
+    // 生きているか不明なので、14日超過でも abandoned にせず attempting のまま残す。
+    // abandoned にすると unskip 等で引き戻された際に acquireClaim の gid 照会がスキップされ
+    // 新 key で二重発行しうる。
+    const state = freshState({ contracts: new Map([[GID, contract()]]) });
+    state.claims.set(key(GID, '3'), {
+      contract_gid: GID, cycle_key: '3', status: 'attempting', retry_policy: 'none',
+      attempt_no: 1, attempt_gid: null, idempotency_key: 'k', claimed_at: NOW, resolved_at: null,
+    });
+    const cycles: BillingCycleInfo[] = [
+      { cycleIndex: 3, expectedDate: '2026-07-01T15:00:00Z', billed: false, skipped: false }, // 21日超過
+    ];
+    const { api } = createFakeApi({ cycles });
+    const r = await resolveBillableCycle(createFakeDb(state), api, contract(), TODAY, NOW, noAlert);
+    expect(r.abandonedStale).toBe(true); // サイクル自体は放棄される (skip される)
+    // だが attempt_gid 不明の attempting claim は abandoned に化けない
+    expect(state.claims.get(key(GID, '3'))!.status).toBe('attempting');
+  });
+
+  it('I-6: attempt_gid を持つ attempting claim は従来どおり abandoned 化する', async () => {
+    const state = freshState({ contracts: new Map([[GID, contract()]]) });
+    state.claims.set(key(GID, '3'), {
+      contract_gid: GID, cycle_key: '3', status: 'attempting', retry_policy: 'none',
+      attempt_no: 1, attempt_gid: 'gid://shopify/SubscriptionBillingAttempt/9', idempotency_key: 'k',
+      claimed_at: NOW, resolved_at: null,
+    });
+    const cycles: BillingCycleInfo[] = [
+      { cycleIndex: 3, expectedDate: '2026-07-01T15:00:00Z', billed: false, skipped: false },
+    ];
+    const { api } = createFakeApi({ cycles });
+    await resolveBillableCycle(createFakeDb(state), api, contract(), TODAY, NOW, noAlert);
+    expect(state.claims.get(key(GID, '3'))!.status).toBe('abandoned');
   });
 
   it('I-6 境界: ちょうど 14 日は放棄しない (>14 のみ)', async () => {
@@ -623,6 +726,15 @@ describe('resyncContractCycle / listDueContracts', () => {
     expect(state.contracts.get(GID)!.dunning_state).toBe('ops_hold');
     const due = await listDueContracts(createFakeDb(state), TODAY);
     expect(due.length).toBe(0);
+  });
+
+  it('quarantine 収載の契約は due 候補から除外される (SQL の NOT EXISTS を検証)', async () => {
+    const state = freshState();
+    // 通常なら due になる契約 (active/none/scheduled<=today)
+    expect((await listDueContracts(createFakeDb(state), TODAY)).map((c) => c.contract_gid)).toEqual([GID]);
+    // quarantine に入れると候補から外れる
+    state.quarantine = [GID];
+    expect((await listDueContracts(createFakeDb(state), TODAY)).length).toBe(0);
   });
 
   it('§4.0 step 4: 対象サイクルの claim 取得前に旧サイクルの failed claim が abandoned 化される', async () => {

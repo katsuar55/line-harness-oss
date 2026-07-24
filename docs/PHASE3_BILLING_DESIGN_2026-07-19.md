@@ -597,7 +597,32 @@ read_customer_payment_methods + write_own_subscription_contracts (+webhook 用 r
 
 1. migration 071 + cron 骨格 (gate OFF/heartbeat) + billing-kill op + Katsu kill 実地テスト
 2. サイクル同期 + resolveBillableCycle + claim ライフサイクル + 同期エラーレーン (unit 全網羅)
-3. webhook 4 系統 + matrix + 通知キュー (email fallback)
+3. webhook 4 系統 + matrix + 通知キュー (email fallback) ← **PR #204 で完了 (8 ラウンド採点、全6次元90+)**
 4. 移行 phase 機械 + 宣言 endpoint + 監視群 + サーキットブレーカー
 5. LINE UI 実 API 化 + 非 LINE マイページ
 6. ¥100 E2E → リハーサル → Katsu 契約 1 件 (WI-5)
+
+### step3 で残した LOW (既知・実害なし。step4 or 気づいた時に対応)
+
+- **SQL レベルの `WHERE status='active'` 並行ガードが単体テストで未検証** (採点 R10 test-integrity LOW):
+  matrix/challenged の UPDATE は `AND status='active'` を持つが、呼び出し側に同等の
+  in-memory ガード (`if (contract.status !== 'active') return 'late_ignored'`) があり、そちらは
+  テスト済み。SQL 述語を消しても全テスト green のまま (= 冗長な二重防御の SQL 側が無テスト)。
+  fake が述語を尊重するようにすれば独立に検出できる。同様に failCas (二重 failure の CAS) は
+  §4.1 の attempting ガードが先に効くため単体では到達せず、並行性ガードとして残置。
+- **email fallback の at-least-once 二重送信窓** (30分クラッシュ窓・通知重複であって二重課金ではない):
+  Resend に決定的冪等キーを渡せるようになれば消せる。現状は受容。
+
+### step3 で残した MEDIUM (step4 で対応)
+
+- **dunning-origin cycle の遅延 success で I-4 リセットが漏れる余地** (採点 R8 state-machine MEDIUM):
+  cycle N が retry_wait/await_card のまま、別 webhook (update 等) の resync で current_cycle_index が
+  N+1 へ前進した後に cycle N の success が届くと、`isCurrentCycle` (N vs N+1) が false になり
+  dunning リセットを skip する。支払済み契約に stale な retry_wait/await_card が残り、await_card 版は
+  step4 の deadline sweep が「支払済みの顧客を pause + pause_notice」する誤通知に発展しうる。
+  §8 の dunning 滞留検出器が可視化する。**根治は own_sub_contracts に dunning 起点 cycle_key を
+  明示保持し「起点サイクルの success では常に I-4 を適用」する** (step3 の isCurrentCycle は
+  「閉じた/古いサイクルの遅延 success が別サイクルの dunning を壊さない」ための保守的ガードで、
+  この漏れと表裏一体。origin 追跡を入れて両立させる)。現状は非現在サイクル success で
+  カデンツ前進 (scheduleEdit) と dunning リセットの両方を抑止しているので、督促は「遅延」で
+  あって「恒久喪失」ではない (最終的に新予定日で課金され、§8 が滞留を検出する)。

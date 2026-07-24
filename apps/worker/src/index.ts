@@ -100,6 +100,11 @@ import { processWeeklyReports } from './services/weekly-report.js';
 import { processSubscriptionReminders } from './services/subscription-reminder.js';
 import { processBillingReminders } from './services/subscription-billing-reminder.js';
 import { processOwnBilling } from './services/own-billing.js';
+import { canIssueAttempt, readStaticGates, readD1Gates } from './services/own-billing.js';
+import { applyPromotedSuccess } from './services/own-billing-webhooks.js';
+import { ownBillingWebhook, buildAdapter } from './routes/own-billing-webhook.js';
+import { buildEmailDispatcherDeps } from './services/email-dispatch-config.js';
+import type { NoticeDispatchDeps } from './services/own-billing-notify.js';
 import { processMonthlyFoodReports } from './services/monthly-food-report.js';
 import { processWeeklyCoachPush } from './services/weekly-coach-push.js';
 import { processCronMonitor } from './services/cron-monitor.js';
@@ -343,6 +348,9 @@ app.route('/', liffOptIn);
 app.route('/', liffOptInPage);
 app.route('/', liffAccountLink);
 app.route('/', accountLinkAdmin);
+// WI-4 step3: Phase 3 自社課金基盤の Shopify サブスク webhook 受信口。
+// HMAC 検証で代替認証 (authMiddleware は POST 限定で skip)。own 契約 0 件の間は無害。
+app.route('/', ownBillingWebhook);
 app.route('/', friendsProfileAdmin);
 app.route('/', integrationsResend);
 // liffCart route 削除 (2026-04-29): /api/liff/cart endpoints は dead code
@@ -556,9 +564,48 @@ async function scheduled(
   jobs.push(withHeartbeat(env.DB, 'ban-monitor', () => checkAccountHealth(env.DB)));
   jobs.push(withHeartbeat(env.DB, 'token-refresh', () => refreshLineAccessTokens(env.DB)));
   // WI-4 (Phase 3 自社課金基盤) own-billing 5分 tick。account 非依存のため token loop の外で 1 回。
-  // gate OFF (既定) = skippedGating heartbeat のみ・071 新テーブル非アクセス (migration 未適用でも安全)。
-  // 内部で insertCronRunLog を呼ぶため wrap しない。
-  jobs.push(processOwnBilling(env));
+  // gate OFF (既定) = skippedGating heartbeat のみ・071/072 新テーブル非アクセス
+  // (migration 未適用でも安全)。内部で insertCronRunLog を呼ぶため wrap しない。
+  //
+  // step3 で ①実 Shopify adapter ②通知キューの配送先 (LINE + email fallback) を注入する。
+  // どちらも canIssueAttempt / gate の内側でしか使われないため、gate OFF の現状では
+  // 「作るだけで一切呼ばれない」(= 本番挙動は不変)。
+  jobs.push(
+    (async () => {
+      const ownBillingDeps: Parameters<typeof processOwnBilling>[1] = {};
+      // ⚠️ gate OFF の間は adapter を **作らない**。buildAdapter は D1 読み + (期限切れなら)
+      // Shopify token エンドポイントへの subrequest を伴うため、5 分毎 tick で常時呼ぶと
+      // dormant のはずの機能が実費と subrequest 予算を消費してしまう。
+      // (processOwnBilling 側も !enabled で即 return するので、ここで作っても使われない)
+      if ((env.SELF_BILLING_ENABLED ?? '').replace(/[\r\n]/g, '') === 'true') {
+        const billingApi = await buildAdapter(env.DB, env);
+        if (billingApi) ownBillingDeps.api = billingApi;
+        const notify: NoticeDispatchDeps = {
+          lineClient: new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN),
+        };
+        if (emailConfig) Object.assign(notify, buildEmailDispatcherDeps(emailConfig));
+        ownBillingDeps.notify = notify;
+        // engine の promoted_succeeded に §6.1 I-4 を適用するフック
+        // (webhooks 側の実装を注入 = 循環 import を作らない)
+        if (billingApi) {
+          const statics = readStaticGates(env);
+          const d1 = await readD1Gates(env.DB);
+          ownBillingDeps.onPromotedSuccess = (contractGid: string) =>
+            applyPromotedSuccess(
+              {
+                db: env.DB,
+                api: billingApi,
+                canIssue: (gid: string) => d1.error === undefined && canIssueAttempt(statics, d1, gid),
+                alert: (m: string) => console.error(m),
+                nowMs: Date.now(),
+              },
+              contractGid,
+            );
+        }
+      }
+      return processOwnBilling(env, ownBillingDeps);
+    })(),
+  );
 
   // Phase 5β-1d-2f-followup-2: audit_logs failure spike monitoring (= Discord alert via logger)
   // 直近 5 min で failure 3 件以上 → alert (cooldown 1h で重複防止)

@@ -23,6 +23,11 @@ import {
   issueForContract,
   type ShopifyBillingApi,
 } from './own-billing-engine.js';
+import {
+  dispatchQueuedNotices,
+  type NoticeDispatchDeps,
+  type NoticeDispatchResult,
+} from './own-billing-notify.js';
 
 export const OWN_BILLING_JOB_NAME = 'own-billing';
 
@@ -156,6 +161,10 @@ export interface OwnBillingResult {
   dueContracts?: number;
   processedContracts?: number;
   issueOutcomes?: Record<string, number>;
+  /** §5.6 通知キュー配送 (step 3)。窓外/キュー空なら picked=0 */
+  notices?: NoticeDispatchResult;
+  /** 通知配送そのものが失敗した場合の要約 (課金 tick は落とさない) */
+  noticeError?: string;
 }
 
 /** due 発行窓 (§5.1): JST 05:00-07:59 */
@@ -172,7 +181,19 @@ export function isIssueWindow(nowMs: number): boolean {
  */
 export async function processOwnBilling(
   env: OwnBillingEnv,
-  deps: { api?: ShopifyBillingApi; nowMs?: number; alert?: (m: string) => void } = {},
+  deps: {
+    api?: ShopifyBillingApi;
+    nowMs?: number;
+    alert?: (m: string) => void;
+    /** step 3: 通知キューの配送先 (LINE / email)。未注入なら配送しない */
+    notify?: NoticeDispatchDeps;
+    /**
+     * step 3: engine が `promoted_succeeded` を返したときに §6.1 I-4 を適用するフック。
+     * 実体は own-billing-webhooks.ts の applyPromotedSuccess (循環 import を避けるため
+     * 呼び出し側から注入する)。未注入なら outcome の計数のみ。
+     */
+    onPromotedSuccess?: (contractGid: string) => Promise<unknown>;
+  } = {},
 ): Promise<OwnBillingResult> {
   const statics = readStaticGates(env);
 
@@ -223,6 +244,12 @@ export async function processOwnBilling(
         try {
           const outcome = await issueForContract(env.DB, deps.api, contract, todayJst, nowIso, alert);
           outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
+          // 取り逃した success を CAS 時の照会で発見した場合、engine は outcome を返すだけ。
+          // §6.1 の I-4 (dunning 解除 / order_id / 次サイクル scheduleEdit) をここで適用する
+          // — 適用しないと支払済みの顧客が await_card sweep で pause される (採点 R1 HIGH)。
+          if (outcome === 'promoted_succeeded' && deps.onPromotedSuccess) {
+            await deps.onPromotedSuccess(contract.contract_gid);
+          }
         } catch (e: unknown) {
           outcomes.error = (outcomes.error ?? 0) + 1;
           alert(
@@ -238,7 +265,36 @@ export async function processOwnBilling(
     }
   }
 
-  await logRun(env.DB, result.d1Error === undefined ? 'success' : 'partial', result, result.d1Error);
+  // ── 通知キュー配送 (§5.6、step 3)。発行窓 (JST 05-08) とは別窓 (JST 10:00-20:00)。
+  //
+  // **停止時は配送も凍結する**: 本ブロックへ到達するのは SELF_BILLING_ENABLED='true' の
+  // ときだけ (gate OFF は上で early return 済み) で、さらに breaker trip 中は skip する。
+  // 理由 = billing-kill / breaker が入る状況は「こちらの不具合で誤った失敗判定をした」可能性が
+  // 高く、その状態で「お支払いを確認できませんでした」を顧客へ送るのが最大の事故になるため。
+  // キューは消えない (status='queued' のまま) ので、解除後の tick が順次届ける。
+  // 配送失敗は課金 tick 全体を落とさない (partial として heartbeat に残す)。
+  if (deps.notify && !d1.breakerTripped) {
+    try {
+      result.notices = await dispatchQueuedNotices(
+        env.DB,
+        {
+          ...deps.notify,
+          // §5.2 の凍結規則を契約単位でも適用する: excludelist / quarantine に入れた契約は
+          // 「分類が怪しいので止めた」状態なので、その顧客への失敗通知こそ止めるべき。
+          // 発行 gate と同じ述語を使う (armed/allowlist も含む — 通知だけ先走らせない)。
+          canDispatch: (contractGid: string) => canIssueAttempt(statics, d1, contractGid),
+        },
+        nowMs,
+        new Date(nowMs + 9 * 3600_000).toISOString().replace('Z', '+09:00'),
+      );
+    } catch (e: unknown) {
+      result.noticeError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  const status =
+    result.d1Error === undefined && result.noticeError === undefined ? 'success' : 'partial';
+  await logRun(env.DB, status, result, result.d1Error ?? result.noticeError);
   return result;
 }
 

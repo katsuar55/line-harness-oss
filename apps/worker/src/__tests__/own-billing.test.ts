@@ -30,6 +30,8 @@ interface FakeD1Options {
   failNewTables?: boolean;
   /** cron_run_logs INSERT でも throw */
   failCronLog?: boolean;
+  /** 通知キューに置く行 (配送 gate の実挙動を検証するため) */
+  noticeQueue?: Array<Record<string, unknown>>;
 }
 
 function createFakeDb(opts: FakeD1Options = {}) {
@@ -78,6 +80,15 @@ function createFakeDb(opts: FakeD1Options = {}) {
       if (opts.failCronLog) throw new Error('cron_run_logs write failed');
       cronLogs.push({ sql, args });
       return { success: true };
+    }
+    // step3: 通知キューの配送 (窓内なら候補を引く)。既定は空キュー
+    if (sql.includes('own_billing_notice_queue')) {
+      if (opts.failNewTables) throw new Error('no such table: own_billing_notice_queue');
+      // 'queued' → 'sending' の CAS だけ成功させる (= 配送権を取れたことを表す)。
+      // その先の配送は本テストの対象外 (deliverOne の例外はループの try/catch が受ける)。
+      if (sql.includes("SET status = 'sending'")) return { meta: { changes: 1 } };
+      if (sql.trim().startsWith('UPDATE')) return { meta: { changes: 0 } };
+      return (opts.noticeQueue ?? []).map((r) => ({ ...r }));
     }
     throw new Error(`unexpected SQL in fake db: ${sql}`);
   }
@@ -276,6 +287,90 @@ describe('processOwnBilling', () => {
     });
     expect(r.skippedGating).toBeUndefined();
     expect(r.armed).toBe(true);
+  });
+
+  // ── step3: 通知配送の注入と promoted_succeeded フック ──
+
+  const onGates = {
+    SELF_BILLING_ENABLED: 'true',
+    SELF_BILLING_ARMED_AT: 'x',
+    SELF_BILLING_ALLOWLIST: 'ALL',
+  };
+  const IN_WINDOW = Date.parse('2026-08-05T02:00:00Z'); // JST 11:00 (配送窓内)
+
+  it('gate OFF なら notify を注入しても通知キューに触らない (dormant)', async () => {
+    const { db, executed } = createFakeDb({ failNewTables: true });
+    const r = await processOwnBilling(
+      { DB: db },
+      { notify: { lineClient: {} as never }, nowMs: IN_WINDOW },
+    );
+    expect(r.skippedGating).toBe(true);
+    expect(r.notices).toBeUndefined();
+    expect(executed.some((s) => s.includes('own_billing_notice_queue'))).toBe(false);
+  });
+
+  it('gate ON + 窓内なら通知キューを配送する', async () => {
+    const { db } = createFakeDb();
+    const r = await processOwnBilling(
+      { DB: db, ...onGates },
+      { notify: { lineClient: {} as never }, nowMs: IN_WINDOW },
+    );
+    expect(r.notices).toMatchObject({ window: true, picked: 0 });
+  });
+
+  it('breaker trip 中は通知配送も凍結する (誤判定由来の顧客通知を出さない)', async () => {
+    const { db } = createFakeDb({ breakerTripped: true });
+    const r = await processOwnBilling(
+      { DB: db, ...onGates },
+      { notify: { lineClient: {} as never }, nowMs: IN_WINDOW },
+    );
+    expect(r.breakerTripped).toBe(true);
+    expect(r.notices).toBeUndefined();
+  });
+
+  it('通知配送の例外は課金 tick を落とさず partial として heartbeat に残る', async () => {
+    const { db, cronLogs } = createFakeDb({ failNewTables: true });
+    const r = await processOwnBilling(
+      { DB: db, ...onGates },
+      { notify: { lineClient: {} as never }, nowMs: IN_WINDOW },
+    );
+    // d1Error (gate 読取り失敗) で fail-closed、通知側の例外も握られている
+    expect(r.d1Error).toBeDefined();
+    expect(cronLogs.length).toBe(1);
+  });
+
+  it('契約単位 gate を canDispatch として通知配送へ渡す (quarantine の契約は配送されない)', async () => {
+    // **実際にキューへ行を置いて、processOwnBilling の戻り値で検証する**
+    // (述語を手元で作り直して assert するだけだと何も保証しない — 採点 R4/R6 test-integrity)
+    const { db } = createFakeDb({
+      quarantine: [GID],
+      noticeQueue: [
+        { id: 1, contract_gid: GID, cycle_key: '2', attempt_no: 1, kind: 'fail_notice',
+          shopify_customer_id: '555', payload_json: '{}', dispatch_attempts: 0, queued_at: '2026-08-05T11:00:00.000+09:00' },
+      ],
+    });
+    const r = await processOwnBilling(
+      { DB: db, ...onGates },
+      { notify: { lineClient: {} as never }, nowMs: IN_WINDOW },
+    );
+    expect(r.notices?.gateFrozen).toBe(1);
+    expect(r.notices?.picked).toBe(0);
+  });
+
+  it('quarantine 対象外の契約は配送候補になる (gate が全件を止めていない証拠)', async () => {
+    const { db } = createFakeDb({
+      quarantine: ['gid://shopify/SubscriptionContract/other'],
+      noticeQueue: [
+        { id: 1, contract_gid: GID, cycle_key: '2', attempt_no: 1, kind: 'fail_notice',
+          shopify_customer_id: '555', payload_json: '{}', dispatch_attempts: 0, queued_at: '2026-08-05T11:00:00.000+09:00' },
+      ],
+    });
+    const r = await processOwnBilling(
+      { DB: db, ...onGates },
+      { notify: { lineClient: {} as never }, nowMs: IN_WINDOW },
+    );
+    expect(r.notices?.gateFrozen).toBe(0);
+    expect(r.notices?.picked).toBe(1);
   });
 
   it('gate ON: D1 gate を読み heartbeat metrics に可視化 (課金ロジックはまだ呼ばれない)', async () => {

@@ -51,6 +51,11 @@ name: Admin Ops
 #     migration 071 (Phase 3 課金基盤テーブル群) を wrangler d1 execute --file で直接適用。
 #     CREATE TABLE IF NOT EXISTS のみで冪等・additive (既存テーブル無改変・データ破壊なし)。
 #     d1_migrations state drift があるため migrations apply は使わない (メモリ: 全再実行 trap)。
+#   apply-migration-072:
+#     migration 072 (WI-4 step3 通知キュー own_billing_notice_queue) を同方式で適用。
+#     CREATE TABLE IF NOT EXISTS + CREATE INDEX のみ = 冪等・additive。
+#     未適用でも本番は無害 (gate OFF・enqueue 失敗は握って alert のみ) だが、
+#     SELF_BILLING_ENABLED を ON にする前に必ず適用しておくこと。
 #
 # ⚠️ repo は PUBLIC = workflow ログ/サマリは公開される。secret の値・顧客データ (PII) を
 #    echo/サマリ出力する op を追加してはならない (名前・件数のみ可)。
@@ -78,6 +83,7 @@ on:
           - billing-kill
           - billing-status
           - apply-migration-071
+          - apply-migration-072
           - release-billing-hold
           - custom-domain-status
           - attach-custom-domain
@@ -448,6 +454,22 @@ jobs:
           echo '### Verification (new tables)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('own_sub_contracts','billing_cycle_claims','sub_migration_snapshots','own_billing_notices','own_billing_state','own_billing_quarantine') ORDER BY name" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply migration 072 (own-billing notice queue, idempotent)
+        if: inputs.op == 'apply-migration-072'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute naturism-line-crm --remote \
+            --file ../../packages/db/migrations/072_own_billing_notice_queue.sql
+          echo '### Verification (notice queue table + row count)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name='own_billing_notice_queue'" | tee -a "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS queued_rows FROM own_billing_notice_queue" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Rank discount status (counts only, read-only)
         if: inputs.op == 'rank-discount-status'

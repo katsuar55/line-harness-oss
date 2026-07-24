@@ -60,6 +60,12 @@ export interface OwnContractRow {
   interval_count: number;
   dunning_state: string;
   next_retry_date: string | null;
+  // step 3 (webhook レーン) が読む列。step 2 の SELECT c.* には元から含まれている
+  // (型に無いだけだった) ため、追加は型の穴埋めであって挙動変更ではない。
+  payment_method_gid?: string | null;
+  pending_new_card?: number;
+  dunning_attempts?: number;
+  dunning_deadline_at?: string | null;
 }
 
 export interface ClaimRow {
@@ -279,11 +285,23 @@ export async function applySyncError(
       .bind(nowIso, contractGid, cycleKey)
       .run();
     // 状態再同期 (§6.5): Shopify 実状態へ契約 status を降格 — 翌日以降の due 再列挙と
-    // Shopify への無限再発行ループを止める (実状態の完全同期は contracts webhook / 日次)
+    // Shopify への無限再発行ループを止める (実状態の完全同期は contracts webhook / 日次)。
+    // dunning 系列も同時に解除する (採点 R3 LOW): status だけ書くと
+    // (paused|cancelled)×dunning≠none という §4.1 表外の組合せが残り、
+    // 後続の §6.4 が「システム起因 S5」と誤認する余地を作る。
     const newStatus = userErrorCode === 'CONTRACT_PAUSED' ? 'paused' : 'cancelled';
+    // CONTRACT_PAUSED では **exhausted (システム起因 S5) を保持する** (採点 R7 LOW)。
+    // 潰すと paused/none (S6) に落ち、以後 §6.4 のカード更新復旧が
+    // 「paused ∧ exhausted 以外は再開しない」ガードに掛かって二度と自動復旧できなくなる。
+    // それ以外は dunning を解除して表内へ着地させる。
+    const dunningSql =
+      userErrorCode === 'CONTRACT_PAUSED'
+        ? `dunning_state = CASE WHEN dunning_state = 'exhausted' THEN 'exhausted' ELSE 'none' END`
+        : `dunning_state = 'none', dunning_attempts = 0, next_retry_date = NULL, dunning_deadline_at = NULL`;
     await db
       .prepare(
-        `UPDATE own_sub_contracts SET status = ?, updated_at = ?
+        `UPDATE own_sub_contracts
+            SET status = ?, ${dunningSql}, updated_at = ?
           WHERE contract_gid = ? AND status = 'active'`,
       )
       .bind(newStatus, nowIso, contractGid)
@@ -364,9 +382,14 @@ export async function resolveBillableCycle(
     const cycleKey = String(oldest.cycleIndex);
     await db
       .prepare(
+        // attempt_gid を持たない attempting は abandoned にしない (webhooks 側の
+        // abandonOpenClaims と規則を揃える): 「Shopify 側に attempt が生きているか不明」
+        // な行を abandoned にすると、後で unskip 等で 14 日以内に引き戻された際に
+        // acquireClaim の gid 照会をスキップして新 key で二重発行しうる。
         `UPDATE billing_cycle_claims SET status = 'abandoned', resolved_at = ?
           WHERE contract_gid = ? AND cycle_key = ?
-            AND status IN ('attempting', 'failed', 'failed_no_attempt')`,
+            AND (status IN ('failed', 'failed_no_attempt')
+                 OR (status = 'attempting' AND attempt_gid IS NOT NULL))`,
       )
       .bind(nowIso, contract.contract_gid, cycleKey)
       .run();
@@ -470,6 +493,8 @@ export type IssueOutcome =
   | 'sync_error_state_resync'
   | 'stuck_unrecorded'
   | 'unsupported_interval'
+  /** I-1 違反ガード: status='active' 以外の契約には発行しない */
+  | 'not_active'
   | 'gate_denied';
 
 /**
@@ -485,6 +510,17 @@ export async function issueForContract(
   nowIso: string,
   alert: AlertFn,
 ): Promise<IssueOutcome> {
+  // I-1 の防衛ガード (採点 R3 HIGH): attempt 発行は status='active' の契約に限る。
+  // 呼び出し側 (cron の listDueContracts / §6.4 復旧) は active を保証しているが、
+  // webhook 経路から直接呼ばれる可能性があるため engine 側にも置く。
+  // これが無いと paused/cancelled の契約へ webhook 起点で課金が走りうる。
+  if (contract.status !== 'active') {
+    await alert(
+      `own-billing: 契約 ${contract.contract_gid} は status=${contract.status} のため発行しません (I-1)`,
+    );
+    return 'not_active';
+  }
+
   // §0: DAY 以外はサポート外 (移行 intake が担保するが、エンジン側でも防衛 — WEEK/MONTH 行が
   // 混入した場合に誤った日数算術で scheduleEdit を発行しない)
   if (contract.interval_unit !== 'DAY') {
@@ -564,10 +600,19 @@ export async function issueForContract(
  * (processOwnBilling の MAX_ISSUE_PER_TICK) が「issueForContract を実行した件数」で管理する —
  * gate_denied 契約が候補スロットを恒久占有して allowlist 収載契約を飢餓させない (採点 R2 HIGH)。
  */
+/**
+ * 候補上限の既定。**1 tick の発行予算 (3) より十分大きく取る** (採点 R3 LOW)。
+ * allowlist 非収載 / secret excludelist 収載の契約は SQL では除外できず (gate は env 側)、
+ * 発行されないため scheduled_date が前進せず ORDER BY の先頭に居座り続ける。
+ * 候補枠と予算が近いと、段階ロールアウト中に非収載契約が候補を占有して
+ * allowlist 収載契約が一度も候補に現れない (= 課金漏れ) 飢餓が起きる。
+ */
+export const DUE_CANDIDATE_LIMIT = 100;
+
 export async function listDueContracts(
   db: D1Database,
   todayJst: string,
-  limit = 25,
+  limit = DUE_CANDIDATE_LIMIT,
 ): Promise<OwnContractRow[]> {
   const rows = await db
     .prepare(
