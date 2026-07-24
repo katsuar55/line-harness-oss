@@ -320,9 +320,19 @@ async function deliverOne(
   // pause/resume/delivery は「起きた事実」の通知で陳腐化せず、しかも再 enqueue する主体が
   // 存在しない (matrix は一度しか積まない) ため、stale 破棄すると
   // 「一時停止したのに顧客に一切通知が届かない」が恒久化する。
-  const DATED_KINDS: NoticeKind[] = ['fail_notice', 'card_request', 'challenge_link'];
+  // **文面に日付を含む通知だけ**を stale 破棄対象にする (採点 R7 MEDIUM)。
+  // isFinal の fail_notice (「一時停止しました」) は日付を持たず、しかも exhausted 契約には
+  // 再 enqueue する主体が存在しない (matrix は 1 サイクル 1 回)。これを stale 破棄すると
+  // 「停止したのに最終通知が一切届かない」が恒久化する。payload の日付有無で判定する。
+  let hasDate = false;
+  try {
+    const p = JSON.parse(row.payload_json) as NoticePayload;
+    hasDate = Boolean(p.scheduledDate || p.nextRetryDate || p.deadlineDate);
+  } catch {
+    hasDate = false;
+  }
   const ageMs = Date.parse(nowIso) - Date.parse(row.queued_at);
-  if (DATED_KINDS.includes(kind) && Number.isFinite(ageMs) && ageMs > NOTICE_MAX_AGE_MS) {
+  if (hasDate && Number.isFinite(ageMs) && ageMs > NOTICE_MAX_AGE_MS) {
     await db
       .prepare(
         `UPDATE own_billing_notice_queue

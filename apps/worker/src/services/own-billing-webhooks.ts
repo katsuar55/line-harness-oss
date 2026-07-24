@@ -848,7 +848,13 @@ export async function handleContractLifecycle(
     // D1 を先行 active 化する穴の封鎖)。cycle キャッシュのみ更新する。
     const inWindow = await isInMigrationWindow(deps.db, contractGid);
     const promoting = target === 'active';
-    if (!(inWindow && promoting)) {
+    // §6.7 / I-5: **S6 (顧客都合停止) からの再開は skip → activate の順** (採点 R7 HIGH)。
+    // status='active' を先にコミットすると、skip の Shopify 往復中に別 invocation の cron が
+    // listDueContracts で拾い、休止期間分の overdue サイクルを課金する窓ができる。
+    // resumeFromCustomerPause が skip 完了後に自分で active 化する (失敗時は paused/ops_hold 維持)。
+    const isS6Resume =
+      promoting && !inWindow && contract.status === 'paused' && contract.dunning_state === 'none';
+    if (!(inWindow && promoting) && !isS6Resume) {
       // **status と dunning_state を必ず同時に整合させる** (採点 R1 CRITICAL)。
       // status だけ書くと §4.1 状態表に無い組合せ (paused/retry_wait・active/exhausted 等) が
       // でき、後続の遅延 success が「システム起因 pause」と誤認して顧客都合の停止契約を
@@ -888,7 +894,7 @@ export async function handleContractLifecycle(
     // I-5 は S5 復旧では「14日以内の過去サイクルを回収する」と規定しているので、
     // exhausted からの activate で skip すると回収すべき課金を捨ててしまう。
     // 既に active の契約への activate 再配送でも skip しない。
-    if (promoting && !inWindow && contract.status === 'paused' && contract.dunning_state === 'none') {
+    if (isS6Resume) {
       await skipPastCyclesOnResume(deps, contract, nowIso);
     }
   }
@@ -943,13 +949,21 @@ async function skipPastCyclesOnResume(
   contract: OwnContractRow,
   nowIso: string,
 ): Promise<void> {
-  if (!deps.api || !deps.canIssue(contract.contract_gid)) {
-    // 発行系が止まっている間は Shopify を mutate できない。
-    // **この状態で active に戻すと、休止中に過ぎた過去サイクルがそのまま due になり
-    // 顧客に休止期間分を誤請求する** (採点 R5 HIGH)。skip を完了できない以上、
-    // 契約を ops_hold に置いて発行対象から外し、人間/日次 repair の解決を待つ。
+  // ⚠️ この関数に入る時点で契約は **まだ paused (S6)**。呼び出し側は status を先に
+  // active 化しない (採点 R7 HIGH — 先行 active 化すると skip の Shopify 往復中に
+  // 別 cron tick が overdue サイクルを課金する窓ができる)。
+  // 全 skip + reschedule + resync が完了して初めて active 化する。
+  // 途中で失敗したら **paused のまま**にする = 課金対象にならず、activate 再送で再試行できる
+  // (paused/none は §4.1 の S6 = 有効な状態。ops_hold のような表外状態を作らない)。
+  const failResume = async (reason: string): Promise<void> => {
     await markRepair(deps, contract.contract_gid, nowIso);
-    await holdForResumeRepair(deps, contract.contract_gid, nowIso, 'gate_closed_or_no_api');
+    await deps.alert(
+      `own-billing: 契約 ${contract.contract_gid} の再開で休止期間分の skip を完了できませんでした (${reason}) — 契約は一時停止のまま維持します (誤請求防止)。activate 再送または日次 repair で再試行`,
+    );
+  };
+
+  if (!deps.api || !deps.canIssue(contract.contract_gid)) {
+    await failResume('gate_closed_or_no_api');
     return;
   }
   const todayJst = jstDate(deps.nowMs);
@@ -972,24 +986,15 @@ async function skipPastCyclesOnResume(
         const detail = await deps.api.getAttemptDetail(existing.attempt_gid);
         const terminal = detail !== null && (detail.status === 'succeeded' || detail.status === 'failed');
         if (!terminal) {
-          // §6.7 は「旧 attempt が非 terminal なら**再開全体を保留**」と規定する。
-          // alert だけ出して continue すると、契約は既に active 化されているため
-          // (handleContractLifecycle が先に status を書く)、決着後に休止期間分の
-          // 過去サイクルがそのまま課金される (採点 R6 HIGH)。
-          // skip 失敗経路と同じ待機 vehicle (ops_hold) に倒し、以降の処理も行わない。
-          await deps.alert(
-            `own-billing: 契約 ${contract.contract_gid} の再開で cycle ${cycleKey} の attempt が未決着 (${detail?.status ?? '照会不能'}) — 再開を保留します (§6.7)`,
-          );
-          await holdForResumeRepair(deps, contract.contract_gid, nowIso, `pending_attempt:${cycleKey}`);
+          await failResume(`pending_attempt:${cycleKey}:${detail?.status ?? '照会不能'}`);
           return;
         }
       }
       const res = await deps.api.setCycleSkip(contract.contract_gid, cy.cycleIndex, true);
       if (!res.ok) {
-        // skip できなかった過去サイクルを残したまま課金対象にしない (誤請求の防止)
-        await markRepair(deps, contract.contract_gid, nowIso, res.error);
-        await holdForResumeRepair(deps, contract.contract_gid, nowIso, `skip_failed:${cy.cycleIndex}`);
-        continue;
+        // skip できなかった過去サイクルを残したまま active 化しない (誤請求の防止)
+        await failResume(`skip_failed:${cy.cycleIndex}`);
+        return;
       }
       await deps.db
         .prepare(
@@ -1014,36 +1019,25 @@ async function skipPastCyclesOnResume(
     const target = nextAnchorAfter(contract, todayJst);
     if (next && toJstDateOnly(next.expectedDate) !== target) {
       const res = await deps.api.scheduleCycleDate(contract.contract_gid, next.cycleIndex, target);
-      if (!res.ok) await markRepair(deps, contract.contract_gid, nowIso, res.error);
+      if (!res.ok) {
+        await failResume(`schedule_failed:${next.cycleIndex}`);
+        return;
+      }
     }
     await resyncContractCycle(deps.db, deps.api, contract.contract_gid, nowIso);
+    // ── 全処理成功。**ここで初めて active 化する** (overdue サイクルは全て skip 済み)
+    await deps.db
+      .prepare(
+        `UPDATE own_sub_contracts
+            SET status = 'active', dunning_state = 'none', dunning_attempts = 0,
+                next_retry_date = NULL, dunning_deadline_at = NULL, updated_at = ?
+          WHERE contract_gid = ? AND status = 'paused'`,
+      )
+      .bind(nowIso, contract.contract_gid)
+      .run();
   } catch (e: unknown) {
-    await markRepair(deps, contract.contract_gid, nowIso, e instanceof Error ? e.message : String(e));
-    await holdForResumeRepair(deps, contract.contract_gid, nowIso, 'listCycles_failed');
+    await failResume(`listCycles_failed:${e instanceof Error ? e.message : String(e)}`);
   }
-}
-
-/**
- * I-5 の skip を完了できなかった再開契約を発行対象から外す。
- * `ops_hold` は listDueContracts の述語 (none|retry_wait) から外れる既存の状態で、
- * 「人間が確認するまで課金しない」の意味も一致する (§6.5 の ops 解除 op で復帰)。
- */
-async function holdForResumeRepair(
-  deps: BillingWebhookDeps,
-  contractGid: string,
-  nowIso: string,
-  reason: string,
-): Promise<void> {
-  await deps.db
-    .prepare(
-      `UPDATE own_sub_contracts SET dunning_state = 'ops_hold', updated_at = ?
-        WHERE contract_gid = ? AND dunning_state = 'none'`,
-    )
-    .bind(nowIso, contractGid)
-    .run();
-  await deps.alert(
-    `own-billing: 契約 ${contractGid} の再開で休止期間分の skip を完了できませんでした (${reason}) — 誤請求防止のため ops_hold にしました。復旧は Admin Ops の release-billing-hold`,
-  );
 }
 
 function isFailingState(contract: OwnContractRow): boolean {

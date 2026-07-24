@@ -355,6 +355,10 @@ function createFakeDb(state: State): D1Database {
               }
               if (sql.includes("SET status = 'active', dunning_state = 'none'")) {
                 const c = state.contracts.get(String(args[1]));
+                // 再開の確定 UPDATE は `WHERE status = 'paused'` (skip 成功後のみ active 化)
+                if (sql.includes("status = 'paused'") && c && c.status !== 'paused') {
+                  return { meta: { changes: 0 } };
+                }
                 if (c) {
                   c.status = 'active';
                   c.dunning_state = 'none';
@@ -811,8 +815,9 @@ describe('contracts/* ライフサイクル', () => {
     expect(state.contracts.get(GID)?.status).toBe('paused');
   });
 
-  it('移行窓外の activate は昇格させる', async () => {
-    const state = freshState({ contract: { status: 'paused' } });
+  it('移行窓外の activate は (skip 完了後に) 昇格させる', async () => {
+    // in-flight claim が無い S6 契約の再開 = 過去サイクルを skip して active 化
+    const state = freshState({ contract: { status: 'paused' }, claim: null });
     await routeBillingWebhook(makeDeps(state), 'subscription_contracts/activate', { admin_graphql_api_id: GID });
     expect(state.contracts.get(GID)?.status).toBe('active');
   });
@@ -1143,9 +1148,9 @@ describe('採点 R3 回帰', () => {
     expect(state.claims.get(`${GID}|2`)?.status).toBe('skipped');
   });
 
-  it('R6 HIGH: 未決着 attempt があれば再開を保留する (ops_hold で発行対象から外す)', async () => {
-    // alert だけ出して continue すると、契約は既に active 化済みなので
-    // 決着後に休止期間分の過去サイクルが課金される (§6.7 違反)
+  it('R7 HIGH: 未決着 attempt があれば active 化せず paused のまま維持する (§6.7 再開保留)', async () => {
+    // status を先に active 化すると、決着後に休止期間分の過去サイクルが課金される。
+    // paused のまま = 課金対象にならず、activate 再送で再試行できる (有効な S6 状態)。
     const state = freshState({
       contract: { status: 'paused', dunning_state: 'none' },
       claim: { status: 'abandoned', cycle_key: '2', attempt_gid: ATTEMPT },
@@ -1165,8 +1170,25 @@ describe('採点 R3 回帰', () => {
       admin_graphql_api_id: GID,
     });
     expect(skip).not.toHaveBeenCalled();
-    // 発行対象から外れていること (これが無いと決着後に誤請求)
-    expect(state.contracts.get(GID)?.dunning_state).toBe('ops_hold');
+    expect(state.contracts.get(GID)?.status).toBe('paused');
+    expect(alertMock).toHaveBeenCalled();
+  });
+
+  it('R7 HIGH: 全 skip 完了後に初めて active 化する (skip 中に billable な窓を作らない)', async () => {
+    const state = freshState({ contract: { status: 'paused', dunning_state: 'none' }, claim: null });
+    let skipDone = false;
+    const api = fakeApi({
+      setCycleSkip: async () => { skipDone = true; return { ok: true }; },
+      listCycles: async () => [
+        { cycleIndex: 2, expectedDate: '2026-08-01T03:00:00Z', billed: false, skipped: false },
+        { cycleIndex: 3, expectedDate: '2026-09-04T03:00:00Z', billed: false, skipped: false },
+      ],
+    });
+    await routeBillingWebhook(makeDeps(state, { api }), 'subscription_contracts/activate', {
+      admin_graphql_api_id: GID,
+    });
+    expect(skipDone).toBe(true);
+    expect(state.contracts.get(GID)?.status).toBe('active'); // 成功したので active
   });
 
   it('R6 MEDIUM: 将来サイクルの skip は現在サイクルの dunning を消さない', async () => {
@@ -1357,7 +1379,7 @@ describe('採点 R5 回帰', () => {
     });
   });
 
-  it('HIGH: 再開で過去サイクルを skip できなければ ops_hold にして課金対象から外す', async () => {
+  it('HIGH: 再開で skip を完了できなければ active 化せず paused のまま維持する', async () => {
     const state = freshState({ contract: { status: 'paused', dunning_state: 'none' }, claim: null });
     // adapter 未注入 = skip を実行できない
     await routeBillingWebhook(
@@ -1365,12 +1387,13 @@ describe('採点 R5 回帰', () => {
       'subscription_contracts/activate',
       { admin_graphql_api_id: GID },
     );
-    expect(state.contracts.get(GID)?.dunning_state).toBe('ops_hold');
+    // active 化していない = 課金対象にならない (誤請求防止)。activate 再送で再試行できる
+    expect(state.contracts.get(GID)?.status).toBe('paused');
     expect(state.contracts.get(GID)?.cadence_repair_needed).toBe(1);
     expect(alertMock).toHaveBeenCalled();
   });
 
-  it('再開で skip 自体が失敗した場合も ops_hold にする', async () => {
+  it('再開で skip 自体が失敗した場合も active 化しない', async () => {
     const state = freshState({ contract: { status: 'paused', dunning_state: 'none' }, claim: null });
     const api = fakeApi({
       setCycleSkip: async () => ({ ok: false, error: 'boom' }),
@@ -1381,7 +1404,7 @@ describe('採点 R5 回帰', () => {
     await routeBillingWebhook(makeDeps(state, { api }), 'subscription_contracts/activate', {
       admin_graphql_api_id: GID,
     });
-    expect(state.contracts.get(GID)?.dunning_state).toBe('ops_hold');
+    expect(state.contracts.get(GID)?.status).toBe('paused');
   });
 
   it('LOW: カード更新による S5 復旧は pending_new_card を消費する', async () => {

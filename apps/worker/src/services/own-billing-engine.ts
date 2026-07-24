@@ -290,11 +290,18 @@ export async function applySyncError(
     // (paused|cancelled)×dunning≠none という §4.1 表外の組合せが残り、
     // 後続の §6.4 が「システム起因 S5」と誤認する余地を作る。
     const newStatus = userErrorCode === 'CONTRACT_PAUSED' ? 'paused' : 'cancelled';
+    // CONTRACT_PAUSED では **exhausted (システム起因 S5) を保持する** (採点 R7 LOW)。
+    // 潰すと paused/none (S6) に落ち、以後 §6.4 のカード更新復旧が
+    // 「paused ∧ exhausted 以外は再開しない」ガードに掛かって二度と自動復旧できなくなる。
+    // それ以外は dunning を解除して表内へ着地させる。
+    const dunningSql =
+      userErrorCode === 'CONTRACT_PAUSED'
+        ? `dunning_state = CASE WHEN dunning_state = 'exhausted' THEN 'exhausted' ELSE 'none' END`
+        : `dunning_state = 'none', dunning_attempts = 0, next_retry_date = NULL, dunning_deadline_at = NULL`;
     await db
       .prepare(
         `UPDATE own_sub_contracts
-            SET status = ?, dunning_state = 'none', dunning_attempts = 0,
-                next_retry_date = NULL, dunning_deadline_at = NULL, updated_at = ?
+            SET status = ?, ${dunningSql}, updated_at = ?
           WHERE contract_gid = ? AND status = 'active'`,
       )
       .bind(newStatus, nowIso, contractGid)

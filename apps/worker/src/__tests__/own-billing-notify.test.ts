@@ -206,15 +206,17 @@ function createFakeDb(state: State): D1Database {
                 row.sent_at = null;
                 return { meta: { changes: 1 } };
               }
-              // markSent は channel を書く (bind: channel, nowIso, id)
+              // markSent は channel を書く (bind: channel, nowIso, id)。
+              // real は `AND status = 'sending'` を持つ (reaper 競合対策) ので fake も尊重する
               if (sql.includes("SET status = 'sent'") && sql.includes('channel = ?')) {
-                const row = state.queue.find((r) => r.id === args[2]);
+                const row = state.queue.find((r) => r.id === args[2] && r.status === 'sending');
                 if (row) {
                   row.status = 'sent';
                   row.channel = String(args[0]);
                   row.sent_at = String(args[1]);
+                  return { meta: { changes: 1 } };
                 }
-                return { meta: { changes: 1 } };
+                return { meta: { changes: 0 } };
               }
               // 送信済みマーカー検出時の 'sent' 落とし込み (bind: nowIso, id)
               if (sql.includes("SET status = 'sent'")) {
@@ -598,14 +600,34 @@ describe('採点 R1 回帰 — 通知が消える/届いてはいけない経路
     expect(res.noRecipient).toBe(1);
   });
 
-  it('MEDIUM: 凍結明けの古い通知は破棄する (過去日の締切を案内しない)', async () => {
+  it('MEDIUM: 凍結明けの古い通知 (日付あり) は破棄する (過去日の締切を案内しない)', async () => {
     const state = freshState();
-    await seedOne(state);
-    state.queue[0].queued_at = '2026-08-01T11:00:00.000+09:00'; // 4 日前
+    // 日付を含む card_request を積む
+    await enqueueNotice(
+      createFakeDb(state),
+      { contractGid: GID, cycleKey: '2', attemptNo: 1, kind: 'card_request', shopifyCustomerId: CUSTOMER,
+        payload: { deadlineDate: '2026-08-08' } },
+      '2026-08-01T11:00:00.000+09:00', // 4 日前
+    );
     const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
     expect(res.stale).toBe(1);
     expect(dispatchMock).not.toHaveBeenCalled();
     expect(state.queue[0]).toMatchObject({ status: 'abandoned', last_error: 'stale' });
+  });
+
+  it('R7 MEDIUM: 日付を含まない終端 fail_notice は古くても破棄せず送る (停止したのに通知なしを防ぐ)', async () => {
+    const state = freshState();
+    // isFinal の fail_notice は payload に日付を持たない
+    await enqueueNotice(
+      createFakeDb(state),
+      { contractGid: GID, cycleKey: '2', attemptNo: 3, kind: 'fail_notice', shopifyCustomerId: CUSTOMER,
+        payload: { isFinal: true } },
+      '2026-08-01T11:00:00.000+09:00', // 4 日前 (凍結明け)
+    );
+    dispatchMock.mockResolvedValue({ results: [{ channel: 'line', status: 'sent' }] });
+    const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(res.stale).toBe(0);
+    expect(res.sentLine).toBe(1);
   });
 
   it('LOW: failed と abandoned は排他カウント (heartbeat の二重計上を防ぐ)', async () => {

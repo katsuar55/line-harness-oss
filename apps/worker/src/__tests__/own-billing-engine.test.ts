@@ -156,7 +156,21 @@ function createFakeDb(state: FakeState) {
                   return { meta: { changes: 1 } };
                 }
                 if (sql.includes(`SET status = 'abandoned'`)) {
-                  if (!sql.includes('status IN') || ['attempting', 'failed', 'failed_no_attempt'].includes(row.status)) {
+                  // real の WHERE 述語に忠実化する (採点 R7 test-integrity):
+                  //  - I-6 放棄: failed 系 OR (attempting AND attempt_gid IS NOT NULL)
+                  //    = attempt_gid 不明の attempting は残す (二重課金防止ガード)
+                  //  - CONTRACT_PAUSED/TERMINATED: status='attempting' 限定
+                  let eligible: boolean;
+                  if (sql.includes('attempt_gid IS NOT NULL')) {
+                    eligible =
+                      ['failed', 'failed_no_attempt'].includes(row.status) ||
+                      (row.status === 'attempting' && row.attempt_gid !== null);
+                  } else if (sql.includes('status IN')) {
+                    eligible = ['attempting', 'failed', 'failed_no_attempt'].includes(row.status);
+                  } else {
+                    eligible = row.status === 'attempting';
+                  }
+                  if (eligible) {
                     row.status = 'abandoned';
                     row.resolved_at = String(args[0]);
                     return { meta: { changes: 1 } };
@@ -484,6 +498,41 @@ describe('resolveBillableCycle (§4.0)', () => {
     expect(calls.some((c2) => c2.fn === 'scheduleCycleDate')).toBe(true);
     expect(state.contracts.get(GID)!.dunning_state).toBe('none');
     expect(alerts.length).toBe(1);
+  });
+
+  it('I-6: attempt_gid 不明の attempting claim は abandoned にしない (二重課金防止・webhooks 側と対称)', async () => {
+    // createAttempt が ok だが gid 欠落 (stuck_unrecorded) の claim。Shopify 側に attempt が
+    // 生きているか不明なので、14日超過でも abandoned にせず attempting のまま残す。
+    // abandoned にすると unskip 等で引き戻された際に acquireClaim の gid 照会がスキップされ
+    // 新 key で二重発行しうる。
+    const state = freshState({ contracts: new Map([[GID, contract()]]) });
+    state.claims.set(key(GID, '3'), {
+      contract_gid: GID, cycle_key: '3', status: 'attempting', retry_policy: 'none',
+      attempt_no: 1, attempt_gid: null, idempotency_key: 'k', claimed_at: NOW, resolved_at: null,
+    });
+    const cycles: BillingCycleInfo[] = [
+      { cycleIndex: 3, expectedDate: '2026-07-01T15:00:00Z', billed: false, skipped: false }, // 21日超過
+    ];
+    const { api } = createFakeApi({ cycles });
+    const r = await resolveBillableCycle(createFakeDb(state), api, contract(), TODAY, NOW, noAlert);
+    expect(r.abandonedStale).toBe(true); // サイクル自体は放棄される (skip される)
+    // だが attempt_gid 不明の attempting claim は abandoned に化けない
+    expect(state.claims.get(key(GID, '3'))!.status).toBe('attempting');
+  });
+
+  it('I-6: attempt_gid を持つ attempting claim は従来どおり abandoned 化する', async () => {
+    const state = freshState({ contracts: new Map([[GID, contract()]]) });
+    state.claims.set(key(GID, '3'), {
+      contract_gid: GID, cycle_key: '3', status: 'attempting', retry_policy: 'none',
+      attempt_no: 1, attempt_gid: 'gid://shopify/SubscriptionBillingAttempt/9', idempotency_key: 'k',
+      claimed_at: NOW, resolved_at: null,
+    });
+    const cycles: BillingCycleInfo[] = [
+      { cycleIndex: 3, expectedDate: '2026-07-01T15:00:00Z', billed: false, skipped: false },
+    ];
+    const { api } = createFakeApi({ cycles });
+    await resolveBillableCycle(createFakeDb(state), api, contract(), TODAY, NOW, noAlert);
+    expect(state.claims.get(key(GID, '3'))!.status).toBe('abandoned');
   });
 
   it('I-6 境界: ちょうど 14 日は放棄しない (>14 のみ)', async () => {
