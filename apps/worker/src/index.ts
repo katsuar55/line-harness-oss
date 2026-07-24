@@ -83,6 +83,7 @@ import { liffOptIn } from './routes/liff-opt-in.js';
 import { liffOptInPage } from './routes/liff-opt-in-page.js';
 import { liffAccountLink } from './routes/liff-account-link.js';
 import { accountLinkAdmin } from './routes/account-link-admin.js';
+import { subLink } from './routes/sub-link.js';
 import { friendsProfileAdmin } from './routes/friends-profile-admin.js';
 import { integrationsResend } from './routes/integrations-resend.js';
 import { birthdayCollection } from './routes/birthday-collection.js';
@@ -195,6 +196,9 @@ export type Env = {
     ACCOUNT_LINK_METAFIELD_NAMESPACE?: string; // 自己所有 customer metafield の namespace (default 'naturism')
     ACCOUNT_LINK_METAFIELD_KEY?: string;       // 同 key (default 'line_user_id')
     ACCOUNT_LINK_CLEANUP_FORCE?: string;       // 'true' で account_link_codes cleanup の JST 03:10 gating を bypass
+    // サブスク連携獲得キット / magic-link (2026-07-24): 店舗 email の 1タップ連携リンク。
+    //   'true' で有効化 (= 未設定なら生成 API/redeem とも disabled、 本番 dormant)。
+    SUB_LINK_ENABLED?: string;
     WEBHOOK_DELIVERY_CLEANUP_FORCE?: string;   // 'true' で webhook_deliveries cleanup の JST 03:20 gating を bypass
     BROADCAST_ALL_ENABLED?: string;            // 'true' で target_type='all' の LINE broadcast を許可 (既定OFF=blacklist bypass 防止、 ② Codex)
     CONVERSATION_LOG_CLEANUP_FORCE?: string;   // 'true' で messages_log/conversation_logs 2年prune の JST 03:30 gating を bypass
@@ -348,6 +352,7 @@ app.route('/', liffOptIn);
 app.route('/', liffOptInPage);
 app.route('/', liffAccountLink);
 app.route('/', accountLinkAdmin);
+app.route('/', subLink);
 // WI-4 step3: Phase 3 自社課金基盤の Shopify サブスク webhook 受信口。
 // HMAC 検証で代替認証 (authMiddleware は POST 限定で skip)。own 契約 0 件の間は無害。
 app.route('/', ownBillingWebhook);
