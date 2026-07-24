@@ -1176,6 +1176,8 @@ async function initLiff() {
     await loadRank();
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
+    // 定期購入 連携リンク経由チェック（?slk=xxx）
+    checkSubLinkParam();
     // ハッシュベースのディープリンク（リッチメニューから特定タブへ遷移）
     handleDeepLink();
     // タブ/ツアーのフリック操作 (2026-07-04 先進性方針)
@@ -3359,6 +3361,119 @@ function checkReferralParam() {
       }
     }).catch(function() {});
   } catch(e) { /* ignore */ }
+}
+
+// ─── 定期購入 連携リンク (magic-link, ?slk= param) ───
+// 店舗が顧客の email に載せた 1タップ連携リンクで来た人を、 このLINEと定期購入で連携させる。
+// onclick 文字列を一切使わず createElement + addEventListener + textContent で組む
+// (= inline JS の引用符エスケープ事故 [#193] と XSS を構造的に回避)。
+function checkSubLinkParam() {
+  try {
+    var params = new URLSearchParams(window.location.search);
+    var slk = params.get('slk');
+    if (!slk) return;
+    var url = new URL(window.location.href);
+    url.searchParams.delete('slk');
+    window.history.replaceState({}, '', url.toString());
+    subLinkPreview(slk, 0);
+  } catch (e) { /* ignore */ }
+}
+
+function subLinkPreview(token, attempt) {
+  api('/api/liff/sub-link/preview', { token: token }).then(function(res) {
+    if (res && res.success && res.data) { subLinkShowCard(token, res.data); return; }
+    // 友だち追加直後は friend 行が未反映のことがある (follow webhook の反映待ち) → 数回リトライ。
+    // ただし friend 未反映 (middleware の 'Friend not found') のときだけ。 機能 disabled の 404
+    // ('not_found') や他の 404 はリトライしない (= dormant 時の無駄叩き防止)。
+    if (res && res.status === 404 && res.error === 'Friend not found' && attempt < 4) {
+      setTimeout(function() { subLinkPreview(token, attempt + 1); }, 1500);
+    }
+    // それ以外 (disabled/invalid 等) は静かに無視 = 通常のポータル利用を妨げない
+  }).catch(function() {
+    if (attempt < 4) { setTimeout(function() { subLinkPreview(token, attempt + 1); }, 1500); }
+  });
+}
+
+function subLinkNode(tag, cls, text) {
+  var el = document.createElement(tag);
+  if (cls) { el.className = cls; }
+  if (text != null) { el.textContent = text; }
+  return el;
+}
+
+function subLinkOverlay(card) {
+  subLinkCloseModal();
+  var overlay = subLinkNode('div', 'fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4');
+  overlay.id = 'sublink-overlay';
+  overlay.setAttribute('data-no-tab-swipe', '1');
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+}
+
+function subLinkCloseModal() {
+  var overlay = document.getElementById('sublink-overlay');
+  if (overlay && overlay.parentNode) { overlay.parentNode.removeChild(overlay); }
+}
+
+function subLinkStatusInfo(status) {
+  if (status === 'already_self') return { emoji: '✓', title: '連携済みです', desc: 'このLINEはすでにお客様の定期購入と連携されています。' };
+  if (status === 'friend_conflict') return { emoji: '🔗', title: 'このLINEは別のご登録と連携済み', desc: 'このLINEアカウントは、すでに別のご登録と連携されています。お心当たりがない場合はサポートへお問い合わせください。' };
+  if (status === 'taken') return { emoji: '🔒', title: '別のLINEと連携済み', desc: 'このご登録は、すでに別のLINEアカウントと連携されています。お心当たりがない場合はサポートへお問い合わせください。' };
+  if (status === 'expired') return { emoji: '⏰', title: 'リンクの有効期限切れ', desc: 'この連携リンクは有効期限が切れています。お手数ですが、最新のご案内メールのリンクからお試しください。' };
+  return { emoji: 'ℹ️', title: '使用済みのリンク', desc: 'この連携リンクはすでに使用されています。' };
+}
+
+function subLinkShowCard(token, data) {
+  var status = data.status;
+  if (status === 'invalid') return; // 不正/未知パラメータは静かに無視
+  var card = subLinkNode('div', 'bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl text-center');
+  if (status === 'ready') {
+    card.appendChild(subLinkNode('div', 'text-4xl mb-2', '🌿'));
+    card.appendChild(subLinkNode('h3', 'text-lg font-bold text-gray-800 mb-1', '定期購入をLINEに連携'));
+    card.appendChild(subLinkNode('p', 'text-sm font-semibold text-teal-700 mb-2', (data.plan ? String(data.plan) : 'ご登録の定期便')));
+    card.appendChild(subLinkNode('p', 'text-sm text-gray-600 leading-relaxed mb-5', 'このLINEアカウントとお客様の定期購入をつなぎます。次回お届けのご確認やお知らせがLINEで受け取れるようになります。'));
+    var confirm = subLinkNode('button', 'btn-primary w-full py-3 rounded-xl font-bold text-sm', 'このLINEに連携する');
+    confirm.addEventListener('click', function() { subLinkRedeem(token, confirm); });
+    card.appendChild(confirm);
+    var later = subLinkNode('button', 'w-full py-2.5 mt-2 text-sm text-gray-500', 'あとで');
+    later.addEventListener('click', subLinkCloseModal);
+    card.appendChild(later);
+  } else {
+    var info = subLinkStatusInfo(status);
+    card.appendChild(subLinkNode('div', 'text-4xl mb-2', info.emoji));
+    card.appendChild(subLinkNode('h3', 'text-lg font-bold text-gray-800 mb-1', info.title));
+    card.appendChild(subLinkNode('p', 'text-sm text-gray-600 leading-relaxed mb-5', info.desc));
+    var close = subLinkNode('button', 'btn-primary w-full py-3 rounded-xl font-bold text-sm', 'とじる');
+    close.addEventListener('click', subLinkCloseModal);
+    card.appendChild(close);
+  }
+  subLinkOverlay(card);
+}
+
+function subLinkRedeem(token, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '連携しています…'; }
+  api('/api/liff/sub-link/redeem', { token: token }).then(function(res) {
+    if (res && res.success && res.data) {
+      var plan = (res.data.plan ? String(res.data.plan) : 'ご登録の定期便');
+      subLinkResult('🌿', '連携が完了しました', plan + 'のお知らせやお届けのご確認が、これからLINEで受け取れます。');
+      if (typeof loadRank === 'function') { try { loadRank(); } catch (e) {} }
+    } else {
+      var msg = (res && res.message) ? res.message : '連携に失敗しました。時間をおいてお試しください。';
+      subLinkResult('⚠️', 'ご連携できませんでした', msg);
+    }
+  }).catch(function() {
+    subLinkResult('⚠️', 'ご連携できませんでした', '通信エラーが発生しました。時間をおいてお試しください。');
+  });
+}
+
+function subLinkResult(emoji, title, desc) {
+  var card = subLinkNode('div', 'bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl text-center');
+  card.appendChild(subLinkNode('div', 'text-4xl mb-2', emoji));
+  card.appendChild(subLinkNode('h3', 'text-lg font-bold text-gray-800 mb-1', title));
+  card.appendChild(subLinkNode('p', 'text-sm text-gray-600 leading-relaxed mb-5', desc));
+  var close = subLinkNode('button', 'btn-primary w-full py-3 rounded-xl font-bold text-sm', 'とじる');
+  close.addEventListener('click', subLinkCloseModal);
+  subLinkOverlay(card);
 }
 
 // ─── QUIZ Engine (client-side) ───

@@ -54,6 +54,7 @@ export * from './loyalty-rank-snapshots';
 export * from './loyalty-rank-discount';
 export * from './account-link';
 export * from './account-link-stats';
+export * from './sub-link-tokens';
 export * from './coupon-redemption';
 
 /**

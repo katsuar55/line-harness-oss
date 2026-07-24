@@ -56,6 +56,13 @@ name: Admin Ops
 #     CREATE TABLE IF NOT EXISTS + CREATE INDEX のみ = 冪等・additive。
 #     未適用でも本番は無害 (gate OFF・enqueue 失敗は握って alert のみ) だが、
 #     SELF_BILLING_ENABLED を ON にする前に必ず適用しておくこと。
+#   apply-migration-073:
+#     migration 073 (サブスク連携獲得キット sub_link_tokens) を同方式で適用。
+#     CREATE TABLE IF NOT EXISTS + CREATE INDEX のみ = 冪等・additive。
+#   enable-sub-link:
+#     SUB_LINK_ENABLED=true を投入 (= サブスク連携 magic-link の有効化)。
+#     これ単体では何も送信しない (= 生成 API を叩き店舗が email を送って初めて機能する)。
+#     前提: apply-migration-073 適用済み・LIFF_URL secret 設定済み。
 #
 # ⚠️ repo は PUBLIC = workflow ログ/サマリは公開される。secret の値・顧客データ (PII) を
 #    echo/サマリ出力する op を追加してはならない (名前・件数のみ可)。
@@ -84,6 +91,8 @@ on:
           - billing-status
           - apply-migration-071
           - apply-migration-072
+          - apply-migration-073
+          - enable-sub-link
           - release-billing-hold
           - custom-domain-status
           - attach-custom-domain
@@ -470,6 +479,42 @@ jobs:
             --command "SELECT name FROM sqlite_master WHERE type='table' AND name='own_billing_notice_queue'" | tee -a "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT COUNT(*) AS queued_rows FROM own_billing_notice_queue" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply migration 073 (sub-link tokens, idempotent)
+        if: inputs.op == 'apply-migration-073'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute naturism-line-crm --remote \
+            --file ../../packages/db/migrations/073_sub_link_tokens.sql
+          echo '### Verification (sub_link_tokens table)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name='sub_link_tokens'" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Enable sub-link (SUB_LINK_ENABLED=true)
+        if: inputs.op == 'enable-sub-link'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # 前提: migration 073 適用済み (未適用のまま ON にすると generate/redeem が table 不在で 500)。
+          TABLE=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name='sub_link_tokens'")
+          if ! echo "$TABLE" | grep -q 'sub_link_tokens'; then
+            echo '❌ sub_link_tokens が存在しません — apply-migration-073 を先に実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          TMP="$RUNNER_TEMP/secrets.sub-link.json"
+          printf '{"SUB_LINK_ENABLED":"true"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
 
       - name: Rank discount status (counts only, read-only)
         if: inputs.op == 'rank-discount-status'

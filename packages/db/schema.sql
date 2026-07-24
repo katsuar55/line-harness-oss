@@ -2065,6 +2065,18 @@ CREATE TABLE IF NOT EXISTS own_billing_notice_queue (
   UNIQUE (contract_gid, cycle_key, attempt_no, kind)
 );
 
+-- from 073_sub_link_tokens.sql
+CREATE TABLE IF NOT EXISTS sub_link_tokens (
+  token TEXT PRIMARY KEY,                 -- 160bit base64url ランダム (= link の capability)
+  shopify_customer_id TEXT NOT NULL,      -- 連携先 Shopify customer (= redeem で friends に紐付ける対象)
+  batch_id TEXT NOT NULL,                 -- 生成バッチ ID (= キャンペーン単位のグルーピング/集計)
+  expires_at TEXT NOT NULL,               -- ISO8601 (= now + TTL)。 preview/redeem は過去なら拒否
+  consumed_at TEXT,                       -- single-use CAS (NULL → now)。 消費済は再利用不可
+  consumed_by_line_user_id TEXT,          -- 監査: 消費した検証済 LINE userId
+  consumed_friend_id TEXT,                -- 監査: 実際に紐付いた friend 行
+  created_at TEXT NOT NULL
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -2333,3 +2345,7 @@ CREATE INDEX IF NOT EXISTS idx_sub_migration_snapshots_own_gid
   ON sub_migration_snapshots(own_contract_gid);
 CREATE INDEX IF NOT EXISTS idx_own_billing_notice_queue_pending
   ON own_billing_notice_queue(status, queued_at);
+CREATE INDEX IF NOT EXISTS idx_sub_link_tokens_customer
+  ON sub_link_tokens(shopify_customer_id);
+CREATE INDEX IF NOT EXISTS idx_sub_link_tokens_batch
+  ON sub_link_tokens(batch_id, created_at);
