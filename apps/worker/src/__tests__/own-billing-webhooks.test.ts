@@ -800,31 +800,38 @@ describe('contracts/* ライフサイクル', () => {
 });
 
 describe('§6.4 customer_payment_methods/*', () => {
-  it('challenged 契約は発行せず pending_new_card=1 のみ (no-parallel-attempt)', async () => {
-    const state = freshState({ contract: { dunning_state: 'challenged' } });
-    const out = await routeBillingWebhook(makeDeps(state), 'customer_payment_methods/update', { customer_id: '555' });
-    expect(out).toBe('payment_recovery');
-    expect(issueMock).not.toHaveBeenCalled();
-    expect(state.contracts.get(GID)?.pending_new_card).toBe(1);
+  // ⚠️ トリガ② (customer_payment_methods/*) は step3 では記録のみ。
+  // 契約への支払方法差し替え (subscriptionContractUpdate) が未実装のため、
+  // ここで発行すると旧カードで必ず失敗し、二重 card_request と課金漏れを生む。
+  it('失敗中の契約があれば alert のみ (発行もフラグ立てもしない)', async () => {
+    for (const st of ['challenged', 'exhausted', 'await_card', 'retry_wait']) {
+      const state = freshState({ contract: { dunning_state: st, status: st === 'exhausted' ? 'paused' : 'active' } });
+      alertMock.mockClear();
+      issueMock.mockClear();
+      const out = await routeBillingWebhook(makeDeps(state), 'customer_payment_methods/update', {
+        customer_id: '555',
+      });
+      expect(out).toBe('payment_recovery_deferred');
+      expect(issueMock).not.toHaveBeenCalled();
+      expect(state.contracts.get(GID)?.pending_new_card).toBe(0);
+      expect(alertMock).toHaveBeenCalled();
+    }
   });
 
-  it('S5 (exhausted) は activate してから発行する', async () => {
-    const state = freshState({ contract: { dunning_state: 'exhausted', status: 'paused' } });
-    await routeBillingWebhook(makeDeps(state), 'customer_payment_methods/create', { customer_id: '555' });
+  it('トリガ③ (contracts/update で契約の支払方法が実際に変わった) は従来どおり復旧する', async () => {
+    // こちらは Shopify 側で契約に新カードが既に紐付いているので発行してよい
+    const state = freshState({
+      contract: { dunning_state: 'exhausted', status: 'paused', payment_method_gid: 'gid://shopify/CustomerPaymentMethod/1' },
+    });
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_contracts/update', {
+      admin_graphql_api_id: GID,
+      payment_method_id: 'gid://shopify/CustomerPaymentMethod/2',
+    });
+    expect(out).toBe('payment_recovery');
     expect(state.contracts.get(GID)?.status).toBe('active');
     expect(issueMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('kill 中はトリガを失わないようフラグに退避する', async () => {
-    const state = freshState({ contract: { dunning_state: 'await_card' } });
-    const out = await routeBillingWebhook(
-      makeDeps(state, { canIssue: () => false }),
-      'customer_payment_methods/update',
-      { customer_id: '555' },
-    );
-    expect(out).toBe('payment_recovery');
-    expect(issueMock).not.toHaveBeenCalled();
-    expect(state.contracts.get(GID)?.pending_new_card).toBe(1);
+    // 「一時停止しました」を送った相手には再開も伝える
+    expect(enqueuedOfKind('resume_notice')).toBeDefined();
   });
 
   it('失敗中の契約が無ければ何もしない', async () => {
@@ -973,6 +980,80 @@ describe('採点 R1 回帰 — 二重課金・通知欠落の各経路', () => {
       pending_new_card: 0,
     });
     expect(state.claims.get(`${GID}|2`)?.order_id).toBe('gid://shopify/Order/55');
+  });
+});
+
+describe('採点 R2 回帰', () => {
+  it('HIGH: システム起因 S5 は claim が abandoned でも自動 activate + resume_notice (支払済み永久停止の防止)', async () => {
+    // R1 で入れた claimWasClosed 早期 return が §6.1 の自動 activate を飛ばしていた回帰
+    const state = freshState({
+      contract: { status: 'paused', dunning_state: 'exhausted' },
+      claim: { status: 'abandoned' },
+    });
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
+    expect(state.contracts.get(GID)?.status).toBe('active');
+    expect(enqueuedOfKind('resume_notice')).toBeDefined();
+  });
+
+  it('HIGH: 終端契約 (cancelled) への failure は matrix を適用しない (解約済みの復活を防ぐ)', async () => {
+    const state = freshState({ contract: { status: 'cancelled' } });
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', {
+      ...successBody, admin_graphql_api_order_id: null, error_code: 'FRAUD_SUSPECTED',
+    });
+    expect(out).toBe('late_ignored');
+    expect(state.contracts.get(GID)?.status).toBe('cancelled');
+    expect(state.contracts.get(GID)?.dunning_state).toBe('none');
+    expect(enqueueMock).not.toHaveBeenCalled();
+  });
+
+  it('HIGH: customer_payment_methods は発行せず記録のみ (旧カードでの再試行を約束しない)', async () => {
+    const state = freshState({ contract: { dunning_state: 'await_card' } });
+    const out = await routeBillingWebhook(makeDeps(state), 'customer_payment_methods/create', {
+      customer_id: '555',
+    });
+    expect(out).toBe('payment_recovery_deferred');
+    expect(issueMock).not.toHaveBeenCalled();
+    // 果たせない再試行を約束しない = フラグも立てない
+    expect(state.contracts.get(GID)?.pending_new_card).toBe(0);
+    expect(alertMock).toHaveBeenCalled();
+  });
+
+  it('contracts/pause は dunning_state も同時に整合させる (状態表外の組合せを作らない)', async () => {
+    const state = freshState({ contract: { dunning_state: 'retry_wait', next_retry_date: '2026-08-08' } });
+    await routeBillingWebhook(makeDeps(state), 'subscription_contracts/pause', { admin_graphql_api_id: GID });
+    expect(state.contracts.get(GID)).toMatchObject({
+      status: 'paused',
+      dunning_state: 'none', // S6 (顧客都合停止)
+      next_retry_date: null,
+    });
+  });
+
+  it('contracts/pause は exhausted (自作 S5) を保持する', async () => {
+    const state = freshState({ contract: { dunning_state: 'exhausted' } });
+    await routeBillingWebhook(makeDeps(state), 'subscription_contracts/pause', { admin_graphql_api_id: GID });
+    expect(state.contracts.get(GID)?.dunning_state).toBe('exhausted');
+  });
+
+  it('challenged の再配送は送付済み deadline を消さない', async () => {
+    const state = freshState({
+      contract: { dunning_state: 'challenged', dunning_deadline_at: '2026-08-08T11:00:00.000+09:00' },
+    });
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/challenged', {
+      ...successBody, admin_graphql_api_order_id: null,
+      next_action_url: 'https://shop.myshopify.com/3ds/verify',
+    });
+    expect(state.contracts.get(GID)?.dunning_deadline_at).toBe('2026-08-08T11:00:00.000+09:00');
+  });
+
+  it('systemOriginPause は exhausted 限定 (await_card の paused は自動再開しない)', async () => {
+    const state = freshState({
+      contract: { status: 'paused', dunning_state: 'await_card' },
+      claim: { status: 'failed' },
+    });
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
+    expect(state.contracts.get(GID)?.status).toBe('paused');
+    expect(enqueuedOfKind('resume_notice')).toBeUndefined();
+    expect(enqueuedOfKind('delivery_notice')).toBeDefined();
   });
 });
 

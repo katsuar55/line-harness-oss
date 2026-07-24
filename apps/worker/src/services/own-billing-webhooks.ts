@@ -62,6 +62,8 @@ export type WebhookOutcome =
   | 'contract_synced'
   | 'cycle_synced'
   | 'payment_recovery'
+  /** §6.4 トリガ②: 契約への支払方法差し替え (contractUpdate) 未実装のため記録のみ */
+  | 'payment_recovery_deferred'
   | 'gate_denied'
   | 'noop';
 
@@ -304,42 +306,54 @@ export async function applySuccess(
     .bind(nowIso, contract.contract_gid)
     .run();
 
-  // §6.6 abandoned×遅延 success: **claim 側の状態**でも判定する (採点 R1 HIGH)。
-  // 契約が active のままでも、当該サイクルが skip/abandon されていれば「顧客が止めたはずの
-  // 回に課金された」ケースであり、無言で通してはいけない。contract.status だけを見ると
-  // 「skip したのに課金・出荷され、通知も alert も出ない」経路が残る。
+  // ── 遅延 success の分岐 (§6.1 / §6.3 / §6.6)。**判定順序が重要**。
+  //
+  // 採点 R2 HIGH (R1 で私が入れた回帰): claim が abandoned/skipped というだけで早期 return すると、
+  // 「dunning 起因の S5 に落ちた契約が、abandoned claim の遅延 success で支払われた」ケースで
+  // 自動 activate が飛ばされ、**支払済みなのに永久 paused** (課金漏れ) になる。
+  // §6.1 は「attempting/failed/abandoned を問わず」自動 activate を要求している。
+  // よって systemOriginPause を最初に判定する。
   const claimWasClosed = claim.status === 'abandoned' || claim.status === 'skipped';
-  if (claimWasClosed) {
-    await safeEnqueue(deps, contract, claim.cycle_key, claim.attempt_no, 'delivery_notice', {}, nowIso);
-    await deps.alert(
-      `own-billing: 契約 ${contract.contract_gid} の cycle ${claim.cycle_key} は ${claim.status} だったが success を受信 — 課金済みとして計上。返金/出荷可否は人間判断`,
-    );
-    // 顧客が止めたサイクルなので、ここでカデンツを前進させない
-    // (次サイクル scheduleEdit は skip 処理側が既に発行済み)。
-    return 'success_applied';
-  }
-
-  // pause/cancel 中の遅延 success の扱い (§6.1 / §6.3 / §6.6)。
-  // **システム起因 = 自分が matrix で作った S5 (paused/exhausted) に限定する**。
-  // 「paused かつ dunning≠none」まで広げると、契約ライフサイクル webhook の到達順によっては
+  // システム起因 = 自分が matrix で作った S5 (paused/exhausted) に限定する。
+  // 「paused かつ dunning≠none」まで広げると、ライフサイクル webhook の到達順によっては
   // 顧客都合の停止を自動再開してしまう (採点 R1 MEDIUM)。
   const systemOriginPause =
     contract.status === 'paused' && contract.dunning_state === 'exhausted';
-  if (contract.status === 'cancelled' || (contract.status === 'paused' && !systemOriginPause)) {
-    // 顧客都合の停止/解約は維持。届ける旨だけ伝えて人間に判断を委ねる (自動返金しない)
-    await safeEnqueue(deps, contract, claim.cycle_key, claim.attempt_no, 'delivery_notice', {}, nowIso);
-    await deps.alert(
-      `own-billing: 契約 ${contract.contract_gid} (${contract.status}) で cycle ${claim.cycle_key} の遅延 success を受信 — 状態は維持。返金要否は人間判断`,
-    );
-    return 'success_applied';
-  }
+
   if (systemOriginPause) {
     // dunning 起因の停止 = 支払えた以上ここに留めない。自動 activate + 再開通知
     await deps.db
       .prepare(`UPDATE own_sub_contracts SET status = 'active', updated_at = ? WHERE contract_gid = ?`)
       .bind(nowIso, contract.contract_gid)
       .run();
-    await safeEnqueue(deps, contract, claim.cycle_key, claim.attempt_no, 'resume_notice', {}, nowIso);
+    await safeEnqueue(
+      deps, contract, claim.cycle_key, claim.attempt_no, 'resume_notice', { paymentConfirmed: true }, nowIso,
+    );
+    if (claimWasClosed) {
+      // 放棄済みサイクルでの回収。カデンツは既に次アンカーへ進んでいるので触らない
+      await deps.alert(
+        `own-billing: 契約 ${contract.contract_gid} の cycle ${claim.cycle_key} (${claim.status}) で遅延 success — 停止を解除しました。出荷要否は人間判断`,
+      );
+      return 'success_applied';
+    }
+  } else if (contract.status === 'cancelled' || contract.status === 'paused') {
+    // 顧客都合の停止/解約は維持。届ける旨だけ伝えて人間に判断を委ねる (自動返金しない)
+    await safeEnqueue(
+      deps, contract, claim.cycle_key, claim.attempt_no, 'delivery_notice',
+      { contractClosed: true }, nowIso,
+    );
+    await deps.alert(
+      `own-billing: 契約 ${contract.contract_gid} (${contract.status}) で cycle ${claim.cycle_key} の遅延 success を受信 — 状態は維持。返金要否は人間判断`,
+    );
+    return 'success_applied';
+  } else if (claimWasClosed) {
+    // 契約は生きているが当該サイクルは顧客が止めていた (§6.6 abandoned×遅延 success)。
+    // 無言で通さない。カデンツも前進させない (次サイクル scheduleEdit は skip 処理が発行済み)。
+    await safeEnqueue(deps, contract, claim.cycle_key, claim.attempt_no, 'delivery_notice', {}, nowIso);
+    await deps.alert(
+      `own-billing: 契約 ${contract.contract_gid} の cycle ${claim.cycle_key} は ${claim.status} だったが success を受信 — 課金済みとして計上。返金/出荷可否は人間判断`,
+    );
+    return 'success_applied';
   }
 
   // 次サイクルの明示スケジュール (cadence-by-scheduleEdit §4.0)。
@@ -484,6 +498,21 @@ export async function handleAttemptFailure(
   // §4.1 適用条件: matrix を適用するのは attempting claim を failed 化する場合のみ
   if (claim.status !== 'attempting') return 'late_ignored';
 
+  // **終端契約 (S7/S8) には matrix を適用しない** (採点 R2 HIGH)。
+  // §4.1 の「状態を問わず matrix が決める」は S1-S4o の dunning 状態を指し、cancelled/expired は
+  // 出る遷移を持たない終端。ガードが無いと、cancel 後に届いた failure が
+  // status を cancelled → paused / dunning_state='exhausted' に書き換え、
+  // 「システム起因 S5」と同形になる → 後日カード追加で §6.4 が **解約済み契約に課金**する。
+  // (abandonOpenClaims が二重課金防止のためわざと残す attempt_gid=NULL の attempting claim が
+  //  あると、並行性が無くてもこの経路に入る)
+  // claim は既に closed 済み・記録は alert で残すので、状態だけ書き換えない。
+  if (contract.status === 'cancelled' || contract.status === 'expired') {
+    await deps.alert(
+      `own-billing: 終端契約 ${contract.contract_gid} (${contract.status}) に failure webhook が到着 — 記録のみ (matrix は適用しない)`,
+    );
+    return 'late_ignored';
+  }
+
   // failure が「3DS 要求」を伴う場合は failed 化せず challenged レーンへ (§3 claim 表)
   if (payload.nextActionUrl) {
     return applyChallenged(deps, contract, claim, payload.nextActionUrl);
@@ -567,9 +596,9 @@ export async function handleAttemptFailure(
       `UPDATE own_sub_contracts
           SET dunning_state = ?, dunning_attempts = ?, next_retry_date = ?,
               dunning_deadline_at = ?, last_attempt_error = ?,
-              status = CASE WHEN ? = 1 THEN 'paused' ELSE status END,
+              status = CASE WHEN ? = 1 AND status = 'active' THEN 'paused' ELSE status END,
               updated_at = ?
-        WHERE contract_gid = ?`,
+        WHERE contract_gid = ? AND status IN ('active', 'paused')`,
     )
     .bind(
       decision.dunningState,
@@ -904,12 +933,22 @@ export async function handlePaymentMethodWebhook(
     .bind(numericCustomerId)
     .all<OwnContractRow>();
 
-  let handled = 0;
-  for (const contract of rows.results ?? []) {
-    await recoverAfterCardUpdate(deps, contract);
-    handled += 1;
+  // ⚠️ §6.4 トリガ② は step3 では **記録と alert に留める** (採点 R2 HIGH)。
+  //
+  // Shopify では「新しい vault は契約に自動で紐付かない」(§1)。契約側の支払方法を差し替えるには
+  // `subscriptionContractUpdate` (draft flow) が要るが、本 adapter はまだそれを持たない
+  // (step5 の UI = トリガ① が契約更新まで済ませてから §6.4 を起動するのが主経路)。
+  // その状態で発行すると **旧カードで再試行 → 必ず失敗 → 2 通目の card_request** となり、
+  // カードを登録した直後の顧客に「更新してください」を送りつけ、
+  // dunning_attempts のリセットで S5 にも到達せず課金漏れが恒久化する。
+  // よってここでは発行せず、pending_new_card も立てない (果たせない再試行を約束しない)。
+  const gids = (rows.results ?? []).map((c) => c.contract_gid);
+  if (gids.length > 0) {
+    await deps.alert(
+      `own-billing: 顧客 ${numericCustomerId} が支払方法を追加/更新しましたが、契約への差し替え (subscriptionContractUpdate) は未実装のため自動復旧しません。対象契約 ${gids.length} 件 — マイページ/管理画面から契約の支払方法を更新してください`,
+    );
   }
-  return handled > 0 ? 'payment_recovery' : 'noop';
+  return gids.length > 0 ? 'payment_recovery_deferred' : 'noop';
 }
 
 // ─── §6.6 cycles/{skip,unskip} ───

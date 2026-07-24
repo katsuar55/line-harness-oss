@@ -61,8 +61,10 @@ interface State {
   notices: Set<string>;
   customerEmail: string | null;
   friend: { id: string; line_user_id: string } | null;
-  contracts: Map<string, { dunning_state: string; dunning_deadline_at: string | null }>;
+  contracts: Map<string, { status: string; dunning_state: string; dunning_deadline_at: string | null }>;
   subscribers: SubscriberRow[];
+  /** transactional_only を立て直した記録 (consent 変更の可観測性) */
+  subscriberUpdates: Array<{ id: string; transactional_only: number }>;
   /** 配送直前に読まれる claim の状態。'succeeded' なら失敗通知は破棄される */
   claimStatus: string | null;
   seq: number;
@@ -74,8 +76,9 @@ function freshState(): State {
     notices: new Set(),
     customerEmail: 'buyer@example.com',
     friend: { id: 'f1', line_user_id: 'U1' },
-    contracts: new Map([[GID, { dunning_state: 'challenged', dunning_deadline_at: null }]]),
+    contracts: new Map([[GID, { status: 'active', dunning_state: 'challenged', dunning_deadline_at: null }]]),
     subscribers: [],
+    subscriberUpdates: [],
     claimStatus: 'failed',
     seq: 0,
   };
@@ -102,9 +105,13 @@ function createFakeDb(state: State): D1Database {
                   ? { id: state.friend.id, line_user_id: state.friend.line_user_id }
                   : null;
               }
-              // 配送直前の再検証 (支払済みなら失敗通知を破棄する)
+              // 配送直前の再検証 (支払済み / dunning 解除済みなら失敗通知を破棄する)
               if (sql.includes('SELECT status FROM billing_cycle_claims')) {
                 return state.claimStatus === null ? null : { status: state.claimStatus };
+              }
+              if (sql.includes('SELECT status, dunning_state FROM own_sub_contracts')) {
+                const c = state.contracts.get(String(args[0]));
+                return c ? { status: c.status, dunning_state: c.dunning_state } : null;
               }
               if (sql.includes('FROM email_subscribers WHERE email')) {
                 return state.subscribers.find((s) => s.email === args[0]) ?? null;
@@ -163,6 +170,33 @@ function createFakeDb(state: State): D1Database {
                 row.dispatch_attempts += 1;
                 return { meta: { changes: 1 } };
               }
+              // 'sending' 固着行の回収 (reaper)
+              if (sql.includes("SET status = 'queued'") && sql.includes("status = 'sending'")) {
+                let n = 0;
+                for (const r of state.queue) {
+                  if (r.status === 'sending' && r.queued_at <= String(args[0])) {
+                    r.status = 'queued';
+                    n += 1;
+                  }
+                }
+                return { meta: { changes: n } };
+              }
+              // abandoned 行の復活 (enqueue の UNIQUE 衝突時)
+              if (sql.includes("SET status = 'queued'") && sql.includes("status = 'abandoned'")) {
+                const row = state.queue.find(
+                  (r) =>
+                    r.contract_gid === args[2] && r.cycle_key === args[3] &&
+                    r.attempt_no === Number(args[4]) && r.kind === args[5] && r.status === 'abandoned',
+                );
+                if (!row) return { meta: { changes: 0 } };
+                row.status = 'queued';
+                row.queued_at = String(args[0]);
+                row.payload_json = String(args[1]);
+                row.dispatch_attempts = 0;
+                row.last_error = null;
+                row.sent_at = null;
+                return { meta: { changes: 1 } };
+              }
               if (sql.includes("SET status = 'sent'")) {
                 const row = state.queue.find((r) => r.id === args[2]);
                 if (row) {
@@ -180,6 +214,12 @@ function createFakeDb(state: State): D1Database {
                   transactional_only: Number(args[4]),
                   consent_source: args[5] === null ? null : String(args[5]),
                 });
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes('UPDATE email_subscribers SET transactional_only = 1')) {
+                state.subscriberUpdates.push({ id: String(args[1]), transactional_only: 1 });
+                const s = state.subscribers.find((x) => x.id === args[1]);
+                if (s) s.transactional_only = 1;
                 return { meta: { changes: 1 } };
               }
               if (sql.includes('UPDATE email_subscribers')) {
@@ -395,11 +435,15 @@ describe('dispatchQueuedNotices — チャネル規則 (§2)', () => {
     });
     await seed(state);
     dispatchMock.mockResolvedValue({
-      results: [{ channel: 'email', status: 'skipped', reason: 'inactive_transactional' }],
+      results: [{ channel: 'email', status: 'sent', providerMessageId: 'm', subscriberId: 'existing' }],
     });
     await dispatchQueuedNotices(createFakeDb(state), bothDeps, NOW_IN_WINDOW, NOW_ISO);
+    // 新しい行は作らない。**marketing 許諾 (is_active) にも触らない**。
     expect(state.subscribers).toHaveLength(1);
-    expect(state.subscribers[0].transactional_only).toBe(0);
+    expect(state.subscribers[0].is_active).toBe(0);
+    // transactional_only だけは立て直す (R2 MEDIUM: メルマガ解除者に事務連絡が
+    // 黙って届かなくなるのを防ぐ。schema のコメントが明記している意図どおり)
+    expect(state.subscribers[0].transactional_only).toBe(1);
   });
 
   it('LINE も email も到達不能なら即 abandoned (無限リトライを作らない)', async () => {
@@ -560,6 +604,91 @@ describe('採点 R1 回帰 — 通知が消える/届いてはいけない経路
   });
 });
 
+describe('採点 R2 回帰 — 通知が恒久喪失/陳腐化する経路', () => {
+  async function seedOne(state: State, kind = 'fail_notice') {
+    return enqueueNotice(
+      createFakeDb(state),
+      { contractGid: GID, cycleKey: '2', attemptNo: 1, kind: kind as never, shopifyCustomerId: CUSTOMER, payload: {} },
+      NOW_ISO,
+    );
+  }
+
+  it('HIGH: abandoned になった通知は再 enqueue で復活する (UNIQUE が「二度と積めない」に化けない)', async () => {
+    // 凍結が 36h を超えて stale 破棄 → 解除後に再度 enqueue できないと
+    // 「停止したのに通知なし」が恒久化する
+    const state = freshState();
+    await seedOne(state);
+    state.queue[0].status = 'abandoned';
+    state.queue[0].last_error = 'stale';
+    await expect(seedOne(state)).resolves.toBe('revived');
+    expect(state.queue).toHaveLength(1);
+    expect(state.queue[0]).toMatchObject({ status: 'queued', dispatch_attempts: 0, last_error: null });
+  });
+
+  it('sent 済みの通知は復活しない (二重送信を作らない)', async () => {
+    const state = freshState();
+    await seedOne(state);
+    state.queue[0].status = 'sent';
+    await expect(seedOne(state)).resolves.toBe('duplicate');
+    expect(state.queue[0].status).toBe('sent');
+  });
+
+  it("LOW: 'sending' に固着した行は次 tick で 'queued' に戻る (isolate 強制終了からの回収)", async () => {
+    const state = freshState();
+    await seedOne(state);
+    state.queue[0].status = 'sending';
+    state.queue[0].queued_at = '2026-08-05T09:00:00.000+09:00'; // 2 時間前
+    dispatchMock.mockResolvedValue({ results: [{ channel: 'line', status: 'sent' }] });
+    const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(res.sentLine).toBe(1);
+  });
+
+  it('MEDIUM: dunning が解除済みなら card_request を送らない (更新直後の再依頼を防ぐ)', async () => {
+    const state = freshState();
+    state.contracts.set(GID, { status: 'active', dunning_state: 'none', dunning_deadline_at: null });
+    await seedOne(state, 'card_request');
+    const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(res.superseded).toBe(1);
+    expect(dispatchMock).not.toHaveBeenCalled();
+  });
+
+  it('MEDIUM: 解約済み契約への失敗通知も送らない', async () => {
+    const state = freshState();
+    state.contracts.set(GID, { status: 'cancelled', dunning_state: 'exhausted', dunning_deadline_at: null });
+    await seedOne(state, 'fail_notice');
+    const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(res.superseded).toBe(1);
+  });
+
+  it('MEDIUM: メルマガ解除済みの既存 subscriber にも事務連絡が届くよう transactional_only を立てる', async () => {
+    const state = freshState();
+    state.friend = null;
+    state.subscribers.push({
+      id: 'unsub', email: 'buyer@example.com',
+      is_active: 0, transactional_only: 0, consent_source: 'opt_in_form',
+    });
+    await seedOne(state);
+    dispatchMock.mockResolvedValue({
+      results: [{ channel: 'email', status: 'sent', providerMessageId: 'm', subscriberId: 'unsub' }],
+    });
+    await dispatchQueuedNotices(createFakeDb(state), bothDeps, NOW_IN_WINDOW, NOW_ISO);
+    // is_active は 0 のまま (広告配信は解除されたまま) / transactional_only だけ立て直す
+    expect(state.subscriberUpdates).toContainEqual({ id: 'unsub', transactional_only: 1 });
+    expect(state.subscribers[0].is_active).toBe(0);
+  });
+
+  it('resume_notice はカード更新起因では「お支払いを確認できた」と断定しない', () => {
+    expect(buildNoticeText('resume_notice', { paymentConfirmed: true })).toContain('お支払いを確認できた');
+    expect(buildNoticeText('resume_notice', {})).not.toContain('お支払いを確認できた');
+    expect(buildNoticeText('resume_notice', {})).toContain('お支払い方法のご更新');
+  });
+
+  it('delivery_notice は解約済み契約に継続を前提とした案内をしない', () => {
+    expect(buildNoticeText('delivery_notice', { contractClosed: true })).toContain('停止したまま');
+    expect(buildNoticeText('delivery_notice', { contractClosed: true })).not.toContain('次回分から反映');
+  });
+});
+
 describe('challenge_link の 72h 期限 (§5.6 起点 = 送付時刻)', () => {
   it('送信成功して初めて dunning_deadline_at が設定される', async () => {
     const state = freshState();
@@ -589,7 +718,7 @@ describe('challenge_link の 72h 期限 (§5.6 起点 = 送付時刻)', () => {
 
   it('challenged 以外の状態へ遷移していたら期限を書かない', async () => {
     const state = freshState();
-    state.contracts.set(GID, { dunning_state: 'none', dunning_deadline_at: null });
+    state.contracts.set(GID, { status: 'active', dunning_state: 'none', dunning_deadline_at: null });
     await enqueueNotice(
       createFakeDb(state),
       { contractGid: GID, cycleKey: '2', attemptNo: 1, kind: 'challenge_link', shopifyCustomerId: CUSTOMER, payload: {} },

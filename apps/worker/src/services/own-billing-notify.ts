@@ -43,6 +43,9 @@ export const MAX_NOTICE_PER_TICK = 5;
 /** 候補取得の倍率。凍結行がキュー先頭を占有しても後続が配送されるようにする */
 export const NOTICE_CANDIDATE_FACTOR = 4;
 
+/** 'sending' 固着行を 'queued' へ戻すまでの猶予 (isolate 強制終了からの回収) */
+export const SENDING_REAP_AFTER_MS = 30 * 60_000;
+
 /** 配送失敗時の最大再試行回数。超過で abandoned (無限ループ防止) */
 export const MAX_DISPATCH_ATTEMPTS = 3;
 
@@ -63,6 +66,10 @@ export interface NoticePayload {
   nextActionUrl?: string;
   /** 最終失敗かどうか (fail_notice の文面分岐) */
   isFinal?: boolean;
+  /** resume_notice: 実際に入金を確認できた再開か (カード更新起因の再開では false) */
+  paymentConfirmed?: boolean;
+  /** delivery_notice: 契約自体が停止/解約済みか (継続前提の案内をしない) */
+  contractClosed?: boolean;
 }
 
 export interface EnqueueInput {
@@ -74,7 +81,7 @@ export interface EnqueueInput {
   payload: NoticePayload;
 }
 
-export type EnqueueResult = 'enqueued' | 'duplicate' | 'already_sent';
+export type EnqueueResult = 'enqueued' | 'duplicate' | 'already_sent' | 'revived';
 
 /**
  * 通知を積む (冪等)。既に送信済み (§3 マーカーあり) / 既にキュー済みなら積まない。
@@ -115,8 +122,29 @@ export async function enqueueNotice(
     return 'enqueued';
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (/UNIQUE|constraint/i.test(msg)) return 'duplicate';
-    throw e;
+    if (!/UNIQUE|constraint/i.test(msg)) throw e;
+    // 既存行が **abandoned** (凍結中に stale 化した / 到達手段が無かった / 再試行を使い切った)
+    // なら復活させる (採点 R2 HIGH)。復活経路が無いと、UNIQUE 制約が「二度と積めない」に化け、
+    // billing-kill を 36h 超で解除したケースなどで「停止したのに通知なし」が恒久化する。
+    // sent / queued / sending は触らない (= 二重送信は依然として起きない)。
+    const revived = await db
+      .prepare(
+        `UPDATE own_billing_notice_queue
+            SET status = 'queued', queued_at = ?, dispatch_attempts = 0,
+                last_error = NULL, sent_at = NULL, payload_json = ?
+          WHERE contract_gid = ? AND cycle_key = ? AND attempt_no = ? AND kind = ?
+            AND status = 'abandoned'`,
+      )
+      .bind(
+        nowIso,
+        JSON.stringify(input.payload),
+        input.contractGid,
+        input.cycleKey,
+        input.attemptNo,
+        input.kind,
+      )
+      .run();
+    return (revived.meta?.changes ?? 0) === 1 ? 'revived' : 'duplicate';
   }
 }
 
@@ -186,6 +214,26 @@ export async function dispatchQueuedNotices(
     stale: 0,
   };
   if (!result.window) return result;
+
+  // 'sending' に固着した行の回収 (採点 R2 LOW)。CAS 後に isolate が落ちると行は 'sending' の
+  // まま残り、UNIQUE 制約により再 enqueue もできず通知が恒久喪失する。
+  // 十分に古い 'sending' は配送されなかったものとみなして 'queued' に戻す
+  // (retryKey / 冪等マーカーがあるので、実際には送れていた場合も二重配信にならない)。
+  try {
+    await db
+      .prepare(
+        `UPDATE own_billing_notice_queue SET status = 'queued'
+          WHERE status = 'sending' AND queued_at <= ?`,
+      )
+      // queued_at は JST 表記 (jstIso) で保存されているので、閾値も **JST に寄せてから**
+      // 文字列化する。UTC のまま +09:00 を付けると 9 時間ずれて回収されない。
+      .bind(
+        new Date(nowMs + 9 * 3600_000 - SENDING_REAP_AFTER_MS).toISOString().replace('Z', '+09:00'),
+      )
+      .run();
+  } catch {
+    /* reaper の失敗で配送を止めない */
+  }
 
   // 候補は予算より多めに取り、**実際に配送を試みた件数**だけを予算として数える。
   // LIMIT を予算と同じにすると、キュー先頭に凍結対象 (excludelist / quarantine) が並んだ瞬間に
@@ -297,7 +345,16 @@ async function deliverOne(
       )
       .bind(row.contract_gid, row.cycle_key)
       .first<{ status: string }>();
-    if (claim?.status === 'succeeded') {
+    // **契約の現在状態も見る** (採点 R2 MEDIUM): claim が succeeded でなくても、カード更新等で
+    // dunning が解除されていれば案内は陳腐化している。「更新してください」と言われた直後に
+    // 更新した顧客へ、翌配送窓で同じ依頼が届くのを防ぐ。
+    const contract = await db
+      .prepare(`SELECT status, dunning_state FROM own_sub_contracts WHERE contract_gid = ?`)
+      .bind(row.contract_gid)
+      .first<{ status: string; dunning_state: string }>();
+    const dunningCleared = contract !== null && contract.dunning_state === 'none';
+    const contractGone = contract !== null && (contract.status === 'cancelled' || contract.status === 'expired');
+    if (claim?.status === 'succeeded' || dunningCleared || contractGone) {
       await db
         .prepare(
           `UPDATE own_billing_notice_queue
@@ -445,7 +502,21 @@ async function tryDispatch(
 async function ensureTransactionalSubscriber(db: D1Database, email: string): Promise<void> {
   try {
     const existing = await getEmailSubscriberByEmail(db, email);
-    if (existing) return;
+    if (existing) {
+      // 採点 R2 MEDIUM: consentGate は transactional でも
+      // `transactional_only !== 1 && is_active !== 1` を拒否する。つまり **メルマガを解除した
+      // 顧客には課金失敗通知も届かない**。schema のコメント自身が
+      // 「marketing 解除しても transactional_only は 0 にしない (注文確認等は届く)」と
+      // 意図を書いているので、事務連絡の宛先としては transactional_only を立て直す。
+      // **is_active には触らない** = 広告配信は解除されたまま。
+      if (existing.transactional_only !== 1 && existing.is_active !== 1) {
+        await db
+          .prepare(`UPDATE email_subscribers SET transactional_only = 1, updated_at = ? WHERE id = ?`)
+          .bind(new Date().toISOString(), existing.id)
+          .run();
+      }
+      return;
+    }
     await upsertEmailSubscriber(db, {
       email,
       marketingOptIn: false, // → is_active=0 / transactional_only=1
@@ -671,17 +742,25 @@ export function buildNoticeText(kind: NoticeKind, p: NoticePayload): string {
         `再開はいつでも可能です。${MYPAGE_HINT}`
       );
     case 'resume_notice':
-      return (
-        '📦 お支払いを確認できたため、定期便のお届けを再開しました。\n' +
-        `次回のお届け予定は下記からご確認いただけます。\n${MYPAGE_URL}`
-      );
-    case 'delivery_notice':
+      // 入金確認による再開と、カード更新による再開を区別する (後者はまだ支払われていない)。
+      // 断定すると「確認できたと言われたのにまた失敗した」という不利な証拠になる。
+      return p.paymentConfirmed
+        ? '📦 お支払いを確認できたため、定期便のお届けを再開しました。\n' +
+            `次回のお届け予定は下記からご確認いただけます。\n${MYPAGE_URL}`
+        : '📦 お支払い方法のご更新を確認したため、定期便のお届けを再開しました。\n' +
+            `次回のお届け予定は下記からご確認いただけます。\n${MYPAGE_URL}`;
+    case 'delivery_notice': {
       // スキップ済みサイクルへの遅延成功もこの通知で受ける。「頼んでいないのに届く」と
       // 受け取られないよう、行き違いである旨と問い合わせ導線を明示する。
+      // 解約/停止済みの契約には「次回分から反映されます」と言わない (継続を前提にしない)。
+      const nextLine = p.contractClosed
+        ? 'お届けは今回分のみで、定期便は停止したままです。'
+        : 'お休み(スキップ)のお手続きをされていた場合は、次回分から反映されます。';
       return (
         '📦 お手続きの行き違いにより、直前のお支払いが完了していたため今回分をお届けします。\n' +
-        'お休み(スキップ)のお手続きをされていた場合は、次回分から反映されます。\n' +
+        `${nextLine}\n` +
         `ご不明な点・キャンセルのご希望は下記からご連絡ください。\n${MYPAGE_URL}`
       );
+    }
   }
 }
