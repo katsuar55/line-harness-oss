@@ -69,6 +69,8 @@ interface State {
   subscriberUpdates: Array<{ id: string; transactional_only: number }>;
   /** 配送直前に読まれる claim の状態。'succeeded' なら失敗通知は破棄される */
   claimStatus: string | null;
+  /** (contract_gid|cycle_key) 単位の claim 状態 (取り違え検出テスト用) */
+  claimStatusByKey?: Record<string, string>;
   seq: number;
 }
 
@@ -111,8 +113,12 @@ function createFakeDb(state: State): D1Database {
                   ? { id: state.friend.id, line_user_id: state.friend.line_user_id }
                   : null;
               }
-              // 配送直前の再検証 (支払済み / dunning 解除済みなら失敗通知を破棄する)
+              // 配送直前の再検証 (支払済み / dunning 解除済みなら失敗通知を破棄する)。
+              // **(contract_gid, cycle_key) で引く** = bind 順の取り違え回帰を検出できる
+              // (採点 R8 test-integrity)。per-key があればそちらを優先、無ければ従来の単一値。
               if (sql.includes('SELECT status FROM billing_cycle_claims')) {
+                const perKey = state.claimStatusByKey?.[`${args[0]}|${args[1]}`];
+                if (perKey !== undefined) return { status: perKey };
                 return state.claimStatus === null ? null : { status: state.claimStatus };
               }
               if (sql.includes('SELECT status, dunning_state FROM own_sub_contracts')) {
@@ -613,6 +619,31 @@ describe('採点 R1 回帰 — 通知が消える/届いてはいけない経路
     expect(res.stale).toBe(1);
     expect(dispatchMock).not.toHaveBeenCalled();
     expect(state.queue[0]).toMatchObject({ status: 'abandoned', last_error: 'stale' });
+  });
+
+  it('配送直前の再検証は行の (contract, cycle) で claim を引く (取り違えない)', async () => {
+    // 2 契約分の通知を積み、片方の claim だけ succeeded にする
+    const state = freshState();
+    state.friend = null;
+    await enqueueNotice(
+      createFakeDb(state),
+      { contractGid: GID, cycleKey: '2', attemptNo: 1, kind: 'fail_notice', shopifyCustomerId: CUSTOMER, payload: {} },
+      NOW_ISO,
+    );
+    await enqueueNotice(
+      createFakeDb(state),
+      { contractGid: GID, cycleKey: '3', attemptNo: 1, kind: 'fail_notice', shopifyCustomerId: CUSTOMER, payload: {} },
+      NOW_ISO,
+    );
+    state.claimStatusByKey = { [`${GID}|2`]: 'succeeded', [`${GID}|3`]: 'failed' };
+    state.customerEmail = 'buyer@example.com';
+    dispatchMock.mockResolvedValue({
+      results: [{ channel: 'email', status: 'sent', providerMessageId: 'm', subscriberId: 's' }],
+    });
+    const res = await dispatchQueuedNotices(createFakeDb(state), bothDeps, NOW_IN_WINDOW, NOW_ISO);
+    // cycle 2 (succeeded) は破棄、cycle 3 (failed) は送る
+    expect(res.superseded).toBe(1);
+    expect(res.sentEmail).toBe(1);
   });
 
   it('R7 MEDIUM: 日付を含まない終端 fail_notice は古くても破棄せず送る (停止したのに通知なしを防ぐ)', async () => {

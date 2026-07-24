@@ -327,7 +327,9 @@ async function deliverOne(
   let hasDate = false;
   try {
     const p = JSON.parse(row.payload_json) as NoticePayload;
-    hasDate = Boolean(p.scheduledDate || p.nextRetryDate || p.deadlineDate);
+    // isFinal (終端 pause 通知) は文面が日付を使わないので常に stale 対象外
+    // (発生源が誤って scheduledDate を入れても、ここでも二重に弾く)。
+    hasDate = !p.isFinal && Boolean(p.scheduledDate || p.nextRetryDate || p.deadlineDate);
   } catch {
     hasDate = false;
   }

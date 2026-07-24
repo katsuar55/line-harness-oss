@@ -178,7 +178,12 @@ function createFakeDb(state: State): D1Database {
               if (sql.includes('FROM billing_cycle_claims WHERE contract_gid = ? AND cycle_key = ?')) {
                 return clone(state.claims.get(`${args[0]}|${args[1]}`));
               }
-              if (sql.includes('FROM audit_logs')) return null; // best-effort な証跡読み戻し
+              // insertAuditLog は INSERT 後に id で読み戻す (nullだと throw する)。
+              // 最後に INSERT した行を返して auditSystem を最後まで通す (§3 証跡が実際に
+              // 永続することを end-to-end で検証できるように — 採点 R8 test-integrity)。
+              if (sql.includes('FROM audit_logs WHERE id')) {
+                return state.audits[state.audits.length - 1] ?? null;
+              }
               // resume_notice の連番 (冪等マーカーに食われないようにするための送信済み件数)
               if (sql.includes('COUNT(*) AS n FROM own_billing_notices')) {
                 return { n: state.resumeNoticesSent };
@@ -269,9 +274,10 @@ function createFakeDb(state: State): D1Database {
                 }
                 return { meta: { changes: n } };
               }
-              // §3 証跡 (audit_logs への append)。best-effort なので changes は常に 1
-              if (sql.includes('audit_logs')) {
-                state.audits.push({ action: 'audit', targetId: String(args[0] ?? '') });
+              // §3 証跡 (audit_logs への append)。insertAuditLog の bind 順は
+              // (id, lineAccountId, actorType, actorId, actorName, action, targetType, targetId, ...)
+              if (sql.includes('INSERT INTO audit_logs')) {
+                state.audits.push({ action: String(args[5] ?? ''), targetId: String(args[7] ?? '') });
                 return { meta: { changes: 1 } };
               }
               if (sql.includes('INSERT OR IGNORE INTO billing_cycle_claims')) {
@@ -715,6 +721,30 @@ describe('§6.3 pending_new_card レーン (webhook-first ordering)', () => {
     expect(state.contracts.get(GID)?.dunning_state).toBe('await_card');
     expect(state.contracts.get(GID)?.pending_new_card).toBe(1);
     expect(enqueuedOfKind('card_request')).toBeDefined();
+  });
+
+  it('R8 HIGH: 終端 fail_notice の payload に日付を入れない (stale 破棄で最終通知が消えるのを防ぐ)', async () => {
+    // enqueue の実経路を通す (手で payload を組むと本番と乖離してこの穴を見逃す)
+    const state = freshState();
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', {
+      ...successBody, admin_graphql_api_order_id: null, error_code: 'FRAUD_SUSPECTED',
+    });
+    const notice = enqueuedOfKind('fail_notice');
+    expect(notice?.payload).toMatchObject({ isFinal: true });
+    // 日付フィールドが入っていないこと (入ると 36h stale 破棄の対象になる)
+    expect(notice?.payload.scheduledDate).toBeUndefined();
+    expect(notice?.payload.nextRetryDate).toBeUndefined();
+    expect(notice?.payload.deadlineDate).toBeUndefined();
+  });
+
+  it('中間の fail_notice (retry_wait) には日付を入れる', async () => {
+    const state = freshState();
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', {
+      ...successBody, admin_graphql_api_order_id: null, error_code: 'INSUFFICIENT_FUNDS',
+    });
+    const notice = enqueuedOfKind('fail_notice');
+    expect(notice?.payload.isFinal).toBeUndefined();
+    expect(notice?.payload.nextRetryDate).toBe('2026-08-08');
   });
 
   it('E クラス + gate 閉塞でも「リトライ禁止」が守られる', async () => {
@@ -1238,7 +1268,10 @@ describe('採点 R3 回帰', () => {
   it('§3: attempt の成否は audit_logs に append される (証跡の正)', async () => {
     const state = freshState();
     await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
-    expect(state.audits.length).toBeGreaterThan(0);
+    // action と targetId まで検証する (INSERT が発火しただけでなく中身が正しいこと)
+    expect(state.audits).toContainEqual(
+      expect.objectContaining({ action: 'own_billing.attempt_succeeded', targetId: GID }),
+    );
   });
 });
 
@@ -1328,6 +1361,21 @@ describe('採点 R4 回帰 — cycles/skip 系', () => {
       dunning_attempts: 1,
       next_retry_date: '2026-08-08',
     });
+  });
+
+  it('R8 MEDIUM: 非現在サイクルの遅延 success はカデンツ (次サイクル scheduleEdit) を進めない', async () => {
+    const state = freshState({
+      contract: { current_cycle_index: 3, dunning_state: 'retry_wait', next_retry_date: '2026-08-08' },
+      claim: { status: 'succeeded', cycle_key: '2' },
+    });
+    const sched = vi.fn(async () => ({ ok: true }));
+    await routeBillingWebhook(
+      makeDeps(state, { api: fakeApi({ scheduleCycleDate: sched }) }),
+      'subscription_billing_attempts/success',
+      successBody,
+    );
+    // 進行中サイクル (3) の予定日を ~30 日先へ動かして督促を止めない
+    expect(sched).not.toHaveBeenCalled();
   });
 
   it('MEDIUM: S5 (exhausted) からの activate では過去サイクルを skip しない (I-5 の 14日回収)', async () => {

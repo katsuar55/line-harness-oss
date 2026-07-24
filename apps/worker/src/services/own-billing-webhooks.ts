@@ -421,8 +421,12 @@ export async function applySuccess(
   }
 
   // 次サイクルの明示スケジュール (cadence-by-scheduleEdit §4.0)。
-  // Shopify を mutate するため canIssue 通過が前提 (kill 中は repair フラグに退避)。
-  if (deps.api && deps.canIssue(contract.contract_gid)) {
+  // **現在サイクルの success のときだけ**カデンツを進める (採点 R8 MEDIUM)。
+  // 非現在/閉じたサイクルの遅延・再配送 success でここに落ちると、resync が見つける
+  // oldest unresolved (= 進行中の別サイクル) の予定日を ~30 日先へ動かし、
+  // そのサイクルの督促リトライを約 1 ヶ月止めてしまう。I-4 の dunning リセットと同じ
+  // isCurrentCycle 判定で囲う。
+  if (isCurrentCycle && deps.api && deps.canIssue(contract.contract_gid)) {
     try {
       const { cycles } = await resyncContractCycle(
         deps.db,
@@ -443,7 +447,7 @@ export async function applySuccess(
     } catch (e: unknown) {
       await markRepair(deps, contract.contract_gid, nowIso, e instanceof Error ? e.message : String(e));
     }
-  } else {
+  } else if (isCurrentCycle) {
     // 発行系が止まっている間にカデンツを進めないため、修復フラグで日次ジョブに委ねる
     await markRepair(deps, contract.contract_gid, nowIso, 'gate_closed_or_no_api');
   }
@@ -696,12 +700,19 @@ export async function handleAttemptFailure(
 
   if (decision.notice) {
     const noticePayload: NoticePayload = {};
-    if (contract.current_cycle_scheduled_date) {
-      noticePayload.scheduledDate = contract.current_cycle_scheduled_date;
+    if (decision.pauseContract) {
+      // isFinal (「一時停止しました」) の文面は日付を一切使わない。
+      // ここで scheduledDate を入れると、通知が日付ありと判定されて 36h stale 破棄の
+      // 対象になり、exhausted 契約には再 enqueue 主体が居ないため最終通知が恒久喪失する
+      // (採点 R8 HIGH: 死んだ日付を payload に入れないのが発生源側の正しい対処)。
+      noticePayload.isFinal = true;
+    } else {
+      if (contract.current_cycle_scheduled_date) {
+        noticePayload.scheduledDate = contract.current_cycle_scheduled_date;
+      }
+      if (decision.nextRetryDate) noticePayload.nextRetryDate = decision.nextRetryDate;
+      if (decision.deadlineAt) noticePayload.deadlineDate = decision.deadlineAt.slice(0, 10);
     }
-    if (decision.nextRetryDate) noticePayload.nextRetryDate = decision.nextRetryDate;
-    if (decision.deadlineAt) noticePayload.deadlineDate = decision.deadlineAt.slice(0, 10);
-    if (decision.pauseContract) noticePayload.isFinal = true;
     await safeEnqueue(
       deps, contract, claim.cycle_key, claim.attempt_no, decision.notice, noticePayload, nowIso,
     );
