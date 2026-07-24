@@ -91,6 +91,10 @@ interface State {
   contracts: Map<string, ContractRow>;
   claims: Map<string, ClaimRec>;
   snapshots: Array<{ own_contract_gid: string; phase: string }>;
+  /** 送信済み resume_notice 件数 (連番採番のソース) */
+  resumeNoticesSent: number;
+  /** audit_logs への append 記録 (§3 の証跡) */
+  audits: Array<{ action: string; targetId: string }>;
 }
 
 function contract(over: Partial<ContractRow> = {}): ContractRow {
@@ -137,7 +141,7 @@ function freshState(over: { contract?: Partial<ContractRow>; claim?: Partial<Cla
     const cl = claim(over.claim ?? {});
     claims.set(`${cl.contract_gid}|${cl.cycle_key}`, cl);
   }
-  return { contracts: new Map([[GID, c]]), claims, snapshots: [] };
+  return { contracts: new Map([[GID, c]]), claims, snapshots: [], resumeNoticesSent: 0, audits: [] };
 }
 
 function createFakeDb(state: State): D1Database {
@@ -173,6 +177,16 @@ function createFakeDb(state: State): D1Database {
               }
               if (sql.includes('FROM billing_cycle_claims WHERE contract_gid = ? AND cycle_key = ?')) {
                 return clone(state.claims.get(`${args[0]}|${args[1]}`));
+              }
+              if (sql.includes('FROM audit_logs')) return null; // best-effort な証跡読み戻し
+              // resume_notice の連番 (冪等マーカーに食われないようにするための送信済み件数)
+              if (sql.includes('COUNT(*) AS n FROM own_billing_notices')) {
+                return { n: state.resumeNoticesSent };
+              }
+              // §6.7 再開時の I-5: 過去サイクルの claim 状態
+              if (sql.includes('SELECT status, attempt_gid FROM billing_cycle_claims')) {
+                const c = state.claims.get(`${args[0]}|${args[1]}`);
+                return c ? { status: c.status, attempt_gid: c.attempt_gid } : null;
               }
               // abandonOpenClaims の「未検証 in-flight が残ったか」チェック
               if (sql.includes('COUNT(*) AS n FROM billing_cycle_claims')) {
@@ -254,6 +268,11 @@ function createFakeDb(state: State): D1Database {
                   n += 1;
                 }
                 return { meta: { changes: n } };
+              }
+              // §3 証跡 (audit_logs への append)。best-effort なので changes は常に 1
+              if (sql.includes('audit_logs')) {
+                state.audits.push({ action: 'audit', targetId: String(args[0] ?? '') });
+                return { meta: { changes: 1 } };
               }
               if (sql.includes('INSERT OR IGNORE INTO billing_cycle_claims')) {
                 const k = `${args[0]}|${args[1]}`;
@@ -1054,6 +1073,79 @@ describe('採点 R2 回帰', () => {
     expect(state.contracts.get(GID)?.status).toBe('paused');
     expect(enqueuedOfKind('resume_notice')).toBeUndefined();
     expect(enqueuedOfKind('delivery_notice')).toBeDefined();
+  });
+});
+
+describe('採点 R3 回帰', () => {
+  const failBody3 = (code: string) => ({
+    ...successBody, admin_graphql_api_order_id: null, error_code: code,
+  });
+
+  it('HIGH: S6 (顧客都合 paused) への failure は matrix を適用しない (S5 ロンダリングの防止)', async () => {
+    const state = freshState({ contract: { status: 'paused', dunning_state: 'none' } });
+    const out = await routeBillingWebhook(
+      makeDeps(state), 'subscription_billing_attempts/failure', failBody3('FRAUD_SUSPECTED'),
+    );
+    expect(out).toBe('late_ignored');
+    // S5 (paused/exhausted) に化けない = 後日のカード更新で無断再開・課金されない
+    expect(state.contracts.get(GID)).toMatchObject({ status: 'paused', dunning_state: 'none' });
+    expect(enqueueMock).not.toHaveBeenCalled();
+    // claim は失敗として記録される (証跡は残す)
+    expect(state.claims.get(`${GID}|2`)?.status).toBe('failed');
+  });
+
+  it('HIGH: paused 契約への challenged もレーンを起動しない', async () => {
+    const state = freshState({ contract: { status: 'paused', dunning_state: 'none' } });
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/challenged', {
+      ...successBody, admin_graphql_api_order_id: null,
+      next_action_url: 'https://shop.myshopify.com/3ds/verify',
+    });
+    expect(out).toBe('late_ignored');
+    expect(state.contracts.get(GID)?.dunning_state).toBe('none');
+  });
+
+  it('HIGH: 再開 (activate) は過去サイクルを skip してから次アンカーへ (休止期間分を請求しない = I-5)', async () => {
+    const state = freshState({ contract: { status: 'paused', dunning_state: 'none' }, claim: null });
+    const skip = vi.fn(async () => ({ ok: true }));
+    const api = fakeApi({
+      setCycleSkip: skip,
+      listCycles: async () => [
+        // 休止中に過ぎた過去サイクル
+        { cycleIndex: 2, expectedDate: '2026-08-01T03:00:00Z', billed: false, skipped: false },
+        { cycleIndex: 3, expectedDate: '2026-09-04T03:00:00Z', billed: false, skipped: false },
+      ],
+    });
+    await routeBillingWebhook(makeDeps(state, { api }), 'subscription_contracts/activate', {
+      admin_graphql_api_id: GID,
+    });
+    expect(state.contracts.get(GID)?.status).toBe('active');
+    expect(skip).toHaveBeenCalledWith(GID, 2, true);
+    expect(state.claims.get(`${GID}|2`)?.status).toBe('skipped');
+  });
+
+  it('再開時に未決着の attempt が残っていたら skip せず alert する (no-parallel-attempt)', async () => {
+    const state = freshState({
+      contract: { status: 'paused', dunning_state: 'none' },
+      claim: { status: 'attempting', cycle_key: '2', attempt_gid: ATTEMPT },
+    });
+    const skip = vi.fn(async () => ({ ok: true }));
+    const api = fakeApi({
+      setCycleSkip: skip,
+      listCycles: async () => [
+        { cycleIndex: 2, expectedDate: '2026-08-01T03:00:00Z', billed: false, skipped: false },
+      ],
+    });
+    await routeBillingWebhook(makeDeps(state, { api }), 'subscription_contracts/activate', {
+      admin_graphql_api_id: GID,
+    });
+    expect(skip).not.toHaveBeenCalled();
+    expect(alertMock).toHaveBeenCalled();
+  });
+
+  it('§3: attempt の成否は audit_logs に append される (証跡の正)', async () => {
+    const state = freshState();
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
+    expect(state.audits.length).toBeGreaterThan(0);
   });
 });
 

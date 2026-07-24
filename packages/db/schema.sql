@@ -2057,6 +2057,10 @@ CREATE TABLE IF NOT EXISTS own_billing_notice_queue (
   dispatch_attempts INTEGER NOT NULL DEFAULT 0,
   last_error        TEXT,            -- 分類済みの短い理由のみ (PII なし)
   queued_at         TEXT NOT NULL,
+  -- 'sending' へ CAS した時刻。**reaper はこの列で判定する**。
+  -- queued_at で判定すると、配送窓 (JST10-20) と enqueue 時刻の差により拾った瞬間から
+  -- reap 対象になり、排他が実質無効化されて同じ通知を 2 通送りうる。
+  sending_at        TEXT,
   sent_at           TEXT,
   UNIQUE (contract_gid, cycle_key, attempt_no, kind)
 );

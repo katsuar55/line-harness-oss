@@ -45,6 +45,7 @@ interface QueueRow {
   dispatch_attempts: number;
   last_error: string | null;
   queued_at: string;
+  sending_at: string | null;
   sent_at: string | null;
 }
 
@@ -159,22 +160,25 @@ function createFakeDb(state: State): D1Database {
                   dispatch_attempts: 0,
                   last_error: null,
                   queued_at: String(args[6]),
+                  sending_at: null,
                   sent_at: null,
                 });
                 return { meta: { changes: 1 } };
               }
               if (sql.includes("SET status = 'sending'")) {
-                const row = state.queue.find((r) => r.id === args[0] && r.status === 'queued');
+                // bind は (nowIso, id) の順
+                const row = state.queue.find((r) => r.id === args[1] && r.status === 'queued');
                 if (!row) return { meta: { changes: 0 } };
                 row.status = 'sending';
+                row.sending_at = String(args[0]);
                 row.dispatch_attempts += 1;
                 return { meta: { changes: 1 } };
               }
-              // 'sending' 固着行の回収 (reaper)
+              // 'sending' 固着行の回収 (reaper) — **sending_at** で判定する
               if (sql.includes("SET status = 'queued'") && sql.includes("status = 'sending'")) {
                 let n = 0;
                 for (const r of state.queue) {
-                  if (r.status === 'sending' && r.queued_at <= String(args[0])) {
+                  if (r.status === 'sending' && r.sending_at !== null && r.sending_at <= String(args[0])) {
                     r.status = 'queued';
                     n += 1;
                   }
@@ -197,7 +201,8 @@ function createFakeDb(state: State): D1Database {
                 row.sent_at = null;
                 return { meta: { changes: 1 } };
               }
-              if (sql.includes("SET status = 'sent'")) {
+              // markSent は channel を書く (bind: channel, nowIso, id)
+              if (sql.includes("SET status = 'sent'") && sql.includes('channel = ?')) {
                 const row = state.queue.find((r) => r.id === args[2]);
                 if (row) {
                   row.status = 'sent';
@@ -205,6 +210,15 @@ function createFakeDb(state: State): D1Database {
                   row.sent_at = String(args[1]);
                 }
                 return { meta: { changes: 1 } };
+              }
+              // 送信済みマーカー検出時の 'sent' 落とし込み (bind: nowIso, id)
+              if (sql.includes("SET status = 'sent'")) {
+                const row = state.queue.find((r) => r.id === args[1] && r.status === 'sending');
+                if (row) {
+                  row.status = 'sent';
+                  row.sent_at = String(args[0]);
+                }
+                return { meta: { changes: row ? 1 : 0 } };
               }
               if (sql.includes('INSERT INTO email_subscribers')) {
                 state.subscribers.push({
@@ -637,10 +651,33 @@ describe('採点 R2 回帰 — 通知が恒久喪失/陳腐化する経路', () 
     const state = freshState();
     await seedOne(state);
     state.queue[0].status = 'sending';
-    state.queue[0].queued_at = '2026-08-05T09:00:00.000+09:00'; // 2 時間前
+    // reaper は **sending_at** (CAS 時刻) で判定する。queued_at で判定すると
+    // 配送中の行を別 tick が即座に奪って二重送信になる (R3 MEDIUM)。
+    state.queue[0].sending_at = '2026-08-05T09:00:00.000+09:00'; // 2 時間前
     dispatchMock.mockResolvedValue({ results: [{ channel: 'line', status: 'sent' }] });
     const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
     expect(res.sentLine).toBe(1);
+  });
+
+  it('MEDIUM: 配送中 (sending) の行は reaper に奪われない (二重送信の防止)', async () => {
+    const state = freshState();
+    await seedOne(state);
+    state.queue[0].status = 'sending';
+    state.queue[0].sending_at = NOW_ISO; // ついさっき CAS した = 配送中
+    const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(res.picked).toBe(0);
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(state.queue[0].status).toBe('sending');
+  });
+
+  it('MEDIUM: 送信済みマーカーがあれば配送直前でも送らない (reaper 競合の二重防壁)', async () => {
+    const state = freshState();
+    await seedOne(state);
+    state.notices.add(`${GID}|2|1|fail_notice`); // 実際には送信済み
+    const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(res.superseded).toBe(1);
+    expect(state.queue[0].status).toBe('sent');
   });
 
   it('MEDIUM: dunning が解除済みなら card_request を送らない (更新直後の再依頼を防ぐ)', async () => {

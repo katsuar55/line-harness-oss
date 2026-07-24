@@ -27,6 +27,7 @@ import {
 import type { ShopifyBillingApiExt } from './own-billing-shopify-adapter.js';
 import { decideDunning, normalizeErrorCode, type NoticeKind } from './own-billing-dunning.js';
 import { enqueueNotice, type NoticePayload } from './own-billing-notify.js';
+import { auditSystem } from './audit-logger.js';
 
 // challenged の 72h 期限は「リンク送付時刻」起点のため、設定するのは通知キューの送信成功時
 // (own-billing-notify.ts の markSent)。本ファイルでは deadline を書かない。
@@ -228,6 +229,38 @@ async function abandonOpenClaims(
   }
 }
 
+/**
+ * §3: 「attempt 単位の証跡 (gid/エラー/時刻) は audit_logs に append 記録
+ * (claim 行は最新のみ保持。チャージバック紛争・突合深掘りの一次証跡は audit が正)」。
+ * PII は入れない (契約 gid / cycle / attempt gid / error code のみ)。
+ * 失敗しても課金処理を巻き戻さない (best-effort)。
+ */
+async function appendBillingAudit(
+  deps: BillingWebhookDeps,
+  contract: OwnContractRow,
+  claim: ClaimRow,
+  action: string,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  try {
+    await auditSystem(deps.db, {
+      action,
+      actorType: 'webhook',
+      targetType: 'subscription_contract',
+      targetId: contract.contract_gid,
+      result: 'success',
+      metadata: {
+        cycleKey: claim.cycle_key,
+        attemptNo: claim.attempt_no,
+        attemptGid: claim.attempt_gid,
+        ...extra,
+      },
+    });
+  } catch {
+    /* 証跡の書き込み失敗で課金処理を落とさない */
+  }
+}
+
 async function safeEnqueue(
   deps: BillingWebhookDeps,
   contract: OwnContractRow,
@@ -294,6 +327,12 @@ export async function applySuccess(
     .bind(orderGid, nowIso, contract.contract_gid, claim.cycle_key)
     .run();
 
+  // §3: attempt 単位の証跡は audit_logs が正 (claim 行は最新のみ保持)。
+  // チャージバック紛争・突合深掘りの一次証跡になるため append する。
+  await appendBillingAudit(deps, contract, claim, 'own_billing.attempt_succeeded', {
+    orderGid: orderGid ?? null,
+  });
+
   // I-4: dunning 全リセット (pending_new_card も消費 — 支払えたのでカード差替待ちは終了)
   await deps.db
     .prepare(
@@ -336,7 +375,10 @@ export async function applySuccess(
       );
       return 'success_applied';
     }
-  } else if (contract.status === 'cancelled' || contract.status === 'paused') {
+  } else if (contract.status !== 'active') {
+    // cancelled / paused / failed / expired のいずれでも「状態は維持して人間判断」。
+    // status を列挙すると failed/expired が全ブランチから漏れ、支払済みなのに
+    // 通知も alert も出ない穴になる (採点 R3 MEDIUM) ので !== 'active' で受ける。
     // 顧客都合の停止/解約は維持。届ける旨だけ伝えて人間に判断を委ねる (自動返金しない)
     await safeEnqueue(
       deps, contract, claim.cycle_key, claim.attempt_no, 'delivery_notice',
@@ -498,18 +540,29 @@ export async function handleAttemptFailure(
   // §4.1 適用条件: matrix を適用するのは attempting claim を failed 化する場合のみ
   if (claim.status !== 'attempting') return 'late_ignored';
 
-  // **終端契約 (S7/S8) には matrix を適用しない** (採点 R2 HIGH)。
-  // §4.1 の「状態を問わず matrix が決める」は S1-S4o の dunning 状態を指し、cancelled/expired は
-  // 出る遷移を持たない終端。ガードが無いと、cancel 後に届いた failure が
-  // status を cancelled → paused / dunning_state='exhausted' に書き換え、
-  // 「システム起因 S5」と同形になる → 後日カード追加で §6.4 が **解約済み契約に課金**する。
-  // (abandonOpenClaims が二重課金防止のためわざと残す attempt_gid=NULL の attempting claim が
-  //  あると、並行性が無くてもこの経路に入る)
-  // claim は既に closed 済み・記録は alert で残すので、状態だけ書き換えない。
-  if (contract.status === 'cancelled' || contract.status === 'expired') {
+  // **matrix を適用するのは status='active' の契約だけ** (採点 R2/R3 HIGH — 3 グレーダーが独立検出)。
+  //
+  // §4.1 で matrix が遷移先を決めるのは S1-S4o (いずれも active) であり、S5/S6/S7/S8 は
+  // 「matrix 再分類」を出遷移に持たない。active 以外に適用すると:
+  //   - cancelled/expired → paused/exhausted に化け、後日 §6.4 が **解約済み契約に課金**
+  //   - **paused/none (S6 = 顧客都合の停止) → paused/exhausted (S5) に化ける**。
+  //     顧客は自分で止めたのに「お支払いを確認できず一時停止しました」を受け取り、
+  //     さらにカード更新で §6.4 が無断再開・課金する (S6→S5 ロンダリング)
+  // この経路は並行性が無くても起きる: abandonOpenClaims は二重課金防止のため
+  // attempt_gid=NULL の attempting claim をわざと残すので、pause/cancel 後に届いた
+  // failure が attempting ガード (上) を通過してしまう。
+  // claim の失敗は下の CAS で記録し、契約状態だけ触らない。
+  if (contract.status !== 'active') {
     await deps.alert(
-      `own-billing: 終端契約 ${contract.contract_gid} (${contract.status}) に failure webhook が到着 — 記録のみ (matrix は適用しない)`,
+      `own-billing: 非 active 契約 ${contract.contract_gid} (${contract.status}) に failure webhook が到着 — claim のみ記録し matrix は適用しません`,
     );
+    await deps.db
+      .prepare(
+        `UPDATE billing_cycle_claims SET status = 'failed', resolved_at = ?
+          WHERE contract_gid = ? AND cycle_key = ? AND status = 'attempting'`,
+      )
+      .bind(jstIso(deps.nowMs), contract.contract_gid, claim.cycle_key)
+      .run();
     return 'late_ignored';
   }
 
@@ -596,9 +649,9 @@ export async function handleAttemptFailure(
       `UPDATE own_sub_contracts
           SET dunning_state = ?, dunning_attempts = ?, next_retry_date = ?,
               dunning_deadline_at = ?, last_attempt_error = ?,
-              status = CASE WHEN ? = 1 AND status = 'active' THEN 'paused' ELSE status END,
+              status = CASE WHEN ? = 1 THEN 'paused' ELSE status END,
               updated_at = ?
-        WHERE contract_gid = ? AND status IN ('active', 'paused')`,
+        WHERE contract_gid = ? AND status = 'active'`,
     )
     .bind(
       decision.dunningState,
@@ -624,6 +677,11 @@ export async function handleAttemptFailure(
       deps, contract, claim.cycle_key, claim.attempt_no, decision.notice, noticePayload, nowIso,
     );
   }
+  await appendBillingAudit(deps, contract, claim, 'own_billing.attempt_failed', {
+    errorCode: payload.errorCode,
+    dunningClass: decision.klass,
+    dunningState: decision.dunningState,
+  });
   if (decision.alertOps) {
     await deps.alert(
       `own-billing: 契約 ${contract.contract_gid} cycle ${claim.cycle_key} が ${decision.klass} クラス失敗 (${payload.errorCode ?? '不明 code'}) — 自動処理なし。人間の確認が必要`,
@@ -686,6 +744,9 @@ export async function applyChallenged(
   // ⚠️ deadline を NULL に戻すのは **challenged へ遷移する時だけ** (採点 R1 HIGH)。
   // 既に challenged で期限も設定済みの契約に webhook が再配送されると、無条件 NULL は
   // 送付済みリンクの期限を消し、§5.2 の失効 sweep が永久に発火せず課金が止まる。
+  // §6.3 のレーンは **active 契約でのみ**起動する (採点 R3 MEDIUM)。
+  // status 述語が無いと cancelled/challenged・paused/challenged という §4.1 表外の組合せができ、
+  // isFailingState が 'challenged' を含むため §6.4 の発行前段が揃ってしまう。
   await deps.db
     .prepare(
       `UPDATE own_sub_contracts
@@ -693,7 +754,7 @@ export async function applyChallenged(
               dunning_deadline_at = CASE WHEN dunning_state = 'challenged'
                                          THEN dunning_deadline_at ELSE NULL END,
               updated_at = ?
-        WHERE contract_gid = ?`,
+        WHERE contract_gid = ? AND status = 'active'`,
     )
     .bind(nowIso, contract.contract_gid)
     .run();
@@ -725,6 +786,8 @@ export async function handleAttemptChallenged(
   // §6.3: レーン起動は attempting claim を持つ場合のみ。resolved/abandoned への challenged は
   // 記録のみ (状態表 §4.1 に無い paused×challenged 等の組合せを作らない)
   if (claim.status !== 'attempting') return 'late_ignored';
+  // 契約が active でなければ dunning レーンに入れない (failure 側と同じ I-1 の考え方)
+  if (contract.status !== 'active') return 'late_ignored';
   return applyChallenged(deps, contract, claim, payload.nextActionUrl);
 }
 
@@ -787,6 +850,14 @@ export async function handleContractLifecycle(
     if (['paused', 'cancelled', 'expired', 'failed'].includes(target)) {
       await abandonOpenClaims(deps, contractGid, nowIso);
     }
+    // §6.7 / I-5: **S6 → S1 の再開では休止期間分を請求しない** (採点 R3 HIGH)。
+    // status だけ active に戻すと、resolveBillableCycle が休止中に過ぎた過去サイクルを
+    // 返し (I-6 の 14 日以内なら) そのまま課金してしまう。
+    // I-5 の規定どおり、過去の未解決サイクルを skip + claim skipped 化してから
+    // 次アンカーを明示スケジュールする。
+    if (promoting && !inWindow) {
+      await skipPastCyclesOnResume(deps, contract, nowIso);
+    }
   }
 
   // update: §6.4 防御 fallback — 失敗中契約で支払方法が変わっていれば復旧手順を評価
@@ -823,6 +894,79 @@ export async function handleContractLifecycle(
     }
   }
   return 'contract_synced';
+}
+
+/**
+ * §6.7 再開時の I-5 処理: 過去の未解決サイクルを skip + claim skipped 化し、
+ * 次アンカー日を明示スケジュールする (= 休止期間分は請求しない、の一意化)。
+ *
+ * 前提条件 (§6.7): 当該 claim の旧 attempt が非 terminal (pending/challenged) なら
+ * 再開全体を保留すべきだが、その待機 vehicle は step4 (§5.4 の能動照会) の管轄。
+ * step3 では **attempt_gid を持つ attempting claim があれば skip せず alert に留める**
+ * (no-parallel-attempt を破らない方向へ倒す)。
+ */
+async function skipPastCyclesOnResume(
+  deps: BillingWebhookDeps,
+  contract: OwnContractRow,
+  nowIso: string,
+): Promise<void> {
+  if (!deps.api || !deps.canIssue(contract.contract_gid)) {
+    // 発行系が止まっている間は Shopify を mutate しない。日次 repair に委ねる
+    await markRepair(deps, contract.contract_gid, nowIso);
+    return;
+  }
+  const todayJst = jstDate(deps.nowMs);
+  try {
+    const cycles = await deps.api.listCycles(contract.contract_gid);
+    const past = cycles
+      .filter((cy) => !cy.billed && !cy.skipped && toJstDateOnly(cy.expectedDate) <= todayJst)
+      .sort((a, b) => a.cycleIndex - b.cycleIndex);
+    for (const cy of past) {
+      const cycleKey = String(cy.cycleIndex);
+      const existing = await deps.db
+        .prepare(`SELECT status, attempt_gid FROM billing_cycle_claims WHERE contract_gid = ? AND cycle_key = ?`)
+        .bind(contract.contract_gid, cycleKey)
+        .first<{ status: string; attempt_gid: string | null }>();
+      if (existing?.status === 'attempting') {
+        await deps.alert(
+          `own-billing: 契約 ${contract.contract_gid} の再開で cycle ${cycleKey} に未決着の attempt が残っています — skip せず決着待ち (§6.7)`,
+        );
+        continue;
+      }
+      const res = await deps.api.setCycleSkip(contract.contract_gid, cy.cycleIndex, true);
+      if (!res.ok) {
+        await markRepair(deps, contract.contract_gid, nowIso, res.error);
+        continue;
+      }
+      await deps.db
+        .prepare(
+          `INSERT OR IGNORE INTO billing_cycle_claims
+             (contract_gid, cycle_key, status, retry_policy, attempt_no, idempotency_key, claimed_at, resolved_at)
+           VALUES (?, ?, 'skipped', 'none', 0, ?, ?, ?)`,
+        )
+        .bind(contract.contract_gid, cycleKey, `resume-skip:${contract.contract_gid}:${cycleKey}`, nowIso, nowIso)
+        .run();
+      await deps.db
+        .prepare(
+          `UPDATE billing_cycle_claims SET status = 'skipped', resolved_at = ?
+            WHERE contract_gid = ? AND cycle_key = ? AND status IN ('abandoned', 'failed', 'failed_no_attempt')`,
+        )
+        .bind(nowIso, contract.contract_gid, cycleKey)
+        .run();
+    }
+    // 次アンカー日を明示スケジュール (skip 後にカデンツが作成時刻起点の既定へ落ちる穴の封鎖)
+    const next = cycles
+      .filter((cy) => !cy.billed && !cy.skipped && toJstDateOnly(cy.expectedDate) > todayJst)
+      .sort((a, b) => a.cycleIndex - b.cycleIndex)[0];
+    const target = nextAnchorAfter(contract, todayJst);
+    if (next && toJstDateOnly(next.expectedDate) !== target) {
+      const res = await deps.api.scheduleCycleDate(contract.contract_gid, next.cycleIndex, target);
+      if (!res.ok) await markRepair(deps, contract.contract_gid, nowIso, res.error);
+    }
+    await resyncContractCycle(deps.db, deps.api, contract.contract_gid, nowIso);
+  } catch (e: unknown) {
+    await markRepair(deps, contract.contract_gid, nowIso, e instanceof Error ? e.message : String(e));
+  }
 }
 
 function isFailingState(contract: OwnContractRow): boolean {
@@ -896,8 +1040,18 @@ export async function recoverAfterCardUpdate(
   if (wasPaused) {
     // 「一時停止しました」を送った相手には、再開したことも必ず伝える (採点 R1 MEDIUM)。
     // 伝えないと顧客側で停止の認識が残ったまま商品が届く。
+    // attempt_no には **これまでに送った resume_notice の件数**を使う (採点 R3 MEDIUM):
+    // 固定値だと同一サイクル内で 2 回目の復旧をしたときに冪等マーカーへ食われ、
+    // 「停止しました」だけ届いて「再開しました」が届かなくなる。
     const cycleKey = contract.current_cycle_index !== null ? String(contract.current_cycle_index) : '0';
-    await safeEnqueue(deps, contract, cycleKey, 0, 'resume_notice', {}, nowIso);
+    const sent = await deps.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM own_billing_notices
+          WHERE contract_gid = ? AND kind = 'resume_notice'`,
+      )
+      .bind(contract.contract_gid)
+      .first<{ n: number }>();
+    await safeEnqueue(deps, contract, cycleKey, Number(sent?.n ?? 0), 'resume_notice', {}, nowIso);
   }
   const reloaded = await loadContract(deps.db, contract.contract_gid);
   if (!reloaded) return 'unknown_contract';

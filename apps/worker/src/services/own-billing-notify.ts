@@ -222,11 +222,14 @@ export async function dispatchQueuedNotices(
   try {
     await db
       .prepare(
+        // **sending_at (CAS 時刻) で判定する** (採点 R3 MEDIUM)。queued_at は enqueue 時刻の
+        // ままなので、それで判定すると配送中の行を別 tick が即座に奪い、
+        // email 経路 (冪等キーなし) で同じ課金失敗通知を 2 通送ってしまう。
         `UPDATE own_billing_notice_queue SET status = 'queued'
-          WHERE status = 'sending' AND queued_at <= ?`,
+          WHERE status = 'sending' AND sending_at IS NOT NULL AND sending_at <= ?`,
       )
-      // queued_at は JST 表記 (jstIso) で保存されているので、閾値も **JST に寄せてから**
-      // 文字列化する。UTC のまま +09:00 を付けると 9 時間ずれて回収されない。
+      // 時刻列は JST 表記 (jstIso) なので閾値も **JST に寄せてから**文字列化する。
+      // UTC のまま +09:00 を付けると 9 時間ずれて回収されない。
       .bind(
         new Date(nowMs + 9 * 3600_000 - SENDING_REAP_AFTER_MS).toISOString().replace('Z', '+09:00'),
       )
@@ -262,10 +265,10 @@ export async function dispatchQueuedNotices(
     const claimed = await db
       .prepare(
         `UPDATE own_billing_notice_queue
-            SET status = 'sending', dispatch_attempts = dispatch_attempts + 1
+            SET status = 'sending', sending_at = ?, dispatch_attempts = dispatch_attempts + 1
           WHERE id = ? AND status = 'queued'`,
       )
-      .bind(row.id)
+      .bind(nowIso, row.id)
       .run();
     if ((claimed.meta?.changes ?? 0) !== 1) continue;
     result.picked += 1;
@@ -365,6 +368,27 @@ async function deliverOne(
         .run();
       return 'superseded';
     }
+  }
+
+  // 二重防壁 (採点 R3 MEDIUM): 送信済みマーカーが既にあるなら送らない。
+  // reaper と CAS の競合で同じ行を 2 度拾っても、email 経路 (冪等キーなし) で
+  // 二重配信にならないようにする。
+  const alreadySent = await db
+    .prepare(
+      `SELECT 1 AS x FROM own_billing_notices
+        WHERE contract_gid = ? AND cycle_key = ? AND attempt_no = ? AND kind = ?`,
+    )
+    .bind(row.contract_gid, row.cycle_key, row.attempt_no, row.kind)
+    .first<{ x: number }>();
+  if (alreadySent) {
+    await db
+      .prepare(
+        `UPDATE own_billing_notice_queue SET status = 'sent', sent_at = ?, payload_json = '{}'
+          WHERE id = ? AND status = 'sending'`,
+      )
+      .bind(nowIso, row.id)
+      .run();
+    return 'superseded';
   }
 
   const friend = await getFriendByShopifyCustomerId(db, row.shopify_customer_id);
