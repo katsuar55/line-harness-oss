@@ -972,10 +972,16 @@ async function skipPastCyclesOnResume(
         const detail = await deps.api.getAttemptDetail(existing.attempt_gid);
         const terminal = detail !== null && (detail.status === 'succeeded' || detail.status === 'failed');
         if (!terminal) {
+          // §6.7 は「旧 attempt が非 terminal なら**再開全体を保留**」と規定する。
+          // alert だけ出して continue すると、契約は既に active 化されているため
+          // (handleContractLifecycle が先に status を書く)、決着後に休止期間分の
+          // 過去サイクルがそのまま課金される (採点 R6 HIGH)。
+          // skip 失敗経路と同じ待機 vehicle (ops_hold) に倒し、以降の処理も行わない。
           await deps.alert(
-            `own-billing: 契約 ${contract.contract_gid} の再開で cycle ${cycleKey} の attempt が未決着 (${detail?.status ?? '照会不能'}) — skip せず決着待ち (§6.7)`,
+            `own-billing: 契約 ${contract.contract_gid} の再開で cycle ${cycleKey} の attempt が未決着 (${detail?.status ?? '照会不能'}) — 再開を保留します (§6.7)`,
           );
-          continue;
+          await holdForResumeRepair(deps, contract.contract_gid, nowIso, `pending_attempt:${cycleKey}`);
+          return;
         }
       }
       const res = await deps.api.setCycleSkip(contract.contract_gid, cy.cycleIndex, true);
@@ -1236,15 +1242,22 @@ export async function handleCycleSkip(
       //     2 回目で S5 になる (§6.2 A の「+3日,+7日 計3」「初回+最終」が破れる)
       //   - step4 の期限 sweep が、請求残の無い顧客に「一時停止しました」を送る
       // challenged は §5.2、ops_hold は ops 解除 op の管轄なので触らない。
+      // **解放するのは「その dunning の起点サイクル」を skip したときだけ** (採点 R6 MEDIUM)。
+      // サイクル相関なしに解除すると、cycle N が await_card のときに将来の cycle N+1 を
+      // skip しただけで N のバックオフ・期限・attempts が消え、
+      // 「+3日待つはずが即再課金」「カード未更新の顧客へ card_request 再送」が起きる。
+      // §6.6 の締切ガード上、UI からの skip 対象は将来サイクルになるのが正常系なので、
+      // この誤爆は例外ではなく常態になる。
       await deps.db
         .prepare(
           `UPDATE own_sub_contracts
               SET dunning_state = 'none', dunning_attempts = 0, next_retry_date = NULL,
                   dunning_deadline_at = NULL, last_attempt_error = NULL, updated_at = ?
             WHERE contract_gid = ?
-              AND dunning_state IN ('none', 'retry_wait', 'await_card')`,
+              AND dunning_state IN ('none', 'retry_wait', 'await_card')
+              AND (current_cycle_index IS NULL OR CAST(current_cycle_index AS TEXT) = ?)`,
         )
-        .bind(nowIso, contractGid)
+        .bind(nowIso, contractGid, cycleKey)
         .run();
       // 当該サイクル向けに積まれた未送信の督促通知も破棄する
       // (スキップしたのに「お支払い方法をご更新ください」が翌配送窓に届くのを防ぐ)

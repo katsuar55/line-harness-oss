@@ -16,13 +16,24 @@ import { authMiddleware } from '../middleware/auth.js';
 
 const SECRET = 'shpss_test_secret';
 
+const executed: string[] = [];
+
 function fakeDb() {
+  executed.length = 0;
   return {
     prepare(sql: string) {
+      executed.push(sql);
       const stmt = {
-        // bind なしで first() を呼ぶ経路 (own 契約の存在チェック) にも応える
+        // bind なしで first()/all() を呼ぶ経路にも応える。
+        // all() が無いと readD1Gates が常に例外に落ち、gate 評価が一度も実行されない
+        // (= gate 経路が無検証のまま green になる — 採点 R4/R6 test-integrity)。
         async first() {
           return null;
+        },
+        async all() {
+          executed.push(sql);
+          if (sql.includes('own_billing_quarantine')) return { results: [] };
+          return { results: [] };
         },
         bind: () => ({
           async first() {
@@ -159,6 +170,27 @@ describe('topic / body の扱い', () => {
     const res = await post(body, { hmac: await sign(SECRET, body) });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ data: { outcome: 'invalid_body' } });
+  });
+
+  it('gate 評価 (readD1Gates) が実際に実行される', async () => {
+    const body = JSON.stringify({
+      admin_graphql_api_id: 'gid://shopify/SubscriptionBillingAttempt/1',
+      admin_graphql_api_subscription_contract_id: 'gid://shopify/SubscriptionContract/1',
+    });
+    await post(body, { hmac: await sign(SECRET, body) });
+    // §8 gate の 2 テーブルを両方読んでいること (fake が例外に落ちていない証拠)
+    expect(executed.some((s) => s.includes('own_billing_state'))).toBe(true);
+    expect(executed.some((s) => s.includes('own_billing_quarantine'))).toBe(true);
+  });
+
+  it('own 契約 0 件のときは Shopify adapter を組み立てない (無駄な往復をしない)', async () => {
+    const body = JSON.stringify({
+      admin_graphql_api_id: 'gid://shopify/SubscriptionBillingAttempt/1',
+      admin_graphql_api_subscription_contract_id: 'gid://shopify/SubscriptionContract/1',
+    });
+    await post(body, { hmac: await sign(SECRET, body) });
+    // adapter を作るなら shopify_tokens を読む
+    expect(executed.some((s) => s.includes('shopify_tokens'))).toBe(false);
   });
 
   it('own 契約が存在しない間は unknown_contract で無害に帰る', async () => {

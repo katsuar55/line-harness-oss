@@ -621,9 +621,12 @@ async function markSent(
     .prepare(
       // 送信後は payload を落とす: challenge_link の 3DS URL (capability link) を
       // D1 に無期限保持しないため (再送は不要 — 冪等マーカーで二度と送らない)。
+      // `AND status = 'sending'` を付ける (markFailed / markNoRecipient と同じ規則)。
+      // 無いと、reaper で 'queued' に戻され別 tick が配送中の行を、遅れて復帰した
+      // 旧 tick が無条件に 'sent' へ書き換えて状態が壊れる (採点 R6 LOW)。
       `UPDATE own_billing_notice_queue
           SET status = 'sent', channel = ?, sent_at = ?, last_error = NULL, payload_json = '{}'
-        WHERE id = ?`,
+        WHERE id = ? AND status = 'sending'`,
     )
     .bind(channel, nowIso, row.id)
     .run();

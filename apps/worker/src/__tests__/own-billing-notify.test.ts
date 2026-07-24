@@ -24,6 +24,7 @@ import {
   buildNoticeSubject,
   formatJpDate,
   MAX_DISPATCH_ATTEMPTS,
+  MAX_NOTICE_PER_TICK,
 } from '../services/own-billing-notify.js';
 
 const GID = 'gid://shopify/SubscriptionContract/111';
@@ -99,6 +100,10 @@ function createFakeDb(state: State): D1Database {
               // 宛先解決は **WHERE 述語を尊重する** (顧客 ID 取り違えを検出できるように)
               if (sql.includes('FROM shopify_customers')) {
                 return args[0] === CUSTOMER ? { email: state.customerEmail } : { email: null };
+              }
+              // 契約行が無い gid (予算テストの `${GID}-N`) は null を返す
+              if (sql.includes('FROM own_sub_contracts') && !state.contracts.has(String(args[0]))) {
+                return null;
               }
               if (sql.includes('FROM friends')) {
                 if (args[0] !== CUSTOMER) return null;
@@ -723,6 +728,55 @@ describe('採点 R2 回帰 — 通知が恒久喪失/陳腐化する経路', () 
   it('delivery_notice は解約済み契約に継続を前提とした案内をしない', () => {
     expect(buildNoticeText('delivery_notice', { contractClosed: true })).toContain('停止したまま');
     expect(buildNoticeText('delivery_notice', { contractClosed: true })).not.toContain('次回分から反映');
+  });
+});
+
+describe('配送予算と飢餓防止', () => {
+  async function seedN(state: State, n: number) {
+    for (let i = 0; i < n; i += 1) {
+      await enqueueNotice(
+        createFakeDb(state),
+        {
+          contractGid: `${GID}-${i}`, cycleKey: '2', attemptNo: 1, kind: 'fail_notice',
+          shopifyCustomerId: CUSTOMER, payload: {},
+        },
+        `2026-08-05T${String(10 + i).padStart(2, '0')}:00:00.000+09:00`,
+      );
+    }
+  }
+
+  it('1 tick の配送は MAX_NOTICE_PER_TICK 件までに制限される', async () => {
+    const state = freshState();
+    await seedN(state, MAX_NOTICE_PER_TICK + 3);
+    dispatchMock.mockResolvedValue({ results: [{ channel: 'line', status: 'sent' }] });
+    const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(res.picked).toBe(MAX_NOTICE_PER_TICK);
+    expect(state.queue.filter((r) => r.status === 'queued')).toHaveLength(3);
+  });
+
+  it('凍結行は予算を消費せず、後続の契約が配送される (飢餓防止)', async () => {
+    const state = freshState();
+    await seedN(state, 4);
+    const frozen = new Set([`${GID}-0`, `${GID}-1`]);
+    dispatchMock.mockResolvedValue({ results: [{ channel: 'line', status: 'sent' }] });
+    const res = await dispatchQueuedNotices(
+      createFakeDb(state),
+      { ...lineDeps, canDispatch: (gid: string) => !frozen.has(gid) },
+      NOW_IN_WINDOW,
+      NOW_ISO,
+    );
+    expect(res.gateFrozen).toBe(2);
+    // 凍結が先頭 2 件を占めても、残り 2 件は配送される
+    expect(res.picked).toBe(2);
+  });
+
+  it('FIFO (queued_at 昇順) で配送される', async () => {
+    const state = freshState();
+    await seedN(state, 3);
+    dispatchMock.mockResolvedValue({ results: [{ channel: 'line', status: 'sent' }] });
+    await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    // 先に積んだ順に sent になっていること
+    expect(state.queue.map((r) => r.status)).toEqual(['sent', 'sent', 'sent']);
   });
 });
 

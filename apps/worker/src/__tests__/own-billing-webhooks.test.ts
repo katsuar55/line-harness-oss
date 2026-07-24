@@ -302,6 +302,13 @@ function createFakeDb(state: State): D1Database {
                   const allowed = m[1].split(',').map((s) => s.trim().replace(/'/g, ''));
                   if (!c || !allowed.includes(c.dunning_state)) return { meta: { changes: 0 } };
                 }
+                // サイクル相関の述語 (skip 経路): 現在サイクルの dunning だけを閉じる
+                if (sql.includes('CAST(current_cycle_index AS TEXT) = ?')) {
+                  const cycleArg = String(args[2]);
+                  if (c && c.current_cycle_index !== null && String(c.current_cycle_index) !== cycleArg) {
+                    return { meta: { changes: 0 } };
+                  }
+                }
                 if (c) {
                   c.dunning_state = 'none';
                   c.dunning_attempts = 0;
@@ -1136,6 +1143,45 @@ describe('採点 R3 回帰', () => {
     expect(state.claims.get(`${GID}|2`)?.status).toBe('skipped');
   });
 
+  it('R6 HIGH: 未決着 attempt があれば再開を保留する (ops_hold で発行対象から外す)', async () => {
+    // alert だけ出して continue すると、契約は既に active 化済みなので
+    // 決着後に休止期間分の過去サイクルが課金される (§6.7 違反)
+    const state = freshState({
+      contract: { status: 'paused', dunning_state: 'none' },
+      claim: { status: 'abandoned', cycle_key: '2', attempt_gid: ATTEMPT },
+    });
+    const skip = vi.fn(async () => ({ ok: true }));
+    const api = fakeApi({
+      setCycleSkip: skip,
+      getAttemptDetail: async () => ({
+        attemptGid: ATTEMPT, idempotencyKey: 'idem-1', status: 'challenged',
+        nextActionUrl: null, errorCode: null, orderGid: null,
+      }),
+      listCycles: async () => [
+        { cycleIndex: 2, expectedDate: '2026-08-01T03:00:00Z', billed: false, skipped: false },
+      ],
+    });
+    await routeBillingWebhook(makeDeps(state, { api }), 'subscription_contracts/activate', {
+      admin_graphql_api_id: GID,
+    });
+    expect(skip).not.toHaveBeenCalled();
+    // 発行対象から外れていること (これが無いと決着後に誤請求)
+    expect(state.contracts.get(GID)?.dunning_state).toBe('ops_hold');
+  });
+
+  it('R6 MEDIUM: 将来サイクルの skip は現在サイクルの dunning を消さない', async () => {
+    const state = freshState({
+      contract: { current_cycle_index: 2, dunning_state: 'await_card', dunning_deadline_at: '2026-08-18T23:59:59+09:00' },
+      claim: { status: 'failed' },
+    });
+    // 締切ガード上、UI からの skip 対象は将来サイクル (3) になるのが正常系
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_cycles/skip', {
+      subscription_contract_id: 111, cycle_index: 3,
+    });
+    expect(state.contracts.get(GID)?.dunning_state).toBe('await_card');
+    expect(state.contracts.get(GID)?.dunning_deadline_at).toBe('2026-08-18T23:59:59+09:00');
+  });
+
   it('再開時に未決着の attempt が残っていたら skip せず alert する (no-parallel-attempt)', async () => {
     const state = freshState({
       contract: { status: 'paused', dunning_state: 'none' },
@@ -1152,6 +1198,18 @@ describe('採点 R3 回帰', () => {
       admin_graphql_api_id: GID,
     });
     expect(skip).not.toHaveBeenCalled();
+    expect(alertMock).toHaveBeenCalled();
+  });
+
+  it('通知 enqueue が失敗しても課金処理は巻き戻らず alert される (safeEnqueue の握り潰し)', async () => {
+    // migration 072 未適用の本番でも failure 処理が完了することの保証
+    const state = freshState();
+    enqueueMock.mockRejectedValueOnce(new Error('no such table: own_billing_notice_queue'));
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', {
+      ...successBody, admin_graphql_api_order_id: null, error_code: 'INSUFFICIENT_FUNDS',
+    });
+    expect(out).toBe('failure_applied');
+    expect(state.contracts.get(GID)?.dunning_state).toBe('retry_wait');
     expect(alertMock).toHaveBeenCalled();
   });
 

@@ -30,6 +30,8 @@ interface FakeD1Options {
   failNewTables?: boolean;
   /** cron_run_logs INSERT でも throw */
   failCronLog?: boolean;
+  /** 通知キューに置く行 (配送 gate の実挙動を検証するため) */
+  noticeQueue?: Array<Record<string, unknown>>;
 }
 
 function createFakeDb(opts: FakeD1Options = {}) {
@@ -82,7 +84,11 @@ function createFakeDb(opts: FakeD1Options = {}) {
     // step3: 通知キューの配送 (窓内なら候補を引く)。既定は空キュー
     if (sql.includes('own_billing_notice_queue')) {
       if (opts.failNewTables) throw new Error('no such table: own_billing_notice_queue');
-      return [];
+      // 'queued' → 'sending' の CAS だけ成功させる (= 配送権を取れたことを表す)。
+      // その先の配送は本テストの対象外 (deliverOne の例外はループの try/catch が受ける)。
+      if (sql.includes("SET status = 'sending'")) return { meta: { changes: 1 } };
+      if (sql.trim().startsWith('UPDATE')) return { meta: { changes: 0 } };
+      return (opts.noticeQueue ?? []).map((r) => ({ ...r }));
     }
     throw new Error(`unexpected SQL in fake db: ${sql}`);
   }
@@ -333,21 +339,38 @@ describe('processOwnBilling', () => {
     expect(cronLogs.length).toBe(1);
   });
 
-  it('契約単位 gate を canDispatch として通知配送へ渡す (excludelist が通知も止める)', async () => {
-    const { db } = createFakeDb({ quarantine: [GID] });
-    let seen: ((gid: string) => boolean) | undefined;
-    await processOwnBilling(
+  it('契約単位 gate を canDispatch として通知配送へ渡す (quarantine の契約は配送されない)', async () => {
+    // **実際にキューへ行を置いて、processOwnBilling の戻り値で検証する**
+    // (述語を手元で作り直して assert するだけだと何も保証しない — 採点 R4/R6 test-integrity)
+    const { db } = createFakeDb({
+      quarantine: [GID],
+      noticeQueue: [
+        { id: 1, contract_gid: GID, cycle_key: '2', attempt_no: 1, kind: 'fail_notice',
+          shopify_customer_id: '555', payload_json: '{}', dispatch_attempts: 0, queued_at: '2026-08-05T11:00:00.000+09:00' },
+      ],
+    });
+    const r = await processOwnBilling(
       { DB: db, ...onGates },
-      {
-        notify: { lineClient: {} as never },
-        nowMs: IN_WINDOW,
-      },
+      { notify: { lineClient: {} as never }, nowMs: IN_WINDOW },
     );
-    // canDispatch は processOwnBilling が組み立てるため、述語の同値性を直接検証する
-    seen = (gid: string) =>
-      canIssueAttempt(statics(), d1({ quarantine: new Set([GID]) }), gid);
-    expect(seen(GID)).toBe(false);
-    expect(seen('gid://shopify/SubscriptionContract/other')).toBe(true);
+    expect(r.notices?.gateFrozen).toBe(1);
+    expect(r.notices?.picked).toBe(0);
+  });
+
+  it('quarantine 対象外の契約は配送候補になる (gate が全件を止めていない証拠)', async () => {
+    const { db } = createFakeDb({
+      quarantine: ['gid://shopify/SubscriptionContract/other'],
+      noticeQueue: [
+        { id: 1, contract_gid: GID, cycle_key: '2', attempt_no: 1, kind: 'fail_notice',
+          shopify_customer_id: '555', payload_json: '{}', dispatch_attempts: 0, queued_at: '2026-08-05T11:00:00.000+09:00' },
+      ],
+    });
+    const r = await processOwnBilling(
+      { DB: db, ...onGates },
+      { notify: { lineClient: {} as never }, nowMs: IN_WINDOW },
+    );
+    expect(r.notices?.gateFrozen).toBe(0);
+    expect(r.notices?.picked).toBe(1);
   });
 
   it('gate ON: D1 gate を読み heartbeat metrics に可視化 (課金ロジックはまだ呼ばれない)', async () => {

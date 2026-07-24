@@ -375,9 +375,14 @@ export async function resolveBillableCycle(
     const cycleKey = String(oldest.cycleIndex);
     await db
       .prepare(
+        // attempt_gid を持たない attempting は abandoned にしない (webhooks 側の
+        // abandonOpenClaims と規則を揃える): 「Shopify 側に attempt が生きているか不明」
+        // な行を abandoned にすると、後で unskip 等で 14 日以内に引き戻された際に
+        // acquireClaim の gid 照会をスキップして新 key で二重発行しうる。
         `UPDATE billing_cycle_claims SET status = 'abandoned', resolved_at = ?
           WHERE contract_gid = ? AND cycle_key = ?
-            AND status IN ('attempting', 'failed', 'failed_no_attempt')`,
+            AND (status IN ('failed', 'failed_no_attempt')
+                 OR (status = 'attempting' AND attempt_gid IS NOT NULL))`,
       )
       .bind(nowIso, contract.contract_gid, cycleKey)
       .run();
