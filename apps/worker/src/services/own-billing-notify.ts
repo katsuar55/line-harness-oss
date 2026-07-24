@@ -40,8 +40,12 @@ export const NOTICE_WINDOW_END_HOUR = 20;
 /** 1 tick の配送予算 (Workers Free の subrequest 予算。1 通 = LINE 1 + email 1 が上限) */
 export const MAX_NOTICE_PER_TICK = 5;
 
-/** 候補取得の倍率。凍結行がキュー先頭を占有しても後続が配送されるようにする */
-export const NOTICE_CANDIDATE_FACTOR = 4;
+/**
+ * 候補取得の倍率。凍結行 (excludelist / quarantine) がキュー先頭を占有しても
+ * 後続が配送されるようにする。engine の DUE_CANDIDATE_LIMIT=100 と較正を揃える
+ * (契約は最大 76 件想定なので 20 行では凍結が並ぶと全停止しうる — 採点 R4 LOW)。
+ */
+export const NOTICE_CANDIDATE_FACTOR = 20;
 
 /** 'sending' 固着行を 'queued' へ戻すまでの猶予 (isolate 強制終了からの回収) */
 export const SENDING_REAP_AFTER_MS = 30 * 60_000;
@@ -312,8 +316,13 @@ async function deliverOne(
   // ── 鮮度チェック (採点 R1 MEDIUM)。
   // billing-kill / breaker で数日凍結したあと解除すると、キューには「もう過ぎた締切日」を
   // 含む通知が残っている。過去日を案内するのは誤情報なので、古い通知は送らず破棄する。
+  // **日付を含む案内だけを対象にする** (採点 R4 HIGH)。
+  // pause/resume/delivery は「起きた事実」の通知で陳腐化せず、しかも再 enqueue する主体が
+  // 存在しない (matrix は一度しか積まない) ため、stale 破棄すると
+  // 「一時停止したのに顧客に一切通知が届かない」が恒久化する。
+  const DATED_KINDS: NoticeKind[] = ['fail_notice', 'card_request', 'challenge_link'];
   const ageMs = Date.parse(nowIso) - Date.parse(row.queued_at);
-  if (Number.isFinite(ageMs) && ageMs > NOTICE_MAX_AGE_MS) {
+  if (DATED_KINDS.includes(kind) && Number.isFinite(ageMs) && ageMs > NOTICE_MAX_AGE_MS) {
     await db
       .prepare(
         `UPDATE own_billing_notice_queue
@@ -362,6 +371,28 @@ async function deliverOne(
         .prepare(
           `UPDATE own_billing_notice_queue
               SET status = 'abandoned', last_error = 'superseded_by_success', sent_at = ?
+            WHERE id = ? AND status = 'sending'`,
+        )
+        .bind(nowIso, row.id)
+        .run();
+      return 'superseded';
+    }
+  }
+
+  // resume_notice も配送直前に再検証する (採点 R4 MEDIUM)。
+  // enqueue から配送窓までの間に顧客が解約/再停止していると、
+  // 「定期便のお届けを再開しました」が事実と食い違う。
+  if (kind === 'resume_notice') {
+    const contract = await db
+      .prepare(`SELECT status, dunning_state FROM own_sub_contracts WHERE contract_gid = ?`)
+      .bind(row.contract_gid)
+      .first<{ status: string; dunning_state: string }>();
+    if (contract !== null && contract.status !== 'active') {
+      await db
+        .prepare(
+          `UPDATE own_billing_notice_queue
+              SET status = 'abandoned', last_error = 'superseded_by_state', sent_at = ?,
+                  payload_json = '{}'
             WHERE id = ? AND status = 'sending'`,
         )
         .bind(nowIso, row.id)
@@ -660,8 +691,10 @@ async function markFailed(
 async function markNoRecipient(db: D1Database, row: QueueRow, nowIso: string): Promise<void> {
   await db
     .prepare(
+      // payload も落とす (3DS capability URL を D1 に無期限保持しない)
       `UPDATE own_billing_notice_queue
-          SET status = 'abandoned', last_error = 'no_reachable_channel', sent_at = ?
+          SET status = 'abandoned', last_error = 'no_reachable_channel', sent_at = ?,
+              payload_json = '{}'
         WHERE id = ? AND status = 'sending'`,
     )
     .bind(nowIso, row.id)

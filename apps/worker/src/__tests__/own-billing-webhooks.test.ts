@@ -295,6 +295,13 @@ function createFakeDb(state: State): D1Database {
               // ── contracts
               if (sql.includes("SET dunning_state = 'none'")) {
                 const c = state.contracts.get(String(args[1]));
+                // WHERE の dunning_state IN (...) 述語を尊重する
+                // (challenged / ops_hold は skip 経路の対象外 = §5.2 / ops 管轄)
+                const m = sql.match(/dunning_state IN \(([^)]*)\)/);
+                if (m) {
+                  const allowed = m[1].split(',').map((s) => s.trim().replace(/'/g, ''));
+                  if (!c || !allowed.includes(c.dunning_state)) return { meta: { changes: 0 } };
+                }
                 if (c) {
                   c.dunning_state = 'none';
                   c.dunning_attempts = 0;
@@ -1146,6 +1153,125 @@ describe('採点 R3 回帰', () => {
     const state = freshState();
     await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
     expect(state.audits.length).toBeGreaterThan(0);
+  });
+});
+
+describe('採点 R4 回帰 — cycles/skip 系', () => {
+  /** skip を反映する listCycles (skip 後の再照会で cycle 2 が skipped になる) */
+  function skipAwareApi(over: Partial<ShopifyBillingApiExt> = {}) {
+    let skipped = false;
+    return fakeApi({
+      setCycleSkip: async (_gid: string, idx: number, on: boolean) => {
+        if (idx === 2) skipped = on;
+        return { ok: true };
+      },
+      listCycles: async () => [
+        { cycleIndex: 2, expectedDate: '2026-08-05T03:00:00Z', billed: false, skipped },
+        { cycleIndex: 3, expectedDate: '2026-09-04T03:00:00Z', billed: false, skipped: false },
+      ],
+      ...over,
+    });
+  }
+
+  it('HIGH: 締切前の skip で「スキップしたサイクルの日付」を次サイクルに割り当てない', async () => {
+    // anchor=2026-07-06 / interval=30 → cycle2=08-05, cycle3=09-04。
+    // 07-20 (締切前) に cycle2 を skip した場合、次サイクルの目標は 09-04 でなければならない。
+    // today 基準だと nextAnchorAfter=08-05 となり、顧客が拒否した当日に課金されてしまう。
+    const state = freshState({ claim: null });
+    const sched = vi.fn(async (_gid: string, _idx: number, _date: string) => ({ ok: true }));
+    const api = skipAwareApi({ scheduleCycleDate: sched });
+    await routeBillingWebhook(
+      makeDeps(state, { api, nowMs: Date.parse('2026-07-20T02:00:00Z') }),
+      'subscription_billing_cycles/skip',
+      { subscription_contract_id: 111, cycle_index: 2 },
+    );
+    // 目標日が 08-05 (= スキップした当のサイクル日) になっていないこと
+    for (const call of sched.mock.calls) {
+      expect(call[2]).not.toBe('2026-08-05');
+    }
+  });
+
+  it('HIGH: 失敗中サイクルを skip したら契約の dunning を解放する (await_card 固着=課金漏れの防止)', async () => {
+    const state = freshState({
+      contract: { dunning_state: 'await_card', dunning_deadline_at: '2026-08-18T23:59:59+09:00' },
+      claim: { status: 'failed' },
+    });
+    await routeBillingWebhook(makeDeps(state, { api: skipAwareApi() }), 'subscription_billing_cycles/skip', {
+      subscription_contract_id: 111, cycle_index: 2,
+    });
+    expect(state.contracts.get(GID)).toMatchObject({
+      dunning_state: 'none',
+      dunning_attempts: 0,
+      next_retry_date: null,
+      dunning_deadline_at: null,
+    });
+  });
+
+  it('retry_wait の dunning_attempts も次サイクルへ持ち越さない', async () => {
+    const state = freshState({
+      contract: { dunning_state: 'retry_wait', dunning_attempts: 1, next_retry_date: '2026-08-08' },
+      claim: { status: 'failed' },
+    });
+    await routeBillingWebhook(makeDeps(state, { api: skipAwareApi() }), 'subscription_billing_cycles/skip', {
+      subscription_contract_id: 111, cycle_index: 2,
+    });
+    expect(state.contracts.get(GID)?.dunning_attempts).toBe(0);
+  });
+
+  it('challenged / ops_hold は skip で触らない (§5.2 / ops 管轄)', async () => {
+    for (const st of ['challenged', 'ops_hold']) {
+      const state = freshState({ contract: { dunning_state: st }, claim: { status: 'failed' } });
+      await routeBillingWebhook(makeDeps(state, { api: skipAwareApi() }), 'subscription_billing_cycles/skip', {
+        subscription_contract_id: 111, cycle_index: 2,
+      });
+      expect(state.contracts.get(GID)?.dunning_state).toBe(st);
+    }
+  });
+
+  it('MEDIUM: 閉じたサイクルの遅延 success は契約 dunning をリセットしない', async () => {
+    // 現在サイクルは 3、遅延 success は cycle 2 (skipped) のもの
+    const state = freshState({
+      contract: { current_cycle_index: 3, dunning_state: 'retry_wait', dunning_attempts: 1, next_retry_date: '2026-08-08' },
+      claim: { status: 'skipped', cycle_key: '2' },
+    });
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
+    expect(state.claims.get(`${GID}|2`)?.status).toBe('succeeded');
+    // 別サイクルで進行中の dunning は保たれる (即再課金しない)
+    expect(state.contracts.get(GID)).toMatchObject({
+      dunning_state: 'retry_wait',
+      dunning_attempts: 1,
+      next_retry_date: '2026-08-08',
+    });
+  });
+
+  it('MEDIUM: S5 (exhausted) からの activate では過去サイクルを skip しない (I-5 の 14日回収)', async () => {
+    const state = freshState({ contract: { status: 'paused', dunning_state: 'exhausted' }, claim: null });
+    const skip = vi.fn(async () => ({ ok: true }));
+    await routeBillingWebhook(
+      makeDeps(state, { api: fakeApi({ setCycleSkip: skip }) }),
+      'subscription_contracts/activate',
+      { admin_graphql_api_id: GID },
+    );
+    expect(skip).not.toHaveBeenCalled();
+  });
+
+  it('gate 閉塞中の skip は cadence_repair_needed を立てる', async () => {
+    const state = freshState({ claim: null });
+    await routeBillingWebhook(
+      makeDeps(state, { canIssue: () => false }),
+      'subscription_billing_cycles/skip',
+      { subscription_contract_id: 111, cycle_index: 2 },
+    );
+    expect(state.contracts.get(GID)?.cadence_repair_needed).toBe(1);
+  });
+
+  it('LOW: contract gid を解析できない success も必ず alert する', async () => {
+    const state = freshState();
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', {
+      admin_graphql_api_id: ATTEMPT,
+    });
+    expect(out).toBe('noop');
+    expect(alertMock).toHaveBeenCalled();
   });
 });
 

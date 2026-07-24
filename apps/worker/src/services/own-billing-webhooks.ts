@@ -333,17 +333,26 @@ export async function applySuccess(
     orderGid: orderGid ?? null,
   });
 
-  // I-4: dunning 全リセット (pending_new_card も消費 — 支払えたのでカード差替待ちは終了)
-  await deps.db
-    .prepare(
-      `UPDATE own_sub_contracts
-          SET dunning_state = 'none', dunning_attempts = 0, next_retry_date = NULL,
-              dunning_deadline_at = NULL, pending_new_card = 0, last_attempt_error = NULL,
-              updated_at = ?
-        WHERE contract_gid = ?`,
-    )
-    .bind(nowIso, contract.contract_gid)
-    .run();
+  // I-4: dunning 全リセット (pending_new_card も消費 — 支払えたのでカード差替待ちは終了)。
+  // **現在サイクルの success に限る** (採点 R4 MEDIUM): 閉じた/古いサイクルの遅延 success で
+  // 契約全体をリセットすると、別サイクルで進行中の dunning (retry_wait のバックオフ・
+  // await_card の期限・pending_new_card の回収約束) が消え、翌 tick で
+  // 「+3日待つはずの契約に即再課金」「新カード再試行の権利喪失」が起きる。
+  const isCurrentCycle =
+    contract.current_cycle_index === null ||
+    String(contract.current_cycle_index) === claim.cycle_key;
+  if (isCurrentCycle) {
+    await deps.db
+      .prepare(
+        `UPDATE own_sub_contracts
+            SET dunning_state = 'none', dunning_attempts = 0, next_retry_date = NULL,
+                dunning_deadline_at = NULL, pending_new_card = 0, last_attempt_error = NULL,
+                updated_at = ?
+          WHERE contract_gid = ?`,
+      )
+      .bind(nowIso, contract.contract_gid)
+      .run();
+  }
 
   // ── 遅延 success の分岐 (§6.1 / §6.3 / §6.6)。**判定順序が重要**。
   //
@@ -501,7 +510,14 @@ export async function handleAttemptSuccess(
   body: unknown,
 ): Promise<WebhookOutcome> {
   const payload = parseAttemptPayload(body);
-  if (!payload.contractGid) return 'noop';
+  if (!payload.contractGid) {
+    // success の取り逃しは「課金済み未計上」= 最悪の欠損。payload 形状のゆらぎで
+    // contract gid が読めなかった場合も**必ず人間へ上げる** (採点 R4 LOW)。
+    await deps.alert(
+      `own-billing: success webhook の契約 gid を解析できませんでした (attempt=${payload.attemptGid ?? 'なし'} order=${payload.orderGid ?? 'なし'} key=${payload.idempotencyKey ?? 'なし'}) — parser の較正が必要`,
+    );
+    return 'noop';
+  }
   const contract = await loadContract(deps.db, payload.contractGid);
   if (!contract) return 'unknown_contract';
 
@@ -855,7 +871,11 @@ export async function handleContractLifecycle(
     // 返し (I-6 の 14 日以内なら) そのまま課金してしまう。
     // I-5 の規定どおり、過去の未解決サイクルを skip + claim skipped 化してから
     // 次アンカーを明示スケジュールする。
-    if (promoting && !inWindow) {
+    // **S6 (顧客都合の停止) からの再開のときだけ** (採点 R4 MEDIUM)。
+    // I-5 は S5 復旧では「14日以内の過去サイクルを回収する」と規定しているので、
+    // exhausted からの activate で skip すると回収すべき課金を捨ててしまう。
+    // 既に active の契約への activate 再配送でも skip しない。
+    if (promoting && !inWindow && contract.status === 'paused' && contract.dunning_state === 'none') {
       await skipPastCyclesOnResume(deps, contract, nowIso);
     }
   }
@@ -927,11 +947,19 @@ async function skipPastCyclesOnResume(
         .prepare(`SELECT status, attempt_gid FROM billing_cycle_claims WHERE contract_gid = ? AND cycle_key = ?`)
         .bind(contract.contract_gid, cycleKey)
         .first<{ status: string; attempt_gid: string | null }>();
-      if (existing?.status === 'attempting') {
-        await deps.alert(
-          `own-billing: 契約 ${contract.contract_gid} の再開で cycle ${cycleKey} に未決着の attempt が残っています — skip せず決着待ち (§6.7)`,
-        );
-        continue;
+      // §6.7 の「旧 attempt が非 terminal なら再開全体を保留」。
+      // **status==='attempting' だけを見ると死んだガードになる** (採点 R4 HIGH):
+      // I-3 (pause 受理時の abandonOpenClaims) が既に abandoned へ落としているため。
+      // attempt_gid を持つ claim は状態に関わらず実際に照会して terminal を確認する。
+      if (existing?.attempt_gid && existing.status !== 'succeeded' && existing.status !== 'skipped') {
+        const detail = await deps.api.getAttemptDetail(existing.attempt_gid);
+        const terminal = detail !== null && (detail.status === 'succeeded' || detail.status === 'failed');
+        if (!terminal) {
+          await deps.alert(
+            `own-billing: 契約 ${contract.contract_gid} の再開で cycle ${cycleKey} の attempt が未決着 (${detail?.status ?? '照会不能'}) — skip せず決着待ち (§6.7)`,
+          );
+          continue;
+        }
       }
       const res = await deps.api.setCycleSkip(contract.contract_gid, cy.cycleIndex, true);
       if (!res.ok) {
@@ -1147,6 +1175,40 @@ export async function handleCycleSkip(
         )
         .bind(nowIso, contractGid, cycleKey)
         .run();
+
+      // §4.0「放棄済みサイクルの dunning は cycle とともに閉じる」を skip にも適用する
+      // (採点 R4 HIGH — 2 グレーダーが独立検出)。閉じないと:
+      //   - await_card のまま残った契約は listDueContracts の述語 (none|retry_wait) に
+      //     二度と一致せず、**以後のサイクルが一度も課金されない** (課金漏れ)
+      //   - retry_wait の dunning_attempts が次サイクルへ持ち越され、初回失敗通知が出ず
+      //     2 回目で S5 になる (§6.2 A の「+3日,+7日 計3」「初回+最終」が破れる)
+      //   - step4 の期限 sweep が、請求残の無い顧客に「一時停止しました」を送る
+      // challenged は §5.2、ops_hold は ops 解除 op の管轄なので触らない。
+      await deps.db
+        .prepare(
+          `UPDATE own_sub_contracts
+              SET dunning_state = 'none', dunning_attempts = 0, next_retry_date = NULL,
+                  dunning_deadline_at = NULL, last_attempt_error = NULL, updated_at = ?
+            WHERE contract_gid = ?
+              AND dunning_state IN ('none', 'retry_wait', 'await_card')`,
+        )
+        .bind(nowIso, contractGid)
+        .run();
+      // 当該サイクル向けに積まれた未送信の督促通知も破棄する
+      // (スキップしたのに「お支払い方法をご更新ください」が翌配送窓に届くのを防ぐ)
+      try {
+        await deps.db
+          .prepare(
+            `UPDATE own_billing_notice_queue
+                SET status = 'abandoned', last_error = 'cycle_skipped', payload_json = '{}'
+              WHERE contract_gid = ? AND cycle_key = ? AND status = 'queued'
+                AND kind IN ('fail_notice', 'card_request', 'challenge_link')`,
+          )
+          .bind(contractGid, cycleKey)
+          .run();
+      } catch {
+        /* migration 072 未適用でも skip 処理を落とさない */
+      }
     } else {
       // unskip: 行は残したまま abandoned へ (未 claim 定義により due 復帰できる §3)
       await deps.db
@@ -1168,12 +1230,20 @@ export async function handleCycleSkip(
         const next = cycles
           .filter((cy) => !cy.billed && !cy.skipped)
           .sort((a, b) => a.cycleIndex - b.cycleIndex)[0];
-        if (next && toJstDateOnly(next.expectedDate) !== nextAnchorAfter(contract, todayJst)) {
-          const res = await deps.api.scheduleCycleDate(
-            contractGid,
-            next.cycleIndex,
-            nextAnchorAfter(contract, todayJst),
-          );
+        // **基準日は「今日」ではなく「スキップしたサイクルの予定日」** (採点 R4 HIGH)。
+        // skip は §6.6 の締切ガード上「予定日の 3 日以上前」に来るのが正常系なので、
+        // 今日を基準にすると nextAnchorAfter が **スキップした当のサイクルの予定日**を返し、
+        // 次サイクルをその日に割り当ててしまう = 顧客が拒否した日に番号だけ変えて課金・出荷。
+        // しかも anchor 列とは一致するため §8 の乖離検出器にも掛からない。
+        const skipped = cycles.find((cy) => String(cy.cycleIndex) === cycleKey);
+        const basisDate = skipped
+          ? toJstDateOnly(skipped.expectedDate)
+          : (contract.current_cycle_scheduled_date && contract.current_cycle_scheduled_date > todayJst
+              ? contract.current_cycle_scheduled_date
+              : todayJst);
+        const target = nextAnchorAfter(contract, basisDate);
+        if (next && toJstDateOnly(next.expectedDate) !== target) {
+          const res = await deps.api.scheduleCycleDate(contractGid, next.cycleIndex, target);
           if (!res.ok) await markRepair(deps, contractGid, nowIso, res.error);
         }
       }
