@@ -125,6 +125,11 @@ function createFakeDb(state: State): D1Database {
                 const c = state.contracts.get(String(args[0]));
                 return c ? { status: c.status, dunning_state: c.dunning_state } : null;
               }
+              // delivery_notice の配送直前再検証 (status のみ)
+              if (sql.includes('SELECT status FROM own_sub_contracts')) {
+                const c = state.contracts.get(String(args[0]));
+                return c ? { status: c.status } : null;
+              }
               if (sql.includes('FROM email_subscribers WHERE email')) {
                 return state.subscribers.find((s) => s.email === args[0]) ?? null;
               }
@@ -267,6 +272,14 @@ function createFakeDb(state: State): D1Database {
                 if (row) {
                   row.status = 'abandoned';
                   row.last_error = 'stale';
+                }
+                return { meta: { changes: 1 } };
+              }
+              if (sql.includes("last_error = 'superseded_by_state'")) {
+                const row = state.queue.find((r) => r.id === args[1] && r.status === 'sending');
+                if (row) {
+                  row.status = 'abandoned';
+                  row.last_error = 'superseded_by_state';
                 }
                 return { meta: { changes: 1 } };
               }
@@ -644,6 +657,37 @@ describe('採点 R1 回帰 — 通知が消える/届いてはいけない経路
     // cycle 2 (succeeded) は破棄、cycle 3 (failed) は送る
     expect(res.superseded).toBe(1);
     expect(res.sentEmail).toBe(1);
+  });
+
+  it('R9 HIGH: resume_notice は配送時に dunning が非 none なら破棄する (再開後に失敗した誤送信を防ぐ)', async () => {
+    const state = freshState();
+    state.contracts.set(GID, { status: 'active', dunning_state: 'retry_wait', dunning_deadline_at: null });
+    await enqueueNotice(
+      createFakeDb(state),
+      { contractGid: GID, cycleKey: '2', attemptNo: -1, kind: 'resume_notice', shopifyCustomerId: CUSTOMER, payload: {} },
+      NOW_ISO,
+    );
+    const res = await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(res.superseded).toBe(1);
+    expect(dispatchMock).not.toHaveBeenCalled();
+  });
+
+  it('R9 LOW: delivery_notice は配送時に解約済みなら継続前提の文面を出さない', async () => {
+    const state = freshState();
+    state.contracts.set(GID, { status: 'cancelled', dunning_state: 'none', dunning_deadline_at: null });
+    await enqueueNotice(
+      createFakeDb(state),
+      { contractGid: GID, cycleKey: '2', attemptNo: 1, kind: 'delivery_notice', shopifyCustomerId: CUSTOMER, payload: {} },
+      NOW_ISO,
+    );
+    let sentText = '';
+    dispatchMock.mockImplementation(async (_deps: unknown, input: { linePayload?: { messages: Array<{ text: string }> } }) => {
+      sentText = input.linePayload?.messages?.[0]?.text ?? '';
+      return { results: [{ channel: 'line', status: 'sent' }] };
+    });
+    await dispatchQueuedNotices(createFakeDb(state), lineDeps, NOW_IN_WINDOW, NOW_ISO);
+    expect(sentText).toContain('停止したまま');
+    expect(sentText).not.toContain('次回分から反映');
   });
 
   it('R7 MEDIUM: 日付を含まない終端 fail_notice は古くても破棄せず送る (停止したのに通知なしを防ぐ)', async () => {

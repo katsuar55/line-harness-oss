@@ -562,16 +562,22 @@ export async function handleAttemptFailure(
 
   const { claim, mismatch } = await matchClaim(deps.db, payload.contractGid, payload);
   if (mismatch) {
-    // 検算不一致の failure は**適用しない** (§3)。旧 attempt 再配送で現行サイクルを汚さない
+    // 検算不一致の failure は**適用しない** (§3)。旧 attempt 再配送で現行サイクルを汚さない。
+    // §3 は「audit のみ」= alert (揮発) でなく audit_logs (一次証跡の正) に残す (採点 R9 LOW)。
     await deps.alert(
       `own-billing: 契約 ${payload.contractGid} の failure webhook が claim 検算不一致 — 適用せず記録のみ`,
     );
+    await appendBillingAudit(deps, contract, claim ?? { cycle_key: '', attempt_no: 0, attempt_gid: payload.attemptGid } as ClaimRow, 'own_billing.failure_not_applied', { reason: 'claim_mismatch', errorCode: payload.errorCode });
     return 'claim_mismatch';
   }
   if (!claim) return 'no_claim';
 
   // §4.1 適用条件: matrix を適用するのは attempting claim を failed 化する場合のみ
-  if (claim.status !== 'attempting') return 'late_ignored';
+  if (claim.status !== 'attempting') {
+    // resolved 済み claim への遅延/再配送 failure = audit のみ (§3)
+    await appendBillingAudit(deps, contract, claim, 'own_billing.failure_not_applied', { reason: 'late_resolved', claimStatus: claim.status, errorCode: payload.errorCode });
+    return 'late_ignored';
+  }
 
   // **matrix を適用するのは status='active' の契約だけ** (採点 R2/R3 HIGH — 3 グレーダーが独立検出)。
   //
@@ -596,6 +602,7 @@ export async function handleAttemptFailure(
       )
       .bind(jstIso(deps.nowMs), contract.contract_gid, claim.cycle_key)
       .run();
+    await appendBillingAudit(deps, contract, claim, 'own_billing.failure_not_applied', { reason: 'non_active', contractStatus: contract.status, errorCode: payload.errorCode });
     return 'late_ignored';
   }
 

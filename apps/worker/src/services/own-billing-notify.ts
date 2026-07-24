@@ -399,7 +399,11 @@ async function deliverOne(
       .prepare(`SELECT status, dunning_state FROM own_sub_contracts WHERE contract_gid = ?`)
       .bind(row.contract_gid)
       .first<{ status: string; dunning_state: string }>();
-    if (contract !== null && contract.status !== 'active') {
+    // **dunning_state も評価する** (採点 R9 HIGH — 取得済みなのに使っていなかった)。
+    // resume_notice は enqueue 時点で必ず dunning_state='none'。配送時に非 none なら
+    // 「再開判断のあとに新たな失敗が起きた」ことを意味するので、「再開しました」を送らない。
+    // (§S5 復旧 → 新カードで再試行 → その attempt が失敗、の窓でこの誤送信が起きる)
+    if (contract !== null && (contract.status !== 'active' || contract.dunning_state !== 'none')) {
       await db
         .prepare(
           `UPDATE own_billing_notice_queue
@@ -434,9 +438,24 @@ async function deliverOne(
     return 'superseded';
   }
 
+  // delivery_notice は配送直前に契約終端を再検証する (採点 R9 LOW)。
+  // active 向けに積んだ「次回分から反映されます」を、その後解約された顧客へ
+  // 継続前提のまま届けないよう、payload.contractClosed を補正する。
+  let payloadOverride: NoticePayload | null = null;
+  if (kind === 'delivery_notice' && !payload.contractClosed) {
+    const contract = await db
+      .prepare(`SELECT status FROM own_sub_contracts WHERE contract_gid = ?`)
+      .bind(row.contract_gid)
+      .first<{ status: string }>();
+    if (contract !== null && (contract.status === 'cancelled' || contract.status === 'expired')) {
+      payloadOverride = { ...payload, contractClosed: true };
+    }
+  }
+  const effectivePayload = payloadOverride ?? payload;
+
   const friend = await getFriendByShopifyCustomerId(db, row.shopify_customer_id);
   const email = await lookupCustomerEmail(db, row.shopify_customer_id);
-  const text = buildNoticeText(kind, payload);
+  const text = buildNoticeText(kind, effectivePayload);
   const subject = buildNoticeSubject(kind);
   // 「到達手段が存在しない」と「存在するチャネルが全部失敗した」を区別する (採点 R1 MEDIUM)。
   // 区別しないと、LINE の一時障害 + email 未登録の顧客で 1 回目の失敗が即 abandoned になり、
@@ -485,6 +504,10 @@ async function deliverOne(
     // 復活させることもない)。
     anyChannelTried = true;
     await ensureTransactionalSubscriber(db, email);
+    // 【受容済みの tradeoff・採点 R9 LOW】email には LINE の retryKey に相当する冪等キーが無い。
+    // 送信受理〜markSent の間 (数十 ms) に isolate が落ち、30 分後の reaper で再取得されると
+    // 同じ事務連絡が 2 通届きうる (二重課金ではなく通知重複)。Resend 側に決定的キーを
+    // 渡せるようになれば消せるが、現状は at-least-once として許容する。
     const sent = await tryDispatch(db, deps, {
       recipient: { email },
       channel: 'email',

@@ -663,6 +663,31 @@ describe('§6.2 failure', () => {
     }
   });
 
+  it('R9 LOW: 同一 claim への 2 本目 failure は late_ignored で dunning を二重加算しない (failCas)', async () => {
+    const state = freshState();
+    // 1 本目: attempting → failed 化 + matrix
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', {
+      ...successBody, admin_graphql_api_order_id: null, error_code: 'INSUFFICIENT_FUNDS',
+    });
+    expect(state.contracts.get(GID)?.dunning_attempts).toBe(1);
+    // 2 本目: claim は既に failed なので CAS が changes 0 → late_ignored
+    const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', {
+      ...successBody, admin_graphql_api_order_id: null, error_code: 'INSUFFICIENT_FUNDS',
+    });
+    expect(out).toBe('late_ignored');
+    expect(state.contracts.get(GID)?.dunning_attempts).toBe(1); // 二重加算されない
+  });
+
+  it('R9 LOW: 適用しない failure (mismatch / late) は audit_logs に記録する (§3 一次証跡)', async () => {
+    const state = freshState({ claim: { status: 'succeeded' } });
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/failure', {
+      ...successBody, admin_graphql_api_order_id: null, error_code: 'DO_NOT_HONOR',
+    });
+    expect(state.audits).toContainEqual(
+      expect.objectContaining({ action: 'own_billing.failure_not_applied' }),
+    );
+  });
+
   it('検算不一致の failure は適用せず alert のみ', async () => {
     const state = freshState();
     state.claims.set(`${GID}|2`, claim({ attempt_gid: 'gid://shopify/SubscriptionBillingAttempt/other' }));
