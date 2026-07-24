@@ -602,6 +602,17 @@ read_customer_payment_methods + write_own_subscription_contracts (+webhook 用 r
 5. LINE UI 実 API 化 + 非 LINE マイページ
 6. ¥100 E2E → リハーサル → Katsu 契約 1 件 (WI-5)
 
+### step3 で残した LOW (既知・実害なし。step4 or 気づいた時に対応)
+
+- **SQL レベルの `WHERE status='active'` 並行ガードが単体テストで未検証** (採点 R10 test-integrity LOW):
+  matrix/challenged の UPDATE は `AND status='active'` を持つが、呼び出し側に同等の
+  in-memory ガード (`if (contract.status !== 'active') return 'late_ignored'`) があり、そちらは
+  テスト済み。SQL 述語を消しても全テスト green のまま (= 冗長な二重防御の SQL 側が無テスト)。
+  fake が述語を尊重するようにすれば独立に検出できる。同様に failCas (二重 failure の CAS) は
+  §4.1 の attempting ガードが先に効くため単体では到達せず、並行性ガードとして残置。
+- **email fallback の at-least-once 二重送信窓** (30分クラッシュ窓・通知重複であって二重課金ではない):
+  Resend に決定的冪等キーを渡せるようになれば消せる。現状は受容。
+
 ### step3 で残した MEDIUM (step4 で対応)
 
 - **dunning-origin cycle の遅延 success で I-4 リセットが漏れる余地** (採点 R8 state-machine MEDIUM):

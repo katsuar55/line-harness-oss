@@ -381,8 +381,11 @@ async function deliverOne(
     if (claim?.status === 'succeeded' || dunningCleared || contractGone) {
       await db
         .prepare(
+          // payload も落とす (challenge_link の 3DS URL を D1 に残さない — 採点 R10 LOW。
+          // 他の終端パスと規則を揃える)
           `UPDATE own_billing_notice_queue
-              SET status = 'abandoned', last_error = 'superseded_by_success', sent_at = ?
+              SET status = 'abandoned', last_error = 'superseded_by_success', sent_at = ?,
+                  payload_json = '{}'
             WHERE id = ? AND status = 'sending'`,
         )
         .bind(nowIso, row.id)

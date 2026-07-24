@@ -540,9 +540,16 @@ export async function handleAttemptSuccess(
 
   const { claim, mismatch } = await matchClaim(deps.db, payload.contractGid, payload);
   if (mismatch || !claim) {
-    // success の取り逃しは「課金済み未計上」= 最悪の欠損。必ず人間へ上げる (§6.5 逆引き救済)
+    // success の取り逃しは「課金済み未計上」= 最悪の欠損。必ず人間へ上げる (§6.5 逆引き救済)。
+    // §3: 一次証跡は audit_logs が正。failure 側と対称に永続記録する (採点 R10 LOW)。
     await deps.alert(
       `own-billing: 契約 ${payload.contractGid} の success webhook に対応する claim が特定できません (attempt=${payload.attemptGid ?? 'なし'} order=${payload.orderGid ?? 'なし'}) — 手動突合が必要`,
+    );
+    await appendBillingAudit(
+      deps, contract,
+      (claim ?? { cycle_key: '', attempt_no: 0, attempt_gid: payload.attemptGid }) as ClaimRow,
+      'own_billing.success_not_matched',
+      { reason: mismatch ? 'mismatch' : 'no_claim', orderGid: payload.orderGid, idempotencyKey: payload.idempotencyKey },
     );
     return mismatch ? 'claim_mismatch' : 'no_claim';
   }
@@ -798,6 +805,7 @@ export async function applyChallenged(
     .prepare(
       `UPDATE own_sub_contracts
           SET dunning_state = 'challenged',
+              next_retry_date = NULL,
               dunning_deadline_at = CASE WHEN dunning_state = 'challenged'
                                          THEN dunning_deadline_at ELSE NULL END,
               updated_at = ?
@@ -884,6 +892,7 @@ export async function handleContractLifecycle(
       const dunningSql =
         target === 'paused'
           ? `dunning_state = CASE WHEN dunning_state = 'exhausted' THEN 'exhausted' ELSE 'none' END,
+             dunning_attempts = CASE WHEN dunning_state = 'exhausted' THEN dunning_attempts ELSE 0 END,
              next_retry_date = CASE WHEN dunning_state = 'exhausted' THEN next_retry_date ELSE NULL END,
              dunning_deadline_at = CASE WHEN dunning_state = 'exhausted' THEN dunning_deadline_at ELSE NULL END`
           : `dunning_state = 'none', dunning_attempts = 0, next_retry_date = NULL,

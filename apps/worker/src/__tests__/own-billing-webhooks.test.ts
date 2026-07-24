@@ -579,11 +579,15 @@ describe('§6.1 success', () => {
     expect(state.contracts.get(GID)?.status).toBe('cancelled');
   });
 
-  it('claim が特定できない success は必ず alert する (課金済み未計上を黙らせない)', async () => {
+  it('claim が特定できない success は alert + audit_logs 記録する (課金済み未計上を黙らせない)', async () => {
     const state = freshState({ claim: null });
     const out = await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
     expect(out).toBe('no_claim');
     expect(alertMock).toHaveBeenCalled();
+    // §3 一次証跡 (failure 側と対称に永続記録)
+    expect(state.audits).toContainEqual(
+      expect.objectContaining({ action: 'own_billing.success_not_matched' }),
+    );
   });
 
   it('gate 閉塞中は次サイクル scheduleEdit を打たず repair フラグに退避する', async () => {
