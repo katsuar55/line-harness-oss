@@ -369,9 +369,22 @@ export async function applySuccess(
     contract.status === 'paused' && contract.dunning_state === 'exhausted';
 
   if (systemOriginPause) {
-    // dunning 起因の停止 = 支払えた以上ここに留めない。自動 activate + 再開通知
+    // dunning 起因の停止 = 支払えた以上ここに留めない。自動 activate + 再開通知。
+    //
+    // **status と dunning_state は必ず同一 UPDATE で整合させる** (採点 R5 HIGH)。
+    // R4 で入れた isCurrentCycle ガードにより、非現在サイクルの遅延 success では
+    // 上の I-4 リセットが走らない。そこで status だけ 'active' にすると
+    // **(active, exhausted)** という §4.1 表外状態ができ、listDueContracts の述語
+    // (none|retry_wait) に二度と一致せず **その契約は永久に課金されない**。
+    // S5 は「進行中の dunning」ではなく終端なので、ここでは無条件に解除してよい。
     await deps.db
-      .prepare(`UPDATE own_sub_contracts SET status = 'active', updated_at = ? WHERE contract_gid = ?`)
+      .prepare(
+        `UPDATE own_sub_contracts
+            SET status = 'active', dunning_state = 'none', dunning_attempts = 0,
+                next_retry_date = NULL, dunning_deadline_at = NULL, pending_new_card = 0,
+                updated_at = ?
+          WHERE contract_gid = ?`,
+      )
       .bind(nowIso, contract.contract_gid)
       .run();
     await safeEnqueue(
@@ -931,8 +944,12 @@ async function skipPastCyclesOnResume(
   nowIso: string,
 ): Promise<void> {
   if (!deps.api || !deps.canIssue(contract.contract_gid)) {
-    // 発行系が止まっている間は Shopify を mutate しない。日次 repair に委ねる
+    // 発行系が止まっている間は Shopify を mutate できない。
+    // **この状態で active に戻すと、休止中に過ぎた過去サイクルがそのまま due になり
+    // 顧客に休止期間分を誤請求する** (採点 R5 HIGH)。skip を完了できない以上、
+    // 契約を ops_hold に置いて発行対象から外し、人間/日次 repair の解決を待つ。
     await markRepair(deps, contract.contract_gid, nowIso);
+    await holdForResumeRepair(deps, contract.contract_gid, nowIso, 'gate_closed_or_no_api');
     return;
   }
   const todayJst = jstDate(deps.nowMs);
@@ -963,7 +980,9 @@ async function skipPastCyclesOnResume(
       }
       const res = await deps.api.setCycleSkip(contract.contract_gid, cy.cycleIndex, true);
       if (!res.ok) {
+        // skip できなかった過去サイクルを残したまま課金対象にしない (誤請求の防止)
         await markRepair(deps, contract.contract_gid, nowIso, res.error);
+        await holdForResumeRepair(deps, contract.contract_gid, nowIso, `skip_failed:${cy.cycleIndex}`);
         continue;
       }
       await deps.db
@@ -994,7 +1013,31 @@ async function skipPastCyclesOnResume(
     await resyncContractCycle(deps.db, deps.api, contract.contract_gid, nowIso);
   } catch (e: unknown) {
     await markRepair(deps, contract.contract_gid, nowIso, e instanceof Error ? e.message : String(e));
+    await holdForResumeRepair(deps, contract.contract_gid, nowIso, 'listCycles_failed');
   }
+}
+
+/**
+ * I-5 の skip を完了できなかった再開契約を発行対象から外す。
+ * `ops_hold` は listDueContracts の述語 (none|retry_wait) から外れる既存の状態で、
+ * 「人間が確認するまで課金しない」の意味も一致する (§6.5 の ops 解除 op で復帰)。
+ */
+async function holdForResumeRepair(
+  deps: BillingWebhookDeps,
+  contractGid: string,
+  nowIso: string,
+  reason: string,
+): Promise<void> {
+  await deps.db
+    .prepare(
+      `UPDATE own_sub_contracts SET dunning_state = 'ops_hold', updated_at = ?
+        WHERE contract_gid = ? AND dunning_state = 'none'`,
+    )
+    .bind(nowIso, contractGid)
+    .run();
+  await deps.alert(
+    `own-billing: 契約 ${contractGid} の再開で休止期間分の skip を完了できませんでした (${reason}) — 誤請求防止のため ops_hold にしました。復旧は Admin Ops の release-billing-hold`,
+  );
 }
 
 function isFailingState(contract: OwnContractRow): boolean {
@@ -1058,9 +1101,13 @@ export async function recoverAfterCardUpdate(
   const wasPaused = contract.status === 'paused';
   await deps.db
     .prepare(
+      // pending_new_card もここで消費する (採点 R5 LOW): この経路が「カード更新起点の
+      // 再試行」をまさに今使っているため、残すと後続 failure で E クラス (リトライ禁止) が
+      // 1 回破られる。
       `UPDATE own_sub_contracts
           SET status = 'active', dunning_state = 'none', dunning_attempts = 0,
-              next_retry_date = NULL, dunning_deadline_at = NULL, updated_at = ?
+              next_retry_date = NULL, dunning_deadline_at = NULL, pending_new_card = 0,
+              updated_at = ?
         WHERE contract_gid = ?`,
     )
     .bind(nowIso, contract.contract_gid)
@@ -1072,14 +1119,19 @@ export async function recoverAfterCardUpdate(
     // 固定値だと同一サイクル内で 2 回目の復旧をしたときに冪等マーカーへ食われ、
     // 「停止しました」だけ届いて「再開しました」が届かなくなる。
     const cycleKey = contract.current_cycle_index !== null ? String(contract.current_cycle_index) : '0';
+    // **cycle_key で絞った件数**を使う (採点 R5 LOW): contract 単位の COUNT だと
+    // applySuccess 側 (claim.attempt_no 採番) と同じ番号に落ちて冪等マーカーが衝突し、
+    // 「停止しました」を受け取った顧客に「再開しました」が届かなくなる。
     const sent = await deps.db
       .prepare(
         `SELECT COUNT(*) AS n FROM own_billing_notices
-          WHERE contract_gid = ? AND kind = 'resume_notice'`,
+          WHERE contract_gid = ? AND cycle_key = ? AND kind = 'resume_notice'`,
       )
-      .bind(contract.contract_gid)
+      .bind(contract.contract_gid, cycleKey)
       .first<{ n: number }>();
-    await safeEnqueue(deps, contract, cycleKey, Number(sent?.n ?? 0), 'resume_notice', {}, nowIso);
+    // applySuccess は claim.attempt_no (1 始まり) を使うため、こちらは負方向に採番して
+    // キー空間を分離する (衝突しない・順序も安定)
+    await safeEnqueue(deps, contract, cycleKey, -1 - Number(sent?.n ?? 0), 'resume_notice', {}, nowIso);
   }
   const reloaded = await loadContract(deps.db, contract.contract_gid);
   if (!reloaded) return 'unknown_contract';

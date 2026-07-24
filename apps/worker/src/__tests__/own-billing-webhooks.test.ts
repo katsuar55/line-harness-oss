@@ -341,6 +341,11 @@ function createFakeDb(state: State): D1Database {
                 }
                 return { meta: { changes: 1 } };
               }
+              if (sql.includes("SET dunning_state = 'ops_hold'")) {
+                const c = state.contracts.get(String(args[1]));
+                if (c && c.dunning_state === 'none') c.dunning_state = 'ops_hold';
+                return { meta: { changes: c ? 1 : 0 } };
+              }
               if (sql.includes("SET status = 'active', dunning_state = 'none'")) {
                 const c = state.contracts.get(String(args[1]));
                 if (c) {
@@ -349,6 +354,7 @@ function createFakeDb(state: State): D1Database {
                   c.dunning_attempts = 0;
                   c.next_retry_date = null;
                   c.dunning_deadline_at = null;
+                  if (sql.includes('pending_new_card = 0')) c.pending_new_card = 0;
                 }
                 return { meta: { changes: 1 } };
               }
@@ -1272,6 +1278,66 @@ describe('採点 R4 回帰 — cycles/skip 系', () => {
     });
     expect(out).toBe('noop');
     expect(alertMock).toHaveBeenCalled();
+  });
+});
+
+describe('採点 R5 回帰', () => {
+  it('HIGH: S5 + 非現在サイクルの遅延 success でも (active, none) に着地する (表外状態=永久課金漏れの防止)', async () => {
+    // R4 で入れた isCurrentCycle ガードが systemOriginPause の activate と噛み合わず、
+    // status だけ active・dunning は exhausted のままという §4.1 表外状態を作っていた。
+    const state = freshState({
+      contract: { status: 'paused', dunning_state: 'exhausted', current_cycle_index: 3 },
+      claim: { status: 'skipped', cycle_key: '2' },
+    });
+    await routeBillingWebhook(makeDeps(state), 'subscription_billing_attempts/success', successBody);
+    expect(state.contracts.get(GID)).toMatchObject({
+      status: 'active',
+      dunning_state: 'none',
+      dunning_attempts: 0,
+      next_retry_date: null,
+      dunning_deadline_at: null,
+    });
+  });
+
+  it('HIGH: 再開で過去サイクルを skip できなければ ops_hold にして課金対象から外す', async () => {
+    const state = freshState({ contract: { status: 'paused', dunning_state: 'none' }, claim: null });
+    // adapter 未注入 = skip を実行できない
+    await routeBillingWebhook(
+      makeDeps(state, { api: undefined }),
+      'subscription_contracts/activate',
+      { admin_graphql_api_id: GID },
+    );
+    expect(state.contracts.get(GID)?.dunning_state).toBe('ops_hold');
+    expect(state.contracts.get(GID)?.cadence_repair_needed).toBe(1);
+    expect(alertMock).toHaveBeenCalled();
+  });
+
+  it('再開で skip 自体が失敗した場合も ops_hold にする', async () => {
+    const state = freshState({ contract: { status: 'paused', dunning_state: 'none' }, claim: null });
+    const api = fakeApi({
+      setCycleSkip: async () => ({ ok: false, error: 'boom' }),
+      listCycles: async () => [
+        { cycleIndex: 2, expectedDate: '2026-08-01T03:00:00Z', billed: false, skipped: false },
+      ],
+    });
+    await routeBillingWebhook(makeDeps(state, { api }), 'subscription_contracts/activate', {
+      admin_graphql_api_id: GID,
+    });
+    expect(state.contracts.get(GID)?.dunning_state).toBe('ops_hold');
+  });
+
+  it('LOW: カード更新による S5 復旧は pending_new_card を消費する', async () => {
+    const state = freshState({
+      contract: {
+        dunning_state: 'exhausted', status: 'paused', pending_new_card: 1,
+        payment_method_gid: 'gid://shopify/CustomerPaymentMethod/1',
+      },
+    });
+    await routeBillingWebhook(makeDeps(state), 'subscription_contracts/update', {
+      admin_graphql_api_id: GID,
+      payment_method_id: 'gid://shopify/CustomerPaymentMethod/2',
+    });
+    expect(state.contracts.get(GID)?.pending_new_card).toBe(0);
   });
 });
 
