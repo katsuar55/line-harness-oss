@@ -38,7 +38,7 @@ function foodPage(liffId: string, apiBase: string): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#059669">
+  <meta name="theme-color" content="#2fa8ad">
   <title>食事記録 — naturism</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
@@ -47,33 +47,34 @@ function foodPage(liffId: string, apiBase: string): string {
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     *{-webkit-tap-highlight-color:transparent}
-    body{font-family:'Noto Sans JP',system-ui,sans-serif;background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%);min-height:100vh}
-    .btn-primary{background:linear-gradient(135deg,#059669 0%,#06C755 100%);color:#fff;border:none;transition:transform .15s,box-shadow .15s}
-    .btn-primary:active{transform:scale(0.97);box-shadow:0 2px 8px rgba(5,150,105,.3)}
-    .btn-secondary{background:#fff;color:#059669;border:1.5px solid #d1fae5;transition:background .15s}
-    .btn-secondary:active{background:#ecfdf5}
+    body{font-family:'Noto Sans JP',system-ui,sans-serif;background:linear-gradient(160deg,#f2fafa 0%,#f8fafc 40%,#faf5ff 100%);min-height:100vh}
+    /* 60代可読性 (§7-1): 白文字を載せてよいのは白との比 4.5:1 以上の背景のみ。旧 LINE 黄緑は 2.2:1 で不成立。ページ全体もティールへ移行済 (LINE黄緑封印方針)。 */
+    .btn-primary{background:#0f766e;color:#fff;border:none;transition:transform .15s,box-shadow .15s}
+    .btn-primary:active{transform:scale(0.97);box-shadow:0 2px 8px rgba(15,118,110,.3)}
+    .btn-secondary{background:#fff;color:#0f766e;border:1.5px solid #cfe6e6;transition:background .15s}
+    .btn-secondary:active{background:#eef7f7}
     .btn-danger{background:#fff;color:#dc2626;border:1.5px solid #fecaca;transition:background .15s}
     .btn-danger:active{background:#fef2f2}
     .card{background:rgba(255,255,255,.85);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-radius:16px;border:1px solid rgba(0,0,0,.04);box-shadow:0 1px 4px rgba(0,0,0,.04),0 4px 16px rgba(0,0,0,.02)}
     .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px}
     @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
     input[type="datetime-local"],input[type="number"],input[type="text"],textarea,select{border-radius:12px;border:1.5px solid #e2e8f0;padding:10px 12px;font-size:14px;transition:border-color .2s,box-shadow .2s;background:#fff;width:100%}
-    input:focus,textarea:focus,select:focus{outline:none;border-color:#06C755;box-shadow:0 0 0 3px rgba(6,199,85,.12)}
+    input:focus,textarea:focus,select:focus{outline:none;border-color:#0f766e;box-shadow:0 0 0 3px rgba(15,118,110,.12)}
     #toast{backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);background:rgba(15,23,42,.85);font-weight:500;letter-spacing:.02em}
-    #loading{background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%)}
+    #loading{background:linear-gradient(160deg,#f2fafa 0%,#f8fafc 40%,#faf5ff 100%)}
     .badge{display:inline-flex;align-items:center;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px}
-    .badge-meal{background:#ecfdf5;color:#059669}
+    .badge-meal{background:#eef7f7;color:#0f766e}
     .badge-ai{background:#eff6ff;color:#2563eb}
     .badge-manual{background:#f5f3ff;color:#7c3aed}
     .badge-pending{background:#fef3c7;color:#b45309}
     .badge-failed{background:#fee2e2;color:#b91c1c}
-    .spinner{display:inline-block;width:14px;height:14px;border:2px solid #d1fae5;border-top-color:#059669;border-radius:50%;animation:spin .8s linear infinite}
+    .spinner{display:inline-block;width:14px;height:14px;border:2px solid #cfe6e6;border-top-color:#0f766e;border-radius:50%;animation:spin .8s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
     details>summary{cursor:pointer;list-style:none;outline:none}
     details>summary::-webkit-details-marker{display:none}
     details[open] .chevron{transform:rotate(180deg)}
     .chevron{transition:transform .2s}
-    @media(hover:hover){.btn-primary:hover{box-shadow:0 4px 16px rgba(5,150,105,.25)}}
+    @media(hover:hover){.btn-primary:hover{box-shadow:0 4px 16px rgba(15,118,110,.25)}}
   </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -82,7 +83,7 @@ function foodPage(liffId: string, apiBase: string): string {
   <header class="sticky top-0 z-50" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(0,0,0,.06)">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
       <a href="/liff/portal" class="text-xs text-gray-500 flex items-center gap-1">&larr; マイページ</a>
-      <h1 class="text-base font-bold tracking-tight" style="background:linear-gradient(135deg,#059669,#06C755);-webkit-background-clip:text;-webkit-text-fill-color:transparent">&#x1F37D; 食事記録</h1>
+      <h1 class="text-base font-bold tracking-tight" style="color:#0f766e">&#x1F37D; 食事記録</h1>
       <span class="w-16"></span>
     </div>
   </header>
@@ -175,9 +176,9 @@ function foodPage(liffId: string, apiBase: string): string {
   </main>
 
   <!-- Loading overlay -->
-  <div id="loading" class="fixed inset-0 z-50 flex flex-col items-center justify-center" style="background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%)">
+  <div id="loading" class="fixed inset-0 z-50 flex flex-col items-center justify-center" style="background:linear-gradient(160deg,#f2fafa 0%,#f8fafc 40%,#faf5ff 100%)">
     <div class="spinner" style="width:32px;height:32px;border-width:3px;"></div>
-    <p class="text-sm text-gray-400 mt-4">読み込み中...</p>
+    <p class="text-sm mt-4" style="color:#5b6670">読み込み中...</p>
   </div>
 
   <!-- Toast -->
@@ -335,7 +336,7 @@ function renderTodayStats(stats) {
     '<span class="text-xs text-gray-400 ml-auto">' + mealCount + ' 食</span>' +
     '</div>' +
     '<div class="grid grid-cols-3 gap-2 text-center">' +
-    '<div class="bg-emerald-50 rounded-lg py-2"><p class="text-xs text-gray-500">P</p><p class="text-sm font-bold text-emerald-700">' + p.toFixed(1) + 'g</p></div>' +
+    '<div class="bg-teal-50 rounded-lg py-2"><p class="text-xs text-gray-500">P</p><p class="text-sm font-bold text-teal-800">' + p.toFixed(1) + 'g</p></div>' +
     '<div class="bg-amber-50 rounded-lg py-2"><p class="text-xs text-gray-500">F</p><p class="text-sm font-bold text-amber-700">' + f.toFixed(1) + 'g</p></div>' +
     '<div class="bg-blue-50 rounded-lg py-2"><p class="text-xs text-gray-500">C</p><p class="text-sm font-bold text-blue-700">' + c.toFixed(1) + 'g</p></div>' +
     '</div>';

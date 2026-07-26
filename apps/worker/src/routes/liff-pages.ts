@@ -64,8 +64,22 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
     .tab-active{color:#1d7d82;border-bottom:2.5px solid #2fa8ad;font-weight:600}
     .tab-inactive{color:#475569;border-bottom:2.5px solid transparent}
     nav button{transition:color .2s,border-color .2s;white-space:nowrap}
-    .btn-primary{background:linear-gradient(135deg,#2fa8ad 0%,#1d7d82 100%);color:#fff;border:none;border-radius:999px !important;letter-spacing:.02em;transition:transform .15s,box-shadow .15s}
+    /* 60代可読性 (§7-1): gradient の明るい側 #2fa8ad は白文字で 2.87:1、中間 #269398 でも 3.68:1 と
+       AA (4.5:1) に届かない。ラベルは 14px bold で大文字扱いにもならないため solid #0f766e (5.47:1) に統一する。
+       #0f766e は Flex/メール面で既に使っている既存トークンなので新色は増えない。ブランドはティール基軸のまま。 */
+    .btn-primary{background:#0f766e;color:#fff;border:none;border-radius:999px !important;letter-spacing:.02em;box-shadow:0 2px 8px rgba(15,118,110,.28);transition:transform .15s,box-shadow .15s}
     .btn-primary:active{transform:scale(0.95) translateY(1.5px);box-shadow:0 2px 6px rgba(29,125,130,.35)}
+    /* 連携カード (magic-link 着地面) の 60代トークン (§7-2): 本文≥16px / 行間1.6 / タップ領域≥48px /
+       日付・プランは 20px bold #0f766e。全 .btn-primary への min-height 一括適用は 40+ 箇所の
+       レイアウト回帰を伴うため、本 PR が所有するこの面に限定する。 */
+    #sublink-overlay{z-index:70}
+    .sublink-card{padding:24px;line-height:1.6}
+    .sublink-title{font-size:19px;font-weight:700;color:#052422;line-height:1.5}
+    .sublink-plan{font-size:20px;font-weight:700;color:#0f766e;line-height:1.6}
+    .sublink-body{font-size:16px;color:#3f4b55;line-height:1.6}
+    .sublink-btn{min-height:48px;font-size:16px;font-weight:700;width:100%;border-radius:14px !important}
+    .sublink-sub{min-height:48px;font-size:16px;width:100%;color:#5b6670;background:transparent;border:none}
+    .sublink-sk{height:14px;border-radius:7px;margin:10px auto}
     /* コーラル挿し色 (2026-07-07 Katsu FB: 三層設計 = ティール基調 / コーラル=感情・お得・アクション / ゴールド=プレミア。実測 pp-styles.css --color-coral) */
     /* コーラルは「淡ピーチ chip」が主軸 (2026-07-08 Katsu「濃すぎ・薄く」): 14px 白文字×コーラルは
        物理的に AA 不可 (#e8836a=2.66:1) なので白文字塗りを廃し、薄ピーチ地 + コーラル文字 + コーラル枠へ。
@@ -92,12 +106,14 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
     .mood-btn:active,.skin-btn:active,.bowel-btn:active{transform:translateY(1.5px) scale(0.95)}
     .gender-btn{transition:all .15s;border-radius:12px !important}
     #toast{backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);background:rgba(15,23,42,.85);font-weight:500;letter-spacing:.02em}
-    #loading{background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%)}
+    #loading{background:linear-gradient(160deg,#f2fafa 0%,#f8fafc 40%,#faf5ff 100%)}
     .graph-period-btn{transition:all .15s}
     #survey-answer-modal>div{box-shadow:0 -4px 24px rgba(0,0,0,.08)}
     @media(hover:hover){.btn-primary:hover{box-shadow:0 4px 16px rgba(29,125,130,.25)}}
     /* Ambassador badge */
-    .ambassador-badge{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:linear-gradient(135deg,#fbbf24,#f59e0b);color:#fff;box-shadow:0 1px 4px rgba(245,158,11,.3);animation:badgePop .4s cubic-bezier(.34,1.56,.64,1)}
+    /* §7-1: 10px 白文字を amber gradient (#fbbf24=1.67:1 / #f59e0b=2.15:1) に載せていたので solid #92400e
+       (白 7.0:1) へ。 ゴールドの「特別感」は枠と影で残す (10px は large text の緩和が使えない)。 */
+    .ambassador-badge{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:#92400e;color:#fff;border:1px solid #fbbf24;box-shadow:0 1px 4px rgba(146,64,14,.3);animation:badgePop .4s cubic-bezier(.34,1.56,.64,1)}
     @keyframes badgePop{from{transform:scale(0);opacity:0}to{transform:scale(1);opacity:1}}
     /* Ambassador sparkle rank card */
     .rank-ambassador{position:relative;background:linear-gradient(135deg,rgba(251,191,36,.08) 0%,rgba(245,158,11,.04) 50%,rgba(255,255,255,.9) 100%) !important;border:1.5px solid rgba(251,191,36,.25) !important;overflow:hidden}
@@ -125,7 +141,7 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
     .tab-strip{overflow-x:auto;scrollbar-width:none}
     .tab-strip::-webkit-scrollbar{display:none}
     /* ─ 友だち紹介ヒーロー (実機FB第5弾 2026-07-10: 「お得感を演出」— 動くグラデ枠 + シャイン + 弾む🎁) ─ */
-    .ref-hero{position:relative;border-radius:20px;padding:2px;background:linear-gradient(120deg,#0ABAB5,#ffb39c,#d9573d,#0ABAB5);background-size:300% 300%;animation:refBorder 7s ease infinite}
+    .ref-hero{position:relative;border-radius:20px;padding:2px;background:linear-gradient(120deg,#2fa8ad,#ffb39c,#d9573d,#2fa8ad);background-size:300% 300%;animation:refBorder 7s ease infinite}
     .ref-hero-inner{background:linear-gradient(160deg,#fffdfb,#fff5ec);border-radius:18px;padding:18px 16px;overflow:hidden;position:relative}
     .ref-hero-inner::after{content:'';position:absolute;top:0;left:-60%;width:40%;height:100%;background:linear-gradient(105deg,transparent,rgba(255,255,255,.6),transparent);transform:skewX(-20deg);animation:refShine 4.5s ease-in-out infinite;pointer-events:none}
     @keyframes refBorder{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
@@ -149,7 +165,12 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
     .text-green-700,.text-emerald-700{color:#17666a !important}
     .bg-green-50,.bg-emerald-50{background-color:#eef7f7 !important}
     .bg-green-100,.bg-emerald-100{background-color:#dff0f0 !important}
-    .bg-green-500,.bg-green-600{background-color:#2fa8ad !important}
+    /* §7-1: この 2 ユーティリティは text-white と組で使われる面が 7 箇所ある。 #2fa8ad は白文字 2.87:1 で
+       AA 不成立 (btn-primary の gradient を廃したのと同じ理由) → #115e59 (白 7.58:1)。
+       NOTE: #0f766e (btn-primary) との差は 1.39:1 しかないので、 これは**コントラスト是正であって
+       「非対話バッジと購入 CTA の描き分け」ではない**。 塗りの濃さだけで役割を伝えるのは無理があるので、
+       描き分けは形 (chip か pill か) の設計変更として別途扱う。 */
+    .bg-green-500,.bg-green-600{background-color:#115e59 !important}
     .border-green-200{border-color:#cfe7e8 !important}
     .border-green-300,.border-emerald-300{border-color:#a8d8da !important}
     .border-green-400{border-color:#7cc6c9 !important}
@@ -270,7 +291,7 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
             <span>次まで <span id="badge-pts-next">-</span> pt</span>
           </div>
           <div class="h-2 bg-gray-200 rounded-full overflow-hidden">
-            <div id="badge-progress-bar" class="h-full bg-gradient-to-r from-green-400 to-green-600 transition-all" style="width:0%"></div>
+            <div id="badge-progress-bar" class="h-full transition-all" style="width:0%;background:linear-gradient(90deg,#2fa8ad,#0f766e)"></div>
           </div>
         </div>
         <!-- バッジグリッド -->
@@ -826,10 +847,10 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
   </main>
 
   <!-- Loading overlay -->
-  <div id="loading" class="fixed inset-0 flex items-center justify-center z-50" style="background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%)">
+  <div id="loading" class="fixed inset-0 flex items-center justify-center z-50" style="background:linear-gradient(160deg,#f2fafa 0%,#f8fafc 40%,#faf5ff 100%)">
     <div class="text-center">
       <div class="w-12 h-12 rounded-full animate-spin mx-auto mb-4" style="border:3px solid #e2e8f0;border-top-color:#2fa8ad"></div>
-      <p class="text-sm text-gray-400 font-medium tracking-wide">読み込み中...</p>
+      <p class="text-sm font-medium tracking-wide" style="color:#5b6670">読み込み中...</p>
     </div>
   </div>
 
@@ -982,6 +1003,9 @@ function dismissNextMove() {
 function initOnboarding() {
   try {
     renderNextMove();
+    // 連携カード表示中はツアーを出さない。 magic-link で来る 109 名はまさに「初回訪問かつ未連携」の
+    // コホートなので、 ツアーが連携カードに重なると変換率をそのまま削る。 カードを閉じてから開始する。
+    if (window.__subLinkPending) { window.__tourDeferred = true; return; }
     if (lsGet(ONBOARDING_TOUR_KEY) !== '1') { startTour(); }
   } catch (e) { /* onboarding は非必須。失敗しても本体に影響させない */ }
 }
@@ -1136,6 +1160,9 @@ let isDemo = false;
 async function initLiff() {
   try {
     if (!LIFF_ID) throw new Error('LIFF_ID not configured');
+    // ?slk= は liff.init() より前に退避する。 liff.login() は現在 URL へ戻ってくるが、 その URL は
+    // 既に replaceState で slk を削ってあるため、 sessionStorage が唯一のトークン運搬手段になる。
+    captureSubLinkToken();
     await liff.init({ liffId: LIFF_ID });
     if (!liff.isLoggedIn()) {
       liff.login();
@@ -1156,6 +1183,11 @@ async function initLiff() {
       showFatalError('ログインの有効期限が切れました。お手数ですが、トーク画面から開き直してください🌿');
       return;
     }
+    // 定期購入 連携リンク (?slk=) の fast path。 idToken 代入の直後 = api() が 401 にならない最初の地点で、
+    // かつ 12 loader の Promise.all / loadRank より前に撃つ (メールから来た未連携顧客に最速でカードを出す)。
+    // #rank 早期分岐 (上) と同位置にはしない — そこは idToken 未代入なので全経路 401 → 全画面エラーになる。
+    // await しない: 連携カードの表示がホームの読み込み完了に律速されないようにする。
+    checkSubLinkParam();
     const profile = await liff.getProfile();
     if (profile.pictureUrl) {
       document.getElementById('user-avatar').innerHTML =
@@ -1176,8 +1208,6 @@ async function initLiff() {
     await loadRank();
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
-    // 定期購入 連携リンク経由チェック（?slk=xxx）
-    checkSubLinkParam();
     // ハッシュベースのディープリンク（リッチメニューから特定タブへ遷移）
     handleDeepLink();
     // タブ/ツアーのフリック操作 (2026-07-04 先進性方針)
@@ -1333,7 +1363,10 @@ function loadDemoData() {
 }
 
 // ─── API Helper ───
-async function api(path, body = {}) {
+// opts.softAuth = true のとき 401 で handleAuthExpired() を発火させない。
+// 用途は sub-link (magic-link) 経路のみ: ここで全画面エラーに倒すと、 メールから来た未連携顧客が
+// 連携カードを一度も見られずに終わる。 呼び出し側が退避トークンを保持したまま自前で案内する。
+async function api(path, body = {}, opts = {}) {
   const res = await fetch(API_BASE + path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1343,7 +1376,7 @@ async function api(path, body = {}) {
   // HTTP status を透過 (エラー文字列の英文 sniffing をせず status code で判定できるように)
   if (json && typeof json === 'object' && json.status === undefined) { json.status = res.status; }
   // 401 = idToken 失効。どの呼び出し経路 (mutation 含む) でも全画面の再読み込み誘導へ
-  if (res.status === 401 && !isDemo) { handleAuthExpired(); }
+  if (res.status === 401 && !isDemo && !opts.softAuth) { handleAuthExpired(); }
   return json;
 }
 
@@ -2552,7 +2585,7 @@ async function loadAmbassador() {
       '<div class="flex items-center gap-3 mb-3" style="position:relative;z-index:1">' +
       '<div class="w-12 h-12 rounded-full flex items-center justify-center text-2xl" style="background:linear-gradient(135deg,#fef3c7,#fde68a);box-shadow:0 2px 8px rgba(251,191,36,.25)">' + (tierIcons[data.tier] || '&#x1F331;') + '</div>' +
       '<div><p class="text-sm font-bold text-gray-800">アンバサダー <span class="ambassador-badge">&#x2728; Ambassador</span></p>' +
-      '<p class="text-xs text-yellow-600 font-bold">' + esc(tierNames[data.tier] || data.tier) + '</p></div></div>' +
+      '<p class="text-xs font-bold" style="color:#92400e">' + esc(tierNames[data.tier] || data.tier) + '</p></div></div>' +
       '<div class="grid grid-cols-3 gap-2 text-center" style="position:relative;z-index:1">' +
       '<div class="bg-yellow-50 rounded-lg p-2"><p class="text-lg font-bold text-gray-800">' + (data.surveysCompleted || 0) + '</p><p class="text-xs text-gray-500">回答数</p></div>' +
       '<div class="bg-yellow-50 rounded-lg p-2"><p class="text-lg font-bold text-gray-800">' + (data.productTests || 0) + '</p><p class="text-xs text-gray-500">商品テスト</p></div>' +
@@ -3367,7 +3400,50 @@ function checkReferralParam() {
 // 店舗が顧客の email に載せた 1タップ連携リンクで来た人を、 このLINEと定期購入で連携させる。
 // onclick 文字列を一切使わず createElement + addEventListener + textContent で組む
 // (= inline JS の引用符エスケープ事故 [#193] と XSS を構造的に回避)。
-function checkSubLinkParam() {
+// ─── トークン退避 (§6-4) ───
+// URL からの即時削除 (履歴・共有スクショへの残留防止) は維持したまま、 同一セッションのリロード救済だけを足す。
+// 削除条件: ①redeem 成功 ②preview が terminal 状態を返した ③保存から 30 分経過 ④ユーザーが明示的に閉じた。
+// 保持条件: 通信エラー / リトライ枯渇 (= まだ結論が出ていないので次の試行に残す)。
+var SUBLINK_STASH_KEY = 'sublink_token_v1';
+var SUBLINK_STASH_TTL_MS = 30 * 60 * 1000;
+var SUBLINK_STALL_MS = 15000;
+// sessionStorage が使えない端末 (private mode 等) 用の同一ページ内 fallback。
+// URL からは既に slk を消しているので、 ここが無いと書込失敗時に機能ごと無言で消える。
+var subLinkMemStash = null;
+// 保留中のリトライ timer。 dismiss で必ず止める (止めないと「閉じた」はずのモーダルが復活する)。
+var subLinkTimer = null;
+var subLinkStallTimer = null;
+// **世代カウンタ**: timer を止めるだけでは足りない。 飛行中の fetch は止められないので、
+// 応答が返った時点で「その要求がまだ最新か」を照合する。 これが無いと
+//   ①shimmer 中に背景タップで閉じた後、 遅れて届いた応答がモーダルを復活させる
+//   ②「もう一度試す」で走らせた新しい要求の結果を、 古い要求の応答が上書きして偽の結論を出す
+// が起きる (どちらも R2 採点で実機再現された)。
+var subLinkGen = 0;
+function subLinkNextGen() { subLinkGen += 1; return subLinkGen; }
+function subLinkStale(gen) { return gen !== subLinkGen; }
+
+function subLinkStashWrite(rec) {
+  subLinkMemStash = rec;
+  try { window.sessionStorage.setItem(SUBLINK_STASH_KEY, JSON.stringify(rec)); } catch (e) { /* private mode 等 */ }
+}
+function subLinkClearStash() {
+  subLinkMemStash = null;
+  try { window.sessionStorage.removeItem(SUBLINK_STASH_KEY); } catch (e) { /* ignore */ }
+}
+function subLinkStashRead() {
+  var raw = null;
+  try { raw = window.sessionStorage.getItem(SUBLINK_STASH_KEY); } catch (e) { raw = null; }
+  if (raw) { try { return JSON.parse(raw); } catch (e) { return null; } }
+  return subLinkMemStash;
+}
+
+// URL から slk を抜き取り、 セッションへ退避する。 **2 回呼ぶ (liff.init() の前と後)。**
+//   - init 前: endpoint URL に直接 ?slk= が乗っている場合と、 liff.login() 往復前の救済。
+//   - init 後: 配布リンクは liff.line.me/{id}?slk=... なので、 endpoint には ?liff.state=%3Fslk%3D... で
+//     着弾し、 **liff.init() が復元して初めて location.search に ?slk= が現れる** (#rank 導線と同機構)。
+//     init 前だけで読むと本番の唯一の流入経路で 1 件も拾えない。
+// 冪等: slk が無ければ何もしない。 新しいトークンが来たら上書きする (より新しい意思が勝つ)。
+function captureSubLinkToken() {
   try {
     var params = new URLSearchParams(window.location.search);
     var slk = params.get('slk');
@@ -3375,22 +3451,78 @@ function checkSubLinkParam() {
     var url = new URL(window.location.href);
     url.searchParams.delete('slk');
     window.history.replaceState({}, '', url.toString());
-    subLinkPreview(slk, 0);
+    subLinkStashWrite({ t: slk, s: null, ts: Date.now() });
+    // ツアー抑止は init 完走を待たない (ツアーは loading 解除直後に走るため)
+    window.__subLinkPending = true;
   } catch (e) { /* ignore */ }
 }
 
-function subLinkPreview(token, attempt) {
-  api('/api/liff/sub-link/preview', { token: token }).then(function(res) {
+// 退避トークンを取り出す。 sub (idToken の subject) でスコープし、 共有端末で別の LINE アカウントが
+// 他人の Shopify customer に紐付くのを防ぐ。 初回の読み出しで現在の sub に束縛する。
+function subLinkTakeStash(sub) {
+  var rec = subLinkStashRead();
+  if (!rec) return null;
+  if (!rec.t || typeof rec.t !== 'string') { subLinkClearStash(); return null; }
+  if (!rec.ts || (Date.now() - rec.ts) > SUBLINK_STASH_TTL_MS) { subLinkClearStash(); return null; }
+  if (rec.s && sub && rec.s !== sub) { subLinkClearStash(); return null; }
+  if (!rec.s && sub) { rec.s = sub; subLinkStashWrite(rec); }
+  return rec.t;
+}
+
+function checkSubLinkParam() {
+  try {
+    // liff.init() が liff.state から復元した ?slk= をここで拾う (本番の主経路)。
+    captureSubLinkToken();
+    var sub = null;
+    try { var decoded = liff.getDecodedIDToken(); if (decoded && decoded.sub) { sub = decoded.sub; } } catch (e) { /* demo/未init */ }
+    var token = subLinkTakeStash(sub);
+    if (!token) { subLinkReleaseTour(); return; }
+    window.__subLinkPending = true;
+    subLinkStartPreview(token);
+  } catch (e) { subLinkReleaseTour(); }
+}
+
+// preview chain を開始する唯一の入口。 「shimmer を出す」「世代を進める」「要求を投げる」を
+// 1 箇所に束ねる — 呼び出し側が世代更新を書き忘れると古い応答が新しい画面を上書きするため、
+// 分散させない (2026-07-26 の採点で、 再試行側の世代更新だけが回帰テストで守られない状態になった)。
+function subLinkStartPreview(token) {
+  // shimmer 先出し (§9): preview の friend 非依存化を却下した代わりに、 待ち時間を空白にしない。
+  subLinkShowLoading(token);
+  subLinkPreview(token, 0, subLinkNextGen());
+}
+
+function subLinkRetryLater(fn) {
+  if (subLinkTimer) { clearTimeout(subLinkTimer); }
+  subLinkTimer = setTimeout(function() { subLinkTimer = null; fn(); }, 1500);
+}
+
+function subLinkPreview(token, attempt, gen) {
+  api('/api/liff/sub-link/preview', { token: token }, { softAuth: true }).then(function(res) {
+    if (subLinkStale(gen)) return; // 閉じられた / 新しい要求に置き換わった
     if (res && res.success && res.data) { subLinkShowCard(token, res.data); return; }
     // 友だち追加直後は friend 行が未反映のことがある (follow webhook の反映待ち) → 数回リトライ。
     // ただし friend 未反映 (middleware の 'Friend not found') のときだけ。 機能 disabled の 404
     // ('not_found') や他の 404 はリトライしない (= dormant 時の無駄叩き防止)。
-    if (res && res.status === 404 && res.error === 'Friend not found' && attempt < 4) {
-      setTimeout(function() { subLinkPreview(token, attempt + 1); }, 1500);
-    }
-    // それ以外 (disabled/invalid 等) は静かに無視 = 通常のポータル利用を妨げない
+    var friendPending = res && res.status === 404 && res.error === 'Friend not found';
+    if (friendPending && attempt < 4) { subLinkRetryLater(function() { subLinkPreview(token, attempt + 1, gen); }); return; }
+    // 401 = idToken 失効。 handleAuthExpired は撃たない (softAuth) が、 黙って消すのも不誠実なので案内する。
+    if (res && res.status === 401) { subLinkShowRetryCard(token, 'auth'); return; }
+    // friend 未反映のまま枯渇 / サーバエラー = **結論が出ていない**。 退避を残して再試行導線を出す。
+    // magic-link の対象は「まだ友だちでない」層なので、 この 404 枯渇こそ既定経路。 無言で消してはいけない。
+    if (friendPending) { subLinkShowRetryCard(token, 'friend'); return; }
+    // 429 = レート制限。 この worker は /api/liff/* を IP 単位で絞るので、 CGNAT 共有 IP では
+    // 本人が悪くなくても当たる。 結論ではないので退避を消さない。
+    if (res && res.status === 429) { subLinkShowRetryCard(token, 'net'); return; }
+    if (!res || typeof res.status !== 'number' || res.status >= 500) { subLinkShowRetryCard(token, 'net'); return; }
+    // ここから先は結論が出た失敗 = 退避を消す。 404(not_found) は店舗側で受付が止まっている状態、
+    // それ以外 (400/403 等) はリンク自体が使えない状態なので、 案内文を分ける。
+    subLinkClearStash();
+    subLinkShowUnavailable(res.status === 404 ? 'paused' : 'invalid');
   }).catch(function() {
-    if (attempt < 4) { setTimeout(function() { subLinkPreview(token, attempt + 1); }, 1500); }
+    if (subLinkStale(gen)) return;
+    if (attempt < 4) { subLinkRetryLater(function() { subLinkPreview(token, attempt + 1, gen); }); return; }
+    // 通信エラーでリトライ枯渇 = 結論が出ていない。 退避は残したまま再試行導線を出す (§4 誠実な失敗)。
+    subLinkShowRetryCard(token, 'net');
   });
 }
 
@@ -3401,11 +3533,20 @@ function subLinkNode(tag, cls, text) {
   return el;
 }
 
-function subLinkOverlay(card) {
+function subLinkCard() {
+  return subLinkNode('div', 'sublink-card bg-white rounded-2xl w-full max-w-sm shadow-xl text-center');
+}
+
+function subLinkOverlay(card, phase) {
   subLinkCloseModal();
-  var overlay = subLinkNode('div', 'fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4');
+  var overlay = subLinkNode('div', 'fixed inset-0 flex items-center justify-center bg-black/40 p-4');
   overlay.id = 'sublink-overlay';
   overlay.setAttribute('data-no-tab-swipe', '1');
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('data-sublink-phase', phase || 'card');
+  // 背景タップ = 判断保留の離脱。 退避は残す (同一セッションでのリロード救済を潰さない)。
+  overlay.addEventListener('click', function(ev) { if (ev.target === overlay) { subLinkDismiss(false); } });
   overlay.appendChild(card);
   document.body.appendChild(overlay);
 }
@@ -3413,6 +3554,119 @@ function subLinkOverlay(card) {
 function subLinkCloseModal() {
   var overlay = document.getElementById('sublink-overlay');
   if (overlay && overlay.parentNode) { overlay.parentNode.removeChild(overlay); }
+}
+
+// カードを閉じる唯一の出口。 clearStash=true は「明示的に閉じた」(§6-4 削除条件④)。
+// 閉じたら必ずツアーを解放する — でないと初回ユーザーがツアーを永久に受け取れない。
+// 保留中の timer も必ず止める (止めないと閉じた後にモーダルが復活する)。
+function subLinkDismiss(clearStash) {
+  if (clearStash) { subLinkClearStash(); }
+  subLinkNextGen(); // 飛行中の応答を無効化する (timer を止めるだけでは復活を防げない)
+  subLinkCancelTimers();
+  subLinkCloseModal();
+  subLinkReleaseTour();
+}
+
+function subLinkCancelTimers() {
+  if (subLinkTimer) { clearTimeout(subLinkTimer); subLinkTimer = null; }
+  if (subLinkStallTimer) { clearTimeout(subLinkStallTimer); subLinkStallTimer = null; }
+}
+
+function subLinkReleaseTour() {
+  window.__subLinkPending = false;
+  if (!window.__tourDeferred) return;
+  window.__tourDeferred = false;
+  try {
+    if (window.__fatalShown) return;
+    var loadingEl = document.getElementById('loading');
+    if (loadingEl && loadingEl.style.display !== 'none') return; // まだ読み込み中 = initOnboarding 側が拾う
+    if (lsGet(ONBOARDING_TOUR_KEY) !== '1') { startTour(); }
+  } catch (e) { /* ツアーは非必須 */ }
+}
+
+// shimmer 先出し: preview の応答を待つ間、 空白でも「読み込み中…」だけでもなく、 これから何が出るかの
+// 骨格を見せる。 §9 で「preview の friend 非依存化」を却下した際の代替策なので落とせない。
+function subLinkShowLoading(token) {
+  var card = subLinkCard();
+  card.appendChild(subLinkNode('div', 'text-4xl mb-2', '🌿'));
+  card.appendChild(subLinkNode('h3', 'sublink-title mb-4', '定期購入をLINEに連携'));
+  var widths = ['82%', '100%', '64%'];
+  for (var i = 0; i < widths.length; i++) {
+    var bar = subLinkNode('div', 'skeleton sublink-sk');
+    bar.style.width = widths[i];
+    card.appendChild(bar);
+  }
+  var note = subLinkNode('p', 'sublink-body mt-4', 'ご登録内容を確認しています…');
+  card.appendChild(note);
+  subLinkOverlay(card, 'loading');
+  if (token) { subLinkArmStall(token, 'loading'); }
+}
+
+// fetch が resolve も reject もしないまま固まるケースの脱出口。 ポータル本体の 12s watchdog は
+// #loading にしか書かないため、 その上に出るこのカードには届かない (= shimmer が永久に残る)。
+function subLinkArmStall(token, phase) {
+  if (subLinkStallTimer) { clearTimeout(subLinkStallTimer); }
+  subLinkStallTimer = setTimeout(function() {
+    subLinkStallTimer = null;
+    var overlay = document.getElementById('sublink-overlay');
+    if (!overlay) return; // 既に閉じた/結果が出た
+    if (overlay.getAttribute('data-sublink-phase') !== phase) return; // 先へ進んでいる
+    subLinkNextGen(); // 固まった要求の遅延応答がこの後カードを上書きしないようにする
+    subLinkShowRetryCard(token, 'net');
+  }, SUBLINK_STALL_MS);
+}
+
+// 結論が出ていない失敗。 退避は残し、 再試行と離脱の両方を出す。
+// kind: 'auth' = ログイン失効 / 'friend' = 友だち情報の反映待ち / 'net' = 通信・サーバ側の不調。
+function subLinkShowRetryCard(token, kind) {
+  var isAuth = kind === 'auth';
+  var isFriend = kind === 'friend';
+  var card = subLinkCard();
+  card.appendChild(subLinkNode('div', 'text-4xl mb-2', isAuth ? '🔑' : (isFriend ? '⏳' : '📶')));
+  card.appendChild(subLinkNode('h3', 'sublink-title mb-3', isAuth
+    ? 'ログインの有効期限が切れました'
+    : (isFriend ? 'もう少しお待ちください' : '通信に失敗しました')));
+  card.appendChild(subLinkNode('p', 'sublink-body mb-5', isAuth
+    ? 'お手数ですが、この画面を開き直してから、もう一度お試しください。連携のご案内はこのままお預かりしています。'
+    : (isFriend
+      ? '友だち追加の反映に少し時間がかかっています。少し待ってから「もう一度試す」を押してください。連携のご案内はこのままお預かりしています。'
+      : '電波の良い場所でもう一度お試しください。連携のご案内はこのままお預かりしています。')));
+  if (isAuth) {
+    var reload = subLinkNode('button', 'btn-primary sublink-btn', '開き直す');
+    reload.addEventListener('click', function() { location.reload(); });
+    card.appendChild(reload);
+  } else {
+    var retry = subLinkNode('button', 'btn-primary sublink-btn', 'もう一度試す');
+    retry.addEventListener('click', function() {
+      subLinkCancelTimers();
+      subLinkStartPreview(token); // 世代更新込み = 古い chain の応答は捨てられる
+    });
+    card.appendChild(retry);
+  }
+  var later = subLinkNode('button', 'sublink-sub mt-2', 'あとで');
+  later.addEventListener('click', function() { subLinkDismiss(false); });
+  card.appendChild(later);
+  subLinkOverlay(card, 'retry');
+}
+
+// 結論の出た「使えない」。 顧客側に打つ手は無いが、 黙って消すと「タップしたのに何も起きなかった」に
+// なるので、 事実だけ伝えて閉じられるようにする。
+// kind: 'paused' = 店舗側で受付を停止中 (顧客の落ち度でも、 メールを探し直しても解決しない)
+//       'invalid' = このリンク自体が使えない (最新の案内メールなら解決しうる)
+function subLinkShowUnavailable(kind) {
+  var paused = kind === 'paused';
+  var card = subLinkCard();
+  card.appendChild(subLinkNode('div', 'text-4xl mb-2', 'ℹ️'));
+  card.appendChild(subLinkNode('h3', 'sublink-title mb-3', paused
+    ? 'ただいまお受けできません'
+    : 'このリンクはご利用いただけません'));
+  card.appendChild(subLinkNode('p', 'sublink-body mb-5', paused
+    ? 'LINEでの連携のお受付を一時停止しています。ご迷惑をおかけします。再開しましたら改めてご案内しますので、そのままお待ちください。'
+    : 'お手数ですが、最新のご案内メールのリンクからお試しください。お困りのときはサポートまでご連絡ください。'));
+  var close = subLinkNode('button', 'btn-primary sublink-btn', 'とじる');
+  close.addEventListener('click', function() { subLinkDismiss(true); });
+  card.appendChild(close);
+  subLinkOverlay(card);
 }
 
 function subLinkStatusInfo(status) {
@@ -3425,26 +3679,30 @@ function subLinkStatusInfo(status) {
 
 function subLinkShowCard(token, data) {
   var status = data.status;
-  if (status === 'invalid') return; // 不正/未知パラメータは静かに無視
-  var card = subLinkNode('div', 'bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl text-center');
+  // ready 以外はすべて terminal (結論が出た) = 退避を消す。 残すと同一セッションのリロードで
+  // 同じ結果カードが繰り返し出る (§6-4 削除条件②)。
+  subLinkCancelTimers(); // 応答が来た = 保留中のリトライ/スタール監視は不要
+  if (status !== 'ready') { subLinkClearStash(); }
+  if (status === 'invalid') { subLinkShowUnavailable('invalid'); return; } // 不正/未知トークンも事実を伝えて閉じられるように
+  var card = subLinkCard();
   if (status === 'ready') {
     card.appendChild(subLinkNode('div', 'text-4xl mb-2', '🌿'));
-    card.appendChild(subLinkNode('h3', 'text-lg font-bold text-gray-800 mb-1', '定期購入をLINEに連携'));
-    card.appendChild(subLinkNode('p', 'text-sm font-semibold text-teal-700 mb-2', (data.plan ? String(data.plan) : 'ご登録の定期便')));
-    card.appendChild(subLinkNode('p', 'text-sm text-gray-600 leading-relaxed mb-5', 'このLINEアカウントとお客様の定期購入をつなぎます。次回お届けのご確認やお知らせがLINEで受け取れるようになります。'));
-    var confirm = subLinkNode('button', 'btn-primary w-full py-3 rounded-xl font-bold text-sm', 'このLINEに連携する');
+    card.appendChild(subLinkNode('h3', 'sublink-title mb-2', '定期購入をLINEに連携'));
+    card.appendChild(subLinkNode('p', 'sublink-plan mb-3', (data.plan ? String(data.plan) : 'ご登録の定期便')));
+    card.appendChild(subLinkNode('p', 'sublink-body mb-5', 'このLINEアカウントとお客様の定期購入をつなぎます。次回お届けのご確認やお知らせがLINEで受け取れるようになります。'));
+    var confirm = subLinkNode('button', 'btn-primary sublink-btn', 'このLINEに連携する');
     confirm.addEventListener('click', function() { subLinkRedeem(token, confirm); });
     card.appendChild(confirm);
-    var later = subLinkNode('button', 'w-full py-2.5 mt-2 text-sm text-gray-500', 'あとで');
-    later.addEventListener('click', subLinkCloseModal);
+    var later = subLinkNode('button', 'sublink-sub mt-2', 'あとで');
+    later.addEventListener('click', function() { subLinkDismiss(true); });
     card.appendChild(later);
   } else {
     var info = subLinkStatusInfo(status);
     card.appendChild(subLinkNode('div', 'text-4xl mb-2', info.emoji));
-    card.appendChild(subLinkNode('h3', 'text-lg font-bold text-gray-800 mb-1', info.title));
-    card.appendChild(subLinkNode('p', 'text-sm text-gray-600 leading-relaxed mb-5', info.desc));
-    var close = subLinkNode('button', 'btn-primary w-full py-3 rounded-xl font-bold text-sm', 'とじる');
-    close.addEventListener('click', subLinkCloseModal);
+    card.appendChild(subLinkNode('h3', 'sublink-title mb-3', info.title));
+    card.appendChild(subLinkNode('p', 'sublink-body mb-5', info.desc));
+    var close = subLinkNode('button', 'btn-primary sublink-btn', 'とじる');
+    close.addEventListener('click', function() { subLinkDismiss(true); });
     card.appendChild(close);
   }
   subLinkOverlay(card);
@@ -3452,27 +3710,44 @@ function subLinkShowCard(token, data) {
 
 function subLinkRedeem(token, btn) {
   if (btn) { btn.disabled = true; btn.textContent = '連携しています…'; }
-  api('/api/liff/sub-link/redeem', { token: token }).then(function(res) {
+  // 応答が返らないまま固まっても脱出できるようにする (ボタンは disabled なので放置すると詰む)
+  var overlay = document.getElementById('sublink-overlay');
+  if (overlay) { overlay.setAttribute('data-sublink-phase', 'redeeming'); }
+  var gen = subLinkNextGen();
+  subLinkArmStall(token, 'redeeming');
+  api('/api/liff/sub-link/redeem', { token: token }, { softAuth: true }).then(function(res) {
+    if (subLinkStale(gen)) return; // 閉じられた / スタール経由で別の要求に置き換わった
+    subLinkCancelTimers();
     if (res && res.success && res.data) {
+      subLinkClearStash(); // §6-4 削除条件①
       var plan = (res.data.plan ? String(res.data.plan) : 'ご登録の定期便');
       subLinkResult('🌿', '連携が完了しました', plan + 'のお知らせやお届けのご確認が、これからLINEで受け取れます。');
       if (typeof loadRank === 'function') { try { loadRank(); } catch (e) {} }
-    } else {
-      var msg = (res && res.message) ? res.message : '連携に失敗しました。時間をおいてお試しください。';
-      subLinkResult('⚠️', 'ご連携できませんでした', msg);
+      return;
     }
+    if (res && res.status === 401) { subLinkShowRetryCard(token, 'auth'); return; }
+    // サーバ側が落ちている (5xx) / 応答が壊れている = 結論ではない → 退避を残して再試行導線へ。
+    if (!res || typeof res.status !== 'number' || res.status >= 500) { subLinkShowRetryCard(token, 'net'); return; }
+    // サーバが結論を返した失敗 (使用済み/占有済み/期限切れ 等) は再試行しても同じ = 退避を消す。
+    subLinkClearStash();
+    var msg = (res && res.message) ? res.message : '連携に失敗しました。時間をおいてお試しください。';
+    subLinkResult('⚠️', 'ご連携できませんでした', msg);
   }).catch(function() {
-    subLinkResult('⚠️', 'ご連携できませんでした', '通信エラーが発生しました。時間をおいてお試しください。');
+    if (subLinkStale(gen)) return;
+    // 通信エラーは結論ではない = 退避を残して再試行導線へ (二重 redeem は single-use CAS が防ぐ)
+    subLinkCancelTimers();
+    subLinkShowRetryCard(token, 'net');
   });
 }
 
 function subLinkResult(emoji, title, desc) {
-  var card = subLinkNode('div', 'bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl text-center');
+  var card = subLinkCard();
   card.appendChild(subLinkNode('div', 'text-4xl mb-2', emoji));
-  card.appendChild(subLinkNode('h3', 'text-lg font-bold text-gray-800 mb-1', title));
-  card.appendChild(subLinkNode('p', 'text-sm text-gray-600 leading-relaxed mb-5', desc));
-  var close = subLinkNode('button', 'btn-primary w-full py-3 rounded-xl font-bold text-sm', 'とじる');
-  close.addEventListener('click', subLinkCloseModal);
+  card.appendChild(subLinkNode('h3', 'sublink-title mb-3', title));
+  card.appendChild(subLinkNode('p', 'sublink-body mb-5', desc));
+  var close = subLinkNode('button', 'btn-primary sublink-btn', 'とじる');
+  close.addEventListener('click', function() { subLinkDismiss(true); });
+  card.appendChild(close); // 旧実装はここが欠落しており、 連携成功直後に閉じられないモーダルに閉じ込めていた
   subLinkOverlay(card);
 }
 

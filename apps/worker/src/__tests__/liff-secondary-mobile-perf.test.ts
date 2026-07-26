@@ -25,7 +25,8 @@ const STANDALONE_PAGES = [
 describe('二次 LIFF の mobile/perf/a11y polish', () => {
   for (const file of STANDALONE_PAGES) {
     it(`${file} はブランド theme-color meta を持つ`, () => {
-      expect(readRoute(file)).toMatch(/<meta name="theme-color" content="#059669">/);
+      // 2026-07-26: LINE 黄緑 (#059669) → naturism ティール #2fa8ad。portal と同値に統一。
+      expect(readRoute(file)).toMatch(/<meta name="theme-color" content="#2fa8ad">/);
     });
   }
 
