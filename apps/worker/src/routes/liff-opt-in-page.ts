@@ -62,7 +62,7 @@ function optInPage(liffId: string, apiBase: string): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#059669">
+  <meta name="theme-color" content="#2fa8ad">
   <meta name="robots" content="noindex,nofollow">
   <title>メール配信登録 — naturism</title>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -72,24 +72,25 @@ function optInPage(liffId: string, apiBase: string): string {
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     *{-webkit-tap-highlight-color:transparent}
-    body{font-family:'Noto Sans JP',system-ui,sans-serif;background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%);min-height:100vh}
-    .btn-primary{background:linear-gradient(135deg,#059669 0%,#06C755 100%);color:#fff;border:none;transition:transform .15s,box-shadow .15s}
-    .btn-primary:active{transform:scale(0.97);box-shadow:0 2px 8px rgba(5,150,105,.3)}
+    body{font-family:'Noto Sans JP',system-ui,sans-serif;background:linear-gradient(160deg,#f2fafa 0%,#f8fafc 40%,#faf5ff 100%);min-height:100vh}
+    /* 60代可読性 (§7-1): 白文字を載せてよいのは白との比 4.5:1 以上の背景のみ。旧 LINE 黄緑は 2.2:1 で不成立。ページ全体もティールへ移行済 (LINE黄緑封印方針)。 */
+    .btn-primary{background:#0f766e;color:#fff;border:none;transition:transform .15s,box-shadow .15s}
+    .btn-primary:active{transform:scale(0.97);box-shadow:0 2px 8px rgba(15,118,110,.3)}
     .btn-primary:disabled{background:#cbd5e1;cursor:not-allowed}
-    .btn-secondary{background:#fff;color:#059669;border:1.5px solid #d1fae5;transition:background .15s}
-    .btn-secondary:active{background:#ecfdf5}
+    .btn-secondary{background:#fff;color:#0f766e;border:1.5px solid #cfe6e6;transition:background .15s}
+    .btn-secondary:active{background:#eef7f7}
     .card{background:rgba(255,255,255,.85);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-radius:16px;border:1px solid rgba(0,0,0,.04);box-shadow:0 1px 4px rgba(0,0,0,.04),0 4px 16px rgba(0,0,0,.02)}
     #toast{backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);background:rgba(15,23,42,.85);font-weight:500;letter-spacing:.02em}
-    #loading{background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%)}
-    .spinner{display:inline-block;width:14px;height:14px;border:2px solid #d1fae5;border-top-color:#059669;border-radius:50%;animation:spin .8s linear infinite}
+    #loading{background:linear-gradient(160deg,#f2fafa 0%,#f8fafc 40%,#faf5ff 100%)}
+    .spinner{display:inline-block;width:14px;height:14px;border:2px solid #cfe6e6;border-top-color:#0f766e;border-radius:50%;animation:spin .8s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
     .input-field{width:100%;padding:12px 14px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:15px;background:#fff;transition:border-color .15s}
-    .input-field:focus{outline:none;border-color:#059669;box-shadow:0 0 0 3px rgba(5,150,105,.12)}
+    .input-field:focus{outline:none;border-color:#0f766e;box-shadow:0 0 0 3px rgba(15,118,110,.12)}
     .input-error{border-color:#dc2626 !important}
-    .consent-row{display:flex;align-items:flex-start;gap:10px;padding:12px;background:#f0fdf4;border:1.5px solid #d1fae5;border-radius:10px;cursor:pointer;line-height:1.6;font-size:13px;color:#374151}
-    .consent-row input{margin-top:3px;cursor:pointer;width:18px;height:18px;accent-color:#059669}
-    .benefits-box{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:14px}
-    .benefits-box ul{list-style:disc;padding-left:20px;margin:0;line-height:1.8;color:#166534;font-size:12.5px}
+    .consent-row{display:flex;align-items:flex-start;gap:10px;padding:12px;background:#f2fafa;border:1.5px solid #cfe6e6;border-radius:10px;cursor:pointer;line-height:1.6;font-size:13px;color:#374151}
+    .consent-row input{margin-top:3px;cursor:pointer;width:18px;height:18px;accent-color:#0f766e}
+    .benefits-box{background:#f2fafa;border:1px solid #cfe6e6;border-radius:12px;padding:14px}
+    .benefits-box ul{list-style:disc;padding-left:20px;margin:0;line-height:1.8;color:#0f5f5c;font-size:12.5px}
   </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -97,7 +98,7 @@ function optInPage(liffId: string, apiBase: string): string {
   <header class="sticky top-0 z-50" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(0,0,0,.06)">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
       <a href="/liff/portal" class="text-xs text-gray-500 flex items-center gap-1">&larr; マイページ</a>
-      <h1 class="text-base font-bold tracking-tight" style="background:linear-gradient(135deg,#059669,#06C755);-webkit-background-clip:text;-webkit-text-fill-color:transparent">📧 メール配信登録</h1>
+      <h1 class="text-base font-bold tracking-tight" style="color:#0f766e">📧 メール配信登録</h1>
       <span class="w-16"></span>
     </div>
   </header>
@@ -113,7 +114,7 @@ function optInPage(liffId: string, apiBase: string): string {
 
       <div class="card p-5 mt-4">
         <div class="benefits-box mb-4">
-          <p class="text-xs text-green-800 font-semibold mb-1.5">📬 配信内容</p>
+          <p class="text-xs text-teal-800 font-semibold mb-1.5">📬 配信内容</p>
           <ul>
             <li>新商品の先行ご案内</li>
             <li>季節の健康コラム / 摂取アドバイス</li>
@@ -159,7 +160,7 @@ function optInPage(liffId: string, apiBase: string): string {
   <!-- Loading overlay -->
   <div id="loading" class="fixed inset-0 z-50 flex flex-col items-center justify-center">
     <div class="spinner" style="width:32px;height:32px;border-width:3px;"></div>
-    <p class="text-sm text-gray-400 mt-4">読み込み中...</p>
+    <p class="text-sm mt-4" style="color:#5b6670">読み込み中...</p>
   </div>
 
   <!-- Toast -->

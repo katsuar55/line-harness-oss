@@ -33,7 +33,7 @@ function graphPage(liffId: string, apiBase: string): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#059669">
+  <meta name="theme-color" content="#2fa8ad">
   <title>📊 食事グラフ — naturism</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
@@ -43,21 +43,22 @@ function graphPage(liffId: string, apiBase: string): string {
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     *{-webkit-tap-highlight-color:transparent}
-    body{font-family:'Noto Sans JP',system-ui,sans-serif;background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%);min-height:100vh}
+    body{font-family:'Noto Sans JP',system-ui,sans-serif;background:linear-gradient(160deg,#f2fafa 0%,#f8fafc 40%,#faf5ff 100%);min-height:100vh}
     .card{background:rgba(255,255,255,.85);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-radius:16px;border:1px solid rgba(0,0,0,.04);box-shadow:0 1px 4px rgba(0,0,0,.04),0 4px 16px rgba(0,0,0,.02)}
-    .btn-primary{background:linear-gradient(135deg,#059669 0%,#06C755 100%);color:#fff;border:none;transition:transform .15s,box-shadow .15s;border-radius:12px}
-    .btn-primary:active{transform:scale(0.97);box-shadow:0 2px 8px rgba(5,150,105,.3)}
+    /* 60代可読性 (§7-1): 白文字を載せてよいのは白との比 4.5:1 以上の背景のみ。旧 LINE 黄緑は 2.2:1 で不成立。ページ全体もティールへ移行済 (LINE黄緑封印方針)。 */
+    .btn-primary{background:#0f766e;color:#fff;border:none;transition:transform .15s,box-shadow .15s;border-radius:12px}
+    .btn-primary:active{transform:scale(0.97);box-shadow:0 2px 8px rgba(15,118,110,.3)}
     .range-btn{transition:all .15s;border-radius:10px;font-weight:500}
-    .range-btn-active{background:linear-gradient(135deg,#059669,#06C755);color:#fff;box-shadow:0 2px 8px rgba(5,150,105,.25)}
+    .range-btn-active{background:#0f766e;color:#fff;box-shadow:0 2px 8px rgba(15,118,110,.25)}
     .range-btn-inactive{background:#fff;color:#64748b;border:1px solid #e2e8f0}
     .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px}
     @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
     .chart-wrap{position:relative;height:240px;width:100%}
     .empty-state{display:flex;align-items:center;justify-content:center;height:240px;color:#94a3b8;font-size:14px}
-    #loading{background:linear-gradient(160deg,#f0fdf4 0%,#f8fafc 40%,#faf5ff 100%);position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:100}
-    .spinner{width:36px;height:36px;border:3px solid #e2e8f0;border-top-color:#06C755;border-radius:50%;animation:spin .8s linear infinite}
+    #loading{background:linear-gradient(160deg,#f2fafa 0%,#f8fafc 40%,#faf5ff 100%);position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:100}
+    .spinner{width:36px;height:36px;border:3px solid #e2e8f0;border-top-color:#0f766e;border-radius:50%;animation:spin .8s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
-    @media(hover:hover){.btn-primary:hover{box-shadow:0 4px 16px rgba(5,150,105,.25)}}
+    @media(hover:hover){.btn-primary:hover{box-shadow:0 4px 16px rgba(15,118,110,.25)}}
   </style>
 </head>
 <body class="min-h-screen pb-20">
@@ -66,8 +67,8 @@ function graphPage(liffId: string, apiBase: string): string {
 
   <header class="sticky top-0 z-40" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(0,0,0,.06)">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center gap-3">
-      <a href="/liff/food" class="text-emerald-600 text-sm font-medium hover:underline" aria-label="食事ログに戻る">&larr; 戻る</a>
-      <h1 class="text-lg font-bold tracking-tight ml-1" style="background:linear-gradient(135deg,#059669,#06C755);-webkit-background-clip:text;-webkit-text-fill-color:transparent">📊 食事グラフ</h1>
+      <a href="/liff/food" class="text-teal-700 text-sm font-medium hover:underline" aria-label="食事ログに戻る">&larr; 戻る</a>
+      <h1 class="text-lg font-bold tracking-tight ml-1" style="color:#0f766e">📊 食事グラフ</h1>
     </div>
   </header>
 
@@ -91,13 +92,10 @@ function graphPage(liffId: string, apiBase: string): string {
 
     <!-- PFC chart card -->
     <section class="card p-4">
+      <!-- 凡例は Chart.js 側 (canvas 内・ラベル付き) に一本化した。 8px の色ドットだけの自前凡例は
+           白地との分離が 2:1 前後しか出ず、 色だけに依存する凡例にもなっていた (WCAG 1.4.1 / 1.4.11)。 -->
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-sm font-bold text-gray-800">🥗 PFC (g) — 積み上げ</h2>
-        <div class="flex gap-3 text-xs text-gray-500">
-          <span><span class="inline-block w-2 h-2 rounded-full" style="background:#10b981"></span> P</span>
-          <span><span class="inline-block w-2 h-2 rounded-full" style="background:#f59e0b"></span> F</span>
-          <span><span class="inline-block w-2 h-2 rounded-full" style="background:#3b82f6"></span> C</span>
-        </div>
       </div>
       <div id="pfc-wrap" class="chart-wrap"><canvas id="pfc-chart"></canvas></div>
       <div id="pfc-empty" class="empty-state" style="display:none">データがありません</div>
@@ -241,8 +239,10 @@ function graphPage(liffId: string, apiBase: string): string {
       type: 'bar',
       data: {
         labels: labels,
+        // 系列色は「色相」だけでなく「明度」でも離す (ティール化で P と C が近づいた指摘への対応)。
+        // P=濃ティール / F=明るいアンバー / C=中間の青 の 3 段。 凡例も出して色だけに依存させない (WCAG 1.4.1)。
         datasets: [
-          { label: 'P (g)', data: protein, backgroundColor: '#10b981' },
+          { label: 'P (g)', data: protein, backgroundColor: '#0f766e' },
           { label: 'F (g)', data: fat, backgroundColor: '#f59e0b' },
           { label: 'C (g)', data: carbs, backgroundColor: '#3b82f6' },
         ],
@@ -250,7 +250,7 @@ function graphPage(liffId: string, apiBase: string): string {
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
+        plugins: { legend: { display: true, position: 'bottom', labels: { color: '#3f4b55', boxWidth: 10, font: { size: 12 } } } },
         scales: {
           x: { stacked: true, ticks: { color: '#64748b', font: { size: 10 }, maxRotation: 0, autoSkip: true } },
           y: { stacked: true, beginAtZero: true, ticks: { color: '#64748b', font: { size: 10 } } },
@@ -282,7 +282,7 @@ function graphPage(liffId: string, apiBase: string): string {
 
     function tile(label, value, unit) {
       // label/unit はリテラル, value は number なので textContent 経由でなくても XSS 経路なし
-      return '<div class="bg-emerald-50/50 rounded-xl p-3 border border-emerald-100">' +
+      return '<div class="bg-teal-50/50 rounded-xl p-3 border border-teal-100">' +
         '<p class="text-xs text-gray-500">' + label + '</p>' +
         '<p class="text-lg font-bold text-gray-800 mt-1">' + value + '<span class="text-xs text-gray-500 ml-1">' + unit + '</span></p>' +
         '</div>';

@@ -39,15 +39,21 @@ describe('LINE黄緑の封印 (naturism ティール統一)', () => {
     expect(pages).not.toContain('rgba(5,150,105');
   });
 
-  it('ブランドトークン :root とティール gradient の btn-primary (pill 形状)', () => {
+  it('ブランドトークン :root と AA 合格 solid の btn-primary (pill 形状)', () => {
     expect(pages).toMatch(/:root\{--brand:#2fa8ad;--brand-deep:#1d7d82/);
-    expect(pages).toMatch(/\.btn-primary\{background:linear-gradient\(135deg,#2fa8ad 0%,#1d7d82 100%\)/);
+    // 2026-07-26 §7-1: gradient は明るい側 #2fa8ad が白文字 2.87:1 で AA 不成立 → solid #0f766e (5.47:1)。
+    expect(pages).toMatch(/\.btn-primary\{background:#0f766e;color:#fff/);
+    expect(pages).not.toMatch(/\.btn-primary\{background:linear-gradient/);
     expect(pages).toMatch(/\.btn-primary\{[^}]*border-radius:999px !important/);
   });
 
   it('brand skin: green/emerald ユーティリティが !important でブランド実色に上書きされる', () => {
     expect(pages).toMatch(/\.text-green-500,\.text-green-600,\.text-emerald-600\{color:#1d7d82 !important\}/);
-    expect(pages).toMatch(/\.bg-green-500,\.bg-green-600\{background-color:#2fa8ad !important\}/);
+    // 2026-07-26 §7-1: この 2 ユーティリティは text-white と組で使う面があり、#2fa8ad は白文字 2.87:1 で
+    // AA 不成立。塗り面は #115e59 (白 7.0:1) へ — btn-primary (#0f766e) と同色にすると
+    // 非対話バッジと購入 CTA が同じ塗り・同じ pill で見分けられなくなるため 1 段暗くする。
+    // 文字色・枠色の写像はティール基軸のまま。
+    expect(pages).toMatch(/\.bg-green-500,\.bg-green-600\{background-color:#115e59 !important\}/);
     expect(pages).toMatch(/\.border-green-500,\.border-green-600\{border-color:#2fa8ad !important\}/);
     // variant (hover/active) も上書き — TS template literal では \\: が CSS の \: になる
     expect(pages).toContain('.hover\\\\:bg-green-100:hover');

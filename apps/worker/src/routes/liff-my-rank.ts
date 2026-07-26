@@ -195,7 +195,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#059669">
+  <meta name="theme-color" content="#2fa8ad">
   <title>マイランク — naturism</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
@@ -219,7 +219,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
       filter:drop-shadow(0 10px 18px rgba(0,0,0,.20))}
     .badge-glow{filter:drop-shadow(0 4px 10px rgba(0,0,0,.18))}
     #loading{background:linear-gradient(165deg,#ecfeff 0%,#f8fafc 42%,#faf5ff 100%)}
-    .spinner{display:inline-block;width:34px;height:34px;border:3px solid #cffafe;border-top-color:#0ABAB5;border-radius:50%;animation:spin .8s linear infinite}
+    .spinner{display:inline-block;width:34px;height:34px;border:3px solid #cfe6e6;border-top-color:#0f766e;border-radius:50%;animation:spin .8s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
     .pop{animation:pop .55s cubic-bezier(.22,1.4,.4,1) both}
     @keyframes pop{0%{transform:scale(.7);opacity:0}100%{transform:scale(1);opacity:1}}
@@ -240,7 +240,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
   <header class="sticky top-0 z-40" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(0,0,0,.05)">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
       <a href="/liff/portal" class="text-xs text-gray-500 flex items-center gap-1 tap">&larr; マイページ</a>
-      <h1 class="text-base font-extrabold tracking-tight" style="color:#0ABAB5">&#x1F451; マイランク</h1>
+      <h1 class="text-base font-extrabold tracking-tight" style="color:#0f766e">&#x1F451; マイランク</h1>
       <span class="w-16"></span>
     </div>
   </header>
@@ -257,7 +257,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
     <section id="coupons-card" style="display:none;"></section>
     <section id="about-card" style="display:none;"></section>
     <a id="store-cta" href="https://${escapeHtml(storeDomain)}" style="display:none;" class="block text-center card tap" >
-      <span class="inline-flex items-center justify-center gap-2 w-full py-3.5 text-sm font-bold" style="color:#0ABAB5">&#x1F6CD;&#xFE0F; ストアでお買い物する &rarr;</span>
+      <span class="inline-flex items-center justify-center gap-2 w-full py-3.5 text-sm font-bold" style="color:#0f766e">&#x1F6CD;&#xFE0F; ストアでお買い物する &rarr;</span>
     </a>
     <section id="error-card" class="card p-6 text-center" style="display:none;">
       <p class="text-3xl mb-2">&#x1F614;</p>
@@ -270,7 +270,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
 
   <div id="loading" class="fixed inset-0 z-50 flex flex-col items-center justify-center">
     <div class="spinner"></div>
-    <p class="text-sm text-gray-400 mt-4">読み込み中...</p>
+    <p class="text-sm mt-4" style="color:#5b6670">読み込み中...</p>
   </div>
 
 <script>
@@ -311,7 +311,7 @@ var DEMO_DATA = {
 function esc(s){ if(s===null||s===undefined) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function yen(n){ try{ return '¥' + Number(n||0).toLocaleString('ja-JP'); }catch(e){ return '¥' + (n||0); } }
 // badgeColor は style 属性に入るため HTML-escape では不十分 (CSS injection 防止)。hex のみ allowlist 正規化。
-function safeColor(c){ return /^#[0-9A-Fa-f]{3,8}$/.test(String(c)) ? String(c) : '#0ABAB5'; }
+function safeColor(c){ return /^#[0-9A-Fa-f]{3,8}$/.test(String(c)) ? String(c) : '#0f766e'; }
 // 背景色の明度から読みやすい文字色を選ぶ (= 明るい金/銀バッジに白文字で潰れるのを防止)。
 function textOn(hex){ var h=String(hex).replace('#',''); if(h.length===3){ h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2]; } var r=parseInt(h.substr(0,2),16),g=parseInt(h.substr(2,2),16),b=parseInt(h.substr(4,2),16); if(isNaN(r)) return '#ffffff'; return (0.299*r+0.587*g+0.114*b)/255 > 0.62 ? '#1f2937' : '#ffffff'; }
 // rank id → 英語表示名 (この画面はランク名を英語で大きく見せる)。
@@ -341,7 +341,7 @@ function copyCode(code){
 
 function renderRank(d){
   var rank = d.rank || {};
-  var color = safeColor(rank.badgeColor || '#0ABAB5');
+  var color = safeColor(rank.badgeColor || '#0f766e');
   var txt = textOn(color);
   var emoji = rank.badgeEmoji || '✨';
   var pct = Number.isFinite(rank.discountPercent) ? Math.floor(rank.discountPercent) : 0;
@@ -383,7 +383,7 @@ function renderProgress(d){
     '<span class="text-xs font-bold text-gray-600">'+esc(fmtYmd(nextEvalDate()))+'</span>' +
   '</div>';
   if (!d.next){
-    card.innerHTML = '<p class="text-sm font-bold text-center" style="color:#0ABAB5">&#x2728; 最高ランク達成！いつもありがとうございます</p>' + evalLine;
+    card.innerHTML = '<p class="text-sm font-bold text-center" style="color:#0f766e">&#x2728; 最高ランク達成！いつもありがとうございます</p>' + evalLine;
     return;
   }
   var ratio = Math.max(0, Math.min(1, d.progressRatio || 0));
@@ -394,11 +394,11 @@ function renderProgress(d){
       '<p class="text-sm font-bold text-gray-800"><span class="en">'+esc(enName(d.next.id))+'</span> <span class="text-xs text-gray-400">'+esc(d.next.name)+'</span></p>' +
     '</div>' +
     '<div class="w-full h-3 rounded-full overflow-hidden" style="background:#e2e8f0">' +
-      '<div class="bar-fill h-3 rounded-full" id="bar" style="width:0%;background:linear-gradient(90deg,#0ABAB5,#22d3ee)"></div>' +
+      '<div class="bar-fill h-3 rounded-full" id="bar" style="width:0%;background:linear-gradient(90deg,#2fa8ad,#80c8cd)"></div>' +
     '</div>' +
     (d.next.remainingJpy <= 1
       ? '<p class="text-xs text-gray-500 mt-2 text-center">まずは1回のお買い物で '+esc(d.next.name)+'会員へ</p>'
-      : '<p class="text-xs text-gray-500 mt-2 text-center">あと <span class="font-bold" style="color:#0ABAB5">'+esc(yen(d.next.remainingJpy))+'</span> で '+esc(d.next.name)+'にランクアップ</p>') +
+      : '<p class="text-xs text-gray-500 mt-2 text-center">あと <span class="font-bold" style="color:#0f766e">'+esc(yen(d.next.remainingJpy))+'</span> で '+esc(d.next.name)+'にランクアップ</p>') +
     evalLine;
   setTimeout(function(){ var b=document.getElementById('bar'); if(b) b.style.width = pctW + '%'; }, 80);
 }
@@ -483,14 +483,14 @@ function renderLink(d){
       '<input id="link-email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" aria-label="ご注文時のメールアドレス" placeholder="ご注文時のメールアドレス" ' +
         'class="w-full px-3.5 py-2.5 rounded-xl text-sm mb-2" style="border:1px solid #e2e8f0;outline:none">' +
       '<button type="button" id="link-send-btn" class="tap w-full text-white text-sm font-bold py-2.5 rounded-xl shadow" ' +
-        'style="background:linear-gradient(135deg,#0ABAB5,#22d3ee)">確認コードを送信</button>' +
+        'style="background:#0f766e">確認コードを送信</button>' +
     '</div>' +
     '<div id="link-step-code" style="display:none">' +
       '<p class="text-xs text-gray-500 mb-2"><span id="link-sent-to" class="font-bold text-gray-700"></span> に確認コードを送信しました（5分間有効）。</p>' +
       '<input id="link-code" type="text" inputmode="numeric" autocomplete="one-time-code" enterkeyhint="done" aria-label="6桁の確認コード" maxlength="6" placeholder="6桁の確認コード" ' +
         'class="w-full px-3.5 py-2.5 rounded-xl text-sm mb-2 text-center font-bold" style="border:1px solid #e2e8f0;outline:none;letter-spacing:.4em">' +
       '<button type="button" id="link-verify-btn" class="tap w-full text-white text-sm font-bold py-2.5 rounded-xl shadow" ' +
-        'style="background:linear-gradient(135deg,#0ABAB5,#22d3ee)">メールアドレスを確認して連携</button>' +
+        'style="background:#0f766e">メールアドレスを確認して連携</button>' +
       '<button type="button" id="link-restart" class="tap w-full text-xs text-gray-600 mt-2 py-3 rounded-xl" style="background:#f8fafc;border:1px solid #e2e8f0">別のメールアドレスで送り直す</button>' +
     '</div>' +
     '<p id="link-msg" role="status" aria-live="polite" style="display:none;font-size:12px;margin-top:8px;text-align:center"></p>';
@@ -513,10 +513,10 @@ function renderShop(d){
   card.style.display = 'block';
   var html = '<div class="flex items-center justify-between mb-3">' +
     '<p class="text-sm font-bold text-gray-700">&#x1F6CD;&#xFE0F; おトクにお買い物</p>' +
-    (pct > 0 ? '<span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:#ecfeff;color:#0ABAB5">ランク特典 ' + pct + '% OFF</span>' : '') +
+    (pct > 0 ? '<span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:#eef7f7;color:#0f766e">ランク特典 ' + pct + '% OFF</span>' : '') +
   '</div>';
   if (applyUrl){
-    html += '<a href="' + esc(applyUrl) + '" class="tap block text-center text-white text-sm font-bold py-3 rounded-xl shadow mb-3" style="background:linear-gradient(135deg,#0ABAB5,#22d3ee)">' +
+    html += '<a href="' + esc(applyUrl) + '" class="tap block text-center text-white text-sm font-bold py-3 rounded-xl shadow mb-3" style="background:#0f766e">' +
       (pct > 0 ? pct + '% OFF を使ってお買い物' : 'お買い物にすすむ') + ' &rarr;</a>';
   }
   if (items.length){
@@ -530,7 +530,7 @@ function renderShop(d){
         img +
         '<div class="flex-1 min-w-0"><p class="text-xs font-bold text-gray-800 truncate">' + esc(q.title) + '</p>' +
           (price ? '<p class="text-xs text-gray-500 mt-0.5">' + esc(price) + '</p>' : '') + '</div>' +
-        '<span class="text-xs font-bold text-white px-3 py-1.5 rounded-lg shrink-0" style="background:#0ABAB5">購入</span>' +
+        '<span class="text-xs font-bold text-white px-3 py-1.5 rounded-lg shrink-0" style="background:#0f766e">購入</span>' +
       '</a>';
     }).join('') + '</div>';
   }
@@ -542,7 +542,7 @@ function renderCoupons(d){
   card.className = 'card p-5 rise';
   card.style.display = 'block';
   var list = (d.coupons || []).filter(function(c){ return c && c.code; });
-  var head = '<div class="flex items-center justify-between mb-3"><p class="text-sm font-bold text-gray-700">&#x1F39F;&#xFE0F; 保有クーポン</p><span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:#ecfeff;color:#0ABAB5">'+list.length+'枚</span></div>';
+  var head = '<div class="flex items-center justify-between mb-3"><p class="text-sm font-bold text-gray-700">&#x1F39F;&#xFE0F; 保有クーポン</p><span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:#eef7f7;color:#0f766e">'+list.length+'枚</span></div>';
   if (list.length === 0){
     card.innerHTML = head + '<p class="text-xs text-gray-400 text-center py-3">利用できるクーポンはまだありません</p>';
     return;
@@ -552,10 +552,10 @@ function renderCoupons(d){
     return '<div class="flex items-center gap-3 p-3 rounded-xl" style="background:linear-gradient(135deg,#f0fdfa,#faf5ff);border:1px solid #e2e8f0">' +
       '<div class="flex-1 min-w-0">' +
         '<p class="text-sm font-bold text-gray-800 truncate">'+esc(c.title || 'クーポン')+'</p>' +
-        '<p class="text-xs font-bold mt-0.5" style="color:#0ABAB5">'+esc(couponValueLabel(c))+(exp ? ' <span class="text-gray-400 font-normal">/ '+esc(exp)+'まで</span>' : '')+'</p>' +
+        '<p class="text-xs font-bold mt-0.5" style="color:#0f766e">'+esc(couponValueLabel(c))+(exp ? ' <span class="text-gray-400 font-normal">/ '+esc(exp)+'まで</span>' : '')+'</p>' +
         '<p class="text-[11px] text-gray-400 mt-0.5 font-mono truncate">'+esc(c.code)+'</p>' +
       '</div>' +
-      '<button type="button" data-code="'+esc(c.code)+'" class="copy-btn tap shrink-0 text-xs font-bold text-white px-3 py-2 rounded-lg shadow" style="background:#0ABAB5">コピー</button>' +
+      '<button type="button" data-code="'+esc(c.code)+'" class="copy-btn tap shrink-0 text-xs font-bold text-white px-3 py-2 rounded-lg shadow" style="background:#0f766e">コピー</button>' +
     '</div>';
   }).join('');
   card.innerHTML = head + '<div class="space-y-2">'+rows+'</div>';
@@ -574,10 +574,10 @@ function renderAbout(d){
   var rows = ladder.map(function(r){
     var active = (r.id === curId);
     var thr = (Number(r.minTrailing12moJpy)||0) <= 1 ? (Number(r.minTrailing12moJpy)===0 ? '¥0〜' : '¥1〜') : yen(r.minTrailing12moJpy)+'〜';
-    return '<div class="ladder-row flex items-center justify-between px-4 py-2.5" style="'+(active?'background:#ecfeff':'')+'">' +
+    return '<div class="ladder-row flex items-center justify-between px-4 py-2.5" style="'+(active?'background:#eef7f7':'')+'">' +
       '<div class="flex items-center gap-2">' +
-        (active ? '<span style="color:#0ABAB5">&#x25B6;</span>' : '<span class="w-3 inline-block"></span>') +
-        '<span class="en text-sm font-bold '+(active?'':'text-gray-600')+'" style="'+(active?'color:#0ABAB5':'')+'">'+esc(enName(r.id))+'</span>' +
+        (active ? '<span style="color:#0f766e">&#x25B6;</span>' : '<span class="w-3 inline-block"></span>') +
+        '<span class="en text-sm font-bold '+(active?'':'text-gray-600')+'" style="'+(active?'color:#0f766e':'')+'">'+esc(enName(r.id))+'</span>' +
         '<span class="text-[11px] text-gray-400">'+esc(r.name)+'</span>' +
       '</div>' +
       '<div class="flex items-center gap-3">' +
