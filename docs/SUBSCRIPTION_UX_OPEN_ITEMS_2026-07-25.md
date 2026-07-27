@@ -125,7 +125,9 @@ HB 側締切の再計算) が未定義。放置すると deferred が「承り�
    sessionStorage 退避は §6-4 の削除条件 4 つ込み + `sub` スコープ。sub-link 経路の 401 は
    `handleAuthExpired` を撃たない (`api(..., {softAuth:true})`)。ツアーはカード表示中は抑止し閉じたら解放。
    併せて `subLinkResult` の**閉じるボタン appendChild 欠落**を修正 (連携成功直後に閉じられないモーダルだった)。
-2. ⏳ **LIFF「友だち追加オプション」= On(normal)** — LINE Developers コンソールがログイン必須のため **Katsu 作業**。
+2. ✅ **LIFF「友だち追加オプション」= On (aggressive) で決着** (2026-07-26 Katsu 設定確認)。設計の
+   On(normal) 指定から意図的に変更維持 — 友だち追加は redeem の必須条件のため、normal のチェック
+   見落とし (=404 リトライ待ちへの脱落) より aggressive の専用 1 画面が正。§2 / §10-2 注記参照。
 3. ✅ **60代可読性トークン** (§7) — LIFF 側を実装済 (下記)。**Flex 側 (`action.label` 全角 8 字 / `size` 規約) は未実装** =
    §10-5 のリマインドカード実装時に同時に入れる。
 4. ✅ **shimmer 先出し** — `subLinkShowLoading()` として実装済。
