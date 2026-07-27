@@ -1,0 +1,77 @@
+name: Deploy Admin Web
+
+# main への push で admin web (apps/web → Cloudflare Pages: naturism-admin) を自動デプロイ。
+# CI workflow (typecheck + test) が通った場合のみ走る (deploy-worker.yml と同型)。
+#
+# 背景 (2026-07-26): naturism-admin.pages.dev は手動デプロイのみで運用され (最終 = 2026-06-15 の
+# 手動再デプロイ 763da62b)、以後 API だけが進化して「開くと空のダッシュボード」に再び stale 化した。
+# 恒久対策として起票された PR #126 が未 merge のまま残っていた。本 workflow はそれを置き換え、
+# worker と同じ「main に入れば自動で最新」に揃えて腐る問題を根絶する。
+#
+# 必要な権限: CLOUDFLARE_API_TOKEN に Cloudflare Pages:Edit が必要。
+# トークンが Workers 専用スコープの場合はこの job が権限エラーで落ちる → トークンに
+# 「Cloudflare Pages: 編集」権限を追加する (アカウント: katsu-7d5)。
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy-web:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @line-crm/shared build
+
+      - run: pnpm --filter web build
+        env:
+          # 管理画面が叩く worker API。repo 公開情報なので直書きで良いが、
+          # 別環境で使う場合は GitHub Variables の NEXT_PUBLIC_API_URL が優先される。
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || 'https://naturism-line-crm.katsu-7d5.workers.dev' }}
+
+      # output: 'export' なので apps/web/out が成果物。--branch=main で production 環境へ。
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/web
+          command: pages deploy out --project-name=naturism-admin --branch=main
+
+      # production branch 不一致の silent no-op を検出する (--branch がプロジェクトの production
+      # branch と一致しない場合、job は success のまま preview に置かれ本番 URL が更新されない)。
+      # ビルドごとにハッシュが変わる _next チャンク名で「今ビルドした成果物が本番で配られている」を照合。
+      - name: Verify production serves this build
+        run: |
+          CHUNK=$(grep -o '/_next/static/chunks/[a-zA-Z0-9._-]*\.js' out/dashboard.html | head -1)
+          if [ -z "$CHUNK" ]; then echo "::warning::chunk marker not found in out/dashboard.html — skip verify"; exit 0; fi
+          for i in 1 2 3 4 5 6; do
+            if curl -sf "https://naturism-admin.pages.dev/dashboard" | grep -q "$CHUNK"; then
+              echo "::notice title=Verified::production serves $CHUNK"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error title=Stale production::deploy succeeded but naturism-admin.pages.dev does not serve $CHUNK — Pages プロジェクトの production branch が 'main' か確認 (不一致だと preview に置かれる)"
+          exit 1
+        working-directory: apps/web
+
+      - name: Notify deploy result
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "::notice title=Admin web deployed::naturism-admin.pages.dev updated"
+          else
+            echo "::error title=Deploy failed::Admin web deployment failed — 上の失敗 step を確認 (wrangler step なら CLOUDFLARE_API_TOKEN の Pages:Edit 権限、verify step なら production branch 設定)"
+          fi

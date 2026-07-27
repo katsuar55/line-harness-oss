@@ -111,6 +111,18 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-gray-50">
       <Header title="ダッシュボード" />
       <main className="max-w-6xl mx-auto px-4 py-6">
+        {/* 役割分担 (2026-07-26 確定): 日常の数字確認と頻出オペは worker /admin が正。
+            この画面 (apps/web) は設営・分析・詳細 GUI 用で、日常運用には使わない。 */}
+        <div className="mb-4 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-900">
+          毎日の数字確認とよく使う操作は{' '}
+          <a
+            href="https://naturism-line-crm.katsu-7d5.workers.dev/admin"
+            className="font-bold underline"
+          >
+            運用ダッシュボード
+          </a>{' '}
+          をご利用ください。この画面は配信の作成・分析など詳細な管理用です。
+        </div>
         <div className="flex items-center justify-between mb-6">
           <div className="flex gap-1 bg-white rounded-lg border p-0.5">
             {[7, 30, 90].map((d) => (

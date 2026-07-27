@@ -133,11 +133,15 @@ CREATE UNIQUE INDEX ux_sub_intents_open
 「1タップ復旧」は `executor='own_billing'` (PHASE3 §6.4 の `customer_payment_methods` 経路) 以降として §10 の Phase 3 待ちへ置く。
 決済失敗カードには `[お支払い方法を確認する]` を必ず併記する (会員登録が必要な旨を事前開示)。
 
-**初回連携の友だち追加は LIFF「友だち追加オプション」= On(normal) で権限同意画面に畳む。**
-コード 0 行・失敗経路 0 の最短解。aggressive は画面が増えるので使わない。
+**初回連携の友だち追加は LIFF「友だち追加オプション」で LINE ネイティブ画面に畳む。
+採用値 = On (aggressive)** (2026-07-26 決定・§10-2 注記参照。本書の初版は On(normal) =
+「aggressive は画面が増えるので使わない」としていたが、**タップ数よりも完遂率を優先して反転**した)。
+理由: 友だち追加は redeem の必須条件 (friend 行が無いと preview 404) なのに、normal の同意画面
+チェックボックスは**見落とすと追加されないまま LIFF が開き、404 リトライ待ちに落ちる**。
+aggressive の専用 1 画面 (+1 画面) はこの脱落経路を塞ぎ、既存友だちには表示されない = 追加コストは
+未友だち (まさに magic-link の対象) だけが払う。
 **畳めるのは友だち追加の独立タップだけで、権限同意画面そのものは残る** (初回のみ)。
 到達 3/112 のボトルネックはこのフローなので、離脱見積りを楽観方向へずらさないため 1+1 と書かない。
-同意画面の文言 (友だち追加チェックの既定状態) も §7 の可読性トークンの対象に含める。
 
 ---
 
@@ -529,9 +533,14 @@ PHASE3 §7 `activated` の遅延 catch-up (`scheduleEdit(当該 cycle → 本日
 
 ### 今すぐ (Phase 3 非依存) — **依存順。番号順に出荷すること**
 
-> **進捗 (2026-07-26)**: **1 出荷済** / **6 は LIFF 側のみ出荷済** (Flex 側は 5 と同時) / 2 は Katsu 作業
-> (LINE Developers コンソールがログイン必須)。0・3・4・5 は未着手。
-> 実装時に決めた §7 の適用範囲の解釈は `SUBSCRIPTION_UX_OPEN_ITEMS_2026-07-25.md` §D に記録した。
+> **進捗 (2026-07-26)**: **1 出荷済** / **2 済** (下記注) / **6 は LIFF 側のみ出荷済** (Flex 側は 5 と同時)。
+> 0・3・4・5 は未着手。実装時に決めた §7 の適用範囲の解釈は `SUBSCRIPTION_UX_OPEN_ITEMS_2026-07-25.md` §D に記録した。
+>
+> **2 の注 (設計変更)**: 実機は **On (aggressive)** で確認 (Katsu 設定済・LIFF 2009713578-NbdHyFZf)。
+> 本書は On(normal) を指定していたが **aggressive を維持する**。理由: magic-link コホート 109 名は全員
+> 未友だちで、**友だち追加は redeem の必須条件** (friend 行が無いと preview が 404)。normal の同意画面
+> チェックボックスは見落とすと「追加されないまま LIFF が開き 404 リトライ待ちに落ちる」——aggressive の
+> 専用 1 画面はこの脱落経路をほぼ塞ぐ。+1 画面は完遂率と引き換えに許容 (既存友だちには何も出ない = 影響ゼロ)。
 0. **前提作業** — ① TEIKI_FLOW の各トリガー設定 (契約作成 / スキップ / お届け日変更) で `estimate_source='flow'` を得る (§3-2)
    ② `ACCOUNT_LINK_ENABLED` の有効化 + 自前ドメイン送信の整備 (§6 の経路1 を機能させるため)
    ③ 生成バッチ (§6-0) の送信手段確定 — **これが無いと 1 の fast path が効く母集団が 0**
@@ -550,7 +559,7 @@ PHASE3 §7 `activated` の遅延 catch-up (`scheduleEdit(当該 cycle → 本日
    (retry 分岐は 404 `Friend not found` のみ対象なのでリトライも効かない)。
    受入条件: **sub-link 経路の 401 では `handleAuthExpired` を発火させない (soft fail + 退避トークン保持で再試行)**。
    sessionStorage 退避は §6-4 の削除条件込みで同時に実装する
-2. **LIFF 友だち追加オプション On(normal)** — コンソール設定 1 つ、コード 0 行
+2. **LIFF 友だち追加オプション On** — コンソール設定 1 つ、コード 0 行 (採用値は aggressive・§2 参照)
 3. **`sub_intents` 受理レイヤー + `/admin/ops`** — worker 内蔵 (公開 HTML shell + `requireRole('owner','admin')` 保護 API、
    `routes/friend-coupon.ts` と同型。apps/web 未デプロイ問題を回避)。partial UNIQUE / state 機械 / 監査 (§1) 込み
 4. **代行 3 層防御 + 第0層の実行直前再評価 + 第4層の `cancel` 救済** (§4 の 0〜4 すべて)

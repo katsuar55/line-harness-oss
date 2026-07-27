@@ -54,6 +54,11 @@ jobs:
       - name: Typecheck plugin-template
         run: pnpm --filter @line-harness/plugin-myservice typecheck
 
+      # deploy-web.yml の gate を実効化する (これが無いと web を壊す PR が green で merge され、
+      # post-merge の deploy-web の next build で初めて落ちる)
+      - name: Typecheck web
+        run: pnpm --filter web typecheck
+
       # Vitest — Worker (966 tests)
       - name: Worker tests
         run: pnpm --filter worker exec vitest run
