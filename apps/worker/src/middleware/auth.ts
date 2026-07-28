@@ -46,6 +46,9 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     // Flow は Bearer を付けられないため共有シークレットヘッダで代替認証 (route 内で検証)。
     // POST 限定 (method 非依存 skip の穴 = 採点 D2 パターンを作らない)。
     (c.req.method === 'POST' && path === '/api/integrations/teiki-flow') ||
+    // Shopify App Proxy (2026-07-29): storefront /apps/line-link からの転送。 route 内で
+    // App Proxy 署名 (query HMAC) を検証して代替認証する。 GET 限定 = method 非依存 skip の穴を作らない。
+    (c.req.method === 'GET' && path === '/proxy/line-link') ||
     path.match(/^\/api\/webhooks\/incoming\/[^/]+\/receive$/) ||
     path.match(/^\/api\/forms\/[^/]+\/submit$/) ||
     // GET のみ公開 (LIFF が form 定義を読む)。 PUT(編集)/DELETE(削除) は authMiddleware を
