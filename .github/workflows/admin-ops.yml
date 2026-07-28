@@ -68,6 +68,14 @@ name: Admin Ops
 #     storefront_url を渡すと SHOPIFY_STOREFRONT_URL も併せて投入され、LIFF マイアカウントに
 #     連携ボタンが出る。省略時は gate のみ ON (= proxy 経路の live 検証用・ボタン非表示の段階投入)。
 #     前提: apply-migration-073 適用済み・Shopify Dev Dashboard で App Proxy 設定済み。
+#   app-proxy-probe:
+#     🚨 App Proxy 有効化**前**の必須否定テスト。storefront の /apps/line-link に
+#     `?logged_in_customer_id=<架空の数値>` を付けて未ログインで叩き、Shopify が worker へ
+#     転送した query の **logged_in_customer_id の出現回数**を worker ログから読む。
+#       2 回 (= Shopify が自分の値を追記) → 重複キー拒否が効く = 安全
+#       1 回で値が空 (= Shopify が上書き)          → 注入が無効化される = 安全
+#       1 回で注入値のまま (= 訪問者の値を温存)     → 🚨 危険。有効化しないこと
+#     出力は出現回数と「注入値が残ったか」の真偽のみ (署名・実顧客 id は出力しない)。
 #   backfill-customer-friend-id:
 #     連携済み friends (shopify_customer_id 保持) から shopify_customers.friend_id への
 #     逆方向リンクを一括補完する (redeem 側は 2026-07-29 以降自動書込。これは既存分の後追い)。
@@ -102,6 +110,7 @@ on:
           - apply-migration-073
           - enable-sub-link
           - enable-app-proxy-link
+          - app-proxy-probe
           - backfill-customer-friend-id
           - release-billing-hold
           - custom-domain-status
@@ -572,6 +581,54 @@ jobs:
           rm -f "$TMP"
           echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      - name: App Proxy probe (parameter-injection negative test, shape only)
+        if: inputs.op == 'app-proxy-probe'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STOREFRONT_URL: ${{ inputs.storefront_url }}
+        run: |
+          set -euo pipefail
+          if [ -z "$STOREFRONT_URL" ]; then
+            echo '❌ storefront_url を指定してください (例 https://naturism-diet.com)' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # 架空の customer id (実顧客のデータには一切触れない)
+          PROBE_ID=999999999999
+          TAIL_LOG="$RUNNER_TEMP/tail.log"
+          # tail を先に起動し、転送されてくる query を捕まえる
+          npx wrangler tail --format=json > "$TAIL_LOG" 2>/dev/null &
+          TAIL_PID=$!
+          sleep 12
+          curl -s -o /dev/null "$STOREFRONT_URL/apps/line-link?logged_in_customer_id=$PROBE_ID" || true
+          sleep 12
+          kill "$TAIL_PID" 2>/dev/null || true
+          sleep 2
+          # 該当リクエストの URL を 1 本だけ取り出す (署名も実 id も出力しない)
+          LINE=$(grep -o '"url":"[^"]*proxy/line-link[^"]*"' "$TAIL_LOG" | head -1 || true)
+          if [ -z "$LINE" ]; then
+            echo '⚠️ worker ログに該当リクエストが見つかりませんでした (App Proxy 未設定 / 伝播待ち / tail 取りこぼし)' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          COUNT=$(echo "$LINE" | grep -o 'logged_in_customer_id=' | wc -l | tr -d ' ')
+          if echo "$LINE" | grep -q "logged_in_customer_id=$PROBE_ID"; then INJECTED=yes; else INJECTED=no; fi
+          {
+            echo '### App Proxy parameter-injection probe'
+            echo ''
+            echo "- logged_in_customer_id の出現回数: **$COUNT**"
+            echo "- 注入値がそのまま残ったか: **$INJECTED**"
+            echo ''
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$COUNT" -ge 2 ]; then
+            echo '✅ Shopify が自分の値を追記 → 重複キー拒否が効く = 有効化して安全' | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ "$INJECTED" = "no" ]; then
+            echo '✅ Shopify が上書き → 注入が無効化される = 有効化して安全' | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo '🚨 訪問者の値が温存されている — **有効化しないこと**。identity 設計の見直しが必要' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Backfill shopify_customers.friend_id (counts only)
         if: inputs.op == 'backfill-customer-friend-id'
