@@ -123,6 +123,49 @@ export async function deleteUnconsumedSubLinkTokensForCustomer(
   return res.meta?.changes ?? 0;
 }
 
+/**
+ * 同一 customer の「特定バッチの」未消費トークンだけを削除する。
+ * App Proxy 連携 (batch_id='app-proxy') の再訪問時に自分の旧トークンだけを無効化し、
+ * 進行中の magic-link キャンペーン (email 掲載済みの 30日 link) を巻き添えで殺さないための限定版。
+ * @returns 削除件数
+ */
+export async function deleteUnconsumedSubLinkTokensForCustomerBatch(
+  db: D1Database,
+  shopifyCustomerId: string,
+  batchId: string,
+  /** 指定時は「この時刻より前に失効した」行だけを消す (= まだ有効な発行済み link を殺さない)。 */
+  expiredBefore?: string,
+): Promise<number> {
+  const sql = expiredBefore
+    ? `DELETE FROM sub_link_tokens WHERE shopify_customer_id = ? AND batch_id = ? AND consumed_at IS NULL AND expires_at <= ?`
+    : `DELETE FROM sub_link_tokens WHERE shopify_customer_id = ? AND batch_id = ? AND consumed_at IS NULL`;
+  const stmt = expiredBefore
+    ? db.prepare(sql).bind(shopifyCustomerId, batchId, expiredBefore)
+    : db.prepare(sql).bind(shopifyCustomerId, batchId);
+  const res = await stmt.run();
+  return res.meta?.changes ?? 0;
+}
+
+/**
+ * 同一 customer の未消費トークンのうち、指定バッチ **以外** を削除する。
+ * magic-link のバッチ再生成が、進行中の App Proxy 連携 (顧客がストアで開いている
+ * 連携ページのトークン) を巻き添えで殺さないための除外版。
+ * @returns 削除件数
+ */
+export async function deleteUnconsumedSubLinkTokensForCustomerExceptBatch(
+  db: D1Database,
+  shopifyCustomerId: string,
+  exceptBatchId: string,
+): Promise<number> {
+  const res = await db
+    .prepare(
+      `DELETE FROM sub_link_tokens WHERE shopify_customer_id = ? AND batch_id != ? AND consumed_at IS NULL`,
+    )
+    .bind(shopifyCustomerId, exceptBatchId)
+    .run();
+  return res.meta?.changes ?? 0;
+}
+
 export interface SubLinkTokenStats {
   total: number;
   consumed: number;

@@ -106,6 +106,12 @@ function createTestApp(): InstanceType<typeof Hono<Env>> {
   app.get('/liff/reorder', (c) => c.html('<html>reorder</html>'));
   app.get('/liff/cart', (c) => c.html('<html>cart</html>'));
 
+  // Shopify App Proxy: GET のみ skip (route 内で App Proxy 署名を検証して代替認証)。
+  // サブパスも転送されるので prefix 一致で skip する。POST は authMiddleware を通す。
+  app.get('/proxy/line-link', (c) => c.text('proxy'));
+  app.get('/proxy/line-link/sub', (c) => c.text('proxy sub'));
+  app.post('/proxy/line-link', (c) => c.text('proxy post'));
+
   // Forms: GET /:id は公開 (LIFF が form 定義を読む)、 /submit も公開 (handler 内で idToken 検証)。
   // PUT(編集)/DELETE(削除) は authMiddleware を通す (採点 D2: method 非依存 skip の穴を塞ぐ)。
   app.get('/api/forms/:id', (c) => c.json({ ok: true, method: 'GET' }));
@@ -333,6 +339,23 @@ describe('Auth Middleware', () => {
     ])('GET %s is accessible without auth (LIFF SPA)', async (path) => {
       const res = await app.request(path, {}, env);
       expect(res.status).toBe(200);
+    });
+
+    // ── Shopify App Proxy (2026-07-29) ──
+    // storefront /apps/line-link からの転送は Bearer を持てない (route 内で
+    // App Proxy 署名を検証して代替認証する)。skip path の typo / route 登録漏れが
+    // あると本番の全 App Proxy リクエストが 401 になるため、配線をここで固定する。
+    it.each(['/proxy/line-link', '/proxy/line-link/sub'])(
+      'GET %s is accessible without auth (App Proxy, signature verified in route)',
+      async (path) => {
+        const res = await app.request(path, {}, env);
+        expect(res.status).toBe(200);
+      },
+    );
+
+    it('POST /proxy/line-link still requires auth (method 非依存 skip の穴を作らない)', async () => {
+      const res = await app.request('/proxy/line-link', { method: 'POST' }, env);
+      expect(res.status).toBe(401);
     });
   });
 

@@ -33,12 +33,24 @@ const portalHandler = (c: { env: Env['Bindings']; html: (html: string) => Respon
   // 紹介報酬 gate を client に注入 (実機FB第5弾): on のとき紹介カードが
   // 「お友だちが購入するとあなたにも¥500」訴求 + 承認済コピー A' に自動切替する。
   const referralRewardOn = c.env.REFERRAL_REWARD_ENABLED === 'true';
-  return c.html(portalPage(liffId, workerUrl, referralRewardOn));
+  // App Proxy 連携 (2026-07-29): gate on かつ storefront URL が https で妥当な時だけ
+  // マイアカウントに連携カードを出す (URL は inline JS に埋め込むため形式を厳格に検証する)。
+  const storefrontRaw = (c.env.SHOPIFY_STOREFRONT_URL || '').trim().replace(/\/+$/, '');
+  const shopifyLinkUrl =
+    c.env.APP_PROXY_LINK_ENABLED === 'true' && /^https:\/\/[A-Za-z0-9.-]+$/.test(storefrontRaw)
+      ? storefrontRaw
+      : null;
+  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl));
 };
 liffPages.get('/liff/portal', portalHandler as never);
 liffPages.get('/liff/portal/', portalHandler as never);
 
-function portalPage(liffId: string, apiBase: string, referralRewardOn = false): string {
+function portalPage(
+  liffId: string,
+  apiBase: string,
+  referralRewardOn = false,
+  shopifyLinkUrl: string | null = null,
+): string {
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -77,6 +89,10 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
     .sublink-title{font-size:19px;font-weight:700;color:#052422;line-height:1.5}
     .sublink-plan{font-size:20px;font-weight:700;color:#0f766e;line-height:1.6}
     .sublink-body{font-size:16px;color:#3f4b55;line-height:1.6}
+    /* 連携先の識別ヒント (マスク済メール)。 60代可読性を満たす 16px + AA コントラスト */
+    .sublink-hint{font-size:16px;color:#0f766e;background:#effaf8;border:1px solid #bfe8e3;border-radius:12px;padding:10px 12px;line-height:1.6;word-break:break-all}
+    /* link fixation 警告文。 このカードで最も読み落としてはいけない一文なので本文と同じ 16px */
+    .sublink-note{font-size:16px;color:#4b5563;line-height:1.6}
     .sublink-btn{min-height:48px;font-size:16px;font-weight:700;width:100%;border-radius:14px !important}
     .sublink-sub{min-height:48px;font-size:16px;width:100%;color:#5b6670;background:transparent;border:none}
     .sublink-sk{height:14px;border-radius:7px;margin:10px auto}
@@ -752,6 +768,14 @@ function portalPage(liffId: string, apiBase: string, referralRewardOn = false): 
           <button onclick="saveProfile()" class="btn-primary w-full py-2.5 rounded-2xl text-xs font-bold shadow-md">保存</button>
         </div>
       </div>
+
+      ${shopifyLinkUrl ? `<!-- Shopify 連携 (App Proxy, 2026-07-29): gate on + storefront URL 設定時のみ表示 -->
+      <div class="card p-4" id="shopify-link-card" role="status" aria-live="polite">
+        <p class="text-base font-bold text-gray-800 mb-1">🛍️ オンラインストアと連携</p>
+        <p class="text-sm text-gray-600 mb-3">ストアにログインするだけで、会員特典やお届けのお知らせがLINEで受け取れるようになります。</p>
+        <button onclick="openShopifyLinkPage()" class="tap btn-primary py-3 px-5 rounded-xl text-base font-bold">ストアにログインして連携 →</button>
+        <p class="text-sm text-gray-600 mt-2">ストアのページが開きます。ログイン確認のあと、ボタンをタップするとLINEに戻ります。</p>
+      </div>` : ''}
 
       <p class="text-xs text-gray-400 font-bold pt-1">⚙️ 設定</p>
 
@@ -1661,6 +1685,9 @@ async function loadRank() {
     if (apiFailed(res)) { cardError(el, res, 'loadRank'); return; }
     const data = res.data;
     if (!data) return;
+    // Shopify 連携済みなら、マイアカウントの連携カードを「連携済み」表示へ差し替える
+    // (= 既連携ユーザーの無意味な外部ブラウザ往復と、完了直後の「まだ押せる」不安を消す)
+    if (data.linked) { try { markShopifyLinked(); } catch (e) {} }
     if (data.currentRank) {
       const pct = data.progressPercent || 0;
       // Check if user is ambassador (will be set after loadAmbassador runs)
@@ -3396,6 +3423,48 @@ function checkReferralParam() {
   } catch(e) { /* ignore */ }
 }
 
+// ─── Shopify 連携ボタン (App Proxy, 2026-07-29) ───
+// gate off / URL 未設定時は null (カード自体も非表示)。 URL は server 側で https + host 形式に
+// 検証済みの値だけが JSON.stringify で埋まる (= 引用符/エスケープ事故を構造的に回避)。
+var SHOPIFY_LINK_URL = ${JSON.stringify(shopifyLinkUrl)};
+
+// 連携済みが判明したらカードを「✓ 連携済み」に差し替える。 出しっぱなしだと
+// ①既連携ユーザーが外部ブラウザを往復して行き止まりページに着く
+// ②連携完了直後に同じ「連携する」ボタンが居座り、 完了したのか不安にさせる (R1 採点 MED)。
+function markShopifyLinked() {
+  var card = document.getElementById('shopify-link-card');
+  if (!card) return;
+  if (card.getAttribute('data-linked') === '1') return;
+  card.setAttribute('data-linked', '1');
+  while (card.firstChild) { card.removeChild(card.firstChild); }
+  var title = document.createElement('p');
+  title.className = 'text-base font-bold text-gray-800 mb-1';
+  title.textContent = '✅ オンラインストアと連携済み';
+  card.appendChild(title);
+  var body = document.createElement('p');
+  body.className = 'text-sm text-gray-600';
+  body.textContent = '会員特典やお届けのお知らせをLINEでお届けしています。';
+  card.appendChild(body);
+}
+
+function openShopifyLinkPage() {
+  if (!SHOPIFY_LINK_URL) return;
+  var url = SHOPIFY_LINK_URL + '/apps/line-link';
+  // 外部ブラウザで開く (= storefront のログイン cookie が生きている本人ブラウザに乗る)。
+  // 完了後は /proxy/line-link が liff.line.me?slk= へ送り返し、 このポータルの ?slk= fast path が拾う。
+  try {
+    if (typeof liff !== 'undefined' && liff.isInClient && liff.isInClient()) {
+      liff.openWindow({ url: url, external: true });
+      return;
+    }
+  } catch (e) { /* openWindow 不能なら通常遷移へ */ }
+  // popup ブロック時 window.open は throw せず **null を返す** ので、戻り値で判定しないと
+  // 「押しても何も起きない」完全な無反応になる (同ファイルの degrade 前例と同じ扱いにする)。
+  var w = null;
+  try { w = window.open(url, '_blank'); } catch (e) { w = null; }
+  if (!w) { location.href = url; }
+}
+
 // ─── 定期購入 連携リンク (magic-link, ?slk= param) ───
 // 店舗が顧客の email に載せた 1タップ連携リンクで来た人を、 このLINEと定期購入で連携させる。
 // onclick 文字列を一切使わず createElement + addEventListener + textContent で組む
@@ -3589,7 +3658,8 @@ function subLinkReleaseTour() {
 function subLinkShowLoading(token) {
   var card = subLinkCard();
   card.appendChild(subLinkNode('div', 'text-4xl mb-2', '🌿'));
-  card.appendChild(subLinkNode('h3', 'sublink-title mb-4', '定期購入をLINEに連携'));
+  // タイトルは kind (定期購入/お買い物) が preview 応答で判明する前なので中立にする
+  card.appendChild(subLinkNode('h3', 'sublink-title mb-4', 'LINEとの連携'));
   var widths = ['82%', '100%', '64%'];
   for (var i = 0; i < widths.length; i++) {
     var bar = subLinkNode('div', 'skeleton sublink-sk');
@@ -3660,20 +3730,30 @@ function subLinkShowUnavailable(kind) {
   card.appendChild(subLinkNode('h3', 'sublink-title mb-3', paused
     ? 'ただいまお受けできません'
     : 'このリンクはご利用いただけません'));
+  // App Proxy 経由の人 (SHOPIFY_LINK_URL が出ている面) には、届いていないメールでなく
+  // 実際に押せる導線を案内する。
   card.appendChild(subLinkNode('p', 'sublink-body mb-5', paused
     ? 'LINEでの連携のお受付を一時停止しています。ご迷惑をおかけします。再開しましたら改めてご案内しますので、そのままお待ちください。'
-    : 'お手数ですが、最新のご案内メールのリンクからお試しください。お困りのときはサポートまでご連絡ください。'));
+    : (SHOPIFY_LINK_URL
+      ? 'お手数ですが、画面右上のプロフィール写真をタップ →「ストアにログインして連携」からもう一度お試しください。お困りのときはサポートまでご連絡ください。'
+      : 'お手数ですが、最新のご案内メールのリンクからお試しください。お困りのときはサポートまでご連絡ください。')));
   var close = subLinkNode('button', 'btn-primary sublink-btn', 'とじる');
   close.addEventListener('click', function() { subLinkDismiss(true); });
   card.appendChild(close);
   subLinkOverlay(card);
 }
 
-function subLinkStatusInfo(status) {
-  if (status === 'already_self') return { emoji: '✓', title: '連携済みです', desc: 'このLINEはすでにお客様の定期購入と連携されています。' };
+function subLinkStatusInfo(status, kind) {
+  if (status === 'already_self') return { emoji: '✓', title: '連携済みです', desc: (kind === 'shop'
+    ? 'このLINEはすでにお客様のご登録と連携されています。'
+    : 'このLINEはすでにお客様の定期購入と連携されています。') };
   if (status === 'friend_conflict') return { emoji: '🔗', title: 'このLINEは別のご登録と連携済み', desc: 'このLINEアカウントは、すでに別のご登録と連携されています。お心当たりがない場合はサポートへお問い合わせください。' };
   if (status === 'taken') return { emoji: '🔒', title: '別のLINEと連携済み', desc: 'このご登録は、すでに別のLINEアカウントと連携されています。お心当たりがない場合はサポートへお問い合わせください。' };
-  if (status === 'expired') return { emoji: '⏰', title: 'リンクの有効期限切れ', desc: 'この連携リンクは有効期限が切れています。お手数ですが、最新のご案内メールのリンクからお試しください。' };
+  // 復旧手段は経路で違う: shop (App Proxy) の人はメールを受け取っていないので、
+  // 「ご案内メール」を案内すると存在しないものを探させる死路になる。
+  if (status === 'expired') return { emoji: '⏰', title: 'リンクの有効期限切れ', desc: (kind === 'shop'
+    ? 'この連携リンクは有効期限が切れています。お手数ですが、画面右上のプロフィール写真をタップ →「ストアにログインして連携」からもう一度お試しください。'
+    : 'この連携リンクは有効期限が切れています。お手数ですが、最新のご案内メールのリンクからお試しください。') };
   return { emoji: 'ℹ️', title: '使用済みのリンク', desc: 'この連携リンクはすでに使用されています。' };
 }
 
@@ -3686,10 +3766,29 @@ function subLinkShowCard(token, data) {
   if (status === 'invalid') { subLinkShowUnavailable('invalid'); return; } // 不正/未知トークンも事実を伝えて閉じられるように
   var card = subLinkCard();
   if (status === 'ready') {
+    // kind 分岐: 'shop' (App Proxy 自動連携) はプラン有無で文言を変える。 プランを持つ定期購入者は
+    // 経路が App Proxy でも従来の定期購入コピーが正確 (= 情報が多い方を出す)。
+    var isShop = data.kind === 'shop' && !data.plan;
     card.appendChild(subLinkNode('div', 'text-4xl mb-2', '🌿'));
-    card.appendChild(subLinkNode('h3', 'sublink-title mb-2', '定期購入をLINEに連携'));
-    card.appendChild(subLinkNode('p', 'sublink-plan mb-3', (data.plan ? String(data.plan) : 'ご登録の定期便')));
-    card.appendChild(subLinkNode('p', 'sublink-body mb-5', 'このLINEアカウントとお客様の定期購入をつなぎます。次回お届けのご確認やお知らせがLINEで受け取れるようになります。'));
+    card.appendChild(subLinkNode('h3', 'sublink-title mb-2', isShop ? 'お買い物をLINEに連携' : '定期購入をLINEに連携'));
+    card.appendChild(subLinkNode('p', 'sublink-plan mb-3', (data.plan ? String(data.plan) : (isShop ? 'オンラインストアのご登録' : 'ご登録の定期便'))));
+    card.appendChild(subLinkNode('p', 'sublink-body mb-3', isShop
+      ? 'このLINEアカウントとオンラインストアのご登録をつなぎます。会員特典やお届けに関するお知らせがLINEで受け取れるようになります。'
+      : 'このLINEアカウントとお客様の定期購入をつなぎます。次回お届けのご確認やお知らせがLINEで受け取れるようになります。'));
+    // 連携先の識別ヒント (マスク済メール)。 これが唯一「自分のアカウントか」を確かめる材料になる
+    // — 他人が作ったリンクを踏まされたときに気付けるようにするため必ず出す。
+    if (data.hint) {
+      var hintBox = subLinkNode('p', 'sublink-hint mb-5');
+      hintBox.appendChild(subLinkNode('span', null, '連携先: '));
+      var hintVal = subLinkNode('strong', null, String(data.hint));
+      hintBox.appendChild(hintVal);
+      card.appendChild(hintBox);
+      // 警告が指す操作は、実際に押せるボタンのラベル (「あとで」) と一致させる。
+      // 語が食い違うと、他人のリンクを踏まされた人が「閉じる」を探して見つけられない。
+      card.appendChild(subLinkNode('p', 'sublink-note mb-4', 'お心当たりのないメールアドレスの場合は、連携せずに「あとで」を押してください。'));
+    } else {
+      card.appendChild(subLinkNode('div', 'mb-2'));
+    }
     var confirm = subLinkNode('button', 'btn-primary sublink-btn', 'このLINEに連携する');
     confirm.addEventListener('click', function() { subLinkRedeem(token, confirm); });
     card.appendChild(confirm);
@@ -3697,7 +3796,7 @@ function subLinkShowCard(token, data) {
     later.addEventListener('click', function() { subLinkDismiss(true); });
     card.appendChild(later);
   } else {
-    var info = subLinkStatusInfo(status);
+    var info = subLinkStatusInfo(status, data.kind);
     card.appendChild(subLinkNode('div', 'text-4xl mb-2', info.emoji));
     card.appendChild(subLinkNode('h3', 'sublink-title mb-3', info.title));
     card.appendChild(subLinkNode('p', 'sublink-body mb-5', info.desc));
@@ -3720,8 +3819,16 @@ function subLinkRedeem(token, btn) {
     subLinkCancelTimers();
     if (res && res.success && res.data) {
       subLinkClearStash(); // §6-4 削除条件①
-      var plan = (res.data.plan ? String(res.data.plan) : 'ご登録の定期便');
-      subLinkResult('🌿', '連携が完了しました', plan + 'のお知らせやお届けのご確認が、これからLINEで受け取れます。');
+      var doneDesc;
+      if (res.data.plan) {
+        doneDesc = String(res.data.plan) + 'のお知らせやお届けのご確認が、これからLINEで受け取れます。';
+      } else if (res.data.kind === 'shop') {
+        doneDesc = 'オンラインストアの会員特典やお得なお知らせが、これからLINEで受け取れます。';
+      } else {
+        doneDesc = 'ご登録の定期便のお知らせやお届けのご確認が、これからLINEで受け取れます。';
+      }
+      subLinkResult('🌿', '連携が完了しました', doneDesc);
+      try { markShopifyLinked(); } catch (e) {}
       if (typeof loadRank === 'function') { try { loadRank(); } catch (e) {} }
       return;
     }

@@ -201,7 +201,13 @@ function createApp() {
       const friend = await (getFriendByLineUserId as ReturnType<typeof vi.fn>)(env.DB, body.lineUserId);
       if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
 
-      (c as unknown as { set: (key: string, value: unknown) => void }).set('liffUser', { lineUserId: body.lineUserId, friendId: friend.id });
+      // 本物の liffAuthMiddleware と同じく shopifyCustomerId も載せる
+      // (= /api/liff/rank の linked はこの値から導出され、D1 read を増やさない)
+      (c as unknown as { set: (key: string, value: unknown) => void }).set('liffUser', {
+        lineUserId: body.lineUserId,
+        friendId: friend.id,
+        shopifyCustomerId: (friend as { shopify_customer_id?: string | null }).shopify_customer_id ?? null,
+      });
       return next();
     } catch {
       return c.json({ success: false, error: 'Invalid body' }, 400);
@@ -279,6 +285,45 @@ describe('LIFF Portal Routes', () => {
       expect(res.status).toBe(200);
       const json = await res.json() as { data: Record<string, unknown> };
       expect(json.data.currentRank).toBeNull();
+    });
+
+    // linked = ポータルのマイアカウントが「オンラインストアと連携」カードを畳む判定。
+    // この値が欠けると、連携済みの人が毎回ボタンを見て外部ブラウザを往復することになる
+    // (実際に一度その状態で出荷しかけた)。両 return 分岐で固定する。
+    it('未連携の friend は linked=false', async () => {
+      const res = await post(app, '/api/liff/rank', { lineUserId: 'U_EXISTING' });
+      const json = (await res.json()) as { data: { linked: boolean } };
+      expect(json.data.linked).toBe(false);
+    });
+
+    it('連携済みの friend は linked=true', async () => {
+      const db = await import('@line-crm/db');
+      (db.getFriendByLineUserId as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        id: 'friend-1',
+        line_user_id: 'U_EXISTING',
+        display_name: 'Test User',
+        is_following: 1,
+        shopify_customer_id: '6458785661181',
+      });
+      const res = await post(app, '/api/liff/rank', { lineUserId: 'U_EXISTING' });
+      const json = (await res.json()) as { data: { linked: boolean } };
+      expect(json.data.linked).toBe(true);
+    });
+
+    it('rank 記録が無い分岐でも linked を返す (早期 return の取りこぼし防止)', async () => {
+      const db = await import('@line-crm/db');
+      (db.getFriendByLineUserId as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        id: 'friend-1',
+        line_user_id: 'U_EXISTING',
+        display_name: 'Test User',
+        is_following: 1,
+        shopify_customer_id: '6458785661181',
+      });
+      (db.getFriendRank as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+      const res = await post(app, '/api/liff/rank', { lineUserId: 'U_EXISTING' });
+      const json = (await res.json()) as { data: { linked: boolean; currentRank: unknown } };
+      expect(json.data.currentRank).toBeNull();
+      expect(json.data.linked).toBe(true);
     });
   });
 

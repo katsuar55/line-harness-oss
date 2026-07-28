@@ -84,6 +84,7 @@ import { liffOptInPage } from './routes/liff-opt-in-page.js';
 import { liffAccountLink } from './routes/liff-account-link.js';
 import { accountLinkAdmin } from './routes/account-link-admin.js';
 import { subLink } from './routes/sub-link.js';
+import { appProxy } from './routes/app-proxy.js';
 import { friendsProfileAdmin } from './routes/friends-profile-admin.js';
 import { integrationsResend } from './routes/integrations-resend.js';
 import { birthdayCollection } from './routes/birthday-collection.js';
@@ -148,6 +149,10 @@ export type Env = {
     SHOPIFY_CLIENT_ID?: string;
     SHOPIFY_CLIENT_SECRET?: string;
     SHOPIFY_LINE_NOTIFY_ENABLED?: string; // 'true' to enable LINE notifications from Shopify webhooks
+    /** App Proxy 連携 (2026-07-29): 'true' で /proxy/line-link (自動連携入口) が稼働。 既定 dormant */
+    APP_PROXY_LINK_ENABLED?: string;
+    /** storefront の公開 URL (例 https://naturism-diet.com)。 LIFF マイアカウントの連携ボタン先。 未設定ならボタン非表示 */
+    SHOPIFY_STOREFRONT_URL?: string;
     // 監視 (オプショナル, secret 未登録時は no-op)
     AXIOM_TOKEN?: string;
     AXIOM_DATASET?: string;
@@ -243,7 +248,9 @@ export type Env = {
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
-    liffUser: { lineUserId: string; friendId: string };
+    // shopifyCustomerId は liffAuthMiddleware が読んだ friend 行から載せる
+    // (= 下流 route が連携有無を知るために friend を読み直さなくてよい)。
+    liffUser: { lineUserId: string; friendId: string; shopifyCustomerId: string | null };
   };
 };
 
@@ -271,7 +278,14 @@ export function resolveCorsOrigin(origin: string | undefined | null): string | n
   return null;
 }
 
-app.use('*', cors({ origin: (origin) => resolveCorsOrigin(origin) }));
+// App Proxy 応答は連携トークン (capability) を本文に含むため、 CORS を一切付けない
+// (= Origin なしのとき '*' を返す既定を、 この経路にだけ適用しない)。
+// storefront から cross-origin で読む正当な用途は存在しない。
+const corsMiddleware = cors({ origin: (origin) => resolveCorsOrigin(origin) });
+app.use('*', async (c, next) => {
+  if (new URL(c.req.url).pathname.startsWith('/proxy/')) return next();
+  return corsMiddleware(c, next);
+});
 
 // Rate limiting — runs before auth to block abuse early
 app.use('*', rateLimitMiddleware);
@@ -353,6 +367,7 @@ app.route('/', liffOptInPage);
 app.route('/', liffAccountLink);
 app.route('/', accountLinkAdmin);
 app.route('/', subLink);
+app.route('/', appProxy);
 // WI-4 step3: Phase 3 自社課金基盤の Shopify サブスク webhook 受信口。
 // HMAC 検証で代替認証 (authMiddleware は POST 限定で skip)。own 契約 0 件の間は無害。
 app.route('/', ownBillingWebhook);

@@ -19,6 +19,8 @@ interface MinimalEnv {
   LIFF_URL: string;
   WORKER_URL: string;
   REFERRAL_REWARD_ENABLED?: string;
+  APP_PROXY_LINK_ENABLED?: string;
+  SHOPIFY_STOREFRONT_URL?: string;
 }
 
 const baseEnv: MinimalEnv = {
@@ -67,6 +69,71 @@ describe('LIFF ポータル inline script は構文的に valid (吐き出され
   it('/liff/portal (REFERRAL_REWARD_ENABLED=true = gate on 分岐も valid)', async () => {
     const html = await fetchBody('/liff/portal', { ...baseEnv, REFERRAL_REWARD_ENABLED: 'true' });
     assertParses(extractInlineScripts(html), '/liff/portal (gate on)');
+  });
+
+  it('/liff/portal (APP_PROXY_LINK_ENABLED=true + storefront URL = Shopify 連携カード分岐も valid)', async () => {
+    const env = {
+      ...baseEnv,
+      APP_PROXY_LINK_ENABLED: 'true',
+      SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
+    };
+    const html = await fetchBody('/liff/portal', env);
+    assertParses(extractInlineScripts(html), '/liff/portal (app-proxy gate on)');
+    expect(html).toContain('id="shopify-link-card"');
+    expect(html).toContain('"https://naturism-diet.com"'); // JSON.stringify 経由の安全な埋め込み
+  });
+
+  it('/liff/portal (App Proxy gate off = カード非表示・SHOPIFY_LINK_URL は null)', async () => {
+    const html = await fetchBody('/liff/portal');
+    expect(html).not.toContain('id="shopify-link-card"');
+    expect(html).toContain('var SHOPIFY_LINK_URL = null;');
+  });
+
+  it('/liff/portal (gate off + 妥当な storefront URL でもカードを出さない = gate 条件そのものの検証)', async () => {
+    // URL 未設定のケースだけだと「URL 検証で落ちている」のか「gate で落ちている」のか
+    // 区別できず、gate 条件を消す退行が素通りする (tautology)。
+    const env = { ...baseEnv, SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com' };
+    const html = await fetchBody('/liff/portal', env);
+    expect(html).not.toContain('id="shopify-link-card"');
+    expect(html).toContain('var SHOPIFY_LINK_URL = null;');
+  });
+
+  it.each([['TRUE'], ['false'], ['1'], ['true\r'], ['']])(
+    '/liff/portal (gate 値 %s は有効化しない = === \'true\' 厳密一致)',
+    async (gate) => {
+      const env = {
+        ...baseEnv,
+        APP_PROXY_LINK_ENABLED: gate,
+        SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
+      };
+      const html = await fetchBody('/liff/portal', env);
+      expect(html).not.toContain('id="shopify-link-card"');
+      expect(html).toContain('var SHOPIFY_LINK_URL = null;');
+    },
+  );
+
+  // 許可する文字クラスそのものを固定する。 scheme だけを見る正規表現に緩めると
+  // (`^https://.+$` 等)、`https://a.com/</script><script>…` のような breakout が
+  // 通ってしまい #193 クラスの全損に戻る (R2 採点 HIGH)。
+  it.each([
+    ['javascript:alert(1)', 'scheme 違い'],
+    ['http://naturism-diet.com', 'http (非 https)'],
+    ['https://naturism-diet.com/ja', 'path 付き'],
+    ['https://naturism-diet.com?q=1', 'query 付き'],
+    ['https://naturism-diet.com:8443', 'port 付き'],
+    ['https://a.com/</script><script>alert(1)</script>', 'script breakout'],
+    ['https://a.com"+alert(1)+"', '文字列脱出'],
+    ['', '空文字'],
+  ])('/liff/portal (storefront URL %s = %s なら gate on でもカードを出さない)', async (url) => {
+    const env = {
+      ...baseEnv,
+      APP_PROXY_LINK_ENABLED: 'true',
+      SHOPIFY_STOREFRONT_URL: url,
+    };
+    const html = await fetchBody('/liff/portal', env);
+    assertParses(extractInlineScripts(html), `/liff/portal (bad storefront url: ${url})`);
+    expect(html).not.toContain('id="shopify-link-card"');
+    expect(html).toContain('var SHOPIFY_LINK_URL = null;');
   });
 
   it('ソースに「単一バックスラッシュ + クォート」エスケープが存在しない (壊れた \\\' の混入防止)', async () => {

@@ -112,7 +112,16 @@ subLink.post('/api/liff/sub-link/preview', async (c) => {
     if (result.ok) {
       return c.json({
         success: true,
-        data: { status: result.status, plan: result.plan, intervalDays: result.intervalDays },
+        // kind = 発行経路 ('subscription' | 'shop')。 LIFF の確認カード文言分岐に必須
+        // (落とすと App Proxy 経由の非サブスク顧客に「定期購入」と誤表示される)。
+        // hint = ready のみのマスク済 email (= 連携先が自分かを人間が判断する唯一の材料)。
+        data: {
+          status: result.status,
+          plan: result.plan,
+          intervalDays: result.intervalDays,
+          kind: result.kind,
+          hint: result.hint,
+        },
       });
     }
     // disabled = 機能未稼働。 endpoint の存在を露出しないため 404

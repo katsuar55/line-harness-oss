@@ -63,6 +63,14 @@ name: Admin Ops
 #     SUB_LINK_ENABLED=true を投入 (= サブスク連携 magic-link の有効化)。
 #     これ単体では何も送信しない (= 生成 API を叩き店舗が email を送って初めて機能する)。
 #     前提: apply-migration-073 適用済み・LIFF_URL secret 設定済み。
+#   enable-app-proxy-link:
+#     APP_PROXY_LINK_ENABLED=true を投入 (= Shopify App Proxy 自動連携 /proxy/line-link の有効化)。
+#     storefront_url を渡すと SHOPIFY_STOREFRONT_URL も併せて投入され、LIFF マイアカウントに
+#     連携ボタンが出る。省略時は gate のみ ON (= proxy 経路の live 検証用・ボタン非表示の段階投入)。
+#     前提: apply-migration-073 適用済み・Shopify Dev Dashboard で App Proxy 設定済み。
+#   backfill-customer-friend-id:
+#     連携済み friends (shopify_customer_id 保持) から shopify_customers.friend_id への
+#     逆方向リンクを一括補完する (redeem 側は 2026-07-29 以降自動書込。これは既存分の後追い)。
 #
 # ⚠️ repo は PUBLIC = workflow ログ/サマリは公開される。secret の値・顧客データ (PII) を
 #    echo/サマリ出力する op を追加してはならない (名前・件数のみ可)。
@@ -93,11 +101,17 @@ on:
           - apply-migration-072
           - apply-migration-073
           - enable-sub-link
+          - enable-app-proxy-link
+          - backfill-customer-friend-id
           - release-billing-hold
           - custom-domain-status
           - attach-custom-domain
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
+        required: false
+        type: string
+      storefront_url:
+        description: 'enable-app-proxy-link 用: storefront 公開 URL (例 https://naturism-diet.com)。省略時は gate のみ ON'
         required: false
         type: string
 
@@ -515,6 +529,82 @@ jobs:
           rm -f "$TMP"
           echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enable App Proxy link (APP_PROXY_LINK_ENABLED=true)
+        if: inputs.op == 'enable-app-proxy-link'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STOREFRONT_URL: ${{ inputs.storefront_url }}
+        run: |
+          set -euo pipefail
+          # 前提: migration 073 適用済み (redeem 側が sub_link_tokens を使うため)。
+          TABLE=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name='sub_link_tokens'")
+          if ! echo "$TABLE" | grep -q 'sub_link_tokens'; then
+            echo '❌ sub_link_tokens が存在しません — apply-migration-073 を先に実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # feature が実際に必要とする secret の存在を先に確認する。
+          # misconfigured / unauthorized / disabled は全て 404 に collapse する設計なので、
+          # 投入漏れがあると「有効化したのに全部 404」を外形から切り分けられない。
+          SECRETS=$(npx wrangler secret list)
+          for NAME in SHOPIFY_CLIENT_SECRET LIFF_URL SHOPIFY_STORE_DOMAIN; do
+            if ! echo "$SECRETS" | grep -q "\"$NAME\""; then
+              echo "❌ secret $NAME が未設定です — App Proxy は 404 のままになります" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          done
+          TMP="$RUNNER_TEMP/secrets.app-proxy-link.json"
+          if [ -n "$STOREFRONT_URL" ]; then
+            # worker 側 (liff-pages.ts) の判定 ^https://[A-Za-z0-9.-]+$ と揃える。
+            # ここを緩くすると「gate は ON なのに LIFF のボタンだけ無音で出ない」乖離が起きる。
+            if ! echo "${STOREFRONT_URL%/}" | grep -Eq '^https://[A-Za-z0-9.-]+$'; then
+              echo '❌ storefront_url は https://<ホスト名> 形式のみ (path / port / query は不可)' | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            node -e 'const fs=require("fs");fs.writeFileSync(process.argv[1],JSON.stringify({APP_PROXY_LINK_ENABLED:"true",SHOPIFY_STOREFRONT_URL:process.env.STOREFRONT_URL.trim().replace(/\/+$/,"")}))' "$TMP"
+          else
+            printf '{"APP_PROXY_LINK_ENABLED":"true"}' > "$TMP"
+          fi
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Backfill shopify_customers.friend_id (counts only)
+        if: inputs.op == 'backfill-customer-friend-id'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          echo '### Before (linked friends vs backlinked customers)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT (SELECT COUNT(*) FROM friends WHERE shopify_customer_id IS NOT NULL) AS linked_friends, (SELECT COUNT(*) FROM shopify_customers WHERE friend_id IS NOT NULL) AS backlinked_customers" | tee -a "$GITHUB_STEP_SUMMARY"
+          # 既存の friend_id を別値へ上書きする行があれば **停止する**。
+          # 旧値は記録されないのでロールバック不能 + 注文 webhook 経路 (email 照合) が書いた
+          # 値と食い違う可能性がある = 人間が中身を確認してから判断すべきケース。
+          echo '### Rows whose friend_id would be OVERWRITTEN (must be 0 to proceed)' >> "$GITHUB_STEP_SUMMARY"
+          OVERWRITE=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS overwrite_candidates FROM shopify_customers sc WHERE sc.friend_id IS NOT NULL AND EXISTS (SELECT 1 FROM friends f WHERE f.shopify_customer_id = sc.shopify_customer_id AND f.id != sc.friend_id)")
+          echo "$OVERWRITE" | tee -a "$GITHUB_STEP_SUMMARY"
+          if ! echo "$OVERWRITE" | grep -q '"overwrite_candidates": 0'; then
+            echo '❌ 既存 friend_id を上書きする行があります — 中身を確認してから手動で対応してください (backfill は中止)' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          npx wrangler d1 execute naturism-line-crm --remote \
+            --command "UPDATE shopify_customers SET friend_id = (SELECT f.id FROM friends f WHERE f.shopify_customer_id = shopify_customers.shopify_customer_id) WHERE EXISTS (SELECT 1 FROM friends f WHERE f.shopify_customer_id = shopify_customers.shopify_customer_id) AND (friend_id IS NULL OR friend_id != (SELECT f.id FROM friends f WHERE f.shopify_customer_id = shopify_customers.shopify_customer_id))"
+          # runtime の writer (linkShopifyCustomerToFriend) は shopify_orders.friend_id も埋める。
+          # ここを揃えないと、既存連携者の過去注文が friend_id NULL のまま残り、
+          # 購買セグメント配信・ランク集計・出荷通知が対象を静かに取りこぼす。
+          npx wrangler d1 execute naturism-line-crm --remote \
+            --command "UPDATE shopify_orders SET friend_id = (SELECT f.id FROM friends f WHERE f.shopify_customer_id = shopify_orders.shopify_customer_id) WHERE friend_id IS NULL AND EXISTS (SELECT 1 FROM friends f WHERE f.shopify_customer_id = shopify_orders.shopify_customer_id)"
+          echo '### After (customers + orders)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT (SELECT COUNT(*) FROM friends WHERE shopify_customer_id IS NOT NULL) AS linked_friends, (SELECT COUNT(*) FROM shopify_customers WHERE friend_id IS NOT NULL) AS backlinked_customers, (SELECT COUNT(*) FROM shopify_orders WHERE friend_id IS NULL AND shopify_customer_id IN (SELECT shopify_customer_id FROM friends WHERE shopify_customer_id IS NOT NULL)) AS orders_still_unlinked" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Rank discount status (counts only, read-only)
         if: inputs.op == 'rank-discount-status'
