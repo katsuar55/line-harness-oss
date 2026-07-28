@@ -38,8 +38,15 @@ import { APP_PROXY_BATCH_ID } from './sub-link.js';
 
 export { APP_PROXY_BATCH_ID };
 
-/** App Proxy 発行トークンの TTL (分)。 その場で LIFF へ遷移する前提の短命。 */
-export const APP_PROXY_TOKEN_TTL_MIN = 10;
+/**
+ * App Proxy 発行トークンの TTL (分)。
+ * その場で LIFF へ遷移する前提だが、 新規顧客は「友だち追加 → webhook 反映待ち」を挟むため
+ * 短すぎると LIFF 側のリトライ中に失効する。 stash TTL (30分) に合わせる。
+ */
+export const APP_PROXY_TOKEN_TTL_MIN = 30;
+
+/** storefront 側の proxy prefix (Dev Dashboard の App Proxy 設定と一致させる)。 */
+export const APP_PROXY_PATH_PREFIX = '/apps/line-link';
 
 interface EnvLike {
   DB: D1Database;
@@ -88,7 +95,7 @@ export async function handleAppProxyLinkEntry(
   const liffUrl = (env.LIFF_URL ?? '').trim();
   if (!secret || !liffUrl) return { ok: false, code: 'misconfigured' };
 
-  const verdict = await verifyAppProxySignature(query, secret, nowMs);
+  const verdict = await verifyAppProxySignature(query, secret, nowMs, APP_PROXY_PATH_PREFIX);
   if (!verdict.ok) return { ok: false, code: 'unauthorized', reason: verdict.reason };
 
   // shop 一致 (= 他ストアにインストールされた同一 app からの署名済みリクエストを拒否)。

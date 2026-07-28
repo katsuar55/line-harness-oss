@@ -79,13 +79,13 @@ describe('LIFF ポータル inline script は構文的に valid (吐き出され
     };
     const html = await fetchBody('/liff/portal', env);
     assertParses(extractInlineScripts(html), '/liff/portal (app-proxy gate on)');
-    expect(html).toContain('shopify-link-card');
+    expect(html).toContain('id="shopify-link-card"');
     expect(html).toContain('"https://naturism-diet.com"'); // JSON.stringify 経由の安全な埋め込み
   });
 
   it('/liff/portal (App Proxy gate off = カード非表示・SHOPIFY_LINK_URL は null)', async () => {
     const html = await fetchBody('/liff/portal');
-    expect(html).not.toContain('shopify-link-card');
+    expect(html).not.toContain('id="shopify-link-card"');
     expect(html).toContain('var SHOPIFY_LINK_URL = null;');
   });
 
@@ -97,7 +97,7 @@ describe('LIFF ポータル inline script は構文的に valid (吐き出され
     };
     const html = await fetchBody('/liff/portal', env);
     assertParses(extractInlineScripts(html), '/liff/portal (bad storefront url)');
-    expect(html).not.toContain('shopify-link-card');
+    expect(html).not.toContain('id="shopify-link-card"');
     expect(html).toContain('var SHOPIFY_LINK_URL = null;');
   });
 

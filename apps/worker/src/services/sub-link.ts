@@ -32,6 +32,7 @@ import {
   getFriendById,
   getFriendByShopifyCustomerId,
   setFriendShopifyCustomerId,
+  linkShopifyCustomerToFriend,
   jstNow,
   toJstString,
   type SubLinkTokenStats,
@@ -74,12 +75,22 @@ function isGenerateEnabled(env: EnvLike): boolean {
 }
 
 /**
- * preview/redeem/status (= token の受け入れ側) は、 token を発行しうるどちらかの経路が
- * 有効なら動く。 App Proxy (batch_id='app-proxy'、 services/app-proxy-link.ts) は
- * この状態機械をそのまま再利用する (2026-07-29)。
+ * status (= 観測点) は、 token を発行しうるどちらかの経路が有効なら動く。
  */
-function isRedeemEnabled(env: EnvLike): boolean {
+function isAnyGateEnabled(env: EnvLike): boolean {
   return (env.SUB_LINK_ENABLED ?? '') === 'true' || (env.APP_PROXY_LINK_ENABLED ?? '') === 'true';
+}
+
+/**
+ * **token 行の発行経路ごと**に受け入れ可否を判定する (R1 採点 MED の反映)。
+ * OR 結合にすると「magic-link キャンペーンを止める目的で SUB_LINK_ENABLED=false にした後、
+ * App Proxy を有効化した瞬間に未消費の 30日 link が全部よみがえる」= kill switch が効かない。
+ * batch_id='app-proxy' の token は APP_PROXY_LINK_ENABLED、 それ以外は SUB_LINK_ENABLED を要求する。
+ */
+function isTokenAccepted(env: EnvLike, batchId: string | null | undefined): boolean {
+  return kindOfBatch(batchId) === 'shop'
+    ? (env.APP_PROXY_LINK_ENABLED ?? '') === 'true'
+    : (env.SUB_LINK_ENABLED ?? '') === 'true';
 }
 
 /** 160bit crypto ランダムを base64url に (= 推測不能な link capability)。 */
@@ -246,7 +257,15 @@ export type PreviewStatus =
   | 'invalid';
 
 export type PreviewResult =
-  | { ok: true; status: PreviewStatus; plan: string | null; intervalDays: number | null; kind: SubLinkKind }
+  | {
+      ok: true;
+      status: PreviewStatus;
+      plan: string | null;
+      intervalDays: number | null;
+      kind: SubLinkKind;
+      /** 連携先を識別できる最小ヒント (マスク済 email)。 ready 時のみ非 null */
+      hint: string | null;
+    }
   | { ok: false; code: 'disabled' };
 
 /**
@@ -259,17 +278,32 @@ export async function previewSubLinkToken(
   env: EnvLike,
   input: { token: string; friendId: string },
 ): Promise<PreviewResult> {
-  if (!isRedeemEnabled(env)) return { ok: false, code: 'disabled' };
+  if (!isAnyGateEnabled(env)) return { ok: false, code: 'disabled' };
   const db = env.DB;
   const row = await getSubLinkToken(db, input.token);
-  if (!row) return { ok: true, status: 'invalid', plan: null, intervalDays: null, kind: 'subscription' };
+  if (!row) return { ok: true, status: 'invalid', plan: null, intervalDays: null, kind: 'subscription', hint: null };
+  // 発行経路の gate が閉じた token は「無効」として扱う (= 存在も内容も開示しない)
+  if (!isTokenAccepted(env, row.batch_id)) {
+    return { ok: true, status: 'invalid', plan: null, intervalDays: null, kind: 'subscription', hint: null };
+  }
   const cid = row.shopify_customer_id;
   const kind = kindOfBatch(row.batch_id);
-  const legit = async (status: PreviewStatus): Promise<PreviewResult> => {
-    const { plan, intervalDays } = await loadCustomerPlan(db, cid);
-    return { ok: true, status, plan, intervalDays, kind };
+  // ready のみ「連携先が誰か」を判断できるマスク済ヒントを添える。
+  // link fixation (攻撃者の token を被害者に踏ませ、 被害者の LINE を攻撃者の顧客に束縛する)
+  // に対して、 唯一の人間確認点である確認カードに識別材料を与えるため (R1 採点 MED)。
+  // 開示はマスク済 email のみ (先頭1文字 + ドメイン先頭1文字 + TLD)。
+  const legit = async (status: PreviewStatus, withHint = false): Promise<PreviewResult> => {
+    const { plan, intervalDays, email } = await loadCustomerPlan(db, cid);
+    return { ok: true, status, plan, intervalDays, kind, hint: withHint ? maskEmail(email) : null };
   };
-  const opaque = (status: PreviewStatus): PreviewResult => ({ ok: true, status, plan: null, intervalDays: null, kind });
+  const opaque = (status: PreviewStatus): PreviewResult => ({
+    ok: true,
+    status,
+    plan: null,
+    intervalDays: null,
+    kind,
+    hint: null,
+  });
 
   // ① 呼び出し元 friend の既連携を最優先で判定 (= redeem と同じ precedence)
   const friend = await getFriendById(db, input.friendId);
@@ -289,8 +323,8 @@ export async function previewSubLinkToken(
   const existing = await getFriendByShopifyCustomerId(db, cid);
   if (existing && existing.id !== input.friendId) return opaque('taken');
 
-  // ④ 連携可能 (= requester が正当な連携当事者。 ここでだけプランを開示)
-  return legit('ready');
+  // ④ 連携可能 (= requester が正当な連携当事者。 ここでだけプランと識別ヒントを開示)
+  return legit('ready', true);
 }
 
 // ============================================================
@@ -314,16 +348,28 @@ export async function redeemSubLinkToken(
   env: EnvLike,
   input: { token: string; friendId: string; lineUserId: string },
 ): Promise<RedeemResult> {
-  if (!isRedeemEnabled(env)) return { ok: false, code: 'disabled' };
+  if (!isAnyGateEnabled(env)) return { ok: false, code: 'disabled' };
   const db = env.DB;
 
   const row = await getSubLinkToken(db, input.token);
   if (!row) return { ok: false, code: 'invalid' };
+  // 発行経路の gate が閉じた token は受理しない (= preview の判定と一致・死んだボタンを作らない)
+  if (!isTokenAccepted(env, row.batch_id)) return { ok: false, code: 'invalid' };
   const cid = row.shopify_customer_id;
   const kind = kindOfBatch(row.batch_id);
   const summary = async (): Promise<RedeemSummary> => {
     const { plan, intervalDays } = await loadCustomerPlan(db, cid);
     return { customerId: cid, plan, intervalDays, kind };
+  };
+  // 逆方向リンク (= customer 起点 JOIN を 1 hop に)。 既存 writer を再利用し、
+  // shopify_orders.friend_id の後追い補完まで同じ意味論で行う (= 購買データ絞り込み配信が効く)。
+  // best-effort: 失敗しても連携本体 (friends 側 = 真実源) は成立済みなので redeem を落とさない。
+  const backlink = async (): Promise<void> => {
+    try {
+      await linkShopifyCustomerToFriend(db, cid, input.friendId);
+    } catch (err) {
+      console.warn('[sub-link] customer backlink failed (non-fatal):', err instanceof Error ? err.message : 'unknown');
+    }
   };
   // 監査 (PII なし)。 idempotent 経路も含め全成功でトークン消費/連携を記録する。
   const auditRedeem = (idempotent: boolean) =>
@@ -344,7 +390,7 @@ export async function redeemSubLinkToken(
       if (!row.consumed_at) {
         await consumeSubLinkTokenCas(db, input.token, input.lineUserId, input.friendId, jstNow());
       }
-      await backlinkCustomerToFriend(db, cid, input.friendId); // 過去 link の逆方向欠損もここで治す
+      await backlink(); // 過去 link の逆方向欠損もここで治す
       await auditRedeem(true);
       return { ok: true, alreadyLinked: true, summary: await summary() };
     }
@@ -370,7 +416,7 @@ export async function redeemSubLinkToken(
       // friend が別値を持っていた (競合)。 現況を再確認
       const refreshed = await getFriendById(db, input.friendId);
       if (refreshed?.shopify_customer_id === cid) {
-        await backlinkCustomerToFriend(db, cid, input.friendId);
+        await backlink();
         await auditRedeem(true);
         return { ok: true, alreadyLinked: true, summary: await summary() };
       }
@@ -384,7 +430,7 @@ export async function redeemSubLinkToken(
     return { ok: false, code: 'taken' };
   }
 
-  await backlinkCustomerToFriend(db, cid, input.friendId);
+  await backlink();
   await auditRedeem(false);
   return { ok: true, alreadyLinked: false, summary: await summary() };
 }
@@ -404,7 +450,7 @@ export async function getSubLinkStatus(env: EnvLike): Promise<{
   };
   // 両 gate OFF (= 本番 dormant / migration 073 未適用の可能性) では sub_link_tokens を触らない
   // (= generate/preview/redeem と同じ dormancy 不変条件を status にも適用)。
-  if (!isRedeemEnabled(env)) {
+  if (!isAnyGateEnabled(env)) {
     return { enabled: false, gates, tokens: { total: 0, consumed: 0, pending: 0, expired: 0 } };
   }
   const tokens = await getSubLinkTokenStats(env.DB, jstNow());
@@ -415,39 +461,29 @@ export async function getSubLinkStatus(env: EnvLike): Promise<{
 // helpers
 // ============================================================
 
-/**
- * 逆方向書き込み: shopify_customers.friend_id ← friends.id (2026-07-29)。
- * 真実源は friends.shopify_customer_id (UNIQUE partial index) のまま。 こちらは
- * customer 起点の JOIN (購買データ絞り込み配信 / 管理画面) を 1 hop にする冗長列で、
- * best-effort とする (= 失敗しても連携本体は成立済みなので redeem を落とさない)。
- * updated_at は customer-sync の鮮度判定を汚さないよう触らない。
- */
-async function backlinkCustomerToFriend(
-  db: D1Database,
-  shopifyCustomerId: string,
-  friendId: string,
-): Promise<void> {
-  try {
-    await db
-      .prepare(
-        `UPDATE shopify_customers SET friend_id = ?
-          WHERE shopify_customer_id = ? AND (friend_id IS NULL OR friend_id != ?)`,
-      )
-      .bind(friendId, shopifyCustomerId, friendId)
-      .run();
-  } catch (err) {
-    console.warn('[sub-link] customer backlink failed (non-fatal):', err instanceof Error ? err.message : 'unknown');
-  }
-}
-
 async function loadCustomerPlan(
   db: D1Database,
   shopifyCustomerId: string,
-): Promise<{ plan: string | null; intervalDays: number | null }> {
+): Promise<{ plan: string | null; intervalDays: number | null; email: string | null }> {
   const row = await db
-    .prepare(`SELECT tags FROM shopify_customers WHERE shopify_customer_id = ?`)
+    .prepare(`SELECT tags, email FROM shopify_customers WHERE shopify_customer_id = ?`)
     .bind(shopifyCustomerId)
-    .first<{ tags: string | null }>();
+    .first<{ tags: string | null; email: string | null }>();
   const { planName, intervalDays } = extractPrimaryPlan(row?.tags);
-  return { plan: planName, intervalDays };
+  return { plan: planName, intervalDays, email: row?.email ?? null };
+}
+
+/**
+ * email をマスクする (= 本人には自分のものと分かり、 第三者には特定できない粒度)。
+ * `hanako@example.com` → `h***@e***.com`。 不正形式は null。
+ */
+export function maskEmail(email: string | null | undefined): string | null {
+  if (!email) return null;
+  const at = email.indexOf('@');
+  if (at < 1 || at === email.length - 1) return null;
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  const dot = domain.lastIndexOf('.');
+  if (dot < 1) return null;
+  return `${local[0]}***@${domain[0]}***${domain.slice(dot)}`;
 }

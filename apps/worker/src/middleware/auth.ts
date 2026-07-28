@@ -48,7 +48,9 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     (c.req.method === 'POST' && path === '/api/integrations/teiki-flow') ||
     // Shopify App Proxy (2026-07-29): storefront /apps/line-link からの転送。 route 内で
     // App Proxy 署名 (query HMAC) を検証して代替認証する。 GET 限定 = method 非依存 skip の穴を作らない。
-    (c.req.method === 'GET' && path === '/proxy/line-link') ||
+    // App Proxy は prefix 配下の全サブパスを転送するので `/proxy/line-link/...` も含める
+    // (含めないと末尾スラッシュ 1 つで storefront 上に生の 401 が出る)。
+    (c.req.method === 'GET' && (path === '/proxy/line-link' || path.startsWith('/proxy/line-link/'))) ||
     path.match(/^\/api\/webhooks\/incoming\/[^/]+\/receive$/) ||
     path.match(/^\/api\/forms\/[^/]+\/submit$/) ||
     // GET のみ公開 (LIFF が form 定義を読む)。 PUT(編集)/DELETE(削除) は authMiddleware を

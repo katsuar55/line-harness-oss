@@ -143,7 +143,13 @@ export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<
     path.startsWith('/r/') ||
     path.startsWith('/liff/') ||
     // メール起動ブリッジ (contact card 経由の公開静的ページ、 CGNAT-safe に exempt)
-    path === '/contact/email'
+    path === '/contact/email' ||
+    // Shopify App Proxy 入口 (2026-07-29)。 転送元の cf-connecting-ip は **Shopify の egress IP** で
+    // 全顧客が 1 バケットを共有するため、 IP keyed limit だと 1 人の連打で店舗全体の連携入口が
+    // 429 になる (LIFF シェルと同じ CGNAT クラスの問題)。 実質的な入場制御は route 内の
+    // App Proxy 署名検証 (Shopify が発行した 90 秒有効の署名が必須) が担う。
+    path === '/proxy/line-link' ||
+    path.startsWith('/proxy/line-link/')
   ) {
     return next();
   }

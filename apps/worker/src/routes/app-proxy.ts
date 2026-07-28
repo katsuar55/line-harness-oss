@@ -18,6 +18,14 @@ import type { Env } from '../index.js';
 
 const appProxy = new Hono<Env>();
 
+/**
+ * ready 応答は単回限りの連携トークン (capability) を本文に含むのに、 URL は全顧客で同一
+ * (`/apps/line-link`)。 共有キャッシュ (企業プロキシ / storefront 前段 / 共有端末) が
+ * ヒューリスティック保存すると、 顧客 A の token ページが顧客 B に配られる (R1 採点 MED)。
+ * 全応答に付ける (状態ごとに差があると、 それ自体がキャッシュ層への情報になるため)。
+ */
+const NO_STORE = { 'Cache-Control': 'no-store, private', Pragma: 'no-cache' } as const;
+
 /** HTML attribute / text 用の最小エスケープ (埋め込むのは自前 URL のみだが深層防御)。 */
 function esc(s: string): string {
   return s
@@ -32,28 +40,30 @@ function esc(s: string): string {
  * 共通シェル。 60代可読性トークン (§10-6) に合わせ 16px+ / コントラスト AA。
  * meta refresh は ready ページのみ (= JS なしで LINE へ送り返す)。
  */
-function page(opts: { title: string; emoji: string; body: string; refreshUrl?: string }): string {
-  const refresh = opts.refreshUrl
-    ? `<meta http-equiv="refresh" content="0;url=${esc(opts.refreshUrl)}">`
-    : '';
+function page(opts: { title: string; emoji: string; body: string }): string {
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex">
-${refresh}<title>${esc(opts.title)} | naturism</title>
+<title>${esc(opts.title)} | naturism</title>
 <style>
   body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
          background:#f6faf9; color:#1f2937; display:flex; min-height:100vh; align-items:center; justify-content:center; }
   .card { background:#fff; border:1px solid #d8ece9; border-radius:20px; box-shadow:0 8px 24px rgba(15,118,110,.08);
           max-width:420px; margin:16px; padding:32px 24px; text-align:center; }
   .emoji { font-size:44px; margin-bottom:12px; }
-  h1 { font-size:19px; font-weight:700; margin:0 0 12px; color:#0f766e; }
+  h1 { font-size:20px; font-weight:700; margin:0 0 12px; color:#0f766e; }
   p { font-size:16px; line-height:1.7; margin:0 0 20px; color:#374151; }
-  .btn { display:inline-block; background:#0e9f97; color:#fff; text-decoration:none; font-weight:700;
-         font-size:16px; padding:14px 28px; border-radius:9999px; }
-  .note { font-size:13px; color:#6b7280; margin-top:16px; }
+  /* #0f766e = ポータル btn-primary と同一トークン (白文字 5.47:1 = WCAG AA)。
+     初版で使っていた明るいティールは白文字 3.27:1 で AA 不合格だった (R1 採点 MED)。 */
+  .btn { display:inline-block; background:#0f766e; color:#fff; text-decoration:none; font-weight:700;
+         font-size:17px; padding:16px 30px; border-radius:9999px;
+         transition:transform .12s ease-out, box-shadow .12s ease-out; box-shadow:0 3px 10px rgba(15,118,110,.24); }
+  .btn:active { transform:translateY(1px) scale(.98); box-shadow:0 1px 4px rgba(15,118,110,.2); }
+  .btn-sub { display:inline-block; margin-top:14px; color:#0f766e; font-size:15px; font-weight:700; text-decoration:underline; }
+  .note { font-size:15px; color:#4b5563; margin-top:18px; line-height:1.6; }
 </style>
 </head>
 <body>
@@ -66,34 +76,44 @@ ${refresh}<title>${esc(opts.title)} | naturism</title>
 </html>`;
 }
 
-appProxy.get('/proxy/line-link', async (c) => {
+const entryHandler = async (c: {
+  req: { url: string };
+  env: Env['Bindings'];
+  html: (h: string, s?: number, hdr?: Record<string, string>) => Response;
+  text: (t: string, s?: number, hdr?: Record<string, string>) => Response;
+}) => {
   try {
     const query = new URL(c.req.url).searchParams;
     const result = await handleAppProxyLinkEntry(c.env, query);
 
     if (!result.ok) {
-      if (result.code === 'disabled') {
-        // dormant: 存在を露出しない (storefront には店のテーマの 404 相当として見える)
-        return c.text('Not Found', 404);
-      }
+      // 応答は「署名が正当だったか」だけで分岐させる。 gate/設定の状態で 404/503 を
+      // 打ち分けると、 誰でも叩ける workers.dev から「有効化されたか」「secret が入ったか」を
+      // 無認証で監視できる設定オラクルになる (R1 採点 LOW)。
       if (result.code === 'misconfigured') {
-        return c.text('Service Unavailable', 503);
+        console.error('[app-proxy] misconfigured: SHOPIFY_CLIENT_SECRET or LIFF_URL missing');
+      } else if (result.code === 'unauthorized') {
+        console.warn('[app-proxy] unauthorized proxy request:', result.reason);
       }
-      console.warn('[app-proxy] unauthorized proxy request:', result.reason);
-      return c.text('Unauthorized', 401);
+      return c.text('Not Found', 404, NO_STORE);
     }
 
+    const liffHome = (c.env.LIFF_URL ?? '').trim();
+
     if (result.state === 'login_required') {
-      // App Proxy 応答は storefront ドメインで表示されるため相対 URL でログインへ誘導できる
-      // (= classic / new customer accounts どちらでも Shopify 側が適切なログイン画面へ振る)。
+      // ログイン後の復帰は `/customer_authentication/login?return_to=<相対URL>` が公式の方式
+      // (https://shopify.dev/docs/storefronts/themes/sign-in)。 `/account/login?return_url=` は
+      // 文書化されておらず、 新 customer accounts では無視されて /account に着地する (R1 採点 HIGH)。
       return c.html(
         page({
           title: 'ログインしてLINEと連携',
           emoji: '🔑',
-          body: `<p>LINEとの連携には、オンラインストアへのログインが必要です。<br>ログイン後、もう一度このページが開きます。</p>
-  <a class="btn" href="/account/login?return_url=%2Fapps%2Fline-link">ログインする</a>
-  <p class="note">アカウントをお持ちでない場合は、ご購入時に作成できます。</p>`,
+          body: `<p>LINEとの連携には、オンラインストアへのログインが必要です。<br>ログインが終わると、この連携ページに戻ります。</p>
+  <a class="btn" href="/customer_authentication/login?return_to=%2Fapps%2Fline-link">ログインする</a>
+  <p class="note">アカウントをお持ちでない場合は、ご購入時に作成できます。<br>もし戻ってこない場合は、LINEの「マイアカウント」からもう一度お試しください。</p>`,
         }),
+        200,
+        NO_STORE,
       );
     }
 
@@ -103,26 +123,40 @@ appProxy.get('/proxy/line-link', async (c) => {
           title: 'すでに連携済みです',
           emoji: '✅',
           body: `<p>このアカウントは、すでにLINEと連携されています。<br>特典やお知らせはLINEでお届けしています。</p>
+  ${liffHome ? `<a class="btn" href="${esc(liffHome)}">LINEに戻る</a>` : ''}
   <p class="note">別のLINEアカウントへ変更したい場合は、LINEのトークからサポートへご連絡ください。</p>`,
         }),
+        200,
+        NO_STORE,
       );
     }
 
-    // ready: 即 LINE (LIFF) へ送り返す。 meta refresh + ボタン (JS なし)。
+    // ready: タップで LINE へ戻す。
+    // **meta refresh は使わない** — iOS/Android の universal link / App Link は自動遷移では
+    // 発火せず、 外部ブラウザ内で LIFF endpoint が開いて LINE ログインを再要求する
+    // (= 60代ユーザーの最大の脱落点)。 ユーザーのタップだけが確実に LINE アプリを開く (R1 採点 HIGH)。
     return c.html(
       page({
         title: 'LINEに戻って連携を完了',
         emoji: '🌿',
-        refreshUrl: result.redirectUrl,
-        body: `<p>ログインを確認しました。<br>自動でLINEが開き、連携の最終確認が表示されます。</p>
+        body: `<p>ログインを確認しました。<br>下のボタンを押すとLINEが開き、連携の最終確認が表示されます。</p>
   <a class="btn" href="${esc(result.redirectUrl)}">LINEを開いて連携する</a>
-  <p class="note">画面が切り替わらない場合は、上のボタンを押してください。</p>`,
+  <p class="note">このページを閉じても、30分以内であれば同じボタンからやり直せます。</p>`,
       }),
+      200,
+      NO_STORE,
     );
   } catch (err) {
     console.error('GET /proxy/line-link error:', err);
-    return c.text('Internal Server Error', 500);
+    return c.text('Internal Server Error', 500, NO_STORE);
   }
-});
+};
+
+// App Proxy は prefix 配下の全サブパスを転送する (`/apps/line-link/` や
+// `/apps/line-link/foo` → `/proxy/line-link/...`)。 未登録だと authMiddleware の
+// 生 401 が storefront 上に露出するので、 同じハンドラに寄せる (R1 採点 LOW)。
+appProxy.get('/proxy/line-link', entryHandler as never);
+appProxy.get('/proxy/line-link/', entryHandler as never);
+appProxy.get('/proxy/line-link/*', entryHandler as never);
 
 export { appProxy };

@@ -20,7 +20,10 @@ export const APP_PROXY_TIMESTAMP_TOLERANCE_SEC = 90;
 
 export type AppProxyVerifyResult =
   | { ok: true }
-  | { ok: false; reason: 'missing_signature' | 'bad_signature' | 'stale_timestamp' };
+  | {
+      ok: false;
+      reason: 'missing_signature' | 'bad_signature' | 'stale_timestamp' | 'duplicate_param' | 'bad_path_prefix';
+    };
 
 /** hex 文字列同士の定数時間比較 (= 早期 return による timing oracle を作らない)。 */
 function timingSafeEqualHex(a: string, b: string): boolean {
@@ -54,10 +57,24 @@ export async function verifyAppProxySignature(
   query: URLSearchParams,
   secret: string,
   nowMs: number = Date.now(),
+  expectedPathPrefix?: string,
 ): Promise<AppProxyVerifyResult> {
   const signature = query.get('signature');
   if (!signature || !/^[0-9a-f]{64}$/.test(signature)) {
     return { ok: false, reason: 'missing_signature' };
+  }
+
+  // 🚨 重複キーは無条件で拒否する (= 署名と業務ロジックの読み取り不一致を封じる)。
+  // 署名対象は getAll のカンマ結合だが、 呼び出し側は get() = 先頭値を identity に使う。
+  // storefront URL に訪問者が付けた query は Shopify が署名対象ごと転送するため、
+  // `?logged_in_customer_id=<被害者id>` を付けて未ログインで踏むと、 Shopify 由来の値が
+  // 後続値として結合されて署名は通り、 get() は攻撃者が仕込んだ被害者 id を返す
+  // → 被害者 customer の連携トークンが攻撃者のブラウザに発行される (R1 採点 CRITICAL)。
+  // Shopify が実際に append するか overwrite するかに依存せず、 構造的に閉じる。
+  for (const key of new Set(query.keys())) {
+    if (key !== 'signature' && query.getAll(key).length > 1) {
+      return { ok: false, reason: 'duplicate_param' };
+    }
   }
 
   const message = buildAppProxyMessage(query);
@@ -80,8 +97,14 @@ export async function verifyAppProxySignature(
   // 署名検証**後**に timestamp を見る (= 未署名リクエストに timestamp 有無の oracle を与えない)。
   // timestamp は署名対象に含まれるため、 ここまで来た値は Shopify が発行したもの。
   const ts = Number(query.get('timestamp'));
-  if (!Number.isFinite(ts) || Math.abs(nowMs / 1000 - ts) > APP_PROXY_TIMESTAMP_TOLERANCE_SEC) {
+  if (!query.get('timestamp') || !Number.isFinite(ts) || Math.abs(nowMs / 1000 - ts) > APP_PROXY_TIMESTAMP_TOLERANCE_SEC) {
     return { ok: false, reason: 'stale_timestamp' };
+  }
+
+  // path_prefix 照合: 同一 app の別 proxy prefix 向けに発行された署名済み query を
+  // このエンドポイントへ流用させない (署名対象に含まれるので改竄はできないが、 用途違いは弾く)。
+  if (expectedPathPrefix && query.get('path_prefix') !== expectedPathPrefix) {
+    return { ok: false, reason: 'bad_path_prefix' };
   }
 
   return { ok: true };
