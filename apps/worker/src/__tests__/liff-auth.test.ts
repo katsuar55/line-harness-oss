@@ -97,6 +97,26 @@ describe('liffAuthMiddleware', () => {
     expect(((await res.json()) as { liffUser: unknown }).liffUser).toEqual({
       lineUserId: 'U1',
       friendId: 'friend-1',
+      shopifyCustomerId: null, // 未連携 friend
+    });
+  });
+
+  it('連携済み friend では shopifyCustomerId も liffUser に載る (下流の再読込を不要にする)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ sub: 'U1' }), { status: 200 }));
+    mockGetFriendByLineUserId.mockResolvedValue({
+      id: 'friend-1',
+      line_user_id: 'U1',
+      shopify_customer_id: '6458785661181',
+    });
+    const res = await makeApp().fetch(
+      new Request('http://localhost/api/liff/me', { headers: { Authorization: 'Bearer tok' } }),
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { liffUser: unknown }).liffUser).toEqual({
+      lineUserId: 'U1',
+      friendId: 'friend-1',
+      shopifyCustomerId: '6458785661181',
     });
   });
 
