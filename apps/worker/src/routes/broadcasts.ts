@@ -255,6 +255,13 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
 broadcasts.delete('/api/broadcasts/:id', async (c) => {
   try {
     const id = c.req.param('id');
+    // 予約済みの削除は「予約の取り消し」と同じ効果を持つ。 PUT 側 (:226-231) だけを守ると
+    // 「編集で外せないなら削除すればいい」という迂回路が残るため、 同じ述語でここも守る。
+    const existing = await getBroadcastById(c.env.DB, id);
+    if (existing?.status === 'scheduled') {
+      const denied = await denyUnlessRole(c, '予約済み一斉配信の削除', 'owner', 'admin');
+      if (denied) return denied;
+    }
     await deleteBroadcast(c.env.DB, id);
     return c.json({ success: true, data: null });
   } catch (err) {
