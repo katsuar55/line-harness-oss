@@ -68,7 +68,7 @@ function page(opts: { title: string; emoji: string; body: string }): string {
 </head>
 <body>
 <div class="card">
-  <div class="emoji">${opts.emoji}</div>
+  <div class="emoji" aria-hidden="true">${opts.emoji}</div>
   <h1>${esc(opts.title)}</h1>
   ${opts.body}
 </div>
@@ -76,13 +76,33 @@ function page(opts: { title: string; emoji: string; body: string }): string {
 </html>`;
 }
 
+/** 「利用できません」の共通ページ (= storefront 上に生テキストを出さない)。 */
+function unavailablePage(): string {
+  return page({
+    title: 'ただいまご利用いただけません',
+    emoji: 'ℹ️',
+    body: `<p>この連携ページは現在ご利用いただけません。<br>お手数ですが、時間をおいてお試しください。</p>
+  <p class="note">お困りのときは、LINEのトークからサポートへご連絡ください。</p>`,
+  });
+}
+
 const entryHandler = async (c: {
-  req: { url: string };
+  req: { url: string; header: (n: string) => string | undefined };
   env: Env['Bindings'];
   html: (h: string, s?: number, hdr?: Record<string, string>) => Response;
   text: (t: string, s?: number, hdr?: Record<string, string>) => Response;
 }) => {
   try {
+    // このページはブラウザのナビゲーションでのみ意味を持つ。 storefront に同居する
+    // 第三者アプリの script が fetch('/apps/line-link') すると、 Shopify は閲覧者の
+    // セッションで proxy するため、 本文の連携トークン (= capability) を読み取られる。
+    // Sec-Fetch-* を送る UA ではナビゲーション以外を弾く (ヘッダ非対応 UA は従来通り通す)。
+    const dest = c.req.header('sec-fetch-dest');
+    const mode = c.req.header('sec-fetch-mode');
+    if ((dest && dest !== 'document') || (mode && mode !== 'navigate')) {
+      return c.text('Not Found', 404, NO_STORE);
+    }
+
     const query = new URL(c.req.url).searchParams;
     const result = await handleAppProxyLinkEntry(c.env, query);
 
@@ -95,7 +115,9 @@ const entryHandler = async (c: {
       } else if (result.code === 'unauthorized') {
         console.warn('[app-proxy] unauthorized proxy request:', result.reason);
       }
-      return c.text('Not Found', 404, NO_STORE);
+      // 404 でもブランドページを返す (= 設定作業中や誤アクセスで storefront ドメイン上に
+      // 生の "Not Found" テキストが出るのを避ける)。 status は 404 のまま = 情報は増やさない。
+      return c.html(unavailablePage(), 404, NO_STORE);
     }
 
     const liffHome = (c.env.LIFF_URL ?? '').trim();
@@ -110,7 +132,8 @@ const entryHandler = async (c: {
           emoji: '🔑',
           body: `<p>LINEとの連携には、オンラインストアへのログインが必要です。<br>ログインが終わると、この連携ページに戻ります。</p>
   <a class="btn" href="/customer_authentication/login?return_to=%2Fapps%2Fline-link">ログインする</a>
-  <p class="note">アカウントをお持ちでない場合は、ご購入時に作成できます。<br>もし戻ってこない場合は、LINEの「マイアカウント」からもう一度お試しください。</p>`,
+  ${liffHome ? `<a class="btn-sub" href="${esc(liffHome)}">あとでLINEに戻る</a>` : ''}
+  <p class="note">アカウントをお持ちでない場合は、ご購入時に作成できます。</p>`,
         }),
         200,
         NO_STORE,
@@ -118,13 +141,31 @@ const entryHandler = async (c: {
     }
 
     if (result.state === 'already_linked') {
+      // 外部ブラウザ側には訪問者の LINE identity が無いため、連携先が「あなたのLINE」かは
+      // 構造的に判定できない (家族共有・機種変で別 LINE のことがある)。断定しない。
       return c.html(
         page({
           title: 'すでに連携済みです',
           emoji: '✅',
-          body: `<p>このアカウントは、すでにLINEと連携されています。<br>特典やお知らせはLINEでお届けしています。</p>
+          body: `<p>このお客様アカウントは、すでにいずれかのLINEアカウントと連携されています。</p>
   ${liffHome ? `<a class="btn" href="${esc(liffHome)}">LINEに戻る</a>` : ''}
-  <p class="note">別のLINEアカウントへ変更したい場合は、LINEのトークからサポートへご連絡ください。</p>`,
+  <p class="note">LINEでお知らせが届いていない場合は、連携先が別のLINEアカウントになっている可能性があります。お手数ですが、LINEのトークからサポートへご連絡ください。</p>`,
+        }),
+        200,
+        NO_STORE,
+      );
+    }
+
+    if (result.state === 'sync_pending') {
+      // Shopify 側にはいるが当方の顧客データに未反映。連携させると確認材料 (連携先の表示) を
+      // 出せないまま同意させることになるので、待ってもらう。
+      return c.html(
+        page({
+          title: 'もう少しお待ちください',
+          emoji: '⏳',
+          body: `<p>お客様情報の反映に少しお時間をいただいています。<br>数分ほどおいてから、もう一度お試しください。</p>
+  ${liffHome ? `<a class="btn" href="${esc(liffHome)}">LINEに戻る</a>` : ''}
+  <p class="note">何度お試しになってもこの画面が出る場合は、LINEのトークからサポートへご連絡ください。</p>`,
         }),
         200,
         NO_STORE,
@@ -141,7 +182,7 @@ const entryHandler = async (c: {
         emoji: '🌿',
         body: `<p>ログインを確認しました。<br>下のボタンを押すとLINEが開き、連携の最終確認が表示されます。</p>
   <a class="btn" href="${esc(result.redirectUrl)}">LINEを開いて連携する</a>
-  <p class="note">このページを閉じても、30分以内であれば同じボタンからやり直せます。</p>`,
+  <p class="note">うまくいかないときは、ストアの連携ページをもう一度開いてください。</p>`,
       }),
       200,
       NO_STORE,

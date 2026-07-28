@@ -69,6 +69,15 @@ describe('buildAppProxyMessage — 公式仕様との一致', () => {
     expect(buildAppProxyMessage(qs(DOC_QUERY))).toBe(DOC_EXPECTED_MESSAGE);
   });
 
+  it('sort は「k=v 文字列」に対して行う (公式 Ruby サンプルと同じ)', () => {
+    // 公式実装は collect{ "k=v" }.sort.join。 キーだけ sort する実装との差は、
+    // 一方が他方の接頭辞になるキー対 ('a' と 'a0') でのみ現れる:
+    //   文字列 sort → "a0=2a=1" ('=' 0x3D < '0' 0x30 ではないので "a0=" が先)
+    //   キー sort   → "a=1a0=2"
+    // 公式ベクタでは判別できないため、ここで固定する。
+    expect(buildAppProxyMessage(new URLSearchParams('a=1&a0=2'))).toBe('a0=2a=1');
+  });
+
   it('組み立てたメッセージの HMAC が公式ベクタの signature と一致する', () => {
     expect(hmacHex(buildAppProxyMessage(qs(DOC_QUERY)))).toBe(DOC_EXPECTED_SIGNATURE);
   });
@@ -189,6 +198,57 @@ describe('重複キーの拒否', () => {
 // ============================================================
 // path_prefix
 // ============================================================
+
+// ============================================================
+// 分岐順序 (= no-oracle 特性の固定)
+// ============================================================
+
+describe('検証順序', () => {
+  // 署名が不正な相手には、timestamp や path_prefix の情報を返さない。
+  // 各拒否テストが 1 条件しか変えていないと、検査を HMAC 比較より前に持ち上げる
+  // 退行が素通りする (R2 採点 MED)。
+  it('署名不正 + timestamp 失効 → bad_signature (stale を先に返さない)', async () => {
+    const q = qs(signed(base()));
+    q.set('logged_in_customer_id', '999'); // 署名を壊す
+    const stale = NOW_MS + (APP_PROXY_TIMESTAMP_TOLERANCE_SEC + 60) * 1000;
+    expect(await verifyAppProxySignature(q, SECRET, stale, PREFIX)).toEqual({
+      ok: false,
+      reason: 'bad_signature',
+    });
+  });
+
+  it('署名不正 + path_prefix 不一致 → bad_signature', async () => {
+    const q = qs(signed(base()));
+    q.set('logged_in_customer_id', '999');
+    expect(await verifyAppProxySignature(q, SECRET, NOW_MS, '/apps/other')).toEqual({
+      ok: false,
+      reason: 'bad_signature',
+    });
+  });
+
+  it('重複キー + 署名不正 → duplicate_param (重複検査が最初)', async () => {
+    const q = new URLSearchParams();
+    q.append('shop', SHOP);
+    q.append('shop', 'evil.myshopify.com');
+    q.append('path_prefix', PREFIX);
+    q.append('logged_in_customer_id', '');
+    q.append('timestamp', TS);
+    q.set('signature', 'f'.repeat(64)); // 明らかに不正
+    expect(await verifyAppProxySignature(q, SECRET, NOW_MS, PREFIX)).toEqual({
+      ok: false,
+      reason: 'duplicate_param',
+    });
+  });
+
+  it('署名正当 + timestamp 失効 + path_prefix 不一致 → stale_timestamp (timestamp が先)', async () => {
+    const q = qs(signed(base()));
+    const stale = NOW_MS + (APP_PROXY_TIMESTAMP_TOLERANCE_SEC + 60) * 1000;
+    expect(await verifyAppProxySignature(q, SECRET, stale, '/apps/other')).toEqual({
+      ok: false,
+      reason: 'stale_timestamp',
+    });
+  });
+});
 
 describe('path_prefix 照合', () => {
   it('一致は通る / 不一致は bad_path_prefix (別 proxy 向け署名の流用を弾く)', async () => {

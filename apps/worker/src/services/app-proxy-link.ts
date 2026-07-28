@@ -35,6 +35,7 @@ import {
 } from '@line-crm/db';
 import { verifyAppProxySignature } from '../utils/shopify-app-proxy.js';
 import { APP_PROXY_BATCH_ID } from './sub-link.js';
+import { auditSystem } from './audit-logger.js';
 
 export { APP_PROXY_BATCH_ID };
 
@@ -66,6 +67,8 @@ export type AppProxyEntryResult =
   | { ok: false; code: 'unauthorized'; reason: string }
   | { ok: true; state: 'login_required' }
   | { ok: true; state: 'already_linked' }
+  /** Shopify にはいるが local shopify_customers に未同期 (= 確認材料を出せないので連携させない) */
+  | { ok: true; state: 'sync_pending' }
   | { ok: true; state: 'ready'; redirectUrl: string };
 
 /** 160bit crypto ランダム base64url (= sub-link と同形式の推測不能 token)。 */
@@ -98,11 +101,15 @@ export async function handleAppProxyLinkEntry(
   const verdict = await verifyAppProxySignature(query, secret, nowMs, APP_PROXY_PATH_PREFIX);
   if (!verdict.ok) return { ok: false, code: 'unauthorized', reason: verdict.reason };
 
-  // shop 一致 (= 他ストアにインストールされた同一 app からの署名済みリクエストを拒否)。
-  // SHOPIFY_STORE_DOMAIN 未設定時はこの検査を skip (単一ストア運用の既定)。
+  // shop 一致は **必須** (= 他ストアにインストールされた同一 app からの署名済みリクエストを拒否)。
+  // App Proxy 署名は app の client secret で計算されるため、 同一 app を別ストアに入れると
+  // そちらからの転送も署名検証を通る。 未設定時に skip すると、 ストア B の customer id が
+  // ストア A の同 id と同一人物として紐付き、 別人の購買履歴が LINE に開示される。
+  // secret 欠落と同じく「無言 skip」ではなく misconfigured で止める。
   const expectedShop = (env.SHOPIFY_STORE_DOMAIN ?? '').trim().toLowerCase();
+  if (!expectedShop) return { ok: false, code: 'misconfigured' };
   const shop = (query.get('shop') ?? '').trim().toLowerCase();
-  if (expectedShop && shop !== expectedShop) {
+  if (shop !== expectedShop) {
     return { ok: false, code: 'unauthorized', reason: 'shop_mismatch' };
   }
 
@@ -118,7 +125,21 @@ export async function handleAppProxyLinkEntry(
   const existing = await getFriendByShopifyCustomerId(env.DB, customerId);
   if (existing) return { ok: true, state: 'already_linked' };
 
-  // 再訪問時: 自分の旧 app-proxy トークンだけ掃除 (= magic-link キャンペーンの 30日 link は殺さない)
+  // local の shopify_customers に行が無い顧客 (webhook 未達 / 作成直後の race) は ready にしない。
+  // ready にすると preview が plan=null かつ **hint=null** を返し、 確認カードから
+  // 「連携先: h***@e***.com」と警告文が無音で消える = link fixation の唯一の人間確認点が失われる。
+  // さらに backlink も 0 行更新で永久に欠損する。
+  const known = await env.DB.prepare(`SELECT 1 AS ok FROM shopify_customers WHERE shopify_customer_id = ?`)
+    .bind(customerId)
+    .first<{ ok: number }>();
+  if (!known) return { ok: true, state: 'sync_pending' };
+
+  // 未消費・未失効の自分の app-proxy token が既にあれば再利用する
+  // (= 連打しても DELETE+INSERT を繰り返さない。 併せて「開いたままの前のページ」も生き続ける)。
+  const reusable = await findReusableAppProxyToken(env.DB, customerId, toJstString(new Date(nowMs)));
+  if (reusable) return { ok: true, state: 'ready', redirectUrl: `${liffUrl}?slk=${reusable}` };
+
+  // 失効した自分の app-proxy token だけ掃除 (= magic-link キャンペーンの 30日 link は殺さない)
   await deleteUnconsumedSubLinkTokensForCustomerBatch(env.DB, customerId, APP_PROXY_BATCH_ID);
 
   const token = generateLinkToken();
@@ -130,5 +151,32 @@ export async function handleAppProxyLinkEntry(
     createdAt: jstNow(),
   });
 
+  // 監査: 「どの customer にいつ連携 capability を発行したか」。 redeem 側だけ記録していると、
+  // 乗っ取りの疑いが出たときに「発行が正規ログイン由来か注入由来か」を事後に切り分けられない。
+  await auditSystem(env.DB, {
+    action: 'account_link.app_proxy_token_issued',
+    targetType: 'shopify_customer',
+    targetId: customerId,
+    result: 'success',
+    metadata: { shop },
+  });
+
   return { ok: true, state: 'ready', redirectUrl: `${liffUrl}?slk=${token}` };
+}
+
+/** 未消費・未失効の app-proxy token を 1 件返す (= 再訪問時の再利用)。 */
+async function findReusableAppProxyToken(
+  db: D1Database,
+  shopifyCustomerId: string,
+  now: string,
+): Promise<string | null> {
+  const row = await db
+    .prepare(
+      `SELECT token FROM sub_link_tokens
+        WHERE shopify_customer_id = ? AND batch_id = ? AND consumed_at IS NULL AND expires_at > ?
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .bind(shopifyCustomerId, APP_PROXY_BATCH_ID, now)
+    .first<{ token: string }>();
+  return row?.token ?? null;
 }

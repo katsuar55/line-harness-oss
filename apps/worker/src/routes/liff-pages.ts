@@ -769,11 +769,11 @@ function portalPage(
       </div>
 
       ${shopifyLinkUrl ? `<!-- Shopify 連携 (App Proxy, 2026-07-29): gate on + storefront URL 設定時のみ表示 -->
-      <div class="card p-4" id="shopify-link-card">
-        <p class="text-sm font-bold text-gray-800 mb-1">🛍️ オンラインストアと連携</p>
-        <p class="text-xs text-gray-500 mb-3">ストアにログインするだけで、会員特典やお届けのお知らせがLINEで受け取れるようになります。</p>
-        <button onclick="openShopifyLinkPage()" class="tap btn-primary py-2.5 px-4 rounded-xl text-sm font-bold">ストアにログインして連携 →</button>
-        <p class="text-xs text-gray-500 mt-2">ストアのページが開きます。ログイン確認のあと、ボタンをタップするとLINEに戻ります。</p>
+      <div class="card p-4" id="shopify-link-card" role="status" aria-live="polite">
+        <p class="text-base font-bold text-gray-800 mb-1">🛍️ オンラインストアと連携</p>
+        <p class="text-sm text-gray-600 mb-3">ストアにログインするだけで、会員特典やお届けのお知らせがLINEで受け取れるようになります。</p>
+        <button onclick="openShopifyLinkPage()" class="tap btn-primary py-3 px-5 rounded-xl text-base font-bold">ストアにログインして連携 →</button>
+        <p class="text-sm text-gray-600 mt-2">ストアのページが開きます。ログイン確認のあと、ボタンをタップするとLINEに戻ります。</p>
       </div>` : ''}
 
       <p class="text-xs text-gray-400 font-bold pt-1">⚙️ 設定</p>
@@ -3437,11 +3437,11 @@ function markShopifyLinked() {
   card.setAttribute('data-linked', '1');
   while (card.firstChild) { card.removeChild(card.firstChild); }
   var title = document.createElement('p');
-  title.className = 'text-sm font-bold text-gray-800 mb-1';
+  title.className = 'text-base font-bold text-gray-800 mb-1';
   title.textContent = '✅ オンラインストアと連携済み';
   card.appendChild(title);
   var body = document.createElement('p');
-  body.className = 'text-xs text-gray-500';
+  body.className = 'text-sm text-gray-600';
   body.textContent = '会員特典やお届けのお知らせをLINEでお届けしています。';
   card.appendChild(body);
 }
@@ -3457,7 +3457,11 @@ function openShopifyLinkPage() {
       return;
     }
   } catch (e) { /* openWindow 不能なら通常遷移へ */ }
-  try { window.open(url, '_blank'); } catch (e) { location.href = url; }
+  // popup ブロック時 window.open は throw せず **null を返す** ので、戻り値で判定しないと
+  // 「押しても何も起きない」完全な無反応になる (同ファイルの degrade 前例と同じ扱いにする)。
+  var w = null;
+  try { w = window.open(url, '_blank'); } catch (e) { w = null; }
+  if (!w) { location.href = url; }
 }
 
 // ─── 定期購入 連携リンク (magic-link, ?slk= param) ───
@@ -3730,7 +3734,7 @@ function subLinkShowUnavailable(kind) {
   card.appendChild(subLinkNode('p', 'sublink-body mb-5', paused
     ? 'LINEでの連携のお受付を一時停止しています。ご迷惑をおかけします。再開しましたら改めてご案内しますので、そのままお待ちください。'
     : (SHOPIFY_LINK_URL
-      ? 'お手数ですが、マイアカウントの「ストアにログインして連携」からもう一度お試しください。お困りのときはサポートまでご連絡ください。'
+      ? 'お手数ですが、画面右上のプロフィール写真をタップ →「ストアにログインして連携」からもう一度お試しください。お困りのときはサポートまでご連絡ください。'
       : 'お手数ですが、最新のご案内メールのリンクからお試しください。お困りのときはサポートまでご連絡ください。')));
   var close = subLinkNode('button', 'btn-primary sublink-btn', 'とじる');
   close.addEventListener('click', function() { subLinkDismiss(true); });
@@ -3747,7 +3751,7 @@ function subLinkStatusInfo(status, kind) {
   // 復旧手段は経路で違う: shop (App Proxy) の人はメールを受け取っていないので、
   // 「ご案内メール」を案内すると存在しないものを探させる死路になる。
   if (status === 'expired') return { emoji: '⏰', title: 'リンクの有効期限切れ', desc: (kind === 'shop'
-    ? 'この連携リンクは有効期限が切れています。お手数ですが、マイアカウントの「ストアにログインして連携」からもう一度お試しください。'
+    ? 'この連携リンクは有効期限が切れています。お手数ですが、画面右上のプロフィール写真をタップ →「ストアにログインして連携」からもう一度お試しください。'
     : 'この連携リンクは有効期限が切れています。お手数ですが、最新のご案内メールのリンクからお試しください。') };
   return { emoji: 'ℹ️', title: '使用済みのリンク', desc: 'この連携リンクはすでに使用されています。' };
 }

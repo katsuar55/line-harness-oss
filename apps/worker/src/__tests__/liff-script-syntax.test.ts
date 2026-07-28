@@ -89,14 +89,26 @@ describe('LIFF ポータル inline script は構文的に valid (吐き出され
     expect(html).toContain('var SHOPIFY_LINK_URL = null;');
   });
 
-  it('/liff/portal (storefront URL が不正形式なら gate on でもカードを出さない)', async () => {
+  // 許可する文字クラスそのものを固定する。 scheme だけを見る正規表現に緩めると
+  // (`^https://.+$` 等)、`https://a.com/</script><script>…` のような breakout が
+  // 通ってしまい #193 クラスの全損に戻る (R2 採点 HIGH)。
+  it.each([
+    ['javascript:alert(1)', 'scheme 違い'],
+    ['http://naturism-diet.com', 'http (非 https)'],
+    ['https://naturism-diet.com/ja', 'path 付き'],
+    ['https://naturism-diet.com?q=1', 'query 付き'],
+    ['https://naturism-diet.com:8443', 'port 付き'],
+    ['https://a.com/</script><script>alert(1)</script>', 'script breakout'],
+    ['https://a.com"+alert(1)+"', '文字列脱出'],
+    ['', '空文字'],
+  ])('/liff/portal (storefront URL %s = %s なら gate on でもカードを出さない)', async (url) => {
     const env = {
       ...baseEnv,
       APP_PROXY_LINK_ENABLED: 'true',
-      SHOPIFY_STOREFRONT_URL: 'javascript:alert(1)',
+      SHOPIFY_STOREFRONT_URL: url,
     };
     const html = await fetchBody('/liff/portal', env);
-    assertParses(extractInlineScripts(html), '/liff/portal (bad storefront url)');
+    assertParses(extractInlineScripts(html), `/liff/portal (bad storefront url: ${url})`);
     expect(html).not.toContain('id="shopify-link-card"');
     expect(html).toContain('var SHOPIFY_LINK_URL = null;');
   });

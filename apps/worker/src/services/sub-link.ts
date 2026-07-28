@@ -27,7 +27,7 @@ import {
   getSubLinkToken,
   consumeSubLinkTokenCas,
   releaseSubLinkToken,
-  deleteUnconsumedSubLinkTokensForCustomer,
+  deleteUnconsumedSubLinkTokensForCustomerExceptBatch,
   getSubLinkTokenStats,
   getFriendById,
   getFriendByShopifyCustomerId,
@@ -218,8 +218,11 @@ export async function generateSubLinkBatch(
   for (const r of rows) {
     if (!r.shopify_customer_id) continue;
     if (!r.email) continue; // email 無しは連携キャンペーンに載せられない
-    // 旧 unconsumed トークンを掃除 (= 再生成で古い link を無効化)
-    await deleteUnconsumedSubLinkTokensForCustomer(db, r.shopify_customer_id);
+    // 旧 unconsumed トークンを掃除 (= 再生成で古い link を無効化)。
+    // App Proxy 発行分 (batch_id='app-proxy') は対象外にする — 顧客がストアで連携ページを
+    // 開いている最中にバッチ生成が走ると、その場の「LINEを開いて連携する」が
+    // 『このリンクはご利用いただけません』に化ける (本人は何もしていないのに)。
+    await deleteUnconsumedSubLinkTokensForCustomerExceptBatch(db, r.shopify_customer_id, APP_PROXY_BATCH_ID);
     const token = generateLinkToken();
     await insertSubLinkToken(db, {
       token,
@@ -313,10 +316,10 @@ export async function previewSubLinkToken(
   }
 
   // ② トークン状態
-  if (row.consumed_at) {
-    if (row.consumed_friend_id === input.friendId) return legit('already_self');
-    return opaque('used');
-  }
+  // consumed_friend_id が自分でも、 friend 側の連携が外れている場合 (redeem 途中の失敗や
+  // サポートによる手動解除) は「連携済み」と言ってはいけない。 ①で friend.shopify_customer_id が
+  // 無いことは確認済みなので、 ここに来た時点で already_self は成立しない = redeem と同じ 'used'。
+  if (row.consumed_at) return opaque('used');
   if (row.expires_at <= jstNow()) return opaque('expired');
 
   // ③ 連携先が別 friend に占有

@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { Hono } from 'hono';
 import {
   generateSubLinkBatch,
   previewSubLinkToken,
@@ -134,16 +135,21 @@ function createDb(seed: Partial<Store> = {}): { db: D1Database; store: Store } {
       return { meta: { changes: 0 } };
     }
     if (sql.startsWith('DELETE FROM sub_link_tokens WHERE shopify_customer_id')) {
-      // batch 限定版 (App Proxy): AND batch_id = ? が付く。 bind(cid, batchId)
-      const batchScoped = sql.includes('AND batch_id');
+      // 3 形態: 無限定 / batch 限定 (= ?) / batch 除外 (!= ?)。
+      // 述語は SQL 文字列から導出する (JS 側で決め打ちすると SQL の退行を検出できない)。
+      const scoped = sql.includes('AND batch_id = ?');
+      const excluded = sql.includes('AND batch_id != ?');
+      const requireUnconsumed = sql.includes('consumed_at IS NULL');
       const cid = args[0] as string;
-      const batchId = batchScoped ? (args[1] as string) : null;
+      const batchId = scoped || excluded ? (args[1] as string) : null;
       let n = 0;
       for (const [k, v] of store.tokens) {
-        if (v.shopify_customer_id === cid && v.consumed_at === null && (!batchScoped || v.batch_id === batchId)) {
-          store.tokens.delete(k);
-          n++;
-        }
+        if (v.shopify_customer_id !== cid) continue;
+        if (requireUnconsumed && v.consumed_at !== null) continue;
+        if (scoped && v.batch_id !== batchId) continue;
+        if (excluded && v.batch_id === batchId) continue;
+        store.tokens.delete(k);
+        n++;
       }
       return { meta: { changes: n } };
     }
@@ -387,6 +393,15 @@ describe('generateSubLinkBatch', () => {
     expect(remaining.length).toBe(1);
   });
 
+  it('App Proxy 発行トークンは巻き添えで削除しない (顧客がストアで連携中の link を殺さない)', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '400');
+    store.tokens.set('inflight', mkToken('inflight', '400', { batch_id: 'app-proxy' }));
+    const r = await generateSubLinkBatch(envWith(db), { customerIds: ['400'] });
+    expect(r.ok).toBe(true);
+    expect(store.tokens.has('inflight')).toBe(true);
+  });
+
   it('email 無しの顧客は entries に載せない', async () => {
     const { db, store } = createDb();
     seedCustomer(store, '500', { email: null });
@@ -460,14 +475,17 @@ describe('previewSubLinkToken', () => {
     if (r.ok) expect(r.status).toBe('already_self');
   });
 
-  it('自分が消費済み (未連携状態) は already_self (consumed_friend_id 経路)', async () => {
+  it('自分が消費済みでも friend 側の連携が無ければ used (偽の「連携済み」を出さない)', async () => {
+    // redeem 途中の失敗やサポートによる手動解除で、token だけ消費済み・friend は未連携という
+    // 状態が起きうる。 ここで already_self を返すと「✓ 連携済みです」と表示して連携ボタンを
+    // 消してしまい、実際には連携されていないユーザーが自力で復旧できなくなる (R2 採点 LOW)。
     const { db, store } = createDb();
     seedCustomer(store, '100');
     store.tokens.set('T', mkToken('T', '100', { consumed_at: futureIso(-0), consumed_friend_id: 'f1' }));
     seedFriend(store, 'f1'); // friend 自体は未連携だが token は f1 が消費済み
     const r = await previewSubLinkToken(envWith(db), { token: 'T', friendId: 'f1' });
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.status).toBe('already_self');
+    if (r.ok) expect(r.status).toBe('used'); // redeem 側 (code:'used') と同じ述語
   });
 
   it('呼び出し元が別顧客に連携済みは friend_conflict (redeem と一致 = 死んだボタン回避)', async () => {
@@ -703,11 +721,106 @@ describe('sub-link routes', () => {
     expect(res.status).toBe(401);
   });
 
-  it('liff preview: 不正ボディ → 400', async () => {
+  it('liff preview: liffUser なしは 401 (認証境界。 400 の body 検証は下の authed ブロック)', async () => {
     const { db } = createDb();
-    // liffUser は middleware 未経由なので 401 が先に返る = 認証境界を確認
     const res = await post('/api/liff/sub-link/preview', { nope: 1 }, routeEnv(db));
     expect(res.status).toBe(401);
+  });
+});
+
+// ============================================================
+// LIFF route の応答契約 (liffUser 注入つき)
+//   kind / hint を落としても service テストは green のままなので、
+//   route レイヤの body 形状をここで固定する (R2 採点 HIGH)。
+// ============================================================
+
+describe('sub-link LIFF routes (authed)', () => {
+  function routeEnv(db: D1Database, over: Record<string, string | undefined> = {}) {
+    return {
+      DB: db,
+      LIFF_URL: 'https://liff.line.me/123-abc',
+      SUB_LINK_ENABLED: 'true',
+      ...over,
+    } as unknown as Record<string, unknown>;
+  }
+
+  function authedApp(friendId: string, lineUserId = 'U1') {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      (c as unknown as { set: (k: string, v: unknown) => void }).set('liffUser', { friendId, lineUserId });
+      await next();
+    });
+    app.route('/', subLink as never);
+    return app;
+  }
+
+  async function authedPost(
+    friendId: string,
+    path: string,
+    body: unknown,
+    env: Record<string, unknown>,
+  ) {
+    return authedApp(friendId).request(
+      path,
+      { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } },
+      env,
+    );
+  }
+
+  it('preview(ready, app-proxy) は kind=shop と マスク済 hint を返す', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, 'c1', { tags: '', email: 'hanako@example.com' });
+    seedFriend(store, 'f1');
+    store.tokens.set('tk1', mkToken('tk1', 'c1', { batch_id: 'app-proxy' }));
+    const res = await authedPost(
+      'f1',
+      '/api/liff/sub-link/preview',
+      { token: 'tk1' },
+      routeEnv(db, { APP_PROXY_LINK_ENABLED: 'true' }),
+    );
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as {
+      data: { status: string; kind: string; hint: string | null; plan: string | null };
+    };
+    expect(j.data.status).toBe('ready');
+    expect(j.data.kind).toBe('shop');
+    expect(j.data.hint).toBe('h***@e***.com');
+  });
+
+  it('preview(taken) は hint を返さない (転送 link 保持者に識別材料を渡さない)', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, 'c1', { email: 'hanako@example.com' });
+    seedFriend(store, 'f1', { shopify_customer_id: 'c1' });
+    seedFriend(store, 'f2');
+    store.tokens.set('tk1', mkToken('tk1', 'c1', {}));
+    const res = await authedPost('f2', '/api/liff/sub-link/preview', { token: 'tk1' }, routeEnv(db));
+    const j = (await res.json()) as { data: { status: string; hint: string | null; kind: string } };
+    expect(j.data.status).toBe('taken');
+    expect(j.data.hint).toBeNull();
+    expect(j.data.kind).toBe('subscription');
+  });
+
+  it('redeem 応答は kind を含む (完了画面の文言分岐が確認カードと矛盾しない)', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, 'c1', { tags: '', email: 'h@e.com' });
+    seedFriend(store, 'f1');
+    store.tokens.set('tk1', mkToken('tk1', 'c1', { batch_id: 'app-proxy' }));
+    const res = await authedPost(
+      'f1',
+      '/api/liff/sub-link/redeem',
+      { token: 'tk1' },
+      routeEnv(db, { APP_PROXY_LINK_ENABLED: 'true' }),
+    );
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as { data: { linked: boolean; kind: string } };
+    expect(j.data.linked).toBe(true);
+    expect(j.data.kind).toBe('shop');
+  });
+
+  it('不正ボディは 400 (認証を通した上での validation)', async () => {
+    const { db } = createDb();
+    const res = await authedPost('f1', '/api/liff/sub-link/preview', { nope: 1 }, routeEnv(db));
+    expect(res.status).toBe(400);
   });
 });
 

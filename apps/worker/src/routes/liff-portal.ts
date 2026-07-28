@@ -111,11 +111,17 @@ liffPortal.post('/api/liff/rank', async (c) => {
 
     const friendRank = await getFriendRank(c.env.DB, user.friendId);
     const allRanks = await getMemberRanks(c.env.DB);
+    // linked = Shopify customer と紐付け済か。 ポータルのマイアカウントが
+    // 「オンラインストアと連携」カードを畳む判定に使う (= 連携済みの人に押させない)。
+    // 命名は /api/liff/my-rank の同名フィールドに合わせる。
+    const linkedFriend = await getFriendById(c.env.DB, user.friendId);
+    const linked = !!linkedFriend?.shopify_customer_id;
 
     if (!friendRank) {
       return c.json({
         success: true,
         data: {
+          linked,
           currentRank: null,
           totalSpent: 0,
           ordersCount: 0,
@@ -152,6 +158,7 @@ liffPortal.post('/api/liff/rank', async (c) => {
     return c.json({
       success: true,
       data: {
+        linked,
         currentRank: currentRankDetail
           ? {
               name: currentRankDetail.name,

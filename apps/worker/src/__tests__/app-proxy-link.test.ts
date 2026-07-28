@@ -41,12 +41,16 @@ interface Store {
   tokens: Map<string, TokenRow>;
   /** shopify_customer_id → friend 行 (存在すれば連携済み) */
   linkedCustomers: Set<string>;
+  /** local shopify_customers に行がある customer (無い顧客は sync_pending になる) */
+  knownCustomers: Set<string>;
 }
 
 function createDb(seed: Partial<Store> = {}): { db: D1Database; store: Store } {
   const store: Store = {
     tokens: seed.tokens ?? new Map(),
     linkedCustomers: seed.linkedCustomers ?? new Set(),
+    // 既定で '777' は同期済み (= テストの主対象)。 未同期経路は明示的に空集合を渡す
+    knownCustomers: seed.knownCustomers ?? new Set(['777']),
   };
   function exec(sqlRaw: string, args: unknown[], mode: 'first' | 'all' | 'run'): unknown {
     const sql = sqlRaw.replace(/\s+/g, ' ').trim();
@@ -74,6 +78,16 @@ function createDb(seed: Partial<Store> = {}): { db: D1Database; store: Store } {
         }
       }
       return { meta: { changes: n } };
+    }
+    if (sql.startsWith('SELECT 1 AS ok FROM shopify_customers')) {
+      return store.knownCustomers.has(args[0] as string) ? { ok: 1 } : null;
+    }
+    if (sql.startsWith('SELECT token FROM sub_link_tokens')) {
+      const [cid, batch, now] = args as string[];
+      for (const v of store.tokens.values()) {
+        if (v.shopify_customer_id === cid && v.batch_id === batch && v.consumed_at === null && v.expires_at > now) return { token: v.token };
+      }
+      return null;
     }
     if (sql.startsWith('SELECT * FROM friends WHERE shopify_customer_id')) {
       const cid = args[0] as string;
@@ -184,6 +198,16 @@ function createIntegrationDb(): {
       }
       return { meta: { changes: n } };
     }
+    if (sql.startsWith('SELECT 1 AS ok FROM shopify_customers')) {
+      return customers.has(args[0] as string) ? { ok: 1 } : null;
+    }
+    if (sql.startsWith('SELECT token FROM sub_link_tokens')) {
+      const [cid, batch, now] = args as string[];
+      for (const v of tokens.values()) {
+        if (v.shopify_customer_id === cid && v.batch_id === batch && v.consumed_at === null && v.expires_at > now) return { token: v.token };
+      }
+      return null;
+    }
     if (sql.startsWith('SELECT * FROM friends WHERE shopify_customer_id')) {
       const cid = args[0] as string;
       for (const f of friends.values()) if (f.shopify_customer_id === cid) return f;
@@ -255,13 +279,39 @@ function envWith(db: D1Database, over: Record<string, string | undefined> = {}) 
 // ============================================================
 
 describe('handleAppProxyLinkEntry', () => {
-  it('gate off は disabled (署名検証すら行わない dormant)', async () => {
+  it('gate off は disabled — 署名も設定も見ない (判定順序を固定)', async () => {
+    // 署名不正 + secret 欠落を同時に与える。 gate 判定を後段に動かす退行が入ると
+    // bad_signature か misconfigured になるので、この組合せだけが順序を識別できる。
     const { db } = createDb();
     const r = await handleAppProxyLinkEntry(
-      envWith(db, { APP_PROXY_LINK_ENABLED: undefined }),
-      new URLSearchParams(signedQuery(baseParams())),
+      envWith(db, { APP_PROXY_LINK_ENABLED: undefined, SHOPIFY_CLIENT_SECRET: undefined }),
+      new URLSearchParams(signedQuery(baseParams(), 'wrong-secret')),
     );
     expect(r).toEqual({ ok: false, code: 'disabled' });
+  });
+
+  it.each([
+    ['true', true],
+    ['TRUE', false],
+    ['false', false],
+    ['1', false],
+    ['on', false],
+    ['true\r', false], // wrangler secret の CRLF 事故 (既知の罠)
+    ['', false],
+    [undefined, false],
+  ])('gate 値 %s の有効判定は %s (=== \'true\' 厳密一致)', async (value, enabled) => {
+    // `!== ''` 等に緩めると、運用者が APP_PROXY_LINK_ENABLED=false を投入したときに
+    // 「無効化したつもりで全面 live 化」する (R2 採点 MED)。
+    const { db } = createDb();
+    const r = await handleAppProxyLinkEntry(
+      envWith(db, { APP_PROXY_LINK_ENABLED: value }),
+      new URLSearchParams(signedQuery(baseParams())),
+    );
+    if (enabled) {
+      expect(r).toEqual({ ok: true, state: 'login_required' });
+    } else {
+      expect(r).toEqual({ ok: false, code: 'disabled' });
+    }
   });
 
   it('SHOPIFY_CLIENT_SECRET / LIFF_URL 欠落は misconfigured', async () => {
@@ -334,13 +384,36 @@ describe('handleAppProxyLinkEntry', () => {
     expect(Math.abs(expMs - (nowMs + APP_PROXY_TOKEN_TTL_MIN * 60_000))).toBeLessThan(5_000);
   });
 
-  it('SHOPIFY_STORE_DOMAIN 未設定 (単一ストア既定) では shop 検査を skip する', async () => {
-    // guard を `if (shop !== expectedShop)` に退行させると、secret 未投入の本番で
-    // 全 App Proxy リクエストが shop_mismatch 401 になる (R1 採点 MED)。
+  it('SHOPIFY_STORE_DOMAIN 未設定は misconfigured (無言 fail-open にしない)', async () => {
+    // App Proxy 署名は app の client secret で計算されるので、同一 app を別ストアに入れると
+    // そちらからの転送も署名を通る。未設定時に検査を skip すると、別ストアの customer id が
+    // 同 id の当ストア顧客として紐付き、別人の購買履歴が LINE に開示される (R2 採点 MED)。
     const { db } = createDb();
     const q = new URLSearchParams(signedQuery(baseParams({ shop: 'whatever.myshopify.com' })));
     const r = await handleAppProxyLinkEntry(envWith(db, { SHOPIFY_STORE_DOMAIN: undefined }), q);
-    expect(r).toEqual({ ok: true, state: 'login_required' });
+    expect(r).toEqual({ ok: false, code: 'misconfigured' });
+  });
+
+  it('local shopify_customers に行が無い顧客は sync_pending (ready にしない)', async () => {
+    // ready にすると preview が hint=null を返し、確認カードから「連携先」表示と警告文が
+    // 無音で消える = link fixation の唯一の人間確認点が失われる (R2 採点 MED)。
+    const { db, store } = createDb({ knownCustomers: new Set() });
+    const q = new URLSearchParams(signedQuery(baseParams({ logged_in_customer_id: '777' })));
+    const r = await handleAppProxyLinkEntry(envWith(db), q);
+    expect(r).toEqual({ ok: true, state: 'sync_pending' });
+    expect(store.tokens.size).toBe(0);
+  });
+
+  it('未消費・未失効の自分の app-proxy token があれば再利用する (連打で write を増やさない)', async () => {
+    const { db, store } = createDb();
+    const q = () => new URLSearchParams(signedQuery(baseParams({ logged_in_customer_id: '777' })));
+    const first = await handleAppProxyLinkEntry(envWith(db), q());
+    const second = await handleAppProxyLinkEntry(envWith(db), q());
+    if (!first.ok || first.state !== 'ready' || !second.ok || second.state !== 'ready') {
+      throw new Error('expected ready');
+    }
+    expect(second.redirectUrl).toBe(first.redirectUrl);
+    expect(store.tokens.size).toBe(1);
   });
 
   it('path_prefix が別 proxy 向けなら unauthorized (署名は正当でも用途違いを弾く)', async () => {
@@ -368,29 +441,30 @@ describe('handleAppProxyLinkEntry', () => {
     expect(store.tokens.size).toBe(0);
   });
 
-  it('再訪問は自分の旧 app-proxy トークンのみ掃除し、 magic-link キャンペーンの token は残す', async () => {
+  it('失効した自分の app-proxy トークンのみ掃除し、 magic-link キャンペーンの token は残す', async () => {
     const { db, store } = createDb();
-    const jstFuture = '2099-01-01T00:00:00.000+09:00';
-    store.tokens.set('old-proxy', {
-      token: 'old-proxy',
+    const past = '2000-01-01T00:00:00.000+09:00';
+    const future = '2099-01-01T00:00:00.000+09:00';
+    store.tokens.set('expired-proxy', {
+      token: 'expired-proxy',
       shopify_customer_id: '777',
       batch_id: APP_PROXY_BATCH_ID,
-      expires_at: jstFuture,
+      expires_at: past, // 失効済 → 掃除対象
       consumed_at: null,
-      created_at: jstFuture,
+      created_at: past,
     });
     store.tokens.set('campaign', {
       token: 'campaign',
       shopify_customer_id: '777',
       batch_id: 'batch-2026-07',
-      expires_at: jstFuture,
+      expires_at: future,
       consumed_at: null,
-      created_at: jstFuture,
+      created_at: future,
     });
     const q = new URLSearchParams(signedQuery(baseParams({ logged_in_customer_id: '777' })));
     const r = await handleAppProxyLinkEntry(envWith(db), q);
     expect(r.ok).toBe(true);
-    expect(store.tokens.has('old-proxy')).toBe(false); // 旧 app-proxy token は無効化
+    expect(store.tokens.has('expired-proxy')).toBe(false); // 失効 app-proxy token は掃除
     expect(store.tokens.has('campaign')).toBe(true); // キャンペーン token は無傷
     expect(store.tokens.size).toBe(2); // campaign + 新規発行分
   });

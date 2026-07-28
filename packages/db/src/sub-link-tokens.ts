@@ -143,6 +143,26 @@ export async function deleteUnconsumedSubLinkTokensForCustomerBatch(
   return res.meta?.changes ?? 0;
 }
 
+/**
+ * 同一 customer の未消費トークンのうち、指定バッチ **以外** を削除する。
+ * magic-link のバッチ再生成が、進行中の App Proxy 連携 (顧客がストアで開いている
+ * 連携ページのトークン) を巻き添えで殺さないための除外版。
+ * @returns 削除件数
+ */
+export async function deleteUnconsumedSubLinkTokensForCustomerExceptBatch(
+  db: D1Database,
+  shopifyCustomerId: string,
+  exceptBatchId: string,
+): Promise<number> {
+  const res = await db
+    .prepare(
+      `DELETE FROM sub_link_tokens WHERE shopify_customer_id = ? AND batch_id != ? AND consumed_at IS NULL`,
+    )
+    .bind(shopifyCustomerId, exceptBatchId)
+    .run();
+  return res.meta?.changes ?? 0;
+}
+
 export interface SubLinkTokenStats {
   total: number;
   consumed: number;

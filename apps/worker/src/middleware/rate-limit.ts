@@ -122,6 +122,13 @@ const AUTHENTICATED_WINDOW = 60_000; // 1 min
 const UNAUTHENTICATED_MAX = 100;
 const UNAUTHENTICATED_WINDOW = 60_000; // 1 min
 
+/**
+ * App Proxy 入口 (= 顧客 1 人あたり)。 正常系は「ログイン → 1 回叩いて LINE へ戻る」なので
+ * 分間 20 は十分に緩い。 D1 write を伴うため上限そのものは必ず設ける。
+ */
+const PROXY_MAX = 20;
+const PROXY_WINDOW = 60_000;
+
 export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<Response | void> {
   const path = new URL(c.req.url).pathname;
 
@@ -143,14 +150,27 @@ export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<
     path.startsWith('/r/') ||
     path.startsWith('/liff/') ||
     // メール起動ブリッジ (contact card 経由の公開静的ページ、 CGNAT-safe に exempt)
-    path === '/contact/email' ||
-    // Shopify App Proxy 入口 (2026-07-29)。 転送元の cf-connecting-ip は **Shopify の egress IP** で
-    // 全顧客が 1 バケットを共有するため、 IP keyed limit だと 1 人の連打で店舗全体の連携入口が
-    // 429 になる (LIFF シェルと同じ CGNAT クラスの問題)。 実質的な入場制御は route 内の
-    // App Proxy 署名検証 (Shopify が発行した 90 秒有効の署名が必須) が担う。
-    path === '/proxy/line-link' ||
-    path.startsWith('/proxy/line-link/')
+    path === '/contact/email'
   ) {
+    return next();
+  }
+
+  // Shopify App Proxy 入口 (2026-07-29)。
+  // 転送元の cf-connecting-ip は **Shopify の egress IP** なので、既定の IP keyed バケットだと
+  // 全顧客が 1 バケットを共有し、 1 人の連打で店舗全体の連携入口が 429 になる (CGNAT クラスの問題)。
+  // かといって完全除外すると、 このエンドポイントは無認証 trigger で D1 に write する
+  // (DELETE + INSERT / req) ため、 ログイン済みの 1 人が連打するだけで D1 の write 枠を焼き、
+  // webhook 取込や cron まで巻き込める。 そこで **顧客単位のバケット**に振り替える
+  // (logged_in_customer_id は署名対象に含まれるので偽装できない。 未ログインは shop 単位)。
+  if (path === '/proxy/line-link' || path.startsWith('/proxy/line-link/')) {
+    const q = new URL(c.req.url).searchParams;
+    const cid = (q.get('logged_in_customer_id') ?? '').trim();
+    const shop = (q.get('shop') ?? '').trim();
+    const proxyKey = cid ? `proxy:${shop}:${cid}` : `proxy:${shop || getClientIp(c)}`;
+    const result = check(proxyKey, PROXY_MAX, PROXY_WINDOW);
+    if (!result.ok) {
+      return c.text('Too Many Requests', 429, { 'Retry-After': String(result.retryAfter) });
+    }
     return next();
   }
 

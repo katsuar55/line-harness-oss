@@ -43,6 +43,58 @@ describe('rateLimitMiddleware', () => {
     }
   });
 
+  it('/contact/email は rate limit 対象外 (公開静的ページ・CGNAT safe)', async () => {
+    const app = makeApp();
+    for (let i = 0; i < 150; i++) {
+      const res = await app.fetch(req('/contact/email', { ip: '203.0.113.9' }), ENV);
+      expect(res.status).toBe(200);
+    }
+  });
+
+  // ── Shopify App Proxy (2026-07-29) ──
+  // 転送元 IP は Shopify の egress = 全顧客が共有するので IP keyed だと 1 人の連打で
+  // 店舗全体が 429 になる。一方、完全除外にすると無認証 trigger の D1 write が無制限に
+  // なり write 枠を焼ける。よって **顧客単位**のバケットに振り替えている。
+  it('/proxy/line-link は顧客単位で keyed (同一 IP でも別顧客なら独立)', async () => {
+    const app = makeApp();
+    const ip = '203.0.113.10'; // Shopify egress を模す (全顧客で同一)
+    for (let i = 0; i < 20; i++) {
+      const res = await app.fetch(
+        req('/proxy/line-link?shop=s.myshopify.com&logged_in_customer_id=111', { ip }),
+        ENV,
+      );
+      expect(res.status).toBe(200);
+    }
+    // 顧客 111 は上限到達
+    const over = await app.fetch(
+      req('/proxy/line-link?shop=s.myshopify.com&logged_in_customer_id=111', { ip }),
+      ENV,
+    );
+    expect(over.status).toBe(429);
+    // 別顧客 222 は同一 IP でも影響を受けない (= 巻き添え 429 が起きない)
+    const other = await app.fetch(
+      req('/proxy/line-link?shop=s.myshopify.com&logged_in_customer_id=222', { ip }),
+      ENV,
+    );
+    expect(other.status).toBe(200);
+  });
+
+  it('/proxy/line-link は無制限ではない (D1 write を伴うので上限が必ずある)', async () => {
+    const app = makeApp();
+    let saw429 = false;
+    for (let i = 0; i < 60; i++) {
+      const res = await app.fetch(
+        req('/proxy/line-link/sub?shop=s.myshopify.com&logged_in_customer_id=333', { ip: '203.0.113.11' }),
+        ENV,
+      );
+      if (res.status === 429) {
+        saw429 = true;
+        break;
+      }
+    }
+    expect(saw429).toBe(true);
+  });
+
   it('/api/liff/* データ endpoint は exempt されない (idToken Bearer keyed の per-user 制限を維持)', async () => {
     // `/api/liff/...` は `/api/` 始まりなので `/liff/` skip に巻き込まれない。
     // idToken を Bearer で持つので authed bucket (remaining 999) = per-user・CGNAT 安全。

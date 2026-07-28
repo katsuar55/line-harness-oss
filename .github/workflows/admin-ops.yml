@@ -546,12 +546,24 @@ jobs:
             echo '❌ sub_link_tokens が存在しません — apply-migration-073 を先に実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
+          # feature が実際に必要とする secret の存在を先に確認する。
+          # misconfigured / unauthorized / disabled は全て 404 に collapse する設計なので、
+          # 投入漏れがあると「有効化したのに全部 404」を外形から切り分けられない。
+          SECRETS=$(npx wrangler secret list)
+          for NAME in SHOPIFY_CLIENT_SECRET LIFF_URL SHOPIFY_STORE_DOMAIN; do
+            if ! echo "$SECRETS" | grep -q "\"$NAME\""; then
+              echo "❌ secret $NAME が未設定です — App Proxy は 404 のままになります" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          done
           TMP="$RUNNER_TEMP/secrets.app-proxy-link.json"
           if [ -n "$STOREFRONT_URL" ]; then
-            case "$STOREFRONT_URL" in
-              https://*) ;;
-              *) echo '❌ storefront_url は https:// で始まる必要があります' | tee -a "$GITHUB_STEP_SUMMARY"; exit 1 ;;
-            esac
+            # worker 側 (liff-pages.ts) の判定 ^https://[A-Za-z0-9.-]+$ と揃える。
+            # ここを緩くすると「gate は ON なのに LIFF のボタンだけ無音で出ない」乖離が起きる。
+            if ! echo "${STOREFRONT_URL%/}" | grep -Eq '^https://[A-Za-z0-9.-]+$'; then
+              echo '❌ storefront_url は https://<ホスト名> 形式のみ (path / port / query は不可)' | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
             node -e 'const fs=require("fs");fs.writeFileSync(process.argv[1],JSON.stringify({APP_PROXY_LINK_ENABLED:"true",SHOPIFY_STOREFRONT_URL:process.env.STOREFRONT_URL.trim().replace(/\/+$/,"")}))' "$TMP"
           else
             printf '{"APP_PROXY_LINK_ENABLED":"true"}' > "$TMP"
@@ -572,11 +584,19 @@ jobs:
           echo '### Before (linked friends vs backlinked customers)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT (SELECT COUNT(*) FROM friends WHERE shopify_customer_id IS NOT NULL) AS linked_friends, (SELECT COUNT(*) FROM shopify_customers WHERE friend_id IS NOT NULL) AS backlinked_customers" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '### Rows whose friend_id would be OVERWRITTEN (should normally be 0)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS overwrite_candidates FROM shopify_customers sc WHERE sc.friend_id IS NOT NULL AND EXISTS (SELECT 1 FROM friends f WHERE f.shopify_customer_id = sc.shopify_customer_id AND f.id != sc.friend_id)" | tee -a "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote \
             --command "UPDATE shopify_customers SET friend_id = (SELECT f.id FROM friends f WHERE f.shopify_customer_id = shopify_customers.shopify_customer_id) WHERE EXISTS (SELECT 1 FROM friends f WHERE f.shopify_customer_id = shopify_customers.shopify_customer_id) AND (friend_id IS NULL OR friend_id != (SELECT f.id FROM friends f WHERE f.shopify_customer_id = shopify_customers.shopify_customer_id))"
-          echo '### After' >> "$GITHUB_STEP_SUMMARY"
+          # runtime の writer (linkShopifyCustomerToFriend) は shopify_orders.friend_id も埋める。
+          # ここを揃えないと、既存連携者の過去注文が friend_id NULL のまま残り、
+          # 購買セグメント配信・ランク集計・出荷通知が対象を静かに取りこぼす。
+          npx wrangler d1 execute naturism-line-crm --remote \
+            --command "UPDATE shopify_orders SET friend_id = (SELECT f.id FROM friends f WHERE f.shopify_customer_id = shopify_orders.shopify_customer_id) WHERE friend_id IS NULL AND EXISTS (SELECT 1 FROM friends f WHERE f.shopify_customer_id = shopify_orders.shopify_customer_id)"
+          echo '### After (customers + orders)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
-            --command "SELECT (SELECT COUNT(*) FROM friends WHERE shopify_customer_id IS NOT NULL) AS linked_friends, (SELECT COUNT(*) FROM shopify_customers WHERE friend_id IS NOT NULL) AS backlinked_customers" | tee -a "$GITHUB_STEP_SUMMARY"
+            --command "SELECT (SELECT COUNT(*) FROM friends WHERE shopify_customer_id IS NOT NULL) AS linked_friends, (SELECT COUNT(*) FROM shopify_customers WHERE friend_id IS NOT NULL) AS backlinked_customers, (SELECT COUNT(*) FROM shopify_orders WHERE friend_id IS NULL AND shopify_customer_id IN (SELECT shopify_customer_id FROM friends WHERE shopify_customer_id IS NOT NULL)) AS orders_still_unlinked" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Rank discount status (counts only, read-only)
         if: inputs.op == 'rank-discount-status'
