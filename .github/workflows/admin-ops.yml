@@ -598,18 +598,32 @@ jobs:
           # 架空の customer id (実顧客のデータには一切触れない)
           PROBE_ID=999999999999
           TAIL_LOG="$RUNNER_TEMP/tail.log"
-          # tail を先に起動し、転送されてくる query を捕まえる
-          npx wrangler tail --format=json > "$TAIL_LOG" 2>/dev/null &
+          TAIL_ERR="$RUNNER_TEMP/tail.err"
+          # tail を先に起動し、転送されてくる query を捕まえる。
+          # stderr は捨てずに残す (潰すと「なぜ捕まらなかったか」が分からなくなる)。
+          npx wrangler tail --format=json > "$TAIL_LOG" 2> "$TAIL_ERR" &
           TAIL_PID=$!
-          sleep 12
-          curl -s -o /dev/null "$STOREFRONT_URL/apps/line-link?logged_in_customer_id=$PROBE_ID" || true
-          sleep 12
+          # tail の接続完了を待つ (短いと最初のリクエストを取りこぼす)
+          sleep 25
+          for i in 1 2 3; do
+            curl -s -o /dev/null "$STOREFRONT_URL/apps/line-link?logged_in_customer_id=$PROBE_ID" || true
+            sleep 6
+          done
+          sleep 15
           kill "$TAIL_PID" 2>/dev/null || true
-          sleep 2
+          sleep 3
           # 該当リクエストの URL を 1 本だけ取り出す (署名も実 id も出力しない)
           LINE=$(grep -o '"url":"[^"]*proxy/line-link[^"]*"' "$TAIL_LOG" | head -1 || true)
           if [ -z "$LINE" ]; then
-            echo '⚠️ worker ログに該当リクエストが見つかりませんでした (App Proxy 未設定 / 伝播待ち / tail 取りこぼし)' | tee -a "$GITHUB_STEP_SUMMARY"
+            {
+              echo '⚠️ worker ログに該当リクエストが見つかりませんでした'
+              echo ''
+              echo "- tail に届いたイベント行数: $(wc -l < "$TAIL_LOG" | tr -d ' ')"
+              echo '- wrangler stderr (先頭3行):'
+              echo '```'
+              head -3 "$TAIL_ERR" || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           COUNT=$(echo "$LINE" | grep -o 'logged_in_customer_id=' | wc -l | tr -d ' ')
