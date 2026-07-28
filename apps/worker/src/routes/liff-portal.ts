@@ -94,7 +94,9 @@ function validateNote(note: unknown): string | undefined {
 
 // ─── Helper: get verified friend from liffUser middleware ───
 function getLiffUser(c: { get: (key: string) => unknown }) {
-  return c.get('liffUser') as { lineUserId: string; friendId: string } | undefined;
+  return c.get('liffUser') as
+    | { lineUserId: string; friendId: string; shopifyCustomerId?: string | null }
+    | undefined;
 }
 
 // ═══════════════════════════════════════════════
@@ -114,8 +116,9 @@ liffPortal.post('/api/liff/rank', async (c) => {
     // linked = Shopify customer と紐付け済か。 ポータルのマイアカウントが
     // 「オンラインストアと連携」カードを畳む判定に使う (= 連携済みの人に押させない)。
     // 命名は /api/liff/my-rank の同名フィールドに合わせる。
-    const linkedFriend = await getFriendById(c.env.DB, user.friendId);
-    const linked = !!linkedFriend?.shopify_customer_id;
+    // 値は liffAuthMiddleware が既に読んだ friend 行から来るので、 D1 read は増えない
+    // (この endpoint はポータル初期化の直列パスに居るため、 1 本の追加も全ユーザーに載る)。
+    const linked = !!user.shopifyCustomerId;
 
     if (!friendRank) {
       return c.json({

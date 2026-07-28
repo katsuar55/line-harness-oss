@@ -34,17 +34,18 @@ import {
   toJstString,
 } from '@line-crm/db';
 import { verifyAppProxySignature } from '../utils/shopify-app-proxy.js';
-import { APP_PROXY_BATCH_ID } from './sub-link.js';
+import { APP_PROXY_BATCH_ID, maskEmail } from './sub-link.js';
 import { auditSystem } from './audit-logger.js';
 
 export { APP_PROXY_BATCH_ID };
 
 /**
  * App Proxy 発行トークンの TTL (分)。
- * その場で LIFF へ遷移する前提だが、 新規顧客は「友だち追加 → webhook 反映待ち」を挟むため
- * 短すぎると LIFF 側のリトライ中に失効する。 stash TTL (30分) に合わせる。
+ * 短いほど窃取窓が狭まる (= ready ページの DOM から読まれた場合の被害時間) 一方、
+ * 新規顧客は「友だち追加 → webhook 反映待ち」を挟むため短すぎると LIFF 側のリトライ中に失効する。
+ * 実測の友だち追加反映は数秒〜十数秒なので、 15 分あれば往復に十分な余裕がある。
  */
-export const APP_PROXY_TOKEN_TTL_MIN = 30;
+export const APP_PROXY_TOKEN_TTL_MIN = 15;
 
 /** storefront 側の proxy prefix (Dev Dashboard の App Proxy 設定と一致させる)。 */
 export const APP_PROXY_PATH_PREFIX = '/apps/line-link';
@@ -125,18 +126,22 @@ export async function handleAppProxyLinkEntry(
   const existing = await getFriendByShopifyCustomerId(env.DB, customerId);
   if (existing) return { ok: true, state: 'already_linked' };
 
-  // local の shopify_customers に行が無い顧客 (webhook 未達 / 作成直後の race) は ready にしない。
-  // ready にすると preview が plan=null かつ **hint=null** を返し、 確認カードから
-  // 「連携先: h***@e***.com」と警告文が無音で消える = link fixation の唯一の人間確認点が失われる。
-  // さらに backlink も 0 行更新で永久に欠損する。
-  const known = await env.DB.prepare(`SELECT 1 AS ok FROM shopify_customers WHERE shopify_customer_id = ?`)
+  // local の shopify_customers に**マスク表示できる email を持つ行**が無い顧客
+  // (webhook 未達 / 作成直後の race / email 欠落) は ready にしない。
+  // ready にすると preview の hint が null になり、 確認カードから「連携先: h***@e***.com」と
+  // 警告文が無音で消える = link fixation の唯一の人間確認点が失われる
+  // (行の存在だけを見ると、 email を空にした顧客がこの確認点を任意に無効化できてしまう)。
+  // さらに行が無ければ backlink も 0 行更新で永久に欠損する。
+  const known = await env.DB.prepare(`SELECT email FROM shopify_customers WHERE shopify_customer_id = ?`)
     .bind(customerId)
-    .first<{ ok: number }>();
-  if (!known) return { ok: true, state: 'sync_pending' };
+    .first<{ email: string | null }>();
+  if (!known || !maskEmail(known.email)) return { ok: true, state: 'sync_pending' };
 
-  // 未消費・未失効の自分の app-proxy token が既にあれば再利用する
+  // 未消費で **残り時間が十分な** 自分の app-proxy token があれば再利用する
   // (= 連打しても DELETE+INSERT を繰り返さない。 併せて「開いたままの前のページ」も生き続ける)。
-  const reusable = await findReusableAppProxyToken(env.DB, customerId, toJstString(new Date(nowMs)));
+  // 残り僅かな token を配ると、 ストアから戻った直後に「有効期限切れ」に当たる。
+  const reuseFloor = toJstString(new Date(nowMs + (APP_PROXY_TOKEN_TTL_MIN / 2) * 60_000));
+  const reusable = await findReusableAppProxyToken(env.DB, customerId, reuseFloor);
   if (reusable) return { ok: true, state: 'ready', redirectUrl: `${liffUrl}?slk=${reusable}` };
 
   // 失効した自分の app-proxy token だけ掃除 (= magic-link キャンペーンの 30日 link は殺さない)
@@ -164,11 +169,14 @@ export async function handleAppProxyLinkEntry(
   return { ok: true, state: 'ready', redirectUrl: `${liffUrl}?slk=${token}` };
 }
 
-/** 未消費・未失効の app-proxy token を 1 件返す (= 再訪問時の再利用)。 */
+/**
+ * 未消費で expires_at が floor より先の app-proxy token を 1 件返す (= 再訪問時の再利用)。
+ * floor は「今」ではなく「今 + TTL の半分」なので、 残り僅かな token は再利用されない。
+ */
 async function findReusableAppProxyToken(
   db: D1Database,
   shopifyCustomerId: string,
-  now: string,
+  floor: string,
 ): Promise<string | null> {
   const row = await db
     .prepare(
@@ -176,7 +184,7 @@ async function findReusableAppProxyToken(
         WHERE shopify_customer_id = ? AND batch_id = ? AND consumed_at IS NULL AND expires_at > ?
         ORDER BY created_at DESC LIMIT 1`,
     )
-    .bind(shopifyCustomerId, APP_PROXY_BATCH_ID, now)
+    .bind(shopifyCustomerId, APP_PROXY_BATCH_ID, floor)
     .first<{ token: string }>();
   return row?.token ?? null;
 }

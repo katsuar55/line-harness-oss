@@ -93,7 +93,13 @@ export async function liffAuthMiddleware(c: Context<Env>, next: Next): Promise<R
         return c.json({ success: false, error: 'Friend not found' }, 404);
       }
 
-      (c as { set: (key: string, value: unknown) => void }).set('liffUser', { lineUserId: verifiedUserId, friendId: friend.id });
+      // shopifyCustomerId も載せる (= 既に読んだ行から取れるので、下流 route が
+      // 連携有無を知るために friend 行をもう一度読む必要がなくなる)。
+      (c as { set: (key: string, value: unknown) => void }).set('liffUser', {
+        lineUserId: verifiedUserId,
+        friendId: friend.id,
+        shopifyCustomerId: friend.shopify_customer_id ?? null,
+      });
       return next();
     }
 

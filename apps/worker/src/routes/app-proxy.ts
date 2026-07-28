@@ -96,7 +96,13 @@ const entryHandler = async (c: {
     // このページはブラウザのナビゲーションでのみ意味を持つ。 storefront に同居する
     // 第三者アプリの script が fetch('/apps/line-link') すると、 Shopify は閲覧者の
     // セッションで proxy するため、 本文の連携トークン (= capability) を読み取られる。
-    // Sec-Fetch-* を送る UA ではナビゲーション以外を弾く (ヘッダ非対応 UA は従来通り通す)。
+    // Sec-Fetch-* を送る UA では fetch/XHR/iframe を弾く (ヘッダ非対応 UA は従来通り通す)。
+    //
+    // ⚠️ これは完全な防御ではない: **同一オリジンの window.open は dest=document /
+    // mode=navigate なので通過し、 opener から DOM 経由でトークンを読める**
+    // (同一オリジン navigation と正規のナビゲーションはヘッダでは区別できない)。
+    // 残存リスクは ①TTL を短く保つ ②確認カードのマスク済 email が人間側の検知点になる
+    // ③有効化前に storefront 注入 script を棚卸しする (runbook 参照) で縮める。
     const dest = c.req.header('sec-fetch-dest');
     const mode = c.req.header('sec-fetch-mode');
     if ((dest && dest !== 'document') || (mode && mode !== 'navigate')) {
@@ -182,14 +188,15 @@ const entryHandler = async (c: {
         emoji: '🌿',
         body: `<p>ログインを確認しました。<br>下のボタンを押すとLINEが開き、連携の最終確認が表示されます。</p>
   <a class="btn" href="${esc(result.redirectUrl)}">LINEを開いて連携する</a>
-  <p class="note">うまくいかないときは、ストアの連携ページをもう一度開いてください。</p>`,
+  <p class="note">ボタンを押してもLINEが開かないときは、お使いのスマートフォンにLINEアプリが入っているかご確認ください。<br>パソコンからご覧の場合は、スマートフォンのLINEで naturism のトーク画面を開き、「マイアカウント」からお手続きください。</p>`,
       }),
       200,
       NO_STORE,
     );
   } catch (err) {
     console.error('GET /proxy/line-link error:', err);
-    return c.text('Internal Server Error', 500, NO_STORE);
+    // 失敗系はブランドページで統一する (= storefront ドメインに英語の生テキストを出さない)。
+    return c.html(unavailablePage(), 500, NO_STORE);
   }
 };
 

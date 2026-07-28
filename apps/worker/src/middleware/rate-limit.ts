@@ -23,14 +23,33 @@ const store = new Map<string, RateLimitEntry>();
 const PRUNE_INTERVAL = 60_000;
 let lastPrune = Date.now();
 
+/**
+ * store の上限。 prune は 60 秒に 1 回しか走らないため、 キー基数が攻撃者に握られると
+ * その 1 分間ぶんのエントリが isolate に滞留する。 上限に達したら即時 prune し、
+ * それでも減らなければ最古のキーから捨てる (= 有限メモリを保証する)。
+ * store は webhook/api 等 全 rate-limit 対象パスと共有なので、 ここが溢れると
+ * 無関係な本番機能まで巻き込む。
+ */
+const MAX_STORE_KEYS = 10_000;
+
 function prune(windowMs: number): void {
   const now = Date.now();
-  if (now - lastPrune < PRUNE_INTERVAL) return;
+  if (now - lastPrune < PRUNE_INTERVAL && store.size < MAX_STORE_KEYS) return;
   lastPrune = now;
   const cutoff = now - windowMs;
   for (const [key, entry] of store) {
     entry.timestamps = entry.timestamps.filter((t) => t > cutoff);
     if (entry.timestamps.length === 0) store.delete(key);
+  }
+  // window 内の生存エントリだけで上限を超えている = 意図的なキー回転。
+  // Map は挿入順を保つので、先頭 (= 最も古く作られたキー) から捨てる。
+  if (store.size > MAX_STORE_KEYS) {
+    const excess = store.size - MAX_STORE_KEYS;
+    let i = 0;
+    for (const key of store.keys()) {
+      if (i++ >= excess) break;
+      store.delete(key);
+    }
   }
 }
 
@@ -155,21 +174,27 @@ export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<
     return next();
   }
 
-  // Shopify App Proxy 入口 (2026-07-29)。
-  // 転送元の cf-connecting-ip は **Shopify の egress IP** なので、既定の IP keyed バケットだと
-  // 全顧客が 1 バケットを共有し、 1 人の連打で店舗全体の連携入口が 429 になる (CGNAT クラスの問題)。
-  // かといって完全除外すると、 このエンドポイントは無認証 trigger で D1 に write する
-  // (DELETE + INSERT / req) ため、 ログイン済みの 1 人が連打するだけで D1 の write 枠を焼き、
-  // webhook 取込や cron まで巻き込める。 そこで **顧客単位のバケット**に振り替える
-  // (logged_in_customer_id は署名対象に含まれるので偽装できない。 未ログインは shop 単位)。
+  // Shopify App Proxy 入口 (2026-07-29)。 2 段バケットの AND で評価する。
+  //
+  //  ① IP バケット (通常の未認証上限と同じ): キー空間を IP 集合に閉じ込めるための土台。
+  //     これが無いと、 **署名検証前の生 query** をキーにしてしまうため、
+  //     logged_in_customer_id を毎回変えるだけで上限が無効化され、 さらに store が
+  //     無限に膨らんで isolate ごと落とせる (= webhook/cron まで巻き添え)。
+  //     middleware は route より前に走るので、 ここで見える query は**まだ未検証**である点が要。
+  //  ② 顧客バケット: 転送元 IP は Shopify の egress で全顧客が共有するため、 IP だけだと
+  //     1 人の連打で店舗全体が 429 になる。 個人の連打はこちらで細かく止める。
+  //     キーに使うのは形式検査を通った値のみ (= 長さ・文字種を有限に固定する)。
   if (path === '/proxy/line-link' || path.startsWith('/proxy/line-link/')) {
-    const q = new URL(c.req.url).searchParams;
-    const cid = (q.get('logged_in_customer_id') ?? '').trim();
-    const shop = (q.get('shop') ?? '').trim();
-    const proxyKey = cid ? `proxy:${shop}:${cid}` : `proxy:${shop || getClientIp(c)}`;
-    const result = check(proxyKey, PROXY_MAX, PROXY_WINDOW);
-    if (!result.ok) {
-      return c.text('Too Many Requests', 429, { 'Retry-After': String(result.retryAfter) });
+    const ipResult = check(`ip:${getClientIp(c)}`, UNAUTHENTICATED_MAX, UNAUTHENTICATED_WINDOW);
+    if (!ipResult.ok) {
+      return c.text('Too Many Requests', 429, { 'Retry-After': String(ipResult.retryAfter) });
+    }
+    const cid = (new URL(c.req.url).searchParams.get('logged_in_customer_id') ?? '').trim();
+    if (/^\d{1,32}$/.test(cid)) {
+      const cidResult = check(`proxy:${cid}`, PROXY_MAX, PROXY_WINDOW);
+      if (!cidResult.ok) {
+        return c.text('Too Many Requests', 429, { 'Retry-After': String(cidResult.retryAfter) });
+      }
     }
     return next();
   }

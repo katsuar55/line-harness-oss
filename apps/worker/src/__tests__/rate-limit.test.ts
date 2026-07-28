@@ -95,6 +95,45 @@ describe('rateLimitMiddleware', () => {
     expect(saw429).toBe(true);
   });
 
+  it('🚨 logged_in_customer_id を毎回変えても IP バケットで頭打ちになる (キー回転で上限回避できない)', async () => {
+    // middleware は route より前に走るので、ここで見える query は **署名検証前 = 未検証**。
+    // 顧客バケットだけで判定すると、値を回すだけで上限が無効化され、しかも store が
+    // 無限に膨らんで isolate ごと落とせる (= webhook/cron まで巻き添え)。
+    const app = makeApp();
+    const ip = '203.0.113.12';
+    let saw429 = false;
+    for (let i = 0; i < 200; i++) {
+      const res = await app.fetch(
+        req(`/proxy/line-link?shop=s.myshopify.com&logged_in_customer_id=${1000 + i}`, { ip }),
+        ENV,
+      );
+      if (res.status === 429) {
+        saw429 = true;
+        break;
+      }
+    }
+    expect(saw429).toBe(true);
+  });
+
+  it('形式外の logged_in_customer_id は顧客バケットのキーにしない (キー空間を有限に保つ)', async () => {
+    // 長大文字列や任意文字をキーにすると、1 リクエストで数十 KB を isolate に滞留させられる。
+    const app = makeApp();
+    const ip = '203.0.113.13';
+    const huge = 'x'.repeat(5000);
+    let saw429 = false;
+    for (let i = 0; i < 200; i++) {
+      const res = await app.fetch(
+        req(`/proxy/line-link?shop=s.myshopify.com&logged_in_customer_id=${huge}${i}`, { ip }),
+        ENV,
+      );
+      if (res.status === 429) {
+        saw429 = true; // IP バケットで止まる = 形式外の値はキーに使われていない
+        break;
+      }
+    }
+    expect(saw429).toBe(true);
+  });
+
   it('/api/liff/* データ endpoint は exempt されない (idToken Bearer keyed の per-user 制限を維持)', async () => {
     // `/api/liff/...` は `/api/` 始まりなので `/liff/` skip に巻き込まれない。
     // idToken を Bearer で持つので authed bucket (remaining 999) = per-user・CGNAT 安全。

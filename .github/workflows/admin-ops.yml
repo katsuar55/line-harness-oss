@@ -584,9 +584,17 @@ jobs:
           echo '### Before (linked friends vs backlinked customers)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT (SELECT COUNT(*) FROM friends WHERE shopify_customer_id IS NOT NULL) AS linked_friends, (SELECT COUNT(*) FROM shopify_customers WHERE friend_id IS NOT NULL) AS backlinked_customers" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo '### Rows whose friend_id would be OVERWRITTEN (should normally be 0)' >> "$GITHUB_STEP_SUMMARY"
-          npx wrangler d1 execute naturism-line-crm --remote --json \
-            --command "SELECT COUNT(*) AS overwrite_candidates FROM shopify_customers sc WHERE sc.friend_id IS NOT NULL AND EXISTS (SELECT 1 FROM friends f WHERE f.shopify_customer_id = sc.shopify_customer_id AND f.id != sc.friend_id)" | tee -a "$GITHUB_STEP_SUMMARY"
+          # 既存の friend_id を別値へ上書きする行があれば **停止する**。
+          # 旧値は記録されないのでロールバック不能 + 注文 webhook 経路 (email 照合) が書いた
+          # 値と食い違う可能性がある = 人間が中身を確認してから判断すべきケース。
+          echo '### Rows whose friend_id would be OVERWRITTEN (must be 0 to proceed)' >> "$GITHUB_STEP_SUMMARY"
+          OVERWRITE=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS overwrite_candidates FROM shopify_customers sc WHERE sc.friend_id IS NOT NULL AND EXISTS (SELECT 1 FROM friends f WHERE f.shopify_customer_id = sc.shopify_customer_id AND f.id != sc.friend_id)")
+          echo "$OVERWRITE" | tee -a "$GITHUB_STEP_SUMMARY"
+          if ! echo "$OVERWRITE" | grep -q '"overwrite_candidates": 0'; then
+            echo '❌ 既存 friend_id を上書きする行があります — 中身を確認してから手動で対応してください (backfill は中止)' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           npx wrangler d1 execute naturism-line-crm --remote \
             --command "UPDATE shopify_customers SET friend_id = (SELECT f.id FROM friends f WHERE f.shopify_customer_id = shopify_customers.shopify_customer_id) WHERE EXISTS (SELECT 1 FROM friends f WHERE f.shopify_customer_id = shopify_customers.shopify_customer_id) AND (friend_id IS NULL OR friend_id != (SELECT f.id FROM friends f WHERE f.shopify_customer_id = shopify_customers.shopify_customer_id))"
           # runtime の writer (linkShopifyCustomerToFriend) は shopify_orders.friend_id も埋める。

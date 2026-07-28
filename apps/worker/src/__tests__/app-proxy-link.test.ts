@@ -43,6 +43,8 @@ interface Store {
   linkedCustomers: Set<string>;
   /** local shopify_customers に行がある customer (無い顧客は sync_pending になる) */
   knownCustomers: Set<string>;
+  /** customer ごとの email (null / 不正形式は hint を出せないので sync_pending) */
+  customerEmails: Map<string, string | null>;
 }
 
 function createDb(seed: Partial<Store> = {}): { db: D1Database; store: Store } {
@@ -51,6 +53,7 @@ function createDb(seed: Partial<Store> = {}): { db: D1Database; store: Store } {
     linkedCustomers: seed.linkedCustomers ?? new Set(),
     // 既定で '777' は同期済み (= テストの主対象)。 未同期経路は明示的に空集合を渡す
     knownCustomers: seed.knownCustomers ?? new Set(['777']),
+    customerEmails: seed.customerEmails ?? new Map([['777', 'hanako@example.com']]),
   };
   function exec(sqlRaw: string, args: unknown[], mode: 'first' | 'all' | 'run'): unknown {
     const sql = sqlRaw.replace(/\s+/g, ' ').trim();
@@ -79,8 +82,10 @@ function createDb(seed: Partial<Store> = {}): { db: D1Database; store: Store } {
       }
       return { meta: { changes: n } };
     }
-    if (sql.startsWith('SELECT 1 AS ok FROM shopify_customers')) {
-      return store.knownCustomers.has(args[0] as string) ? { ok: 1 } : null;
+    if (sql.startsWith('SELECT email FROM shopify_customers')) {
+      const cid = args[0] as string;
+      if (!store.knownCustomers.has(cid)) return null;
+      return { email: store.customerEmails.has(cid) ? store.customerEmails.get(cid) : 'hanako@example.com' };
     }
     if (sql.startsWith('SELECT token FROM sub_link_tokens')) {
       const [cid, batch, now] = args as string[];
@@ -198,8 +203,9 @@ function createIntegrationDb(): {
       }
       return { meta: { changes: n } };
     }
-    if (sql.startsWith('SELECT 1 AS ok FROM shopify_customers')) {
-      return customers.has(args[0] as string) ? { ok: 1 } : null;
+    if (sql.startsWith('SELECT email FROM shopify_customers')) {
+      const c = customers.get(args[0] as string);
+      return c ? { email: c.email } : null;
     }
     if (sql.startsWith('SELECT token FROM sub_link_tokens')) {
       const [cid, batch, now] = args as string[];
@@ -277,6 +283,12 @@ function envWith(db: D1Database, over: Record<string, string | undefined> = {}) 
 // ============================================================
 // service
 // ============================================================
+
+describe('セキュリティ定数の絶対値', () => {
+  it('token TTL は 15 分 (連携 capability の寿命。相対 assert だけでは伸ばせてしまう)', () => {
+    expect(APP_PROXY_TOKEN_TTL_MIN).toBe(15);
+  });
+});
 
 describe('handleAppProxyLinkEntry', () => {
   it('gate off は disabled — 署名も設定も見ない (判定順序を固定)', async () => {
@@ -392,6 +404,37 @@ describe('handleAppProxyLinkEntry', () => {
     const q = new URLSearchParams(signedQuery(baseParams({ shop: 'whatever.myshopify.com' })));
     const r = await handleAppProxyLinkEntry(envWith(db, { SHOPIFY_STORE_DOMAIN: undefined }), q);
     expect(r).toEqual({ ok: false, code: 'misconfigured' });
+  });
+
+  it('email が無い / マスクできない顧客も sync_pending (確認材料を出せないまま同意させない)', async () => {
+    // 行の存在だけを見ると、email を空にした顧客が「連携先」表示と警告文を任意に無効化できる。
+    const { db, store } = createDb();
+    store.customerEmails.set('777', null);
+    const q = new URLSearchParams(signedQuery(baseParams({ logged_in_customer_id: '777' })));
+    expect(await handleAppProxyLinkEntry(envWith(db), q)).toEqual({ ok: true, state: 'sync_pending' });
+
+    store.customerEmails.set('777', 'not-an-email');
+    expect(await handleAppProxyLinkEntry(envWith(db), q)).toEqual({ ok: true, state: 'sync_pending' });
+    expect(store.tokens.size).toBe(0);
+  });
+
+  it('残り時間が僅かな token は再利用しない (戻った直後に期限切れへ落とさない)', async () => {
+    const { db, store } = createDb();
+    const nowMs = Date.now();
+    // TTL の半分を切っている token を仕込む
+    const nearlyExpired = new Date(nowMs + 2 * 60_000).toISOString().replace('Z', '+09:00');
+    store.tokens.set('stale', {
+      token: 'stale',
+      shopify_customer_id: '777',
+      batch_id: APP_PROXY_BATCH_ID,
+      expires_at: nearlyExpired,
+      consumed_at: null,
+      created_at: nearlyExpired,
+    });
+    const q = new URLSearchParams(signedQuery(baseParams({ logged_in_customer_id: '777' })));
+    const r = await handleAppProxyLinkEntry(envWith(db), q, nowMs);
+    if (!r.ok || r.state !== 'ready') throw new Error('expected ready');
+    expect(r.redirectUrl).not.toContain('slk=stale');
   });
 
   it('local shopify_customers に行が無い顧客は sync_pending (ready にしない)', async () => {
@@ -518,7 +561,40 @@ describe('GET /proxy/line-link', () => {
     }
   });
 
-  it('service が throw したら 500 (握り潰して 200 にしない)', async () => {
+  // Sec-Fetch guard: storefront に同居する第三者 script が fetch でトークンを読む経路を塞ぐ。
+  // (window.open は同一オリジン navigation なので原理的に区別できず、ここでは塞げない)
+  it.each([
+    ['empty', 'cors', 'fetch/XHR'],
+    ['empty', 'no-cors', 'no-cors fetch'],
+    ['iframe', 'navigate', 'iframe 埋め込み'],
+    ['script', 'no-cors', 'script タグ'],
+  ])('Sec-Fetch-Dest=%s Mode=%s (%s) は 404', async (dest, mode) => {
+    const { db } = createDb();
+    const res = await appProxy.request(
+      `/proxy/line-link?${signedQuery(baseParams({ logged_in_customer_id: '777' }))}`,
+      { headers: { 'sec-fetch-dest': dest, 'sec-fetch-mode': mode } },
+      envWith(db) as Record<string, unknown>,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('Sec-Fetch-Dest=document Mode=navigate (通常のページ遷移) は通す', async () => {
+    const { db } = createDb();
+    const res = await appProxy.request(
+      `/proxy/line-link?${signedQuery(baseParams({ logged_in_customer_id: '777' }))}`,
+      { headers: { 'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate' } },
+      envWith(db) as Record<string, unknown>,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('Sec-Fetch-* を送らない UA は通す (後方互換)', async () => {
+    const { db } = createDb();
+    const res = await routeGet(signedQuery(baseParams({ logged_in_customer_id: '777' })), envWith(db));
+    expect(res.status).toBe(200);
+  });
+
+  it('service が throw したら 500 のブランドページ (生テキストを storefront に出さない)', async () => {
     const brokenDb = {
       prepare() {
         throw new Error('D1 unavailable');
@@ -529,6 +605,44 @@ describe('GET /proxy/line-link', () => {
       envWith(brokenDb),
     );
     expect(res.status).toBe(500);
+    expect(res.headers.get('content-type') ?? '').toContain('text/html');
+    expect(await res.text()).toContain('ご利用いただけません');
+  });
+
+  it('token 発行を audit_logs に記録する (発行の追跡可能性)', async () => {
+    // 乗っ取りの疑いが出たとき「発行が正規ログイン由来か注入由来か」を事後に切り分ける唯一の材料。
+    const audits: Array<{ action: string; targetId: string }> = [];
+    const { db, store } = createDb();
+    const spyDb = {
+      prepare(sql: string) {
+        if (sql.includes('INSERT INTO audit_logs')) {
+          return {
+            bind(...args: unknown[]) {
+              // insertAuditLog の bind 順: id, lineAccountId, actorType, actorId,
+              // actorName, action, targetType, targetId, ...
+              return {
+                async run() {
+                  audits.push({ action: String(args[5]), targetId: String(args[7]) });
+                  return { meta: { changes: 1 } };
+                },
+                async first() {
+                  return { id: 'a1' };
+                },
+                async all() {
+                  return { results: [] };
+                },
+              };
+            },
+          };
+        }
+        return (db as unknown as { prepare: (s: string) => unknown }).prepare(sql);
+      },
+    } as unknown as D1Database;
+    const q = new URLSearchParams(signedQuery(baseParams({ logged_in_customer_id: '777' })));
+    const r = await handleAppProxyLinkEntry(envWith(spyDb), q);
+    expect(r.ok).toBe(true);
+    expect(store.tokens.size).toBe(1);
+    expect(audits.some((a) => a.action === 'account_link.app_proxy_token_issued')).toBe(true);
   });
 
   it('未ログインはログイン誘導ページを返す', async () => {

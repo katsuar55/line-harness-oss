@@ -64,6 +64,14 @@ function qs(s: string): URLSearchParams {
 // アルゴリズム一致 (公式ベクタ)
 // ============================================================
 
+describe('セキュリティ定数の絶対値', () => {
+  it('replay 許容窓は 90 秒 (相対 assert だけだと 1 日に伸ばしても green になる)', () => {
+    // この値は「署名済み URL が漏れた場合の replay 可能時間」そのもの。
+    // 他テストは定数自身から期待値を作るため、大きさの変更を検出できない。
+    expect(APP_PROXY_TIMESTAMP_TOLERANCE_SEC).toBe(90);
+  });
+});
+
 describe('buildAppProxyMessage — 公式仕様との一致', () => {
   it('signature 除外・複数値カンマ結合・キー辞書順・区切りなし連結', () => {
     expect(buildAppProxyMessage(qs(DOC_QUERY))).toBe(DOC_EXPECTED_MESSAGE);

@@ -89,6 +89,29 @@ describe('LIFF ポータル inline script は構文的に valid (吐き出され
     expect(html).toContain('var SHOPIFY_LINK_URL = null;');
   });
 
+  it('/liff/portal (gate off + 妥当な storefront URL でもカードを出さない = gate 条件そのものの検証)', async () => {
+    // URL 未設定のケースだけだと「URL 検証で落ちている」のか「gate で落ちている」のか
+    // 区別できず、gate 条件を消す退行が素通りする (tautology)。
+    const env = { ...baseEnv, SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com' };
+    const html = await fetchBody('/liff/portal', env);
+    expect(html).not.toContain('id="shopify-link-card"');
+    expect(html).toContain('var SHOPIFY_LINK_URL = null;');
+  });
+
+  it.each([['TRUE'], ['false'], ['1'], ['true\r'], ['']])(
+    '/liff/portal (gate 値 %s は有効化しない = === \'true\' 厳密一致)',
+    async (gate) => {
+      const env = {
+        ...baseEnv,
+        APP_PROXY_LINK_ENABLED: gate,
+        SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
+      };
+      const html = await fetchBody('/liff/portal', env);
+      expect(html).not.toContain('id="shopify-link-card"');
+      expect(html).toContain('var SHOPIFY_LINK_URL = null;');
+    },
+  );
+
   // 許可する文字クラスそのものを固定する。 scheme だけを見る正規表現に緩めると
   // (`^https://.+$` 等)、`https://a.com/</script><script>…` のような breakout が
   // 通ってしまい #193 クラスの全損に戻る (R2 採点 HIGH)。
