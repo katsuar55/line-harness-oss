@@ -75,29 +75,53 @@ export default function EmergencyPage() {
       updateAction(id, { status: 'executing' })
 
       try {
+        // 緊急停止は「何件止まったか」を必ず検査する。 allSettled の結果を捨てて無条件に done を出すと、
+        // 権限不足 (403) や通信失敗で 1 件も止まっていないのに「完了」と表示され、
+        // 誤配信の最中に「止めた」と誤認させる (= 最悪の false-success)。
+        let attempted = 0
+        let failed = 0
+
+        const runAll = async (tasks: Promise<unknown>[]): Promise<void> => {
+          attempted += tasks.length
+          const results = await Promise.allSettled(tasks)
+          failed += results.filter((r) => r.status === 'rejected').length
+        }
+
         if (id === 'stop-broadcasts') {
           const res = await api.broadcasts.list()
-          if (res.success) {
-            const scheduled = res.data.filter((b) => b.status === 'scheduled')
-            await Promise.allSettled(
-              scheduled.map((b) => api.broadcasts.update(b.id, { scheduledAt: null }))
-            )
-          }
+          if (!res.success) throw new Error('一斉配信の一覧を取得できませんでした')
+          const scheduled = res.data.filter((b) => b.status === 'scheduled')
+          await runAll(scheduled.map((b) => api.broadcasts.update(b.id, { scheduledAt: null })))
         } else if (id === 'stop-scenarios') {
           const res = await api.scenarios.list()
-          if (res.success) {
-            const active = res.data.filter((s) => s.isActive)
-            await Promise.allSettled(
-              active.map((s) => api.scenarios.update(s.id, { isActive: false }))
-            )
-          }
+          if (!res.success) throw new Error('シナリオの一覧を取得できませんでした')
+          const active = res.data.filter((s) => s.isActive)
+          await runAll(active.map((s) => api.scenarios.update(s.id, { isActive: false })))
         } else if (id === 'switch-account') {
           window.location.href = '/health'
           return
         }
-        updateAction(id, { status: 'done' })
-      } catch {
-        updateAction(id, { status: 'error', errorMessage: '実行に失敗しました。再度お試しください。' })
+
+        if (failed > 0) {
+          updateAction(id, {
+            status: 'error',
+            errorMessage:
+              `${attempted} 件中 ${failed} 件を停止できませんでした` +
+              '（権限不足の可能性があります）。オーナー・管理者に連絡してください。',
+          })
+          return
+        }
+        updateAction(id, {
+          status: 'done',
+          errorMessage: attempted === 0 ? '停止対象はありませんでした' : undefined,
+        })
+      } catch (e) {
+        updateAction(id, {
+          status: 'error',
+          errorMessage:
+            (e instanceof Error ? e.message : '実行に失敗しました') +
+            '。止まっていない可能性があります — オーナー・管理者に連絡してください。',
+        })
       }
     }
   }

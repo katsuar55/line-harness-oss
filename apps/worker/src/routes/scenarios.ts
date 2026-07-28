@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { auditAdmin } from '../services/audit-logger.js';
+import { denyUnlessRole } from '../middleware/role-guard.js';
 import {
   getScenarios,
   getScenarioById,
@@ -194,6 +195,15 @@ scenarios.put('/api/scenarios/:id', async (c) => {
       isActive?: boolean;
     }>();
 
+    // 稼働中シナリオの編集、および有効/無効の切替は owner/admin 限定。
+    // 稼働中シナリオは cron が自動配信するため、 文面差し替えは実質「一斉配信の内容差し替え」であり、
+    // 有効化/無効化は「全お客様向け自動配信の開始/停止」にあたる (broadcasts.ts:226-231 と同じ理屈)。
+    // これが無いと /emergency の「シナリオ一括停止」を staff がそのまま実行できてしまう。
+    if (body.isActive !== undefined || before?.is_active) {
+      const denied = await denyUnlessRole(c, 'シナリオ配信の開始・停止・編集', 'owner', 'admin');
+      if (denied) return denied;
+    }
+
     const updated = await updateScenario(c.env.DB, id, {
       name: body.name,
       description: body.description,
@@ -237,6 +247,12 @@ scenarios.delete('/api/scenarios/:id', async (c) => {
   try {
     // Phase 5α-3b: destructive 操作なので削除前 snapshot を audit
     const before = await getScenarioById(c.env.DB, id);
+    // 稼働中シナリオの削除 = 全お客様向け自動配信の恒久停止。 停止 (PUT) と同じ権限を要求する
+    // (でないと「停止できないなら削除すればいい」という迂回路が残る)。
+    if (before?.is_active) {
+      const denied = await denyUnlessRole(c, '稼働中シナリオの削除', 'owner', 'admin');
+      if (denied) return denied;
+    }
     await deleteScenario(c.env.DB, id);
     await auditAdmin(c, {
       action: 'scenario.delete',
