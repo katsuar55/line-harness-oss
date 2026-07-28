@@ -354,7 +354,12 @@ export default function Sidebar() {
           </div>
         )}
         <div className="px-6 py-4 space-y-3">
-        <p className="text-xs text-gray-400">naturism v{process.env.APP_VERSION || '0.0.0'}</p>
+        {/* BUILD_SHA は CI の deploy 検証にも使う (本番が今ビルドしたものを配っているかの照合)。
+            人間にとっても「この画面は古いのでは?」を即座に潰せる手がかりになる。 */}
+        <p className="text-xs text-gray-400" data-build-sha={process.env.BUILD_SHA || 'local'}>
+          naturism v{process.env.APP_VERSION || '0.0.0'}
+          <span className="ml-1 opacity-70">({process.env.BUILD_SHA || 'local'})</span>
+        </p>
         <button
           onClick={() => {
             localStorage.removeItem('lh_api_key')

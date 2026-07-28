@@ -52,18 +52,29 @@ jobs:
 
       # production branch 不一致の silent no-op を検出する (--branch がプロジェクトの production
       # branch と一致しない場合、job は success のまま preview に置かれ本番 URL が更新されない)。
-      # ビルドごとにハッシュが変わる _next チャンク名で「今ビルドした成果物が本番で配られている」を照合。
+      #
+      # ⚠️ chunk 名ハッシュでの照合は使わない: 依存が変わらないビルドでは webpack runtime chunk が
+      # 同名のままなので、**古い本番でも一致して素通りする**。2026-07-28 の初回運用で実際に
+      # `webpack-….js` を拾って「Verified」と出しており、この step は何も検証していなかった
+      # (幸い本番は正しく更新されていたが、それは偶然であって検証の結果ではない)。
+      # commit SHA を成果物に焼き込み、本番がその SHA を配っているかで照合する。
       - name: Verify production serves this build
         run: |
-          CHUNK=$(grep -o '/_next/static/chunks/[a-zA-Z0-9._-]*\.js' out/dashboard.html | head -1)
-          if [ -z "$CHUNK" ]; then echo "::warning::chunk marker not found in out/dashboard.html — skip verify"; exit 0; fi
-          for i in 1 2 3 4 5 6; do
-            if curl -sf "https://naturism-admin.pages.dev/dashboard" | grep -q "$CHUNK"; then
-              echo "::notice title=Verified::production serves $CHUNK"; exit 0
+          SHA_SHORT="$(echo "${GITHUB_SHA}" | cut -c1-12)"
+          # 照合対象は静的 HTML の <meta name="build-sha">。JS チャンク側にも同じ値が入るが、
+          # 本番判定は「HTML を 1 本引いて grep」で完結させる (curl 1 回で済み、経路が短い)。
+          if ! grep -q "build-sha\" content=\"$SHA_SHORT\"" out/dashboard.html; then
+            echo "::error title=Build marker missing::out/dashboard.html に build-sha=$SHA_SHORT が無い — app/layout.tsx の meta と next.config.ts の BUILD_SHA を確認"
+            grep -o 'name="build-sha"[^>]*' out/dashboard.html || echo '(meta 自体が無い)'
+            exit 1
+          fi
+          for i in 1 2 3 4 5 6 7 8; do
+            if curl -sf "https://naturism-admin.pages.dev/dashboard" | grep -q "$SHA_SHORT"; then
+              echo "::notice title=Verified::production serves build $SHA_SHORT"; exit 0
             fi
             sleep 10
           done
-          echo "::error title=Stale production::deploy succeeded but naturism-admin.pages.dev does not serve $CHUNK — Pages プロジェクトの production branch が 'main' か確認 (不一致だと preview に置かれる)"
+          echo "::error title=Stale production::deploy は成功したが naturism-admin.pages.dev が build $SHA_SHORT を配っていない — Pages プロジェクトの production branch が 'main' か確認 (不一致だと preview に置かれる)"
           exit 1
         working-directory: apps/web
 
