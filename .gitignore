@@ -40,3 +40,6 @@ tmp/
 # Local handoff files (not for git)
 NEXT_SESSION_PROMPT.md
 STAFF_GUIDE_naturism_LINE.html
+# 管理システムの手引き。 本 repo は PUBLIC なので、 管理画面 URL・運用手順・権限の内訳を含む
+# 社内向け資料はコミットしない (メール/LINE 添付で個別に配る)。
+ADMIN_GUIDE_naturism.html
