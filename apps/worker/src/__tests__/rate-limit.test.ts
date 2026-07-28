@@ -7,7 +7,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
-import { rateLimitMiddleware, hashRateLimitToken } from '../middleware/rate-limit.js';
+import {
+  rateLimitMiddleware,
+  hashRateLimitToken,
+  __resetRateLimitStoreForTests,
+  __rateLimitStoreSizeForTests,
+} from '../middleware/rate-limit.js';
 
 function makeApp(): Hono {
   const app = new Hono();
@@ -52,57 +57,15 @@ describe('rateLimitMiddleware', () => {
   });
 
   // ── Shopify App Proxy (2026-07-29) ──
-  // 転送元 IP は Shopify の egress = 全顧客が共有するので IP keyed だと 1 人の連打で
-  // 店舗全体が 429 になる。一方、完全除外にすると無認証 trigger の D1 write が無制限に
-  // なり write 枠を焼ける。よって **顧客単位**のバケットに振り替えている。
-  it('/proxy/line-link は顧客単位で keyed (同一 IP でも別顧客なら独立)', async () => {
+  // middleware では **署名検証前** なので、キーに使えるのは IP だけ。query の
+  // logged_in_customer_id をキーにすると、値を回すだけで上限を回避でき、他人の id を
+  // 指定してその人の枠を先に焼けてしまう。顧客単位の絞りは署名検証後 (service 側) で掛ける。
+  it('/proxy/line-link は IP バケットで制限される (query の値では回避できない)', async () => {
     const app = makeApp();
-    const ip = '203.0.113.10'; // Shopify egress を模す (全顧客で同一)
-    for (let i = 0; i < 20; i++) {
-      const res = await app.fetch(
-        req('/proxy/line-link?shop=s.myshopify.com&logged_in_customer_id=111', { ip }),
-        ENV,
-      );
-      expect(res.status).toBe(200);
-    }
-    // 顧客 111 は上限到達
-    const over = await app.fetch(
-      req('/proxy/line-link?shop=s.myshopify.com&logged_in_customer_id=111', { ip }),
-      ENV,
-    );
-    expect(over.status).toBe(429);
-    // 別顧客 222 は同一 IP でも影響を受けない (= 巻き添え 429 が起きない)
-    const other = await app.fetch(
-      req('/proxy/line-link?shop=s.myshopify.com&logged_in_customer_id=222', { ip }),
-      ENV,
-    );
-    expect(other.status).toBe(200);
-  });
-
-  it('/proxy/line-link は無制限ではない (D1 write を伴うので上限が必ずある)', async () => {
-    const app = makeApp();
-    let saw429 = false;
-    for (let i = 0; i < 60; i++) {
-      const res = await app.fetch(
-        req('/proxy/line-link/sub?shop=s.myshopify.com&logged_in_customer_id=333', { ip: '203.0.113.11' }),
-        ENV,
-      );
-      if (res.status === 429) {
-        saw429 = true;
-        break;
-      }
-    }
-    expect(saw429).toBe(true);
-  });
-
-  it('🚨 logged_in_customer_id を毎回変えても IP バケットで頭打ちになる (キー回転で上限回避できない)', async () => {
-    // middleware は route より前に走るので、ここで見える query は **署名検証前 = 未検証**。
-    // 顧客バケットだけで判定すると、値を回すだけで上限が無効化され、しかも store が
-    // 無限に膨らんで isolate ごと落とせる (= webhook/cron まで巻き添え)。
-    const app = makeApp();
-    const ip = '203.0.113.12';
+    const ip = '203.0.113.10';
     let saw429 = false;
     for (let i = 0; i < 200; i++) {
+      // customer id を毎回変えても、キーは IP なので回避できない
       const res = await app.fetch(
         req(`/proxy/line-link?shop=s.myshopify.com&logged_in_customer_id=${1000 + i}`, { ip }),
         ENV,
@@ -115,21 +78,29 @@ describe('rateLimitMiddleware', () => {
     expect(saw429).toBe(true);
   });
 
-  it('形式外の logged_in_customer_id は顧客バケットのキーにしない (キー空間を有限に保つ)', async () => {
-    // 長大文字列や任意文字をキーにすると、1 リクエストで数十 KB を isolate に滞留させられる。
+  it('/proxy/line-link のバケットは Shopify webhook と分離されている (proxy-ip: prefix)', async () => {
+    // 転送元は Shopify egress IP なので、webhook と同じ `ip:` バケットを共有すると
+    // 連携ページへのアクセスが増えたときに **注文 webhook が 429 で落ちる**。
     const app = makeApp();
-    const ip = '203.0.113.13';
-    const huge = 'x'.repeat(5000);
+    const ip = '203.0.113.20';
+    for (let i = 0; i < 100; i++) {
+      await app.fetch(req('/proxy/line-link?shop=s.myshopify.com', { ip }), ENV);
+    }
+    // proxy 側は上限到達
+    const proxyRes = await app.fetch(req('/proxy/line-link?shop=s.myshopify.com', { ip }), ENV);
+    expect(proxyRes.status).toBe(429);
+    // 同一 IP からの webhook は影響を受けない
+    const webhookRes = await app.fetch(req('/api/integrations/shopify/webhook', { ip }), ENV);
+    expect(webhookRes.status).toBe(200);
+  });
+
+  it('/proxy/line-link のサブパスも同じ IP バケット (skip 漏れを作らない)', async () => {
+    const app = makeApp();
+    const ip = '203.0.113.21';
     let saw429 = false;
     for (let i = 0; i < 200; i++) {
-      const res = await app.fetch(
-        req(`/proxy/line-link?shop=s.myshopify.com&logged_in_customer_id=${huge}${i}`, { ip }),
-        ENV,
-      );
-      if (res.status === 429) {
-        saw429 = true; // IP バケットで止まる = 形式外の値はキーに使われていない
-        break;
-      }
+      const res = await app.fetch(req('/proxy/line-link/sub', { ip }), ENV);
+      if (res.status === 429) { saw429 = true; break; }
     }
     expect(saw429).toBe(true);
   });
@@ -185,6 +156,43 @@ describe('rateLimitMiddleware', () => {
     expect((await app.fetch(req('/webhook', { ip: '7.7.7.7' }), ENV)).status).toBe(429);
     // 別 IP は影響を受けない
     expect((await app.fetch(req('/webhook', { ip: '8.8.8.8' }), ENV)).status).toBe(200);
+  });
+});
+
+describe('store のメモリ上限 (キー回転への耐性)', () => {
+  // キー基数は攻撃者が握れる (ランダム Bearer を投げれば key:<hash> が毎回増える)。
+  // prune は 60 秒に 1 回しか走らないので、上限が無いと 1 分ぶんが isolate に滞留し、
+  // store を共有する webhook/cron まで巻き込んで落ちる。
+  it('ユニークキーを大量に作っても store は上限を超えて増え続けない', async () => {
+    __resetRateLimitStoreForTests();
+    const app = makeApp();
+    for (let i = 0; i < 12_000; i++) {
+      await app.fetch(req('/api/friends', { auth: `rotating-token-${i}`, ip: '198.51.100.1' }), ENV);
+    }
+    // 上限 (10,000) を超えて青天井にならないこと
+    expect(__rateLimitStoreSizeForTests()).toBeLessThanOrEqual(10_000);
+    __resetRateLimitStoreForTests();
+  });
+
+  it('退避は「最終アクセスが古い順」= 使い続けている正規バケットを先に捨てない', async () => {
+    __resetRateLimitStoreForTests();
+    const app = makeApp();
+    const liveIp = '198.51.100.2';
+    // 正規バケットを作る (以後も使い続ける想定)
+    await app.fetch(req('/webhook', { ip: liveIp }), ENV);
+    // キー回転で上限を超えさせる
+    for (let i = 0; i < 11_000; i++) {
+      await app.fetch(req('/api/friends', { auth: `flood-${i}`, ip: '198.51.100.3' }), ENV);
+      if (i % 2_000 === 0) {
+        // 正規バケットを触り続ける (= 最終アクセスが新しい状態を保つ)
+        await app.fetch(req('/webhook', { ip: liveIp }), ENV);
+      }
+    }
+    // 正規バケットは生き残っており、カウンタもリセットされていない
+    const res = await app.fetch(req('/webhook', { ip: liveIp }), ENV);
+    const remaining = Number(res.headers.get('X-RateLimit-Remaining'));
+    expect(remaining).toBeLessThan(99); // 99 = 初回相当 (= 捨てられて作り直された状態)
+    __resetRateLimitStoreForTests();
   });
 });
 

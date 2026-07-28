@@ -120,6 +120,18 @@ const entryHandler = async (c: {
         console.error('[app-proxy] misconfigured: SHOPIFY_CLIENT_SECRET or LIFF_URL missing');
       } else if (result.code === 'unauthorized') {
         console.warn('[app-proxy] unauthorized proxy request:', result.reason);
+      } else if (result.code === 'rate_limited') {
+        // 顧客単位の上限 (署名検証後)。 storefront 上に生の英語テキストを出さない。
+        return c.html(
+          page({
+            title: 'しばらくしてからお試しください',
+            emoji: '⏳',
+            body: `<p>短い時間に何度もお試しいただいたため、一時的にお受けできません。<br>1分ほどおいてから、もう一度お試しください。</p>
+  <p class="note">お困りのときは、LINEのトークからサポートへご連絡ください。</p>`,
+          }),
+          429,
+          NO_STORE,
+        );
       }
       // 404 でもブランドページを返す (= 設定作業中や誤アクセスで storefront ドメイン上に
       // 生の "Not Found" テキストが出るのを避ける)。 status は 404 のまま = 情報は増やさない。
@@ -139,7 +151,7 @@ const entryHandler = async (c: {
           body: `<p>LINEとの連携には、オンラインストアへのログインが必要です。<br>ログインが終わると、この連携ページに戻ります。</p>
   <a class="btn" href="/customer_authentication/login?return_to=%2Fapps%2Fline-link">ログインする</a>
   ${liffHome ? `<a class="btn-sub" href="${esc(liffHome)}">あとでLINEに戻る</a>` : ''}
-  <p class="note">アカウントをお持ちでない場合は、ご購入時に作成できます。</p>`,
+  <p class="note">アカウントをお持ちでない方も、メールアドレスに届く確認コードを入力するだけでご利用いただけます。</p>`,
         }),
         200,
         NO_STORE,

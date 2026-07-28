@@ -133,13 +133,16 @@ export async function deleteUnconsumedSubLinkTokensForCustomerBatch(
   db: D1Database,
   shopifyCustomerId: string,
   batchId: string,
+  /** 指定時は「この時刻より前に失効した」行だけを消す (= まだ有効な発行済み link を殺さない)。 */
+  expiredBefore?: string,
 ): Promise<number> {
-  const res = await db
-    .prepare(
-      `DELETE FROM sub_link_tokens WHERE shopify_customer_id = ? AND batch_id = ? AND consumed_at IS NULL`,
-    )
-    .bind(shopifyCustomerId, batchId)
-    .run();
+  const sql = expiredBefore
+    ? `DELETE FROM sub_link_tokens WHERE shopify_customer_id = ? AND batch_id = ? AND consumed_at IS NULL AND expires_at <= ?`
+    : `DELETE FROM sub_link_tokens WHERE shopify_customer_id = ? AND batch_id = ? AND consumed_at IS NULL`;
+  const stmt = expiredBefore
+    ? db.prepare(sql).bind(shopifyCustomerId, batchId, expiredBefore)
+    : db.prepare(sql).bind(shopifyCustomerId, batchId);
+  const res = await stmt.run();
   return res.meta?.changes ?? 0;
 }
 

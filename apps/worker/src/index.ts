@@ -248,7 +248,9 @@ export type Env = {
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
-    liffUser: { lineUserId: string; friendId: string };
+    // shopifyCustomerId は liffAuthMiddleware が読んだ friend 行から載せる
+    // (= 下流 route が連携有無を知るために friend を読み直さなくてよい)。
+    liffUser: { lineUserId: string; friendId: string; shopifyCustomerId: string | null };
   };
 };
 
@@ -276,7 +278,14 @@ export function resolveCorsOrigin(origin: string | undefined | null): string | n
   return null;
 }
 
-app.use('*', cors({ origin: (origin) => resolveCorsOrigin(origin) }));
+// App Proxy 応答は連携トークン (capability) を本文に含むため、 CORS を一切付けない
+// (= Origin なしのとき '*' を返す既定を、 この経路にだけ適用しない)。
+// storefront から cross-origin で読む正当な用途は存在しない。
+const corsMiddleware = cors({ origin: (origin) => resolveCorsOrigin(origin) });
+app.use('*', async (c, next) => {
+  if (new URL(c.req.url).pathname.startsWith('/proxy/')) return next();
+  return corsMiddleware(c, next);
+});
 
 // Rate limiting — runs before auth to block abuse early
 app.use('*', rateLimitMiddleware);

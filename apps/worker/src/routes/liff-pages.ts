@@ -91,7 +91,8 @@ function portalPage(
     .sublink-body{font-size:16px;color:#3f4b55;line-height:1.6}
     /* 連携先の識別ヒント (マスク済メール)。 60代可読性を満たす 16px + AA コントラスト */
     .sublink-hint{font-size:16px;color:#0f766e;background:#effaf8;border:1px solid #bfe8e3;border-radius:12px;padding:10px 12px;line-height:1.6;word-break:break-all}
-    .sublink-note{font-size:14px;color:#4b5563;line-height:1.6}
+    /* link fixation 警告文。 このカードで最も読み落としてはいけない一文なので本文と同じ 16px */
+    .sublink-note{font-size:16px;color:#4b5563;line-height:1.6}
     .sublink-btn{min-height:48px;font-size:16px;font-weight:700;width:100%;border-radius:14px !important}
     .sublink-sub{min-height:48px;font-size:16px;width:100%;color:#5b6670;background:transparent;border:none}
     .sublink-sk{height:14px;border-radius:7px;margin:10px auto}
@@ -3782,7 +3783,9 @@ function subLinkShowCard(token, data) {
       var hintVal = subLinkNode('strong', null, String(data.hint));
       hintBox.appendChild(hintVal);
       card.appendChild(hintBox);
-      card.appendChild(subLinkNode('p', 'sublink-note mb-4', 'ご自身のアカウントでない場合は、連携せずに閉じてください。'));
+      // 警告が指す操作は、実際に押せるボタンのラベル (「あとで」) と一致させる。
+      // 語が食い違うと、他人のリンクを踏まされた人が「閉じる」を探して見つけられない。
+      card.appendChild(subLinkNode('p', 'sublink-note mb-4', 'お心当たりのないメールアドレスの場合は、連携せずに「あとで」を押してください。'));
     } else {
       card.appendChild(subLinkNode('div', 'mb-2'));
     }

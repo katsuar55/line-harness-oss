@@ -36,6 +36,7 @@ import {
 import { verifyAppProxySignature } from '../utils/shopify-app-proxy.js';
 import { APP_PROXY_BATCH_ID, maskEmail } from './sub-link.js';
 import { auditSystem } from './audit-logger.js';
+import { check } from '../middleware/rate-limit.js';
 
 export { APP_PROXY_BATCH_ID };
 
@@ -49,6 +50,14 @@ export const APP_PROXY_TOKEN_TTL_MIN = 15;
 
 /** storefront 側の proxy prefix (Dev Dashboard の App Proxy 設定と一致させる)。 */
 export const APP_PROXY_PATH_PREFIX = '/apps/line-link';
+
+/**
+ * 顧客 1 人あたりの上限 (署名検証後に適用)。
+ * 正常系は「ログイン → 1 回叩いて LINE へ戻る」なので分間 20 は十分に緩い。
+ * D1 write (DELETE + INSERT + audit) を伴うため上限そのものは必ず設ける。
+ */
+export const APP_PROXY_CUSTOMER_MAX = 20;
+export const APP_PROXY_CUSTOMER_WINDOW = 60_000;
 
 interface EnvLike {
   DB: D1Database;
@@ -66,6 +75,7 @@ export type AppProxyEntryResult =
   | { ok: false; code: 'disabled' }
   | { ok: false; code: 'misconfigured' }
   | { ok: false; code: 'unauthorized'; reason: string }
+  | { ok: false; code: 'rate_limited' }
   | { ok: true; state: 'login_required' }
   | { ok: true; state: 'already_linked' }
   /** Shopify にはいるが local shopify_customers に未同期 (= 確認材料を出せないので連携させない) */
@@ -121,6 +131,13 @@ export async function handleAppProxyLinkEntry(
     return { ok: false, code: 'unauthorized', reason: 'bad_customer_id' };
   }
 
+  // 顧客単位の絞りは**ここ** (署名検証後) で掛ける。 middleware では query が未検証なので、
+  // 他人の customer id を指定してその人の枠を先に焼く / 値を回して上限を回避する、 が成立する。
+  // 転送元 IP は Shopify egress で全顧客が共有するため、 個人の連打はこの層でしか止められない。
+  if (!check(`app-proxy-cust:${customerId}`, APP_PROXY_CUSTOMER_MAX, APP_PROXY_CUSTOMER_WINDOW).ok) {
+    return { ok: false, code: 'rate_limited' };
+  }
+
   // 既にどれかの friend と連携済みなら token を発行しない
   // (redeem 側の taken 検査と同じ述語 = getFriendByShopifyCustomerId は following を問わない)。
   const existing = await getFriendByShopifyCustomerId(env.DB, customerId);
@@ -144,8 +161,17 @@ export async function handleAppProxyLinkEntry(
   const reusable = await findReusableAppProxyToken(env.DB, customerId, reuseFloor);
   if (reusable) return { ok: true, state: 'ready', redirectUrl: `${liffUrl}?slk=${reusable}` };
 
-  // 失効した自分の app-proxy token だけ掃除 (= magic-link キャンペーンの 30日 link は殺さない)
-  await deleteUnconsumedSubLinkTokensForCustomerBatch(env.DB, customerId, APP_PROXY_BATCH_ID);
+  // 掃除するのは **失効済み** の自分の app-proxy token だけ。
+  //  - batch を限定: magic-link キャンペーンの 30日 link を巻き添えにしない
+  //  - 失効に限定: 「LIFF に確認カードを出したままストアのページを再読込した」ようなときに、
+  //    まだ有効な token を消してしまうと、 戻って連携ボタンを押した瞬間に
+  //    『このリンクはご利用いただけません』になる (本人は何もしていないのに)。
+  await deleteUnconsumedSubLinkTokensForCustomerBatch(
+    env.DB,
+    customerId,
+    APP_PROXY_BATCH_ID,
+    toJstString(new Date(nowMs)),
+  );
 
   const token = generateLinkToken();
   await insertSubLinkToken(env.DB, {

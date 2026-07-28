@@ -31,6 +31,9 @@ let lastPrune = Date.now();
  * 無関係な本番機能まで巻き込む。
  */
 const MAX_STORE_KEYS = 10_000;
+/** 退避後に残すサイズ。 上限ちょうどまでしか削らないと、 次の呼び出しで再び上限判定に
+ *  引っかかって毎リクエスト全走査になる (境界に張り付く)。 余裕を持って削る。 */
+const STORE_TARGET_KEYS = 9_000;
 
 function prune(windowMs: number): void {
   const now = Date.now();
@@ -42,15 +45,32 @@ function prune(windowMs: number): void {
     if (entry.timestamps.length === 0) store.delete(key);
   }
   // window 内の生存エントリだけで上限を超えている = 意図的なキー回転。
-  // Map は挿入順を保つので、先頭 (= 最も古く作られたキー) から捨てる。
-  if (store.size > MAX_STORE_KEYS) {
-    const excess = store.size - MAX_STORE_KEYS;
-    let i = 0;
-    for (const key of store.keys()) {
-      if (i++ >= excess) break;
-      store.delete(key);
-    }
+  // **最終アクセスが古い順**に捨てる。 Map の挿入順で捨てると、 isolate 起動直後に作られて
+  // 以後ずっと使われ続けている正規バケット (LINE webhook の IP 等) が真っ先に消え、
+  // 直前に作られた攻撃者のキーが生き残る = 本番側だけカウンタがリセットされる fail-open になる。
+  if (store.size > STORE_TARGET_KEYS) {
+    const byRecency = [...store.entries()]
+      .map(([key, entry]) => [key, entry.timestamps[entry.timestamps.length - 1] ?? 0] as const)
+      .sort((a, b) => a[1] - b[1]);
+    const excess = store.size - STORE_TARGET_KEYS;
+    for (let i = 0; i < excess; i++) store.delete(byRecency[i][0]);
   }
+}
+
+/**
+ * テスト専用: バケットを空にする。
+ * store は module-level に永続するため、 同一ファイル内のテストが同じキー
+ * (例: 同じ customer id) を使うと後続テストが前のテストの消費を引き継いでしまう。
+ * 本番コードからは呼ばない。
+ */
+export function __resetRateLimitStoreForTests(): void {
+  store.clear();
+  lastPrune = Date.now();
+}
+
+/** テスト専用: 現在のバケット数 (store 上限の検証用)。 */
+export function __rateLimitStoreSizeForTests(): number {
+  return store.size;
 }
 
 export function check(key: string, max: number, windowMs: number): { ok: boolean; remaining: number; retryAfter: number } {
@@ -174,32 +194,19 @@ export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<
     return next();
   }
 
-  // Shopify App Proxy 入口 (2026-07-29)。 2 段バケットの AND で評価する。
-  //
-  //  ① IP バケット (通常の未認証上限と同じ): キー空間を IP 集合に閉じ込めるための土台。
-  //     これが無いと、 **署名検証前の生 query** をキーにしてしまうため、
-  //     logged_in_customer_id を毎回変えるだけで上限が無効化され、 さらに store が
-  //     無限に膨らんで isolate ごと落とせる (= webhook/cron まで巻き添え)。
-  //     middleware は route より前に走るので、 ここで見える query は**まだ未検証**である点が要。
-  //  ② 顧客バケット: 転送元 IP は Shopify の egress で全顧客が共有するため、 IP だけだと
-  //     1 人の連打で店舗全体が 429 になる。 個人の連打はこちらで細かく止める。
-  //     キーに使うのは形式検査を通った値のみ (= 長さ・文字種を有限に固定する)。
-  if (path === '/proxy/line-link' || path.startsWith('/proxy/line-link/')) {
-    const ipResult = check(`ip:${getClientIp(c)}`, UNAUTHENTICATED_MAX, UNAUTHENTICATED_WINDOW);
-    if (!ipResult.ok) {
-      return c.text('Too Many Requests', 429, { 'Retry-After': String(ipResult.retryAfter) });
-    }
-    const cid = (new URL(c.req.url).searchParams.get('logged_in_customer_id') ?? '').trim();
-    if (/^\d{1,32}$/.test(cid)) {
-      const cidResult = check(`proxy:${cid}`, PROXY_MAX, PROXY_WINDOW);
-      if (!cidResult.ok) {
-        return c.text('Too Many Requests', 429, { 'Retry-After': String(cidResult.retryAfter) });
-      }
-    }
-    return next();
-  }
-
   const unauthenticated = isUnauthenticatedPath(path);
+
+  // Shopify App Proxy 入口 (2026-07-29)。
+  // ここ (= 署名検証より前) で使えるのは **IP だけ**。 query の logged_in_customer_id は
+  // 訪問者が自由に書ける未検証値なので、 キーにすると
+  //   ① 値を回すだけで上限を回避でき、 store が攻撃者の裁量で膨らむ
+  //   ② 他人の customer id を指定して**その人の枠を先に焼く**ことができる
+  // という 2 つの穴になる。 顧客単位の絞りは署名検証**後** (services/app-proxy-link.ts) で掛ける。
+  //
+  // キーの prefix を `proxy-ip:` と分けるのが要点: そのまま `ip:` にすると、 転送元である
+  // Shopify egress IP を Shopify webhook (/api/integrations/shopify/webhook) と共有してしまい、
+  // 連携ページへのアクセスが増えると**注文 webhook が 429 で落ちる**。
+  const isAppProxyPath = path === '/proxy/line-link' || path.startsWith('/proxy/line-link/');
 
   // Resolve the bucket key + limits ONCE, shared by both the Cloudflare
   // distributed limiter and the in-memory fallback. A single request therefore
@@ -209,7 +216,11 @@ export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<
   let max: number;
   let windowMs: number;
 
-  if (unauthenticated) {
+  if (isAppProxyPath) {
+    key = `proxy-ip:${getClientIp(c)}`;
+    max = UNAUTHENTICATED_MAX;
+    windowMs = UNAUTHENTICATED_WINDOW;
+  } else if (unauthenticated) {
     // Key by IP for unauthenticated endpoints (IPs are not secrets).
     key = `ip:${getClientIp(c)}`;
     max = UNAUTHENTICATED_MAX;

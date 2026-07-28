@@ -11,15 +11,22 @@
  * 署名はテスト側で node:crypto (= 実装と別系統) を使って生成する。
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { createHmac } from 'node:crypto';
 import {
   handleAppProxyLinkEntry,
   APP_PROXY_BATCH_ID,
   APP_PROXY_TOKEN_TTL_MIN,
+  APP_PROXY_CUSTOMER_MAX,
 } from '../services/app-proxy-link.js';
 import { previewSubLinkToken, redeemSubLinkToken } from '../services/sub-link.js';
 import { appProxy } from '../routes/app-proxy.js';
+import { __resetRateLimitStoreForTests } from '../middleware/rate-limit.js';
+
+// 顧客単位バケットは module-level に永続するので、テスト間で消費を持ち越さない
+beforeEach(() => {
+  __resetRateLimitStoreForTests();
+});
 
 const SECRET = 'test-client-secret';
 const SHOP = 'example.myshopify.com';
@@ -69,16 +76,26 @@ function createDb(seed: Partial<Store> = {}): { db: D1Database; store: Store } {
       });
       return { meta: { changes: 1 } };
     }
+
     if (sql.startsWith('DELETE FROM sub_link_tokens WHERE shopify_customer_id')) {
-      const batchScoped = sql.includes('AND batch_id');
+      // 述語は SQL から導出する (JS 側で決め打ちすると SQL の退行を検出できない)。
+      // 3 形態: batch 限定 (= ?) / batch 除外 (!= ?) / 失効限定 (expires_at <= ?)
+      const scoped = sql.includes('AND batch_id = ?');
+      const excluded = sql.includes('AND batch_id != ?');
+      const expiredOnly = sql.includes('expires_at <=');
+      const requireUnconsumed = sql.includes('consumed_at IS NULL');
       const cid = args[0] as string;
-      const batchId = batchScoped ? (args[1] as string) : null;
+      const batchId = scoped || excluded ? (args[1] as string) : null;
+      const expiredBefore = expiredOnly ? (args[args.length - 1] as string) : null;
       let n = 0;
       for (const [k, v] of store.tokens) {
-        if (v.shopify_customer_id === cid && v.consumed_at === null && (!batchScoped || v.batch_id === batchId)) {
-          store.tokens.delete(k);
-          n++;
-        }
+        if (v.shopify_customer_id !== cid) continue;
+        if (requireUnconsumed && v.consumed_at !== null) continue;
+        if (scoped && v.batch_id !== batchId) continue;
+        if (excluded && v.batch_id === batchId) continue;
+        if (expiredBefore && !(v.expires_at <= expiredBefore)) continue;
+        store.tokens.delete(k);
+        n++;
       }
       return { meta: { changes: n } };
     }
@@ -190,16 +207,24 @@ function createIntegrationDb(): {
       }
       return { meta: { changes: 0 } };
     }
+
     if (sql.startsWith('DELETE FROM sub_link_tokens WHERE shopify_customer_id')) {
-      const batchScoped = sql.includes('AND batch_id');
+      const scoped = sql.includes('AND batch_id = ?');
+      const excluded = sql.includes('AND batch_id != ?');
+      const expiredOnly = sql.includes('expires_at <=');
+      const requireUnconsumed = sql.includes('consumed_at IS NULL');
       const cid = args[0] as string;
-      const batchId = batchScoped ? (args[1] as string) : null;
+      const batchId = scoped || excluded ? (args[1] as string) : null;
+      const expiredBefore = expiredOnly ? (args[args.length - 1] as string) : null;
       let n = 0;
       for (const [k, v] of tokens) {
-        if (v.shopify_customer_id === cid && v.consumed_at === null && (!batchScoped || v.batch_id === batchId)) {
-          tokens.delete(k);
-          n++;
-        }
+        if (v.shopify_customer_id !== cid) continue;
+        if (requireUnconsumed && v.consumed_at !== null) continue;
+        if (scoped && v.batch_id !== batchId) continue;
+        if (excluded && v.batch_id === batchId) continue;
+        if (expiredBefore && !(v.expires_at <= expiredBefore)) continue;
+        tokens.delete(k);
+        n++;
       }
       return { meta: { changes: n } };
     }
@@ -418,23 +443,63 @@ describe('handleAppProxyLinkEntry', () => {
     expect(store.tokens.size).toBe(0);
   });
 
-  it('残り時間が僅かな token は再利用しない (戻った直後に期限切れへ落とさない)', async () => {
-    const { db, store } = createDb();
+  it('残り時間が十分な token は再利用し、僅かな token は再利用も削除もしない', async () => {
+    // 「まだ有効なのに残り僅か」= 再利用の下限 (TTL/2) を外すと reuse され、
+    // 戻った直後に期限切れに当たる。逆に削除してしまうと、LIFF に確認カードを
+    // 出したままストアを再読込した人の token が消えて『使えないリンク』になる。
     const nowMs = Date.now();
-    // TTL の半分を切っている token を仕込む
-    const nearlyExpired = new Date(nowMs + 2 * 60_000).toISOString().replace('Z', '+09:00');
-    store.tokens.set('stale', {
-      token: 'stale',
-      shopify_customer_id: '777',
-      batch_id: APP_PROXY_BATCH_ID,
-      expires_at: nearlyExpired,
-      consumed_at: null,
-      created_at: nearlyExpired,
-    });
-    const q = new URLSearchParams(signedQuery(baseParams({ logged_in_customer_id: '777' })));
-    const r = await handleAppProxyLinkEntry(envWith(db), q, nowMs);
-    if (!r.ok || r.state !== 'ready') throw new Error('expected ready');
-    expect(r.redirectUrl).not.toContain('slk=stale');
+    const jst = (ms: number) => {
+      const d = new Date(ms + 9 * 3600_000).toISOString().replace('Z', '+09:00');
+      return d;
+    };
+    const seedToken = (store: Store, token: string, expiresMs: number) =>
+      store.tokens.set(token, {
+        token,
+        shopify_customer_id: '777',
+        batch_id: APP_PROXY_BATCH_ID,
+        expires_at: jst(expiresMs),
+        consumed_at: null,
+        created_at: jst(nowMs),
+      });
+    const q = () => new URLSearchParams(signedQuery(baseParams({ logged_in_customer_id: '777' })));
+
+    // ① 残り 12 分 (> TTL/2 = 7.5分) → 再利用される
+    const a = createDb();
+    seedToken(a.store, 'fresh', nowMs + 12 * 60_000);
+    const ra = await handleAppProxyLinkEntry(envWith(a.db), q(), nowMs);
+    if (!ra.ok || ra.state !== 'ready') throw new Error('expected ready');
+    expect(ra.redirectUrl).toContain('slk=fresh');
+
+    // ② 残り 2 分 (< TTL/2) → 再利用されない。ただし **まだ有効なので削除もされない**
+    const b = createDb();
+    seedToken(b.store, 'nearly', nowMs + 2 * 60_000);
+    const rb = await handleAppProxyLinkEntry(envWith(b.db), q(), nowMs);
+    if (!rb.ok || rb.state !== 'ready') throw new Error('expected ready');
+    expect(rb.redirectUrl).not.toContain('slk=nearly');
+    expect(b.store.tokens.has('nearly')).toBe(true);
+
+    // ③ 失効済み → 掃除される
+    const c = createDb();
+    seedToken(c.store, 'dead', nowMs - 60_000);
+    const rc = await handleAppProxyLinkEntry(envWith(c.db), q(), nowMs);
+    expect(rc.ok).toBe(true);
+    expect(c.store.tokens.has('dead')).toBe(false);
+  });
+
+  it('顧客単位の上限は署名検証後に効く (連打で rate_limited)', async () => {
+    // middleware では query が未検証なので、この絞りは service 側にしか置けない。
+    const { db } = createDb();
+    const cid = String(900000 + Math.floor(Date.now() % 10000)); // 他テストとバケットを分ける
+    const q = () => new URLSearchParams(signedQuery(baseParams({ logged_in_customer_id: cid })));
+    let limited = false;
+    for (let i = 0; i < APP_PROXY_CUSTOMER_MAX + 5; i++) {
+      const r = await handleAppProxyLinkEntry(envWith(db, { SHOPIFY_STORE_DOMAIN: SHOP }), q());
+      if (!r.ok && r.code === 'rate_limited') {
+        limited = true;
+        break;
+      }
+    }
+    expect(limited).toBe(true);
   });
 
   it('local shopify_customers に行が無い顧客は sync_pending (ready にしない)', async () => {
@@ -694,6 +759,17 @@ describe('GET /proxy/line-link', () => {
     const html = await res.text();
     expect(html).toContain('すでに連携済み');
     expect(html).toContain(`href="${LIFF_URL}"`);
+  });
+
+  it('sync_pending は専用ページ (ready レンダラに落として 500 にしない)', async () => {
+    // この分岐を消すと ready の描画に落ちて redirectUrl が undefined → throw → 500 になる。
+    // 未同期顧客**全員**が「ご利用いただけません」を見ることになるので、分岐の存在を固定する。
+    const { db } = createDb({ knownCustomers: new Set() });
+    const res = await routeGet(signedQuery(baseParams({ logged_in_customer_id: '777' })), envWith(db));
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('もう少しお待ちください');
+    expect(html).not.toContain('slk=');
   });
 
   it('CTA のコントラストがブランドトークン #0f766e (AA) である', async () => {
