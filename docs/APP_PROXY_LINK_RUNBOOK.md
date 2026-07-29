@@ -44,14 +44,43 @@ LIFF マイアカウント「ストアにログインして連携」
 安全性が変わる。実装は重複キーを無条件で拒否して追記・上書きの両方を塞いでいるが、
 **訪問者の値を温存する**挙動だけはコード側から検証できない。以下を実機で確認する。
 
-gate off のまま (= 404 が返る状態で) worker のログを見ながら:
+gate off のまま (= 404 が返る状態で)、worker へ転送された query の
+`logged_in_customer_id` の **出現回数**を確認する。
 
-```
-https://<storefront>/apps/line-link?logged_in_customer_id=<自分以外の実在 customer id>
+| 観測 | 意味 | 判定 |
+|---|---|---|
+| 2 回 | Shopify が自分の値を追記した | ✅ 重複キー拒否が効く |
+| 1 回・値が空 | Shopify が上書きした | ✅ 注入が無効化される |
+| 1 回・注入値のまま | 訪問者の値が温存された | 🚨 **有効化しない** |
+
+#### 実施方法
+
+**A. 手元に Cloudflare API トークンがある場合 (最短)**
+
+```bash
+npx wrangler tail --format=json --search line-link
 ```
 
-をログアウト状態で開く。worker ログが `duplicate_param` または `login_required`
-(= Shopify が自分の値を追記/上書きしている) であることを確認する。
+を回しながら、別ターミナルで storefront を叩く:
+
+```bash
+curl -s -o /dev/null "https://naturism-diet.com/apps/line-link?logged_in_customer_id=999999999999"
+```
+
+出力の `"url"` に含まれる `logged_in_customer_id=` の出現回数を数える。
+
+**B. トークンが無い場合: Admin Ops `app-proxy-probe`**
+
+`storefront_url` を空にすると **listen-only モード**で 240 秒間 tail し、
+出現回数と「注入値が残ったか」だけをサマリに出す (署名・実顧客 id は出力しない)。
+その 240 秒の間に、**実端末から**上の curl を数回叩く。
+
+運用上の注意 (2026-07-29 に実際に踏んだもの):
+- **GitHub Actions の runner から storefront を叩いても worker に届かない**
+  (datacenter IP が弾かれている模様)。必ず実端末から叩くこと
+- 本番は常時 10 req/s 規模のトラフィックがあり、`--search` を付けないと
+  tail のサンプリングでこちらのリクエストが落ちる
+- job の queue 時間が読めないため、**job が `in_progress` になってから**叩き始める
 
 **`ready` 相当の挙動が観測されたら有効化しないこと。** その場合は identity を
 `logged_in_customer_id` 単独に依存しない設計へ変更する必要がある。
