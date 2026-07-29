@@ -600,6 +600,8 @@ jobs:
           LISTEN_ONLY=no
           if [ -z "$STOREFRONT_URL" ]; then
             LISTEN_ONLY=yes
+            # 実端末からの発火とタイミングを合わせる余裕を持たせる
+            PROBE_WINDOW=240
             echo "🎧 listen-only モード: 75 秒間 tail します。今のうちに実端末から" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "   \`<storefront>/apps/line-link?logged_in_customer_id=$PROBE_ID\` を開いてください" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
