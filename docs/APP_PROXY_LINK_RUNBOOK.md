@@ -1,5 +1,11 @@
 # Shopify App Proxy 連携 — 有効化 runbook (2026-07-29)
 
+> **状態: 🟢 2026-07-29 に本番有効化済み** (`APP_PROXY_LINK_ENABLED=true` /
+> `SHOPIFY_STOREFRONT_URL=https://naturism-diet.com`)。
+> 有効化時点のベースライン: 顧客 3,435 / 友だち 6,596 / 連携済み 10 / app-proxy トークン 0。
+> **停止は Admin Ops `disable-app-proxy-link`** (magic-link とは別 gate なので影響しない)。
+> 経過観測は `app-proxy-status` (件数のみ)。
+
 `/proxy/line-link` を live にするまでの手順。**既定は dormant** (`APP_PROXY_LINK_ENABLED` 未設定 =
 worker は 404 を返す) なので、merge・deploy だけでは何も起きない。
 
