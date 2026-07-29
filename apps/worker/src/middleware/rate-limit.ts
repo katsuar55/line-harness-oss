@@ -165,8 +165,57 @@ const UNAUTHENTICATED_WINDOW = 60_000; // 1 min
  * App Proxy 入口 (= 顧客 1 人あたり)。 正常系は「ログイン → 1 回叩いて LINE へ戻る」なので
  * 分間 20 は十分に緩い。 D1 write を伴うため上限そのものは必ず設ける。
  */
-const PROXY_MAX = 20;
-const PROXY_WINDOW = 60_000;
+/**
+ * App Proxy 入口の IP バケット上限。
+ * 転送元は **Shopify の egress IP** なので、このバケットは全顧客で共有される
+ * = 「1 人あたり」ではなく「店舗全体で 1 分あたり」の上限になる。
+ * 既定の未認証上限 (100/分) のままだと、案内直後のアクセス集中で正規のお客様が
+ * 429 に当たる。 CF 分散 limiter (API_RATE_LIMITER = 300/分) と揃えて 300 にする
+ * (= 実効上限は CF 側が決め、 in-memory はコールドスタート直後の瞬間バースト用の保険)。
+ * 個人の連打は署名検証**後**の顧客単位バケット (services/app-proxy-link.ts, 20/分) が止める。
+ */
+const APP_PROXY_IP_MAX = 300;
+
+/**
+ * storefront ドメイン上で生の JSON エラーを見せないためのブランド 429。
+ * この経路の応答は naturism-diet.com の画面としてお客様に直接見える。
+ */
+function appProxyTooManyRequests(retryAfter: number): Response {
+  const html = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<title>しばらくしてからお試しください | naturism</title>
+<style>
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+         background:#f6faf9; color:#1f2937; display:flex; min-height:100vh; align-items:center; justify-content:center; }
+  .card { background:#fff; border:1px solid #d8ece9; border-radius:20px; box-shadow:0 8px 24px rgba(15,118,110,.08);
+          max-width:420px; margin:16px; padding:32px 24px; text-align:center; }
+  h1 { font-size:20px; font-weight:700; margin:0 0 12px; color:#0f766e; }
+  p { font-size:16px; line-height:1.7; margin:0 0 20px; color:#374151; }
+  .note { font-size:15px; color:#4b5563; line-height:1.6; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div style="font-size:44px;margin-bottom:12px" aria-hidden="true">⏳</div>
+  <h1>しばらくしてからお試しください</h1>
+  <p>ただいまアクセスが集中しています。<br>1分ほどおいてから、もう一度お試しください。</p>
+  <p class="note">お困りのときは、LINEのトークからサポートへご連絡ください。</p>
+</div>
+</body>
+</html>`;
+  return new Response(html, {
+    status: 429,
+    headers: {
+      'Content-Type': 'text/html; charset=UTF-8',
+      'Retry-After': String(retryAfter),
+      'Cache-Control': 'no-store, private',
+    },
+  });
+}
 
 export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<Response | void> {
   const path = new URL(c.req.url).pathname;
@@ -218,7 +267,7 @@ export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<
 
   if (isAppProxyPath) {
     key = `proxy-ip:${getClientIp(c)}`;
-    max = UNAUTHENTICATED_MAX;
+    max = APP_PROXY_IP_MAX;
     windowMs = UNAUTHENTICATED_WINDOW;
   } else if (unauthenticated) {
     // Key by IP for unauthenticated endpoints (IPs are not secrets).
@@ -255,6 +304,7 @@ export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<
   } else if (!unauthenticated && env.API_RATE_LIMITER) {
     const { success } = await env.API_RATE_LIMITER.limit({ key });
     if (!success) {
+      if (isAppProxyPath) return appProxyTooManyRequests(10);
       return c.json(
         { success: false, error: 'Too many requests. Please try again later.' },
         { status: 429, headers: { 'Retry-After': '10' } },
@@ -266,6 +316,7 @@ export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<
   const result = check(key, max, windowMs);
 
   if (!result.ok) {
+    if (isAppProxyPath) return appProxyTooManyRequests(result.retryAfter);
     return c.json(
       { success: false, error: 'Too many requests. Please try again later.' },
       { status: 429, headers: { 'Retry-After': String(result.retryAfter) } },
