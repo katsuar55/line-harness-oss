@@ -13,7 +13,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import type { Hono } from 'hono';
 import { liffPages } from '../routes/liff-pages.js';
+import { liffOptInPage } from '../routes/liff-opt-in-page.js';
+import { liffMyRank } from '../routes/liff-my-rank.js';
+import { liffCoachPage } from '../routes/liff-coach-page.js';
+import { liffFoodPage } from '../routes/liff-food-page.js';
+import { liffFoodGraph } from '../routes/liff-food-graph.js';
+import { liffReorderPage } from '../routes/liff-reorder-page.js';
 
 interface MinimalEnv {
   LIFF_URL: string;
@@ -59,6 +66,60 @@ function assertParses(scripts: string[], label: string): void {
     }
   }
 }
+
+// ============================================================
+// 🚨 script 打ち切り (2026-05-17〜07-29 の本番障害) の恒久ガード
+//
+// inline script の中に **終了タグの literal** が 1 つでもあると、HTML parser は
+// コメント内・文字列内でも構わずそこで <script> を閉じる。以降の JS は一切実行されず、
+// ページは「読み込み中...」で固着する (= /liff/opt-in が 2.5 ヶ月開けなかった原因)。
+//
+// parse 検証だけでは**絶対に捕まらない**: 打ち切られた断片は文法的に valid なので
+// new Function() は成功してしまう。実際 R1-R4 の採点と 4,000 件のテストを素通りした。
+// そこで「終了タグが無いこと」と「本体が丸ごと存在すること」を直接固定する。
+// ============================================================
+
+const LIFF_PAGES: Array<{ path: string; router: Hono; sentinel: string }> = [
+  { path: '/liff/portal', router: liffPages as unknown as Hono, sentinel: 'liff.init' },
+  { path: '/liff/opt-in', router: liffOptInPage as unknown as Hono, sentinel: 'liff.init' },
+  { path: '/liff/my-rank', router: liffMyRank as unknown as Hono, sentinel: 'liff.init' },
+  { path: '/liff/coach', router: liffCoachPage as unknown as Hono, sentinel: 'liff.init' },
+  { path: '/liff/food', router: liffFoodPage as unknown as Hono, sentinel: 'liff.init' },
+  { path: '/liff/food/graph', router: liffFoodGraph as unknown as Hono, sentinel: 'liff.init' },
+  { path: '/liff/reorder', router: liffReorderPage as unknown as Hono, sentinel: 'liff.init' },
+];
+
+describe('LIFF 全ページの inline script が打ち切られていない', () => {
+  it.each(LIFF_PAGES)('$path — 開始タグと終了タグの数が一致する (余分な終了タグ = 打ち切り点)', async ({ path, router }) => {
+    const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    // これが唯一の確実な検出方法。
+    // 抽出後の断片を見ても無駄で、余分な終了タグは「区切り文字」として消費され姿を消す
+    // (= not.toContain('</script') は常に true になる。実際に mutation で確認済み)。
+    // 生 HTML で数を比べれば、本体に紛れ込んだ 1 個が必ず余りとして現れる。
+    const opens = (html.match(/<script\b/gi) ?? []).length;
+    const closes = (html.match(/<\/script\s*>/gi) ?? []).length;
+    expect(closes).toBe(opens);
+  });
+
+  it.each(LIFF_PAGES)('$path — script 本体が丸ごと出ている (断片で終わっていない)', async ({ path, router, sentinel }) => {
+    const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
+    const html = await res.text();
+    const src = extractInlineScripts(html).join('\n');
+
+    // 打ち切られた断片は「コメント数十文字」で終わる。本体があることを sentinel で確認する。
+    expect(src).toContain(sentinel);
+    expect(src.length).toBeGreaterThan(1_000);
+  });
+
+  it.each(LIFF_PAGES)('$path — 吐き出された JS が parse できる', async ({ path, router }) => {
+    const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
+    const html = await res.text();
+    assertParses(extractInlineScripts(html), path);
+  });
+});
 
 describe('LIFF ポータル inline script は構文的に valid (吐き出された JS の parse 検証)', () => {
   it('/liff/portal (gate off = 本番既定)', async () => {

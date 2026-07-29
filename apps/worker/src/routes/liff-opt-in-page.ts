@@ -167,7 +167,9 @@ function optInPage(liffId: string, apiBase: string): string {
   <div id="toast" role="status" aria-live="polite" class="fixed bottom-24 left-1/2 -translate-x-1/2 text-white px-5 py-2.5 rounded-2xl text-sm shadow-xl opacity-0 transition-opacity pointer-events-none z-50"></div>
 
 <script>
-// 注: jsonForScript で JS-string context + </script> 攻撃を防ぐ
+// 注: jsonForScript で JS-string context + 終了タグ注入 攻撃を防ぐ
+// (この行に終了タグを literal で書くと HTML parser がここで script を打ち切り、
+//  以降の JS が一切実行されなくなる = 2026-05-17〜07-29 の本番障害の原因)
 const LIFF_ID = ${jsonForScript(liffId)};
 const API_BASE = ${jsonForScript(apiBase)};
 let idToken = null;
