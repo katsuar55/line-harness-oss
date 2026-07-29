@@ -591,12 +591,18 @@ jobs:
           STOREFRONT_URL: ${{ inputs.storefront_url }}
         run: |
           set -euo pipefail
-          if [ -z "$STOREFRONT_URL" ]; then
-            echo '❌ storefront_url を指定してください (例 https://naturism-diet.com)' | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
           # 架空の customer id (実顧客のデータには一切触れない)
           PROBE_ID=999999999999
+          # storefront_url 未指定 = **listen-only モード**。
+          # GitHub Actions の datacenter IP は Shopify 側で弾かれることがあり、runner から
+          # 叩いた要求が worker に届かない。その場合は実端末から叩いてもらい、
+          # ここは tail に流れてくるものを 75 秒観測するだけにする。
+          LISTEN_ONLY=no
+          if [ -z "$STOREFRONT_URL" ]; then
+            LISTEN_ONLY=yes
+            echo "🎧 listen-only モード: 75 秒間 tail します。今のうちに実端末から" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "   \`<storefront>/apps/line-link?logged_in_customer_id=$PROBE_ID\` を開いてください" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
           TAIL_LOG="$RUNNER_TEMP/tail.log"
           TAIL_ERR="$RUNNER_TEMP/tail.err"
           # tail を先に起動し、転送されてくる query を捕まえる。
@@ -605,6 +611,7 @@ jobs:
           # kill (SIGTERM) だと wrangler の書き出しバッファが落ちることがあるので、
           # timeout に自然終了させて出力を確実にフラッシュさせる。
           (
+            if [ "$LISTEN_ONLY" = "yes" ]; then exit 0; fi
             sleep 25
             for i in 1 2 3; do
               curl -s -o /dev/null "$STOREFRONT_URL/apps/line-link?logged_in_customer_id=$PROBE_ID" || true
