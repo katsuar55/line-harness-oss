@@ -111,6 +111,7 @@ on:
           - enable-sub-link
           - enable-app-proxy-link
           - app-proxy-probe
+          - disable-app-proxy-link
           - backfill-customer-friend-id
           - release-billing-hold
           - custom-domain-status
@@ -581,6 +582,23 @@ jobs:
           rm -f "$TMP"
           echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Disable App Proxy link (kill switch)
+        if: inputs.op == 'disable-app-proxy-link'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # gate は `=== 'true'` の厳密一致なので 'false' で無効化される
+          # (secret を消さずに残すことで、投入済みかどうかが secret list から追える)。
+          # magic-link (SUB_LINK_ENABLED) は別 gate なので影響しない。
+          TMP="$RUNNER_TEMP/secrets.app-proxy-off.json"
+          printf '{"APP_PROXY_LINK_ENABLED":"false"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          echo '✅ APP_PROXY_LINK_ENABLED=false を投入 (= /proxy/line-link は 404 に戻る)' >> "$GITHUB_STEP_SUMMARY"
 
       - name: App Proxy probe (parameter-injection negative test, shape only)
         if: inputs.op == 'app-proxy-probe'
