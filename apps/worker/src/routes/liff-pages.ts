@@ -968,7 +968,10 @@ var tourIndex = 0;
 // run() は既存の switchTab / openFeaturePage を再利用 (新規遷移先なし)。
 var NEXT_MOVE_STEPS = [
   { key: 'nm_quiz', title: 'まずは30秒の無料診断', desc: 'あなたの食生活に合うサプリを見つけましょう。', cta: '診断してみる', run: function () { switchTab('quiz'); } },
-  { key: 'nm_optin', title: 'お得情報をメールでも', desc: '限定クーポンや新商品を、いち早くお届けします。', cta: '登録する', run: function () { openFeaturePage('/liff/opt-in'); } },
+  // key を v2 に上げているのは救済のため。 /liff/opt-in は 2026-05-17〜07-29 の 2.5 ヶ月間
+  // script 打ち切りで全く動かず、「登録する」を押した人ほど (タップ時点で完了印が付くため)
+  // 二度と案内されない状態になっていた。 key を変えることで、その層にもう一度だけ提示する。
+  { key: 'nm_optin_v2', title: 'お得情報をメールでも', desc: '限定クーポンや新商品を、いち早くお届けします。', cta: '登録する', run: function () { openFeaturePage('/liff/opt-in'); } },
   { key: 'nm_intake', title: '今日の服用を記録', desc: '続けるほど習慣に。ワンタップで記録できます。', cta: '記録する', run: function () { switchTab('intake'); } }
 ];
 
@@ -989,7 +992,7 @@ function computeNextMove() {
   for (var i = 0; i < NEXT_MOVE_STEPS.length; i++) {
     var step = NEXT_MOVE_STEPS[i];
     if (lsGet(step.key) === '1') continue;
-    if (step.key === 'nm_optin' && lsGet('optin_dismissed') === '1') continue;
+    if (step.key === 'nm_optin_v2' && lsGet('optin_dismissed') === '1') continue;
     return step;
   }
   return null;

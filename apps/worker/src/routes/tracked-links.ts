@@ -10,6 +10,7 @@ import {
   getFriendByLineUserId,
 } from '@line-crm/db';
 import { addTagToFriend, enrollFriendInScenario } from '@line-crm/db';
+import { jsonForScript, escapeHtmlAttr } from '../utils/inline-script.js';
 import type { TrackedLink } from '@line-crm/db';
 import type { Env } from '../index.js';
 
@@ -205,13 +206,23 @@ function getAndroidPackage(url: string): string | null {
 }
 
 function buildAppRedirectHtml(destinationUrl: string): string {
-  const escaped = destinationUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  // 🚨 script 内と属性値では必要なエスケープが **逆** になる。
+  //   - script data state: 実体参照が復号されない → `&amp;` を使うと URL が literal に壊れる
+  //     (`?v=abc&t=30` → `?v=abc&amp;t=30` = パラメータ名が amp;t になる)。
+  //     さらに `<` `>` を素通しすると終了タグでスクリプトが打ち切られ、
+  //     ユーザ指定 URL 経由で任意マークアップが worker ドメイン上で実行されうる。
+  //   - 属性値 (noscript の meta refresh): 実体参照が復号される → `&amp;` が正しい。
+  // 以前は両方に同じ「& と " だけ」のエスケープを使っており、両方とも誤っていた。
   const androidPackage = getAndroidPackage(destinationUrl);
   // intent://path#Intent;scheme=https;package=com.xxx;S.browser_fallback_url=https://...;end
   const intentUrl = androidPackage
     ? `intent://${destinationUrl.replace(/^https?:\/\//, '')}#Intent;scheme=https;package=${androidPackage};S.browser_fallback_url=${encodeURIComponent(destinationUrl)};end`
     : null;
-  const intentEscaped = intentUrl ? intentUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;') : '';
+  // JS 値 (引用符込みで出力されるので、テンプレート側では引用符を書かない)
+  const destForScript = jsonForScript(destinationUrl);
+  const intentForScript = jsonForScript(intentUrl ?? '');
+  // HTML 属性値
+  const destForAttr = escapeHtmlAttr(destinationUrl);
 
   return `<!DOCTYPE html>
 <html><head>
@@ -224,14 +235,15 @@ function buildAppRedirectHtml(destinationUrl: string): string {
 <script>
 (function(){
   var isAndroid = /Android/i.test(navigator.userAgent);
-  if(isAndroid && "${intentEscaped}"){
-    window.location.href="${intentEscaped}";
+  var intent = ${intentForScript};
+  if(isAndroid && intent){
+    window.location.href = intent;
   } else {
-    window.location.href="${escaped}";
+    window.location.href = ${destForScript};
   }
 })();
 </script>
-<noscript><meta http-equiv="refresh" content="0;url=${escaped}"></noscript>
+<noscript><meta http-equiv="refresh" content="0;url=${destForAttr}"></noscript>
 </body></html>`;
 }
 

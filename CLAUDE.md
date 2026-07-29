@@ -255,6 +255,8 @@ WORKER_URL: string
 |---|---|
 | server 側 TS の template literal 内で、client JS 文字列に「バックスラッシュ+シングルクォート」エスケープを書く (例: onclick 属性内の JS) | TS の template literal がエスケープを素のクォートに潰して emit → client JS の文字列リテラルが途中終端 → **inline script 全体が SyntaxError → ページ全損** (watchdog も同 script 内なので死ぬ)。regex ベースの静的ガードでも typecheck でも原理的に検出不能 |
 | inline onclick / onerror 属性値に引用符ネストが必要な JS を直接書く | 上記エスケープ地獄の温床。両引用符 (HTML=二重・JS=単一) を跨ぐ時点で危険信号 |
+| **inline script の中に script 終了タグを literal で書く (コメント内・文字列内を含む)** | HTML parser は script data state でコメント/文字列を**一切区別せず**最初の終了タグで打ち切る。以降の JS は 1 行も実行されない。**打ち切られた断片は文法的に valid なので parse 検証をすり抜ける** (= 既存の恒久ガードでも検出不能)。2026-05-17〜07-29 に /liff/opt-in が 2.5 ヶ月「読み込み中」で固着し、4,000 件のテスト・preflight・敵対的採点 4 ラウンドを全て素通りした。皮肉にも原因は「終了タグ注入 XSS を防ぐ」説明コメントだった |
+| inline script に埋める値を `&` `"` だけエスケープして済ませる | script data state では**実体参照が復号されない**ため `&amp;` が literal に残り値が壊れる (URL の `&t=30` → `&amp;t=30` でパラメータ名が `amp;t` に化ける)。`<` `>` を素通しすると終了タグ注入まで成立する。/t/:linkId が実際にこの状態で LIVE だった (2026-07-29 の監査で発見) |
 
 ### 推奨パターン
 
@@ -262,13 +264,20 @@ WORKER_URL: string
 |---|---|
 | onclick で複数文の JS を実行 | **名前付き関数を script 内に定義**して `onclick="fnName()"` で呼ぶ (例: `scrollToReferralCard()`) |
 | client JS 内に改行文字を書く | `\\n` (バックスラッシュ2つ) — emit 後に `\n` になる (例: shareRefLine の msg) |
-| 変更後の検証 | `liff-script-syntax.test.ts` が /liff/portal の**吐き出された inline script を new Function で parse** する (gate on/off 両分岐)。LIFF ページに inline script を持つ新ルートを追加したら、このテストにそのルートも追加すること |
+| script 終了タグに言及したい (コメント・文字列) | **バックスラッシュを挟む** (`<\/script>`) か、日本語で「終了タグ」と書く。`utils/inline-script.ts` の `inlineScriptBody()` を通せば機械的に無害化される |
+| inline script に値を埋める | `jsonForScript(value)` (`utils/inline-script.ts`)。`<` `>` `&` を `\u00XX` にする。**引用符込みで返る**ので `"${...}"` と書かない |
+| HTML 属性値に値を埋める | `escapeHtmlAttr(value)`。script 内とは**必要なエスケープが逆**なので使い分ける (属性値では実体参照が復号される) |
+| 変更後の検証 | `liff-script-syntax.test.ts` が **LIFF 全 7 ページ + 管理画面 5 ページ**の吐き出された HTML を検証する。①開始/終了タグの数が釣り合うか ②本体に開始タグが紛れていないか ③本体が丸ごと出ているか ④parse できるか。inline script を持つ新ルートを追加したら、このテストの表にも追加すること |
 
 ### 自己点検チェックリスト (liff-pages.ts 等の inline JS を編集する前)
 
 - [ ] 追加した client JS 文字列に「バックスラッシュ+シングルクォート」が無いか?
 - [ ] onclick 属性に引用符ネストを書いていないか? (必要なら名前付き関数へ)
-- [ ] `liff-script-syntax.test.ts` を実行したか? (吐き出された JS の parse 検証)
+- [ ] **script 終了タグを literal で書いていないか? (コメント内・文字列内も含む)**
+- [ ] **値の埋め込みに `jsonForScript` / `escapeHtmlAttr` を文脈どおり使い分けたか?**
+- [ ] `liff-script-syntax.test.ts` を実行したか? (打ち切り検出 + parse 検証)
+- [ ] **ガードを足したら、バグを再注入して実際に落ちることを確認したか?** (parse 検証だけでは
+      打ち切りを検出できない。「守った」と報告する前に mutation で測定器の健全性を確かめる)
 
 ### 違反時の必須アクション
 

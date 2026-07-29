@@ -104,8 +104,15 @@ describe('LIFF 初回オンボーディング (第2波-⑥) — computeNextMove 
     expect(makeLogic({}).computeNextMove()?.key).toBe('nm_quiz');
   });
 
-  it('診断済なら次は nm_optin', () => {
-    expect(makeLogic({ nm_quiz: '1' }).computeNextMove()?.key).toBe('nm_optin');
+  it('診断済なら次は nm_optin_v2', () => {
+    expect(makeLogic({ nm_quiz: '1' }).computeNextMove()?.key).toBe('nm_optin_v2');
+  });
+
+  // 2026-07-29 救済: /liff/opt-in は 2.5 ヶ月間 script 打ち切りで動かず、
+  // 「登録する」を押した人はタップ時点で完了印 (旧 key) が付いて二度と案内されなくなった。
+  // key を上げることで、その層にもう一度だけ提示する。旧 key は無視されるのが正しい。
+  it('旧 nm_optin の完了印は無視され、もう一度提示される (障害期間の救済)', () => {
+    expect(makeLogic({ nm_quiz: '1', nm_optin: '1' }).computeNextMove()?.key).toBe('nm_optin_v2');
   });
 
   it('optin_dismissed 済でも optin をスキップして nm_intake へ (二重提示回避)', () => {
@@ -113,10 +120,10 @@ describe('LIFF 初回オンボーディング (第2波-⑥) — computeNextMove 
   });
 
   it('全ステップ actioned なら null (カード非表示)', () => {
-    expect(makeLogic({ nm_quiz: '1', nm_optin: '1', nm_intake: '1' }).computeNextMove()).toBeNull();
+    expect(makeLogic({ nm_quiz: '1', nm_optin_v2: '1', nm_intake: '1' }).computeNextMove()).toBeNull();
   });
 
   it('NEXT_MOVE_STEPS の順序は 診断→メール→服用 (診断ファースト)', () => {
-    expect(makeLogic({}).NEXT_MOVE_STEPS.map((s) => s.key)).toEqual(['nm_quiz', 'nm_optin', 'nm_intake']);
+    expect(makeLogic({}).NEXT_MOVE_STEPS.map((s) => s.key)).toEqual(['nm_quiz', 'nm_optin_v2', 'nm_intake']);
   });
 });

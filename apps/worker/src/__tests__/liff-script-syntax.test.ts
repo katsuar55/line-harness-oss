@@ -21,6 +21,10 @@ import { liffCoachPage } from '../routes/liff-coach-page.js';
 import { liffFoodPage } from '../routes/liff-food-page.js';
 import { liffFoodGraph } from '../routes/liff-food-graph.js';
 import { liffReorderPage } from '../routes/liff-reorder-page.js';
+import { adminDashboard } from '../routes/admin-dashboard.js';
+import { adminStaff } from '../routes/admin-staff.js';
+import { faqAdmin } from '../routes/faq-admin.js';
+import { friendCoupon } from '../routes/friend-coupon.js';
 
 interface MinimalEnv {
   LIFF_URL: string;
@@ -79,6 +83,31 @@ function assertParses(scripts: string[], label: string): void {
 // そこで「終了タグが無いこと」と「本体が丸ごと存在すること」を直接固定する。
 // ============================================================
 
+/**
+ * HTML tokenizer と同じ規則で inline script の打ち切りを検出する。
+ *
+ * ブラウザは script data state を「終了タグ名 + 空白 / スラッシュ / 閉じ括弧」で終える。
+ * `</script>` だけでなく `</script >` `</script/>` `</script foo>` も終端になる。
+ *
+ * 検出は 2 軸。片方だけでは以下の実証済み回避が通る:
+ *   - 個数比較のみ → コメント内に「開始タグ + 終了タグ」を両方書くと数が釣り合い素通り
+ *   - 断片の中身検査のみ → 余分な終了タグは区切り文字として消費され姿を消す
+ * よって「開始タグ側が本体に紛れていないか」と「個数が釣り合うか」を両方見る。
+ */
+function assertNoScriptTruncation(html: string, label: string): void {
+  const opens = (html.match(/<script\b/gi) ?? []).length;
+  // tokenizer 準拠: 終了タグ名の直後が 空白 / スラッシュ / 閉じ括弧 なら終端
+  const closes = (html.match(/<\/script[\s/>]/gi) ?? []).length;
+  expect(closes, `${label}: 開始タグ ${opens} / 終了タグ ${closes} — 余分な終了タグが本体を打ち切っている`).toBe(opens);
+
+  // 本体に開始タグが紛れていれば、それは「開始+終了をコメントに書いて数を釣り合わせた」形。
+  for (const src of extractInlineScripts(html)) {
+    expect(src, `${label}: script 本体に開始タグの literal がある = 打ち切りを数合わせで隠している`).not.toMatch(
+      /<script\b/i,
+    );
+  }
+}
+
 const LIFF_PAGES: Array<{ path: string; router: Hono; sentinel: string }> = [
   { path: '/liff/portal', router: liffPages as unknown as Hono, sentinel: 'liff.init' },
   { path: '/liff/opt-in', router: liffOptInPage as unknown as Hono, sentinel: 'liff.init' },
@@ -90,18 +119,10 @@ const LIFF_PAGES: Array<{ path: string; router: Hono; sentinel: string }> = [
 ];
 
 describe('LIFF 全ページの inline script が打ち切られていない', () => {
-  it.each(LIFF_PAGES)('$path — 開始タグと終了タグの数が一致する (余分な終了タグ = 打ち切り点)', async ({ path, router }) => {
+  it.each(LIFF_PAGES)('$path — script が途中で打ち切られていない', async ({ path, router }) => {
     const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
     expect(res.status).toBe(200);
-    const html = await res.text();
-
-    // これが唯一の確実な検出方法。
-    // 抽出後の断片を見ても無駄で、余分な終了タグは「区切り文字」として消費され姿を消す
-    // (= not.toContain('</script') は常に true になる。実際に mutation で確認済み)。
-    // 生 HTML で数を比べれば、本体に紛れ込んだ 1 個が必ず余りとして現れる。
-    const opens = (html.match(/<script\b/gi) ?? []).length;
-    const closes = (html.match(/<\/script\s*>/gi) ?? []).length;
-    expect(closes).toBe(opens);
+    assertNoScriptTruncation(await res.text(), path);
   });
 
   it.each(LIFF_PAGES)('$path — script 本体が丸ごと出ている (断片で終わっていない)', async ({ path, router, sentinel }) => {
@@ -118,6 +139,51 @@ describe('LIFF 全ページの inline script が打ち切られていない', ()
     const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
     const html = await res.text();
     assertParses(extractInlineScripts(html), path);
+  });
+
+  // 本番で実際に配られている形も検証する。gate が変わると portal のテンプレートが
+  // 分岐して別の HTML になるため、既定 env だけ見ていると「配っている形」を誰も見ていない状態になる。
+  it.each([
+    ['gate すべて off (旧既定)', {}],
+    ['APP_PROXY_LINK_ENABLED=true (2026-07-29 以降の本番)', {
+      APP_PROXY_LINK_ENABLED: 'true',
+      SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
+    }],
+    ['REFERRAL_REWARD_ENABLED=true', { REFERRAL_REWARD_ENABLED: 'true' }],
+    ['両方 on', {
+      APP_PROXY_LINK_ENABLED: 'true',
+      SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
+      REFERRAL_REWARD_ENABLED: 'true',
+    }],
+  ])('/liff/portal — %s でも打ち切られていない', async (_label, extra) => {
+    const env = { ...baseEnv, ...(extra as Record<string, string>) };
+    const res = await liffPages.request('/liff/portal', {}, env as unknown as Record<string, unknown>);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    assertNoScriptTruncation(html, '/liff/portal');
+    assertParses(extractInlineScripts(html), '/liff/portal');
+  });
+});
+
+// ============================================================
+// LIFF 以外で inline script を吐くルートも同じガードで守る。
+// 今回の監査で /t/:linkId が同型の欠陥 (かつユーザ入力経由の注入) を抱えたまま
+// LIVE だったことが判明した。「LIFF だけ」の allowlist が穴になっていた。
+// ============================================================
+
+const OTHER_HTML_PAGES: Array<{ path: string; router: Hono }> = [
+  { path: '/admin', router: adminDashboard as unknown as Hono },
+  { path: '/admin/staff', router: adminStaff as unknown as Hono },
+  { path: '/admin/logs', router: adminStaff as unknown as Hono },
+  { path: '/admin/faq', router: faqAdmin as unknown as Hono },
+  { path: '/admin/friend-coupon', router: friendCoupon as unknown as Hono },
+];
+
+describe('LIFF 以外の HTML ページも script が打ち切られていない', () => {
+  it.each(OTHER_HTML_PAGES)('$path', async ({ path, router }) => {
+    const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
+    expect(res.status).toBe(200);
+    assertNoScriptTruncation(await res.text(), path);
   });
 });
 
