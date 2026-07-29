@@ -112,6 +112,7 @@ on:
           - enable-app-proxy-link
           - app-proxy-probe
           - disable-app-proxy-link
+          - app-proxy-status
           - backfill-customer-friend-id
           - release-billing-hold
           - custom-domain-status
@@ -582,6 +583,35 @@ jobs:
           rm -f "$TMP"
           echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      - name: App Proxy status (counts only, read-only)
+        if: inputs.op == 'app-proxy-status'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          echo '### 連携の母集団 (件数のみ・PII なし)' >> "$GITHUB_STEP_SUMMARY"
+          # customers_no_email = App Proxy で ready にできない層 (確認カードに出す
+          # マスク済 email が作れないため sync_pending 止まりになる = 実質の詰まり)
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            SELECT
+              (SELECT COUNT(*) FROM shopify_customers) AS customers_total,
+              (SELECT COUNT(*) FROM shopify_customers WHERE email IS NOT NULL AND email LIKE '%_@_%._%') AS customers_with_email,
+              (SELECT COUNT(*) FROM shopify_customers WHERE email IS NULL OR email NOT LIKE '%_@_%._%') AS customers_no_email,
+              (SELECT COUNT(*) FROM friends WHERE shopify_customer_id IS NOT NULL) AS linked_friends,
+              (SELECT COUNT(*) FROM shopify_customers WHERE friend_id IS NOT NULL) AS backlinked_customers,
+              (SELECT COUNT(*) FROM friends) AS friends_total
+          " | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '### app-proxy トークン' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN consumed_at IS NOT NULL THEN 1 ELSE 0 END) AS consumed,
+              SUM(CASE WHEN consumed_at IS NULL THEN 1 ELSE 0 END) AS pending
+            FROM sub_link_tokens WHERE batch_id = 'app-proxy'
+          " | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Disable App Proxy link (kill switch)
         if: inputs.op == 'disable-app-proxy-link'
