@@ -25,8 +25,9 @@ describe('診断クイズ 商品コピー 薬機法ガード (非届出商品の
     expect(src).not.toContain('脂質カットに特化');
   });
 
-  it('対象者ベースの安全表現に置換されている (liff-pages の Blue reason)', () => {
+  it('対象者ベースの安全表現になっている (liff-pages の Blue desc = 本サイト9問版と同一コピー)', () => {
     const src = readFileSync(FILES[0], 'utf8');
-    expect(src).toContain('脂っこい食事が好きな方の');
+    // 2026-07-29: 本サイト SELF CHECK (nx-lineup-v2.js LINE_META) と同一の対象者ベース表現
+    expect(src).toContain('脂っこい食事やお通じの悩みが気になるあなたには');
   });
 });

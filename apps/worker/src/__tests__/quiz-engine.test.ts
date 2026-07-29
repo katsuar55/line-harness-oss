@@ -1,113 +1,122 @@
 /**
- * Quiz Engine unit tests — naturism商品診断クイズ
+ * Quiz Engine unit tests — 本サイト9問版 (nx-lineup-v2.js ミラー) の採点ロジック
  *
- * Tests scoring logic for Blue/Pink/Premium recommendations
- * based on naturism knowledge base.
+ * Q1,Q3-Q8=加点 / Q2=料理ランキング(1位+2,2位+1,3位+1) / Q9=加点なし(同点処理のみ)
  */
 
 import { describe, it, expect } from 'vitest';
-import { scoreQuiz, NATURISM_QUIZ_CONFIG } from '../services/quiz-engine.js';
+import { scoreQuiz, NATURISM_QUIZ_CONFIG, Q2_CUISINE_TYPE } from '../services/quiz-engine.js';
 
-describe('Quiz Engine — naturism 商品診断', () => {
-  it('recommends Blue for first-time, fatty-food user', () => {
+describe('Quiz Engine — naturism 商品診断 (9問版)', () => {
+  it('has 9 questions with q2 as rank kind', () => {
+    expect(NATURISM_QUIZ_CONFIG.questions).toHaveLength(9);
+    const q2 = NATURISM_QUIZ_CONFIG.questions[1];
+    expect(q2.id).toBe('q2');
+    expect(q2.kind).toBe('rank');
+    expect(q2.options).toEqual(['和食', '中華', '焼肉', 'イタリアン', 'ラーメン／麺類']);
+  });
+
+  it('recommends Blue for fatty-food, gut-concerned first-timer', () => {
     const result = scoreQuiz(NATURISM_QUIZ_CONFIG, {
-      q1: '初めてです',
-      q2: '揚げ物・脂っこい料理が多い',
-      q3: 'ほとんど食べない',
-      q4: '特に気にならない',
-      q5: 'まずは気軽に始めたい',
-      q6: '特にない',
-      q7: '¥60〜70くらい（コーヒー1杯分）',
-      q8: '毎日の食事のお供としてシンプルに始めたい',
+      q1: '揚げ物・脂っこい料理が好き', // blue2 premium2
+      q2: ['中華', '焼肉', '和食'], // blue2 + blue1 + pink1
+      q3: '体型を維持したい', // pink1 blue2
+      q4: 'よく便秘する・お腹が張る', // pink1 blue3 premium2
+      q5: '消化・胃もたれ・お腹周り', // blue2 premium1
+      q6: 'ほとんど食べない', // pink2
+      q7: 'しっかり運動している', // pink2
+      q8: 'まずは手軽に・コスパ重視', // pink1 blue2
+      q9: '初めて',
     });
+    expect(result.scores).toEqual({ blue: 14, pink: 8, premium: 5 });
     expect(result.recommendedProduct).toBe('naturism Blue');
-    expect(result.scores.blue).toBeGreaterThan(result.scores.pink);
-    expect(result.scores.blue).toBeGreaterThan(result.scores.premium);
   });
 
   it('recommends Pink for beauty-focused user', () => {
     const result = scoreQuiz(NATURISM_QUIZ_CONFIG, {
-      q1: '飲んだことがあります',
-      q2: 'バランスよく食べている',
-      q3: '週1〜2回',
-      q4: '肌のハリやツヤが気になる',
-      q5: '少し意識している程度',
-      q6: '特にない',
-      q7: '¥70〜100くらい',
-      q8: '美容と食事ケアを両立したい',
+      q1: 'バランスを意識', // pink2 blue1
+      q2: ['和食', 'イタリアン', '中華'], // pink2 + pink1 + blue1
+      q3: '美容のため', // pink1 premium2
+      q4: '快調だけど維持したい', // pink1 blue1
+      q5: '肌のハリ・ツヤ', // pink3
+      q6: 'ほとんど食べない', // pink2
+      q7: 'しっかり運動している', // pink2
+      q8: 'まずは手軽に・コスパ重視', // pink1 blue2
+      q9: '飲んだことある',
     });
+    expect(result.scores).toEqual({ blue: 5, pink: 15, premium: 2 });
     expect(result.recommendedProduct).toContain('Pink');
-    expect(result.scores.pink).toBeGreaterThan(result.scores.blue);
   });
 
-  it('recommends Premium for carb-heavy, serious user', () => {
+  it('recommends Premium for carb-heavy, invest-minded user', () => {
     const result = scoreQuiz(NATURISM_QUIZ_CONFIG, {
-      q1: '今飲んでいて、別の種類を検討中',
-      q2: 'ご飯・パン・麺類など炭水化物が中心',
-      q3: 'ほぼ毎日',
-      q4: '全体的にケアしたい',
-      q5: '本格的に取り組みたい',
-      q6: '特にない',
-      q7: '¥100〜150くらい、しっかり投資したい',
-      q8: '炭水化物や糖質が気になる食生活を本格サポートしてほしい',
+      q1: 'ご飯・パン・麺類が多い', // pink1 premium2
+      q2: ['ラーメン／麺類', '中華', '焼肉'], // premium2 + blue1 + blue1
+      q3: '体重を落としたい', // blue1 premium2
+      q4: 'たまに便秘・不規則', // blue2 premium1
+      q5: '全体的にケアしたい', // premium3
+      q6: 'ほぼ毎日食べる', // blue1 premium3
+      q7: 'ほとんど運動しない', // blue1 premium2
+      q8: '効果重視でしっかり投資したい', // premium3
+      q9: '今飲んでいて別種類を検討中',
     });
+    expect(result.scores).toEqual({ blue: 7, pink: 1, premium: 18 });
     expect(result.recommendedProduct).toContain('Premium');
-    expect(result.scores.premium).toBeGreaterThan(result.scores.blue);
-    expect(result.scores.premium).toBeGreaterThan(result.scores.pink);
   });
 
-  it('excludes Pink/Premium when allergens selected, forces Blue', () => {
+  it('Q2 rank order changes points (1位+2, 2位+1, 3位+1)', () => {
     const result = scoreQuiz(NATURISM_QUIZ_CONFIG, {
-      q1: '飲んだことがあります',
-      q2: 'ご飯・パン・麺類など炭水化物が中心',
-      q3: 'ほぼ毎日',
-      q4: '全体的にケアしたい',
-      q5: '本格的に取り組みたい',
-      q6: 'オレンジ・キウイ・バナナ・大豆・ゴマ等にアレルギーがある',
-      q7: '¥100〜150くらい、しっかり投資したい',
-      q8: '炭水化物や糖質が気になる食生活を本格サポートしてほしい',
+      q2: ['中華', '和食', '焼肉'], // 中華1位 blue+2, 和食2位 pink+1, 焼肉3位 blue+1
     });
-    // Despite Premium-favoring answers, allergen forces Blue
-    expect(result.recommendedProduct).toBe('naturism Blue');
-    expect(result.excluded).toContain('pink');
-    expect(result.excluded).toContain('premium');
-    expect(result.scores.pink).toBe(0);
+    expect(result.scores.blue).toBe(3);
+    expect(result.scores.pink).toBe(1);
     expect(result.scores.premium).toBe(0);
   });
 
-  it('tie-breaks to Blue (迷ったらBlue rule)', () => {
-    const result = scoreQuiz(NATURISM_QUIZ_CONFIG, {});
+  it('tie-break: q9=初めて prefers Blue', () => {
+    const result = scoreQuiz(NATURISM_QUIZ_CONFIG, { q9: '初めて' });
+    expect(result.scores).toEqual({ blue: 0, pink: 0, premium: 0 });
     expect(result.recommendedProduct).toBe('naturism Blue');
   });
 
-  it('returns product info with reason and emoji', () => {
-    const result = scoreQuiz(NATURISM_QUIZ_CONFIG, {
-      q1: '初めてです',
-      q8: '毎日の食事のお供としてシンプルに始めたい',
-    });
-    expect(result.productInfo.emoji).toBe('🩵');
-    expect(result.productInfo.price).toBe('¥64/日〜');
-    expect(result.productInfo.components).toBe(8);
-    expect(result.reason).toBeTruthy();
+  it('tie-break: q9=別種類検討中 prefers Premium', () => {
+    const result = scoreQuiz(NATURISM_QUIZ_CONFIG, { q9: '今飲んでいて別種類を検討中' });
+    expect(result.scores).toEqual({ blue: 0, pink: 0, premium: 0 });
+    expect(result.recommendedProduct).toBe('naturism Premium');
+  });
+
+  it('tie-break without q9 answer defaults to premium>blue>pink priority', () => {
+    const result = scoreQuiz(NATURISM_QUIZ_CONFIG, {});
+    expect(result.recommendedProduct).toBe('naturism Premium');
   });
 
   it('handles partial answers gracefully', () => {
-    const result = scoreQuiz(NATURISM_QUIZ_CONFIG, { q1: '初めてです' });
-    expect(result.recommendedProduct).toBeTruthy();
-    expect(result.scores).toBeDefined();
+    const result = scoreQuiz(NATURISM_QUIZ_CONFIG, { q1: 'バランスを意識' });
+    expect(result.scores).toEqual({ blue: 1, pink: 2, premium: 0 });
+    expect(result.recommendedProduct).toContain('Pink');
   });
 
-  it('Premium reason mentions 機能性表示食品', () => {
+  it('ignores malformed values (q2 as string / unknown labels) without crashing', () => {
     const result = scoreQuiz(NATURISM_QUIZ_CONFIG, {
-      q1: '今飲んでいて、別の種類を検討中',
-      q2: 'ご飯・パン・麺類など炭水化物が中心',
-      q3: 'ほぼ毎日',
-      q4: '全体的にケアしたい',
-      q5: '本格的に取り組みたい',
-      q6: '特にない',
-      q7: '¥100〜150くらい、しっかり投資したい',
-      q8: '炭水化物や糖質が気になる食生活を本格サポートしてほしい',
+      q2: '和食', // rank 質問に string → 無視
+      q3: '存在しない選択肢', // 未知ラベル → 無視
+      q9: '初めて',
     });
-    expect(result.reason).toContain('機能性表示食品');
+    expect(result.scores).toEqual({ blue: 0, pink: 0, premium: 0 });
+    expect(result.recommendedProduct).toBe('naturism Blue');
+  });
+
+  it('every Q2 cuisine maps to a product type', () => {
+    const q2 = NATURISM_QUIZ_CONFIG.questions[1];
+    for (const cuisine of q2.options as ReadonlyArray<string>) {
+      expect(['blue', 'pink', 'premium']).toContain(Q2_CUISINE_TYPE[cuisine]);
+    }
+  });
+
+  it('returns productInfo with store/compare URLs and reason', () => {
+    const result = scoreQuiz(NATURISM_QUIZ_CONFIG, { q9: '初めて' });
+    expect(result.productInfo.storeUrl).toContain('naturism-diet.com/products/');
+    expect(result.productInfo.compareUrl).toContain('/pages/compare#nxcp-blue');
+    expect(result.reason).toBeTruthy();
   });
 });

@@ -105,7 +105,48 @@ function portalPage(
     .text-coral{color:#b84a2e !important}
     .text-coral-lg{color:#d9573d !important}
     .chip-coral{background:#fff3ec;color:#b84a2e;border:1px solid #f0b49f}
-    #quiz-progress-bar{background:linear-gradient(90deg,#ffb39c,#d9573d) !important}
+    #quiz-progress-bar{background:linear-gradient(90deg,#E8835F,#ffb39c) !important}
+    /* ===== 診断9問版 (本サイト SELF CHECK モーダルの意匠ミラー、2026-07-29) =====
+       トークンは nx-lineup-v2.css 準拠: coral#E8835F / teal#2fa8ad / ink#182229 / muted#66727d / line#e3ecec */
+    .nxq-eyebrow{display:block;font-size:11px;letter-spacing:.22em;font-weight:700;color:#E8835F}
+    .nxq-eyebrow--result{color:#2fa8ad}
+    .nxq-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+    .nxq-close{border:0;background:transparent;color:#66727d;font-size:17px;line-height:1;padding:4px 6px;cursor:pointer}
+    .nxq-progress{height:5px;border-radius:99px;background:#ecf3f3;overflow:hidden;margin-bottom:16px}
+    .nxq-progress span{display:block;height:100%;width:0;border-radius:99px;transition:width .45s cubic-bezier(.22,1,.36,1)}
+    .nxq-sub{font-size:12px;color:#66727d;margin-bottom:4px;text-align:left}
+    .nxq-q{font-size:16.5px;font-weight:700;color:#182229;margin-bottom:14px;line-height:1.6;text-align:left;min-height:2.6em}
+    .nxq-opts{display:grid;gap:9px}
+    .nxq-opt{display:flex;align-items:center;gap:10px;width:100%;min-height:52px;padding:12px 14px;border-radius:14px;border:1.5px solid #e3ecec;background:#fff;color:#182229;font-size:14px;font-weight:600;text-align:left;cursor:pointer;transition:transform .16s cubic-bezier(.22,1,.36,1),border-color .2s,background-color .2s}
+    .nxq-opt b{flex:none;width:26px;height:26px;border-radius:50%;background:rgba(232,131,95,.12);color:#E8835F;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+    .nxq-opt:active{transform:scale(.97)}
+    .nxq-opt.is-picked{border-color:#E8835F;background:#fdf6f2}
+    .nxq-opt--rank b{min-width:38px;width:auto;height:24px;border-radius:99px;font-size:10.5px;padding:0 4px}
+    .nxq-opt--rank b.is-empty{background:transparent;border:1.5px dashed rgba(31,38,46,.25)}
+    .nxq-opt--rank.is-ranked{border-color:#E8835F;background:#fdf6f2}
+    .nxq-opt--rank.is-ranked b{background:#E8835F;color:#fff}
+    .nxq-rankfoot{display:flex;gap:9px;margin-top:13px}
+    .nxq-rankreset{flex:none;border:1.5px solid #e3ecec;background:#fff;color:#66727d;border-radius:99px;padding:10px 16px;font-size:12.5px;font-weight:600;cursor:pointer;transition:color .2s,border-color .2s}
+    .nxq-ranknext{flex:1;border:0;border-radius:99px;padding:10px 16px;font-size:13.5px;font-weight:700;color:#fff;cursor:pointer;background:linear-gradient(120deg,#E8835F,#f0987a);box-shadow:0 8px 20px rgba(232,131,95,.3);transition:opacity .2s,transform .2s,box-shadow .2s}
+    .nxq-ranknext:disabled{opacity:.4;cursor:default;box-shadow:none}
+    .nxq-back{margin-top:14px;background:none;border:none;color:#66727d;font-size:12px;cursor:pointer;text-decoration:underline}
+    .nxq-rname{font-size:24px;font-weight:800;margin:4px 0 8px}
+    .nxq-rname--blue{color:#109A93}
+    .nxq-rname--pink{color:#DD6F8D}
+    .nxq-rname--premium{color:#b8933f}
+    .nxq-bars{display:grid;gap:10px;margin:14px 0 16px;text-align:left}
+    .nxq-brow{display:grid;grid-template-columns:86px 1fr 42px;align-items:center;gap:10px}
+    .nxq-blabel{font-size:12px;font-weight:700;color:#182229}
+    .nxq-btrack{display:block;height:8px;border-radius:99px;background:#EFF2F1;overflow:hidden}
+    .nxq-bfill{display:block;height:100%;width:0;border-radius:99px;transition:width .8s cubic-bezier(.22,1,.36,1)}
+    .nxq-brow--blue .nxq-bfill{background:#109A93}
+    .nxq-brow--pink .nxq-bfill{background:#DD6F8D}
+    .nxq-brow--premium .nxq-bfill{background:#b8933f}
+    .nxq-bval{font-size:12px;font-weight:700;color:#66727d;text-align:right;font-variant-numeric:tabular-nums}
+    .nxq-rdesc{font-size:13.5px;color:#66727d;line-height:1.75;margin-bottom:16px}
+    .nxq-rcta{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;min-height:48px;padding:12px 28px;border-radius:99px;font-size:15px;font-weight:700;color:#fff;background:linear-gradient(135deg,#2fa8ad,#1d7d82);box-shadow:0 8px 22px rgba(47,168,173,.35);text-decoration:none;transition:transform .25s cubic-bezier(.22,1,.36,1),box-shadow .25s}
+    .nxq-rcta:active{transform:scale(.97)}
+    @media(prefers-reduced-motion:reduce){.nxq-bfill,.nxq-progress span,.nxq-opt{transition:none}}
     .card{background:#ffffff;border-radius:20px;border:1px solid #e3ecec;box-shadow:0 2px 6px rgba(24,34,41,.05),0 12px 32px rgba(24,34,41,.06)}
     .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:8px}
     @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
@@ -641,43 +682,39 @@ function portalPage(
             onerror="this.style.display='none';var f=document.getElementById('quiz-hero-fallback');if(f)f.style.display='block'"></video>
           <div id="quiz-hero-fallback" style="display:none" class="py-6 text-5xl">💊</div>
         </div>
+        <p class="nxq-eyebrow mb-2">SELF CHECK — 約30秒</p>
         <h2 class="text-lg font-bold text-gray-800 mb-2">あなたにぴったりの naturism は？</h2>
-        <p class="text-sm text-gray-500 mb-5 leading-relaxed">8つの質問に答えるだけで、<br>最適な商品をご提案します。</p>
+        <p class="text-sm text-gray-500 mb-5 leading-relaxed">9つの質問に答えるだけで、<br>最適な商品をご提案します。</p>
         <button onclick="startQuiz()" class="btn-coral px-10 py-3.5 rounded-2xl text-sm font-bold shadow-lg">診断スタート →</button>
       </div>
 
-      <!-- Quiz Steps (hidden until started) -->
+      <!-- Quiz Steps (hidden until started) — 本サイト SELF CHECK モーダルの意匠ミラー -->
       <div id="quiz-steps" class="card p-5" style="display:none;">
-        <div class="flex items-center justify-between mb-4">
-          <p class="text-xs text-gray-400" id="quiz-progress">Q1 / 8</p>
-          <div class="flex-1 mx-3 bg-gray-100 rounded-full h-1.5 overflow-hidden">
-            <div id="quiz-progress-bar" class="bg-green-500 h-1.5 transition-all duration-300" style="width:12.5%"></div>
-          </div>
-          <button onclick="cancelQuiz()" aria-label="診断を中断する" class="text-gray-300 text-base leading-none px-1.5 py-1 -mr-1">✕</button>
+        <div class="nxq-head">
+          <span class="nxq-eyebrow">SELF CHECK — 約30秒</span>
+          <button onclick="cancelQuiz()" aria-label="診断を中断する" class="nxq-close">✕</button>
         </div>
-        <p class="text-sm font-bold text-gray-800 mb-4" id="quiz-question"></p>
-        <div id="quiz-options" class="space-y-2"></div>
+        <div class="nxq-progress"><span id="quiz-progress-bar"></span></div>
+        <p class="nxq-sub" id="quiz-progress">質問 1 / 9</p>
+        <p class="nxq-q" id="quiz-question"></p>
+        <div class="nxq-opts" id="quiz-options"></div>
+        <button type="button" id="quiz-back" onclick="backQuiz()" class="nxq-back" style="display:none;">← ひとつ前へ戻る</button>
       </div>
 
-      <!-- Quiz Result (hidden until complete) -->
+      <!-- Quiz Result (hidden until complete) — YOUR BEST MATCH + 度数バー (本サイトミラー) -->
       <div id="quiz-result" style="display:none;">
         <div class="card p-6 text-center">
-          <p class="text-xs text-coral font-bold mb-2">あなたにおすすめ</p>
-          <div class="text-4xl mb-2" id="result-emoji"></div>
-          <h3 class="text-xl font-bold text-gray-800 mb-1" id="result-name"></h3>
-          <p class="text-sm text-green-600 font-bold mb-3" id="result-price"></p>
-          <p class="text-xs text-gray-600 leading-relaxed mb-4" id="result-reason"></p>
-          <div class="flex gap-2">
+          <p class="nxq-eyebrow nxq-eyebrow--result mb-1">YOUR BEST MATCH</p>
+          <h3 class="nxq-rname" id="result-name"></h3>
+          <div class="nxq-bars" id="result-scores"></div>
+          <p class="nxq-rdesc" id="result-reason"></p>
+          <a id="result-compare-link" href="https://naturism-diet.com/pages/compare" target="_blank" rel="noopener" class="nxq-rcta">もっと詳しくみる <span aria-hidden="true">→</span></a>
+          <div class="flex gap-2 mt-3">
             <a id="result-store-link" href="#" target="_blank" class="flex-1 btn-primary py-3 rounded-xl text-sm font-bold text-center block">ご購入はこちら ▶</a>
-            <button onclick="retryQuiz()" class="flex-1 py-3 rounded-xl text-sm font-bold border border-gray-300 text-gray-600">もう一度</button>
+            <button onclick="retryQuiz()" class="flex-1 py-3 rounded-xl text-sm font-bold border border-gray-300 text-gray-600">もう一度診断する</button>
           </div>
           <!-- PR-A: クイズ結果から LINE会員特典 (マイランク) への in-CRM 導線。「LINEが一番お得」=一本化動機を結果画面で提示 -->
           <a href="javascript:void(0)" onclick="openFeaturePage('/liff/my-rank')" class="block mt-2 text-center text-xs text-green-700 bg-green-50 rounded-xl py-2.5 font-bold hover:bg-green-100 transition-colors">🎁 マイランク会員特典・おトクな購入方法を見る →</a>
-        </div>
-        <!-- Score Breakdown -->
-        <div class="card p-4 mt-4">
-          <p class="text-xs text-gray-500 font-bold mb-3">スコア内訳</p>
-          <div id="result-scores" class="space-y-2"></div>
         </div>
       </div>
     </div>
@@ -3861,73 +3898,81 @@ function subLinkResult(emoji, title, desc) {
   subLinkOverlay(card);
 }
 
-// ─── QUIZ Engine (client-side) ───
+// ─── QUIZ Engine (client-side) ── 本サイト9問版 (nx-lineup-v2.js / 2026-07-20オーナー仕様) の完全ミラー ───
+// ⚠️ 設問・選択肢・採点を変える時は 本サイト (theme-dawn: nx-lineup-v2.js / naturism-category.js) と
+//    サーバー側 services/quiz-engine.ts を必ず同時更新すること (保存時の採点はサーバーが正)
+var QUIZ_TYPES = ['blue', 'pink', 'premium']; /* 度数バーは必ずこの固定順で表示 */
+var QUIZ_TYPE_LABELS = { blue: 'ブルー度', pink: 'ピンク度', premium: 'プレミアム度' };
 var QUIZ_QUESTIONS = [
-  { id: 'q1', text: 'naturismを試すのは初めてですか？', options: [
-    { label: '初めてです', scores: { blue: 3, pink: 0, premium: 0 } },
-    { label: '飲んだことがあります', scores: { blue: 0, pink: 1, premium: 1 } },
-    { label: '今飲んでいて、別の種類を検討中', scores: { blue: 0, pink: 0, premium: 2 } },
+  { id: 'q1', text: 'Q1. 普段の食事の傾向は?', kind: 'single', options: [
+    { label: '揚げ物・脂っこい料理が好き', pts: { pink: 0, blue: 2, premium: 2 } },
+    { label: 'ご飯・パン・麺類が多い', pts: { pink: 1, blue: 0, premium: 2 } },
+    { label: 'バランスを意識', pts: { pink: 2, blue: 1, premium: 0 } },
+    { label: '外食やコンビニ中心', pts: { pink: 0, blue: 1, premium: 2 } },
   ]},
-  { id: 'q2', text: '普段の食事で一番多いのは？', options: [
-    { label: '揚げ物・脂っこい料理が多い', scores: { blue: 3, pink: 0, premium: 0 } },
-    { label: 'ご飯・パン・麺類など炭水化物が中心', scores: { blue: 0, pink: 0, premium: 3 } },
-    { label: 'バランスよく食べている', scores: { blue: 0, pink: 2, premium: 0 } },
-    { label: '外食やコンビニが中心で偏りがち', scores: { blue: 0, pink: 1, premium: 2 } },
+  { id: 'q2', text: 'Q2. 好きな料理は? 1位〜3位の順にタップしてください', kind: 'rank',
+    options: ['和食', '中華', '焼肉', 'イタリアン', 'ラーメン／麺類'] },
+  { id: 'q3', text: 'Q3. 体型管理の目標は?', kind: 'single', options: [
+    { label: '体重を落としたい', pts: { pink: 0, blue: 1, premium: 2 } },
+    { label: '体型を維持したい', pts: { pink: 1, blue: 2, premium: 0 } },
+    { label: '健康のため', pts: { pink: 1, blue: 0, premium: 2 } },
+    { label: '美容のため', pts: { pink: 1, blue: 0, premium: 2 } },
   ]},
-  { id: 'q3', text: '一週間でスイーツやお菓子を食べる頻度は？', options: [
-    { label: 'ほぼ毎日', scores: { blue: 0, pink: 0, premium: 3 } },
-    { label: '週3〜4回', scores: { blue: 0, pink: 0, premium: 2 } },
-    { label: '週1〜2回', scores: { blue: 1, pink: 1, premium: 0 } },
-    { label: 'ほとんど食べない', scores: { blue: 2, pink: 0, premium: 0 } },
+  { id: 'q4', text: 'Q4. お通じ・お腹の悩みは?', kind: 'single', options: [
+    { label: 'よく便秘する・お腹が張る', pts: { pink: 1, blue: 3, premium: 2 } },
+    { label: 'たまに便秘・不規則', pts: { pink: 0, blue: 2, premium: 1 } },
+    { label: '快調だけど維持したい', pts: { pink: 1, blue: 1, premium: 0 } },
+    { label: '特に悩みはない', pts: { pink: 1, blue: 0, premium: 0 } },
   ]},
-  { id: 'q4', text: '美容面で気になることはありますか？', options: [
-    { label: '肌のハリやツヤが気になる', scores: { blue: 0, pink: 3, premium: 0 } },
-    { label: '消化が重い・胃もたれしやすい', scores: { blue: 0, pink: 3, premium: 0 } },
-    { label: '特に気にならない', scores: { blue: 2, pink: 0, premium: 0 } },
-    { label: '全体的にケアしたい', scores: { blue: 0, pink: 0, premium: 2 } },
+  { id: 'q5', text: 'Q5. 美容・体で一番気になるのは?', kind: 'single', options: [
+    { label: '肌のハリ・ツヤ', pts: { pink: 3, blue: 0, premium: 0 } },
+    { label: '消化・胃もたれ・お腹周り', pts: { pink: 0, blue: 2, premium: 1 } },
+    { label: '全体的にケアしたい', pts: { pink: 0, blue: 0, premium: 3 } },
+    { label: '特になし', pts: { pink: 1, blue: 0, premium: 0 } },
   ]},
-  { id: 'q5', text: '体型管理への本気度は？', options: [
-    { label: '本格的に取り組みたい', scores: { blue: 0, pink: 0, premium: 3 } },
-    { label: '少し意識している程度', scores: { blue: 0, pink: 2, premium: 0 } },
-    { label: 'まずは気軽に始めたい', scores: { blue: 3, pink: 0, premium: 0 } },
-    { label: '食事制限なしで何かしたい', scores: { blue: 2, pink: 1, premium: 0 } },
+  { id: 'q6', text: 'Q6. 甘いもの・間食の頻度は?', kind: 'single', options: [
+    { label: 'ほぼ毎日食べる', pts: { pink: 0, blue: 1, premium: 3 } },
+    { label: '週に数回', pts: { pink: 0, blue: 0, premium: 2 } },
+    { label: 'たまに', pts: { pink: 1, blue: 1, premium: 0 } },
+    { label: 'ほとんど食べない', pts: { pink: 2, blue: 0, premium: 0 } },
   ]},
-  { id: 'q6', text: 'アレルギーで気になるものはありますか？', options: [
-    { label: 'オレンジ・キウイ・バナナ・大豆・ゴマ等にアレルギーがある', scores: { blue: 5, pink: 0, premium: 0 }, excludes: ['pink','premium'] },
-    { label: '特にない', scores: { blue: 0, pink: 0, premium: 0 } },
-    { label: 'よくわからない', scores: { blue: 1, pink: 0, premium: 0 } },
+  { id: 'q7', text: 'Q7. 運動の習慣は?', kind: 'single', options: [
+    { label: 'ほとんど運動しない', pts: { pink: 0, blue: 1, premium: 2 } },
+    { label: '軽く歩く程度', pts: { pink: 1, blue: 1, premium: 0 } },
+    { label: '週1〜2回運動する', pts: { pink: 1, blue: 1, premium: 0 } },
+    { label: 'しっかり運動している', pts: { pink: 2, blue: 0, premium: 0 } },
   ]},
-  { id: 'q7', text: '1日あたりの予算はどのくらいをイメージしていますか？', options: [
-    { label: '¥60〜70くらい（コーヒー1杯分）', scores: { blue: 3, pink: 0, premium: 0 } },
-    { label: '¥70〜100くらい', scores: { blue: 0, pink: 3, premium: 0 } },
-    { label: '¥100〜150くらい、しっかり投資したい', scores: { blue: 0, pink: 0, premium: 3 } },
-    { label: '良いものなら価格は気にしない', scores: { blue: 0, pink: 0, premium: 2 } },
+  { id: 'q8', text: 'Q8. 続けやすさ・価格の考え方は?', kind: 'single', options: [
+    { label: 'まずは手軽に・コスパ重視', pts: { pink: 1, blue: 2, premium: 0 } },
+    { label: '効果重視でしっかり投資したい', pts: { pink: 0, blue: 0, premium: 3 } },
+    { label: '1日55円〜150円くらいなら特に気にならない', pts: { pink: 1, blue: 0, premium: 2 } },
+    { label: '根拠(機能性表示食品など)があるものがいい', pts: { pink: 0, blue: 0, premium: 2 } },
   ]},
-  { id: 'q8', text: 'naturismに一番期待することは？', options: [
-    { label: '毎日の食事のお供としてシンプルに始めたい', scores: { blue: 3, pink: 0, premium: 0 } },
-    { label: '美容と食事ケアを両立したい', scores: { blue: 0, pink: 3, premium: 0 } },
-    { label: '炭水化物や糖質が気になる食生活を本格サポートしてほしい', scores: { blue: 0, pink: 0, premium: 3 } },
-    { label: '食べることを我慢せず、できることから始めたい', scores: { blue: 2, pink: 1, premium: 0 } },
+  { id: 'q9', text: 'Q9. naturism を試すのは?', kind: 'single', options: [
+    { label: '初めて', pts: null },
+    { label: '飲んだことある', pts: null },
+    { label: '今飲んでいて別種類を検討中', pts: null },
   ]},
 ];
+var QUIZ_Q2_CUISINE = { '和食': 'pink', 'イタリアン': 'pink', '中華': 'blue', '焼肉': 'blue', 'ラーメン／麺類': 'premium' };
+var QUIZ_Q2_RANK_PTS = [2, 1, 1]; /* 1位, 2位, 3位 */
 
 var QUIZ_PRODUCTS = {
-  blue: { name: 'naturism Blue', emoji: '\\u{1F499}', price: '\\u00a564/日〜', components: 8, reason: '脂っこい食事が好きな方のエントリーモデル。11年以上のロングセラーで、シンプルに始めたい方に最適です。', storeUrl: 'https://naturism-diet.com/products/naturism-blue-180-30days' },
-  pink: { name: 'KOSO in naturism Pink', emoji: '\\u{1F497}', price: '\\u00a575/日〜', components: 10, reason: 'Blueの8成分に加え、穀物麹由来の活きた酵素360mgを配合。食事ケアと美容を両立したい方のためにデザインされています。', storeUrl: 'https://naturism-diet.com/products/koso-in-naturism-pink-180-30days' },
-  premium: { name: 'naturism Premium', emoji: '\\u{1FA76}', price: '\\u00a5149/日〜', components: 16, reason: '全16成分配合のフラッグシップ。白インゲン豆324mg・サラシア・ブラックジンジャーなど糖質対応成分を含む機能性表示食品です。', storeUrl: 'https://naturism-diet.com/products/naturism-premium-180-20days' },
+  blue: { name: 'naturism Blue', desc: '脂っこい食事やお通じの悩みが気になるあなたには、黒烏龍茶で「食べたあと」をケアするブルーがぴったり。', storeUrl: 'https://naturism-diet.com/products/naturism-blue-180-30days', compareUrl: 'https://naturism-diet.com/pages/compare#nxcp-blue' },
+  pink: { name: 'KOSO in naturism Pink', desc: '美容やバランスを大切にするあなたには、酵素で内側からととのえるピンクがぴったり。', storeUrl: 'https://naturism-diet.com/products/koso-in-naturism-pink-180-30days', compareUrl: 'https://naturism-diet.com/pages/compare#nxcp-pink' },
+  premium: { name: 'naturism Premium', desc: '糖質も脂質もしっかりケアして結果を出したいあなたには、トータルケアのプレミアムがぴったり。', storeUrl: 'https://naturism-diet.com/products/naturism-premium-180-20days', compareUrl: 'https://naturism-diet.com/pages/compare#nxcp-premium' },
 };
 
 var quizCurrentStep = 0;
 var quizAnswers = {};
-var quizExcluded = [];
 var quizAdvancing = false;
 var quizAdvanceTimer = null;
 
 // 中断・誤リロードしても途中から再開できるように sessionStorage へ保存。
-// (注: タブ切替では DOM state が保持されるので不要 — これはリロード/中断対策)
-var QUIZ_STATE_KEY = 'quiz_state_v1';
+// v2 = 9問版 (q2 は配列)。旧 v1 (8問版) とは形が違うためキーごと世代交代して無効化。
+var QUIZ_STATE_KEY = 'quiz_state_v2';
 function saveQuizState() {
-  try { sessionStorage.setItem(QUIZ_STATE_KEY, JSON.stringify({ step: quizCurrentStep, answers: quizAnswers, excluded: quizExcluded })); } catch (e) { /* private mode 等 */ }
+  try { sessionStorage.setItem(QUIZ_STATE_KEY, JSON.stringify({ step: quizCurrentStep, answers: quizAnswers })); } catch (e) { /* private mode 等 */ }
 }
 function loadQuizState() {
   try {
@@ -3935,6 +3980,7 @@ function loadQuizState() {
     if (!raw) return null;
     var st = JSON.parse(raw);
     if (!st || typeof st.step !== 'number' || st.step < 0 || st.step >= QUIZ_QUESTIONS.length) return null;
+    if (!st.answers || typeof st.answers !== 'object') return null;
     return st;
   } catch (e) { return null; }
 }
@@ -3948,11 +3994,9 @@ function startQuiz() {
     // 途中再開 (中断/リロードからの復帰)
     quizCurrentStep = saved.step;
     quizAnswers = saved.answers || {};
-    quizExcluded = saved.excluded || [];
   } else {
     quizCurrentStep = 0;
     quizAnswers = {};
-    quizExcluded = [];
   }
   if (quizAdvanceTimer) { clearTimeout(quizAdvanceTimer); quizAdvanceTimer = null; }
   quizAdvancing = false;
@@ -3976,119 +4020,212 @@ function cancelQuiz() {
   document.getElementById('quiz-intro').style.display = 'block';
 }
 
-function renderQuizStep() {
-  var q = QUIZ_QUESTIONS[quizCurrentStep];
-  document.getElementById('quiz-progress').textContent = 'Q' + (quizCurrentStep + 1) + ' / ' + QUIZ_QUESTIONS.length;
-  document.getElementById('quiz-progress-bar').style.width = ((quizCurrentStep + 1) / QUIZ_QUESTIONS.length * 100) + '%';
-  document.getElementById('quiz-question').textContent = q.text;
-
-  var optHtml = '';
-  for (var i = 0; i < q.options.length; i++) {
-    var opt = q.options[i];
-    optHtml += '<button onclick="selectQuizOption(' + quizCurrentStep + ',' + i + ')" class="w-full text-left px-4 py-3 rounded-xl border border-gray-200 text-sm text-gray-700 hover:border-green-400 hover:bg-green-50 transition-all duration-100 active:bg-green-100 active:scale-[0.98]">' + opt.label + '</button>';
-  }
-  document.getElementById('quiz-options').innerHTML = optHtml;
+// ← ひとつ前へ戻る (本サイト同様。answers は保持 = 前の回答がハイライト/順位で復元される)
+function backQuiz() {
+  if (quizAdvancing) return;
+  quizCurrentStep = Math.max(0, quizCurrentStep - 1);
+  saveQuizState();
+  renderQuizStep();
 }
 
-function selectQuizOption(stepIdx, optIdx) {
+function renderQuizStep() {
+  var q = QUIZ_QUESTIONS[quizCurrentStep];
+  document.getElementById('quiz-progress').textContent = '質問 ' + (quizCurrentStep + 1) + ' / ' + QUIZ_QUESTIONS.length;
+  document.getElementById('quiz-progress-bar').style.width = (quizCurrentStep / QUIZ_QUESTIONS.length * 100) + '%';
+  document.getElementById('quiz-question').textContent = q.text;
+  var box = document.getElementById('quiz-options');
+  box.innerHTML = '';
+  if (q.kind === 'rank') renderQuizRank(q, box);
+  else renderQuizSingle(q, box);
+  document.getElementById('quiz-back').style.display = quizCurrentStep === 0 ? 'none' : 'inline-block';
+}
+
+function renderQuizSingle(q, box) {
+  var LETTERS = 'ABCD';
+  q.options.forEach(function (o, oi) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'nxq-opt';
+    if (quizAnswers[q.id] === o.label) b.classList.add('is-picked'); /* 戻った時に前回回答を保持表示 */
+    var mark = document.createElement('b');
+    mark.textContent = LETTERS[oi] || String(oi + 1);
+    b.appendChild(mark);
+    b.appendChild(document.createTextNode(o.label));
+    b.onclick = function () { selectQuizOption(oi); };
+    box.appendChild(b);
+  });
+}
+
+function selectQuizOption(optIdx) {
   if (quizAdvancing) return; // 連打で 2 問飛ぶ二重 advance を防止
-  var q = QUIZ_QUESTIONS[stepIdx];
-  var opt = q.options[optIdx];
-  quizAnswers[q.id] = opt.label;
+  var q = QUIZ_QUESTIONS[quizCurrentStep];
+  var o = q.options[optIdx];
+  quizAnswers[q.id] = o.label;
+  saveQuizState(); // 150ms の advance 待ちに依存させない — 待ち中の中断でも回答が残る
 
-  // Track excludes
-  if (opt.excludes) {
-    for (var e = 0; e < opt.excludes.length; e++) {
-      if (quizExcluded.indexOf(opt.excludes[e]) === -1) quizExcluded.push(opt.excludes[e]);
-    }
-  }
-
-  // 回答は即時保存 (150ms の advance 待ちに依存させない — 待ち中の中断でも回答が残る)
-  saveQuizState();
-
-  // Highlight selected (classList で確実に — 文字列置換は class 順序/空白に脆い)
   var btns = document.getElementById('quiz-options').querySelectorAll('button');
-  for (var b = 0; b < btns.length; b++) {
-    btns[b].classList.remove('border-green-500', 'bg-green-50', 'font-bold');
-    btns[b].classList.add('border-gray-200');
-  }
-  btns[optIdx].classList.remove('border-gray-200');
-  btns[optIdx].classList.add('border-green-500', 'bg-green-50', 'font-bold');
+  for (var b = 0; b < btns.length; b++) btns[b].classList.remove('is-picked');
+  btns[optIdx].classList.add('is-picked');
 
   // progress bar は選択直後に即時更新 — 待ち時間が「進んでいる」アニメーションになる
-  var nextPct = Math.min((stepIdx + 2) / QUIZ_QUESTIONS.length * 100, 100);
-  document.getElementById('quiz-progress-bar').style.width = nextPct + '%';
+  document.getElementById('quiz-progress-bar').style.width = ((quizCurrentStep + 1) / QUIZ_QUESTIONS.length * 100) + '%';
 
   // Auto advance (150ms: ハイライトを見せつつ軽快に)
   quizAdvancing = true;
-  quizAdvanceTimer = setTimeout(function() {
+  quizAdvanceTimer = setTimeout(function () {
     quizAdvanceTimer = null;
     quizAdvancing = false;
-    if (quizCurrentStep < QUIZ_QUESTIONS.length - 1) {
-      quizCurrentStep++;
-      saveQuizState();
-      renderQuizStep();
-    } else {
-      finishQuiz();
-    }
+    quizAdvanceStep();
   }, 150);
+}
+
+function quizAdvanceStep() {
+  if (quizCurrentStep < QUIZ_QUESTIONS.length - 1) {
+    quizCurrentStep++;
+    saveQuizState();
+    renderQuizStep();
+  } else {
+    finishQuiz();
+  }
+}
+
+/* Q2: タップ順に1位→2位→3位を採番 (再タップで解除・以降繰り上げ)。3位まで選ぶと次へが活性化 (本サイトと同一挙動) */
+function renderQuizRank(q, box) {
+  var picked = Array.isArray(quizAnswers[q.id]) ? quizAnswers[q.id].slice() : [];
+  var wrap = document.createElement('div');
+  wrap.className = 'nxq-opts';
+  var foot = document.createElement('div');
+  foot.className = 'nxq-rankfoot';
+  var resetB = document.createElement('button');
+  resetB.type = 'button';
+  resetB.className = 'nxq-rankreset';
+  resetB.textContent = 'リセット';
+  var nextB = document.createElement('button');
+  nextB.type = 'button';
+  nextB.className = 'nxq-ranknext';
+  nextB.textContent = '次へ →';
+  function build() {
+    wrap.innerHTML = '';
+    q.options.forEach(function (label) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'nxq-opt nxq-opt--rank';
+      var pos = picked.indexOf(label);
+      var mark = document.createElement('b');
+      if (pos > -1) {
+        b.classList.add('is-ranked');
+        mark.textContent = (pos + 1) + '位';
+      } else {
+        mark.textContent = '';
+        mark.className = 'is-empty';
+      }
+      b.appendChild(mark);
+      b.appendChild(document.createTextNode(label));
+      b.onclick = function () {
+        var p = picked.indexOf(label);
+        if (p > -1) picked.splice(p, 1);
+        else if (picked.length < 3) picked.push(label);
+        quizAnswers[q.id] = picked.slice(); /* 編集を即同期 = 戻る→再訪でも最新順位を復元 */
+        saveQuizState();
+        build();
+      };
+      wrap.appendChild(b);
+    });
+    nextB.disabled = picked.length < 3;
+  }
+  resetB.onclick = function () {
+    picked = [];
+    quizAnswers[q.id] = [];
+    saveQuizState();
+    build();
+  };
+  nextB.onclick = function () {
+    if (picked.length < 3 || quizAdvancing) return;
+    quizAnswers[q.id] = picked.slice();
+    saveQuizState();
+    document.getElementById('quiz-progress-bar').style.width = ((quizCurrentStep + 1) / QUIZ_QUESTIONS.length * 100) + '%';
+    quizAdvanceStep();
+  };
+  box.appendChild(wrap);
+  box.appendChild(foot);
+  foot.appendChild(resetB);
+  foot.appendChild(nextB);
+  build();
+}
+
+/* 採点 (本サイト scoreQuiz の完全ミラー。保存時の採点はサーバー側 quiz-engine.ts が正) */
+function scoreQuiz9() {
+  var s = { blue: 0, pink: 0, premium: 0 };
+  for (var i = 0; i < QUIZ_QUESTIONS.length; i++) {
+    var q = QUIZ_QUESTIONS[i];
+    var a = quizAnswers[q.id];
+    if (a == null) continue;
+    if (q.kind === 'rank') {
+      if (!Array.isArray(a)) continue;
+      for (var r = 0; r < a.length && r < 3; r++) {
+        var t = QUIZ_Q2_CUISINE[a[r]];
+        if (t) s[t] += QUIZ_Q2_RANK_PTS[r] || 0;
+      }
+    } else {
+      for (var j = 0; j < q.options.length; j++) {
+        if (q.options[j].label === a) {
+          var p = q.options[j].pts;
+          if (p) { s.blue += p.blue || 0; s.pink += p.pink || 0; s.premium += p.premium || 0; }
+          break;
+        }
+      }
+    }
+  }
+  /* 同点処理 (決定的): Q9=初めて → blue>pink>premium / それ以外 → premium>blue>pink */
+  var first = quizAnswers.q9 === '初めて';
+  var prio = first ? ['blue', 'pink', 'premium'] : ['premium', 'blue', 'pink'];
+  var max = Math.max(s.blue, s.pink, s.premium);
+  var rec = prio.filter(function (t) { return s[t] === max; })[0];
+  return { rec: rec, scores: s };
 }
 
 function finishQuiz() {
   clearQuizState(); // 完了 → 次回は最初から
-  // Score calculation (mirrors quiz-engine.ts)
-  var scores = { blue: 0, pink: 0, premium: 0 };
-  for (var i = 0; i < QUIZ_QUESTIONS.length; i++) {
-    var q = QUIZ_QUESTIONS[i];
-    var label = quizAnswers[q.id];
-    if (!label) continue;
-    for (var j = 0; j < q.options.length; j++) {
-      if (q.options[j].label === label) {
-        var s = q.options[j].scores;
-        scores.blue += s.blue || 0;
-        scores.pink += s.pink || 0;
-        scores.premium += s.premium || 0;
-        break;
-      }
-    }
-  }
-
-  // Zero out excluded
-  for (var e = 0; e < quizExcluded.length; e++) {
-    scores[quizExcluded[e]] = 0;
-  }
-
-  // Find winner (tie-break: blue > pink > premium)
-  var winner = 'blue';
-  var winScore = scores.blue;
-  if (scores.pink > winScore) { winner = 'pink'; winScore = scores.pink; }
-  if (scores.premium > winScore) { winner = 'premium'; winScore = scores.premium; }
-
-  var product = QUIZ_PRODUCTS[winner];
+  var r = scoreQuiz9();
+  var product = QUIZ_PRODUCTS[r.rec];
 
   // Display result (entrance animation — .section class は switchTab 管理下に入るため inline で)
+  document.getElementById('quiz-progress-bar').style.width = '100%';
   document.getElementById('quiz-steps').style.display = 'none';
   document.getElementById('quiz-result').style.display = 'block';
   document.getElementById('quiz-result').style.animation = 'fadeUp 0.38s cubic-bezier(0.22,1,0.36,1)';
-  document.getElementById('result-emoji').textContent = product.emoji;
-  document.getElementById('result-name').textContent = product.name;
-  document.getElementById('result-price').textContent = product.price + '（' + product.components + '成分）';
-  document.getElementById('result-reason').textContent = product.reason;
+  var nameEl = document.getElementById('result-name');
+  nameEl.textContent = product.name;
+  nameEl.className = 'nxq-rname nxq-rname--' + r.rec;
+  document.getElementById('result-reason').textContent = product.desc;
+  document.getElementById('result-compare-link').href = product.compareUrl;
   document.getElementById('result-store-link').href = product.storeUrl;
 
-  // Score bars
-  var maxScore = Math.max(scores.blue, scores.pink, scores.premium, 1);
-  var colors = { blue: '#3B82F6', pink: '#EC4899', premium: '#6B7280' };
-  var names = { blue: 'Blue', pink: 'Pink', premium: 'Premium' };
-  var barsHtml = '';
-  for (var key in scores) {
-    var pct = Math.round(scores[key] / maxScore * 100);
-    var isWin = key === winner;
-    barsHtml += '<div class="flex items-center gap-2"><span class="text-xs w-20 ' + (isWin ? 'font-bold text-green-600' : 'text-gray-500') + '">' + (isWin ? '★ ' : '') + names[key] + '</span>' +
-      '<div class="flex-1 bg-gray-100 rounded-full h-2 overflow-hidden"><div class="h-2 rounded-full transition-all duration-500" style="width:' + pct + '%;background:' + colors[key] + '"></div></div>' +
-      '<span class="text-xs text-gray-500 w-6 text-right">' + scores[key] + '</span></div>';
-  }
-  document.getElementById('result-scores').innerHTML = barsHtml;
+  /* 度数バー: 必ず ブルー度→ピンク度→プレミアム度 の固定順 (得点順に並べ替えない)。% は合計比 */
+  var total = r.scores.blue + r.scores.pink + r.scores.premium;
+  var barsBox = document.getElementById('result-scores');
+  barsBox.innerHTML = '';
+  QUIZ_TYPES.forEach(function (t) {
+    var pct = total > 0 ? Math.round(r.scores[t] / total * 100) : 0; /* ゼロ除算ガード */
+    var row = document.createElement('div');
+    row.className = 'nxq-brow nxq-brow--' + t;
+    var lb = document.createElement('span');
+    lb.className = 'nxq-blabel';
+    lb.textContent = QUIZ_TYPE_LABELS[t];
+    var track = document.createElement('span');
+    track.className = 'nxq-btrack';
+    var fill = document.createElement('span');
+    fill.className = 'nxq-bfill';
+    track.appendChild(fill);
+    var val = document.createElement('span');
+    val.className = 'nxq-bval';
+    val.textContent = pct + '%';
+    row.appendChild(lb);
+    row.appendChild(track);
+    row.appendChild(val);
+    barsBox.appendChild(row);
+    requestAnimationFrame(function () { requestAnimationFrame(function () { fill.style.width = pct + '%'; }); });
+  });
 
   // Submit to server (non-blocking、結果表示とかぶらないよう少し遅らせて通知)
   if (!isDemo && idToken) {
