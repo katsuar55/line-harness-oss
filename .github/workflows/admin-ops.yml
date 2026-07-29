@@ -623,7 +623,7 @@ jobs:
           timeout ${PROBE_WINDOW:-75} npx wrangler tail --format=json --search line-link > "$TAIL_LOG" 2> "$TAIL_ERR" || true
           wait || true
           # 該当リクエストの URL を 1 本だけ取り出す (署名も実 id も出力しない)
-          LINE=$(grep -o '"url":"[^"]*line-link[^"]*"' "$TAIL_LOG" | head -1 || true)
+          LINE=$(grep -oE '"url": *"[^"]*line-link[^"]*"' "$TAIL_LOG" | head -1 || true)
           if [ -z "$LINE" ]; then
             {
               echo '⚠️ worker ログに該当リクエストが見つかりませんでした'
