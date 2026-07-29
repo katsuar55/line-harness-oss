@@ -618,7 +618,7 @@ jobs:
               sleep 6
             done
           ) &
-          timeout 75 npx wrangler tail --format=json > "$TAIL_LOG" 2> "$TAIL_ERR" || true
+          timeout ${PROBE_WINDOW:-75} npx wrangler tail --format=json > "$TAIL_LOG" 2> "$TAIL_ERR" || true
           wait || true
           # 該当リクエストの URL を 1 本だけ取り出す (署名も実 id も出力しない)
           LINE=$(grep -o '"url":"[^"]*proxy/line-link[^"]*"' "$TAIL_LOG" | head -1 || true)
