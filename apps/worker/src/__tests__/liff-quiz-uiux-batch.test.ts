@@ -35,8 +35,9 @@ function fnBlock(name: string): string {
 }
 
 describe('quiz UX batch', () => {
-  it('回答 state を sessionStorage に保存し、リロード/中断から再開できる', () => {
-    expect(pages).toContain("'quiz_state_v1'");
+  it('回答 state を sessionStorage に保存し、リロード/中断から再開できる (v2=9問版キー: 旧8問版 state を世代交代で無効化)', () => {
+    expect(pages).toContain("'quiz_state_v2'");
+    expect(pages).not.toContain("'quiz_state_v1'");
     expect(pages).toContain('function saveQuizState(');
     expect(pages).toContain('function loadQuizState(');
     expect(pages).toContain('function clearQuizState(');
@@ -99,10 +100,13 @@ describe('quiz UX batch', () => {
     expect(b).toMatch(/quiz-result'\)\.style\.animation/);
   });
 
-  it('スコア内訳で winner を ★ + 強調表示', () => {
+  it('度数バーは本サイト同一: 固定順 (ブルー度→ピンク度→プレミアム度)・%は合計比・ゼロ除算ガード (2026-07-29 9問版ミラー)', () => {
     const b = fnBlock('finishQuiz');
-    expect(b).toMatch(/isWin|key === winner/);
-    expect(b).toContain('★');
+    expect(b).toContain('QUIZ_TYPES.forEach');
+    expect(b).toMatch(/total > 0 \? Math\.round/);
+    expect(pages).toMatch(/QUIZ_TYPE_LABELS = \{ blue: 'ブルー度', pink: 'ピンク度', premium: 'プレミアム度' \}/);
+    // 固定順の根拠: QUIZ_TYPES の宣言順 (得点順に並べ替えない)
+    expect(pages).toMatch(/QUIZ_TYPES = \['blue', 'pink', 'premium'\]/);
   });
 
   it('診断結果の保存は成功/失敗をトーストで通知 (silent catch 廃止)', () => {
@@ -111,8 +115,8 @@ describe('quiz UX batch', () => {
     expect(b).not.toMatch(/\.catch\(function\(\) \{\}\)/);
   });
 
-  it('選択肢ボタンに tap feedback (active:scale)', () => {
-    expect(fnBlock('renderQuizStep')).toMatch(/active:scale/);
+  it('選択肢ボタンに tap feedback (2026-07-29: .nxq-opt の CSS :active scale へ移行)', () => {
+    expect(pages).toMatch(/\.nxq-opt:active\{transform:scale\(\.97\)\}/);
   });
 
   it('esbuild backtick trap: quiz 変更ブロックに backtick を含まない', () => {

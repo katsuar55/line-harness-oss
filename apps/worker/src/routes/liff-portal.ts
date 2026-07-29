@@ -1147,15 +1147,27 @@ liffPortal.post('/api/liff/quiz/submit', async (c) => {
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
     const { answers } =
-      await c.req.json<{ answers: Record<string, string> }>();
+      await c.req.json<{ answers: Record<string, string | string[]> }>();
 
-    if (!answers || typeof answers !== 'object') {
+    if (!answers || typeof answers !== 'object' || Array.isArray(answers)) {
       return c.json({ success: false, error: 'answers is required' }, 400);
     }
 
     // Validate answer keys count (max 20 to prevent abuse)
     if (Object.keys(answers).length > 20) {
       return c.json({ success: false, error: 'Too many answer keys' }, 400);
+    }
+
+    // 値の形を検証: 文字列 (単一選択) or 文字列配列 (Q2 料理ランキング、最大5件)
+    for (const value of Object.values(answers)) {
+      const isValidString = typeof value === 'string' && value.length <= 100;
+      const isValidArray =
+        Array.isArray(value) &&
+        value.length <= 5 &&
+        value.every((v) => typeof v === 'string' && v.length <= 50);
+      if (!isValidString && !isValidArray) {
+        return c.json({ success: false, error: 'Invalid answer value' }, 400);
+      }
     }
 
     const { scoreQuiz, NATURISM_QUIZ_CONFIG } = await import('../services/quiz-engine.js');

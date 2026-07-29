@@ -569,15 +569,31 @@ describe('LIFF Portal Routes', () => {
 
   // ─── Quiz ─────────────────────────────────────
   describe('POST /api/liff/quiz/submit', () => {
-    it('returns quiz recommendation', async () => {
+    it('returns quiz recommendation (9問版: q2 は料理ランキング配列)', async () => {
       const res = await post(app, '/api/liff/quiz/submit', {
         lineUserId: 'U_EXISTING',
-        answers: { q1: '初めてです', q2: '揚げ物・脂っこい料理が多い' },
+        answers: { q1: '揚げ物・脂っこい料理が好き', q2: ['中華', '焼肉', '和食'], q9: '初めて' },
       });
       expect(res.status).toBe(200);
       const json = await res.json() as { data: { recommendedProduct: string; scores: Record<string, number> } };
       expect(json.data.recommendedProduct).toBe('naturism Blue');
       expect(json.data.scores).toBeDefined();
+    });
+
+    it('rejects non-string/array answer values with 400', async () => {
+      const res = await post(app, '/api/liff/quiz/submit', {
+        lineUserId: 'U_EXISTING',
+        answers: { q1: 123 },
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects oversized rank arrays with 400', async () => {
+      const res = await post(app, '/api/liff/quiz/submit', {
+        lineUserId: 'U_EXISTING',
+        answers: { q2: ['a', 'b', 'c', 'd', 'e', 'f'] },
+      });
+      expect(res.status).toBe(400);
     });
 
     it('returns 404 for unknown user', async () => {

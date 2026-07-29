@@ -47,13 +47,14 @@ describe('適用箇所 (quiz + home + intake の3タブ、三層規律)', () => 
     expect(pages).toMatch(/onclick="startQuiz\(\)" class="btn-coral/);
   });
 
-  it('quiz progress bar は明コーラルグラデ (#ffb39c→#d9573d)', () => {
-    expect(pages).toMatch(/#quiz-progress-bar\{background:linear-gradient\(90deg,#ffb39c,#d9573d\) !important\}/);
+  it('quiz progress bar は本サイト SELF CHECK と同一コーラルグラデ (#E8835F→#ffb39c、2026-07-29 9問版ミラー)', () => {
+    expect(pages).toMatch(/#quiz-progress-bar\{background:linear-gradient\(90deg,#E8835F,#ffb39c\) !important\}/);
   });
 
-  it('「はじめの一歩」「あなたにおすすめ」「紹介数」の小ラベル/数字が text-coral (#b84a2e)', () => {
+  it('「はじめの一歩」「YOUR BEST MATCH」「紹介数」の小ラベル/数字がコーラル系', () => {
     expect(pages).toMatch(/text-coral[^>]*>はじめの一歩|はじめの一歩[\s\S]{0,40}text-coral/);
-    expect(pages).toMatch(/class="text-xs text-coral font-bold mb-2">あなたにおすすめ/);
+    // 2026-07-29 9問版: 結果ラベルは本サイトミラーの nxq-eyebrow (coral #E8835F) + YOUR BEST MATCH
+    expect(pages).toMatch(/class="nxq-eyebrow nxq-eyebrow--result mb-1">YOUR BEST MATCH/);
     // 実機FB第5弾: 紹介カード刷新で「紹介実績:」→「これまでの紹介:」(coral 数字は維持)
     expect(pages).toMatch(/これまでの紹介: <span class="font-bold text-coral">/);
   });

@@ -591,7 +591,8 @@ export async function createRecommendationResult(
   db: D1Database,
   data: {
     friendId: string;
-    quizAnswers: Record<string, string>;
+    // 9問版: q2 (料理ランキング) は string[]。JSON.stringify で保存するだけなので両対応
+    quizAnswers: Record<string, string | string[]>;
     recommendedProduct: string;
     recommendedProductId?: string;
     scoreBreakdown: Record<string, number>;
