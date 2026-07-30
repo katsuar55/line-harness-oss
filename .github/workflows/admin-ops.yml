@@ -737,9 +737,13 @@ jobs:
           # 購買セグメント配信・ランク集計・出荷通知が対象を静かに取りこぼす。
           npx wrangler d1 execute naturism-line-crm --remote \
             --command "UPDATE shopify_orders SET friend_id = (SELECT f.id FROM friends f WHERE f.shopify_customer_id = shopify_orders.shopify_customer_id) WHERE friend_id IS NULL AND EXISTS (SELECT 1 FROM friends f WHERE f.shopify_customer_id = shopify_orders.shopify_customer_id)"
-          echo '### After (customers + orders)' >> "$GITHUB_STEP_SUMMARY"
+          # 2026-07-30: 発送レコードも注文経由で補完する。fulfillment webhook の旧実装が
+          # friend_id を書き漏らしていた既存分 (LIFF 配送状況カードが空になる) の一括修復。
+          npx wrangler d1 execute naturism-line-crm --remote \
+            --command "UPDATE shopify_fulfillments SET friend_id = (SELECT so.friend_id FROM shopify_orders so WHERE so.shopify_order_id = shopify_fulfillments.shopify_order_id) WHERE friend_id IS NULL AND EXISTS (SELECT 1 FROM shopify_orders so WHERE so.shopify_order_id = shopify_fulfillments.shopify_order_id AND so.friend_id IS NOT NULL)"
+          echo '### After (customers + orders + fulfillments)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
-            --command "SELECT (SELECT COUNT(*) FROM friends WHERE shopify_customer_id IS NOT NULL) AS linked_friends, (SELECT COUNT(*) FROM shopify_customers WHERE friend_id IS NOT NULL) AS backlinked_customers, (SELECT COUNT(*) FROM shopify_orders WHERE friend_id IS NULL AND shopify_customer_id IN (SELECT shopify_customer_id FROM friends WHERE shopify_customer_id IS NOT NULL)) AS orders_still_unlinked" | tee -a "$GITHUB_STEP_SUMMARY"
+            --command "SELECT (SELECT COUNT(*) FROM friends WHERE shopify_customer_id IS NOT NULL) AS linked_friends, (SELECT COUNT(*) FROM shopify_customers WHERE friend_id IS NOT NULL) AS backlinked_customers, (SELECT COUNT(*) FROM shopify_orders WHERE friend_id IS NULL AND shopify_customer_id IN (SELECT shopify_customer_id FROM friends WHERE shopify_customer_id IS NOT NULL)) AS orders_still_unlinked, (SELECT COUNT(*) FROM shopify_fulfillments WHERE friend_id IS NOT NULL) AS fulfillments_linked" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Delivery status diagnose (counts only, read-only)
         if: inputs.op == 'delivery-status-diagnose'
