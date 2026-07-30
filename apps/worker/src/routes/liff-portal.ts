@@ -463,10 +463,48 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
       return c.json({ success: false, error: '再注文は5分に1回までです。しばらくお待ちください。' }, 429);
     }
 
-    const { orderId, items } = await c.req.json<{
+    const { orderId, items, shippingMethod, deliveryDate, deliveryTime } = await c.req.json<{
       orderId?: string;
       items?: Array<{ variantId: string; quantity: number }>;
+      shippingMethod?: string;
+      deliveryDate?: string;
+      deliveryTime?: string;
     }>();
+
+    // ─── 配送オプション検証 (2026-07-30 再注文シート: 固定語彙のみ受理・自由入力は拒否) ───
+    const SHIPPING_METHODS: Record<string, string> = { nekopos: 'ネコポス', takkyubin: '宅配便' };
+    const DELIVERY_TIMES = ['午前中', '14〜16時', '16〜18時', '18〜20時', '19〜21時'];
+
+    let shippingLabel: string | null = null;
+    if (shippingMethod != null) {
+      if (typeof shippingMethod !== 'string' || !SHIPPING_METHODS[shippingMethod]) {
+        return c.json({ success: false, error: 'Invalid shippingMethod' }, 400);
+      }
+      shippingLabel = SHIPPING_METHODS[shippingMethod];
+    }
+
+    // ネコポスはポスト投函のため日時指定不可 — クライアントが無効化していてもサーバー側で落とす
+    let dateAttr: string | null = null;
+    let timeAttr: string | null = null;
+    if (shippingMethod !== 'nekopos') {
+      if (deliveryDate != null && deliveryDate !== '') {
+        if (typeof deliveryDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) {
+          return c.json({ success: false, error: 'Invalid deliveryDate' }, 400);
+        }
+        const requested = new Date(`${deliveryDate}T23:59:59+09:00`).getTime();
+        const now = Date.now();
+        if (!(requested > now) || requested > now + 61 * 24 * 3600 * 1000) {
+          return c.json({ success: false, error: 'お届け希望日は明日〜60日先の範囲で指定してください' }, 400);
+        }
+        dateAttr = deliveryDate;
+      }
+      if (deliveryTime != null && deliveryTime !== '') {
+        if (typeof deliveryTime !== 'string' || !DELIVERY_TIMES.includes(deliveryTime)) {
+          return c.json({ success: false, error: 'Invalid deliveryTime' }, 400);
+        }
+        timeAttr = deliveryTime;
+      }
+    }
 
     // Build line items for draft order
     let lineItems: Array<{ variantId: string; quantity: number }> = [];
@@ -507,58 +545,114 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
       return c.json({ success: false, error: 'Shopify not configured' }, 500);
     }
 
-    // Look up customer email from friend's orders
+    // Look up customer email from friend's orders + 連携済みなら customer を直付け
+    // (purchasingEntity で顧客に紐付けると invoice チェックアウトに住所が事前入力される)
     const recentOrders = await getShopifyOrders(c.env.DB, { friendId: user.friendId, limit: 1 });
     const customerEmail = recentOrders[0]?.email as string | undefined;
+    const friendRow = await c.env.DB
+      .prepare(`SELECT shopify_customer_id FROM friends WHERE id = ?`)
+      .bind(user.friendId)
+      .first<{ shopify_customer_id: string | null }>();
+    const customerGid = friendRow?.shopify_customer_id
+      ? `gid://shopify/Customer/${friendRow.shopify_customer_id}`
+      : null;
 
-    // Create Draft Order via Shopify Admin REST API
-    const draftOrderPayload: Record<string, unknown> = {
-      draft_order: {
-        line_items: lineItems.map((li) => ({
-          variant_id: li.variantId.replace('gid://shopify/ProductVariant/', ''),
-          quantity: li.quantity,
-        })),
-        use_customer_default_address: true,
-        ...(customerEmail ? { email: customerEmail } : {}),
-        tags: 'liff-reorder',
-        note: 'LIFF再購入',
-      },
+    // 店舗スタッフが管理画面の注文詳細で読む配送メモ (customAttributes = note_attributes)
+    const customAttributes = [
+      ...(shippingLabel ? [{ key: '配送方法', value: shippingLabel }] : []),
+      ...(dateAttr ? [{ key: '配送希望日', value: dateAttr }] : []),
+      ...(timeAttr ? [{ key: '配送希望時間帯', value: timeAttr }] : []),
+    ];
+
+    // 2026-07-30: REST draft_orders.json → GraphQL draftOrderCreate へ移行。
+    // 他の Shopify 連携 (account-link / rank-discount 等) と同じ GraphQL 2026-04 へ統一
+    // (REST Admin API は legacy でアプリ種別によっては拒否される)。
+    const draftInput: Record<string, unknown> = {
+      lineItems: lineItems.map((li) => ({ variantId: li.variantId, quantity: li.quantity })),
+      useCustomerDefaultAddress: true,
+      tags: ['liff-reorder'],
+      note: ['LIFF再購入', shippingLabel, dateAttr, timeAttr].filter(Boolean).join(' / '),
+      ...(customAttributes.length > 0 ? { customAttributes } : {}),
+      ...(customerGid
+        ? { purchasingEntity: { customerId: customerGid } }
+        : customerEmail
+          ? { email: customerEmail }
+          : {}),
     };
 
-    // Idempotency key: ユーザーID + タイムスタンプ(分単位) で重複防止
-    const idempotencyKey = `liff-reorder-${user.friendId}-${Math.floor(Date.now() / 60000)}`;
-
-    const draftRes = await fetch(
-      `https://${storeDomain}/admin/api/2026-04/draft_orders.json`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Shopify-Access-Token': accessToken,
-          'Idempotency-Key': idempotencyKey,
-        },
-        body: JSON.stringify(draftOrderPayload),
+    const draftRes = await fetch(`https://${storeDomain}/admin/api/2026-04/graphql.json`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': accessToken,
       },
-    );
+      body: JSON.stringify({
+        query: `mutation liffReorderDraft($input: DraftOrderInput!) {
+          draftOrderCreate(input: $input) {
+            draftOrder {
+              id
+              invoiceUrl
+              status
+              totalPriceSet { shopMoney { amount currencyCode } }
+              lineItems(first: 20) { nodes { name quantity } }
+            }
+            userErrors { field message }
+          }
+        }`,
+        variables: { input: draftInput },
+      }),
+    });
 
     if (!draftRes.ok) {
       const errBody = await draftRes.text();
-      console.error('Shopify Draft Order API error:', draftRes.status, errBody);
-      return c.json({ success: false, error: 'Failed to create draft order' }, 502);
+      console.error('Shopify draftOrderCreate HTTP error:', draftRes.status, errBody.slice(0, 500));
+      return c.json({ success: false, error: '再注文を作成できませんでした。時間をおいてお試しください' }, 502);
     }
 
-    const draftData = await draftRes.json() as {
-      draft_order: {
-        id: number;
-        invoice_url: string;
-        status: string;
-        total_price: string;
-        currency: string;
-        line_items: Array<Record<string, unknown>>;
+    const draftJson = (await draftRes.json()) as {
+      data?: {
+        draftOrderCreate?: {
+          draftOrder: {
+            id: string;
+            invoiceUrl: string;
+            status: string;
+            totalPriceSet?: { shopMoney?: { amount?: string; currencyCode?: string } };
+            lineItems?: { nodes?: Array<Record<string, unknown>> };
+          } | null;
+          userErrors: Array<{ field: string[] | null; message: string }>;
+        };
       };
+      errors?: Array<{ message: string; extensions?: { code?: string } }>;
     };
 
-    const draft = draftData.draft_order;
+    const created = draftJson.data?.draftOrderCreate;
+    if (draftJson.errors?.length || !created?.draftOrder) {
+      console.error(
+        'Shopify draftOrderCreate failed:',
+        JSON.stringify({ errors: draftJson.errors ?? [], userErrors: created?.userErrors ?? [] }).slice(0, 500),
+      );
+      // 権限不足 (write_draft_orders 未付与) は復旧手順が違うため区別して返す
+      const denied = (draftJson.errors ?? []).some((e) => e.extensions?.code === 'ACCESS_DENIED');
+      return c.json(
+        {
+          success: false,
+          error: denied
+            ? '再注文機能の準備中です。お手数ですがストアからご注文ください'
+            : '再注文を作成できませんでした。時間をおいてお試しください',
+        },
+        502,
+      );
+    }
+
+    const gqlDraft = created.draftOrder;
+    const draft = {
+      id: gqlDraft.id.replace('gid://shopify/DraftOrder/', ''),
+      invoice_url: gqlDraft.invoiceUrl,
+      status: String(gqlDraft.status || 'OPEN').toLowerCase(),
+      total_price: gqlDraft.totalPriceSet?.shopMoney?.amount ?? '0',
+      currency: gqlDraft.totalPriceSet?.shopMoney?.currencyCode ?? 'JPY',
+      line_items: gqlDraft.lineItems?.nodes ?? [],
+    };
 
     // Save to D1
     const draftId = crypto.randomUUID();
