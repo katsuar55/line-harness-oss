@@ -120,6 +120,7 @@ on:
           - app-proxy-status
           - backfill-customer-friend-id
           - delivery-status-diagnose
+          - shopify-scope-probe
           - release-billing-hold
           - custom-domain-status
           - attach-custom-domain
@@ -744,6 +745,20 @@ jobs:
           echo '### After (customers + orders + fulfillments)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT (SELECT COUNT(*) FROM friends WHERE shopify_customer_id IS NOT NULL) AS linked_friends, (SELECT COUNT(*) FROM shopify_customers WHERE friend_id IS NOT NULL) AS backlinked_customers, (SELECT COUNT(*) FROM shopify_orders WHERE friend_id IS NULL AND shopify_customer_id IN (SELECT shopify_customer_id FROM friends WHERE shopify_customer_id IS NOT NULL)) AS orders_still_unlinked, (SELECT COUNT(*) FROM shopify_fulfillments WHERE friend_id IS NOT NULL) AS fulfillments_linked" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Shopify token scope probe (scope names only, read-only)
+        if: inputs.op == 'shopify-scope-probe'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # Client Credentials トークンの実効スコープを確認する (Draft Order 失敗等の一次切り分け)。
+          # 出力は scope 名と有効期限のみ — token 値は SELECT しない。
+          echo '### shopify_tokens (scope + expires only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT scope, expires_at FROM shopify_tokens WHERE id='default'" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Delivery status diagnose (counts only, read-only)
         if: inputs.op == 'delivery-status-diagnose'
