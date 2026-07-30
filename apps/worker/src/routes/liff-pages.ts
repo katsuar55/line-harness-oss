@@ -2997,6 +2997,11 @@ async function loadShopData() {
               '<p class="text-sm text-gray-600">#' + esc(f.orderNumber) + '</p>' +
               '<span class="text-xs px-2 py-0.5 rounded-full ' + fulfillBadgeClass(f.status) + '">' + fulfillStatusJa(f.status) + '</span></div>';
           }).join('') : '');
+    } else if (fres.data.latestOrder) {
+      // 2026-07-30 ゼロクリック配送状況: 発送前 (入金待ち/支払い済み/発送準備中) でも
+      // 最新注文のステータスをこの画面だけで確認できる (Shopify へ遷移不要)。
+      fel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">🚚 配送状況</p>' +
+        renderOrderHero(fres.data.latestOrder);
     } else {
       fel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">🚚 配送状況</p>' +
         '<p class="text-sm text-gray-500">現在配送中のお荷物はありません。</p>' +
@@ -3087,6 +3092,57 @@ function renderFulfillHero(f) {
     stepHtml +
     (f.trackingNumber ? '<p class="text-xs text-gray-400 mt-2">追跡番号: ' + esc(f.trackingNumber) + (f.trackingCompany ? ' (' + esc(f.trackingCompany) + ')' : '') + '</p>' : '') +
     (f.trackingUrl ? '<a href="' + esc(f.trackingUrl) + '" target="_blank" class="block text-center btn-primary py-2.5 rounded-xl text-sm font-bold mt-2">配送状況を追跡 ▶</a>' : '') +
+    '</div>';
+}
+
+// 発送前の注文ステータス (financial_status / fulfillment_status → 顧客向け表現)。
+// 2026-07-30 ゼロクリック配送状況: 銀行振込の「入金確認待ち」等、発送 (fulfillment 作成) より
+// 前の段階もこのカードだけで進捗が分かるようにする。値は固定辞書 + esc() で XSS 安全。
+function orderStageInfo(o) {
+  var fin = String(o.financialStatus || '').toLowerCase();
+  var ful = String(o.fulfillmentStatus || '').toLowerCase();
+  // キャンセル・返金系は進捗ステップを出さない
+  if (fin === 'refunded' || fin === 'partially_refunded' || fin === 'voided') {
+    return { label: 'キャンセル・返金済み', stage: -1, badge: 'bg-gray-100 text-gray-500', note: 'この注文はキャンセルまたは返金済みです。' };
+  }
+  if (ful === 'fulfilled' || ful === 'partial') {
+    // fulfillment レコード未着でも注文側が発送済みなら「発送済み」を出す (取りこぼし保険)
+    return { label: '発送済み', stage: 3, badge: 'bg-teal-50 text-teal-700', note: '追跡情報は反映され次第ここに表示されます。' };
+  }
+  if (fin === 'pending') {
+    return { label: 'ご入金確認待ち', stage: 1, badge: 'bg-amber-100 text-amber-700', note: '銀行振込などのお支払い確認が取れ次第、発送準備に進みます。' };
+  }
+  if (fin === 'authorized' || fin === 'partially_paid') {
+    return { label: 'お支払い確認中', stage: 1, badge: 'bg-amber-100 text-amber-700', note: 'お支払いの確認が完了すると発送準備に進みます。' };
+  }
+  if (fin === 'paid') {
+    return { label: '発送準備中', stage: 2, badge: 'bg-teal-50 text-teal-700', note: '発送が完了すると、ここに追跡情報が表示されます。' };
+  }
+  return { label: 'ご注文受付', stage: 0, badge: 'bg-teal-50 text-teal-700', note: 'ご注文を受け付けました。' };
+}
+// 最新注文 (未発送) のヒーロー表示: 4ステップ進捗 (ご注文受付→お支払い→発送準備→お届け)
+function renderOrderHero(o) {
+  var info = orderStageInfo(o);
+  var items = (o.lineItems && o.lineItems.length)
+    ? esc(o.lineItems[0].name || o.lineItems[0].title || '') + (o.lineItems.length > 1 ? ' 他' + (o.lineItems.length - 1) + '点' : '')
+    : '';
+  var stepHtml = '';
+  if (info.stage >= 0) {
+    var steps = ['ご注文受付', 'お支払い', '発送準備', 'お届け'];
+    stepHtml = '<div class="flex items-center gap-1 mt-3 mb-1">' + steps.map(function(label, i) {
+      var on = i <= info.stage;
+      return '<div class="flex-1">' +
+        '<div class="h-1.5 rounded-full" style="background:' + (on ? '#0f766e' : '#e2e8f0') + '"></div>' +
+        '<p class="text-center mt-1" style="font-size:10px;color:' + (on ? '#0f766e' : '#94a3b8') + ';font-weight:' + (i === info.stage ? '700' : '400') + '">' + label + '</p></div>';
+    }).join('') + '</div>';
+  }
+  return '<div class="rounded-2xl p-4" style="background:linear-gradient(135deg,#effaf8,#ffffff);border:1.5px solid #bfe8e3">' +
+    '<div class="flex justify-between items-center">' +
+    '<p class="text-sm font-bold text-gray-700">最新のご注文 <span class="text-gray-400 font-normal">#' + esc(o.orderNumber) + '</span></p>' +
+    '<span class="text-xs px-2.5 py-1 rounded-full font-bold ' + info.badge + '">' + info.label + '</span></div>' +
+    (items ? '<p class="text-xs text-gray-500 mt-1">' + items + '</p>' : '') +
+    stepHtml +
+    '<p class="text-xs text-gray-400 mt-2">' + info.note + '</p>' +
     '</div>';
 }
 

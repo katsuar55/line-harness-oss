@@ -618,6 +618,18 @@ liffPortal.post('/api/liff/fulfillments', async (c) => {
       .bind(user.friendId)
       .all();
 
+    // 2026-07-30 ゼロクリック配送状況: 発送前 (入金待ち/支払い済み/発送準備中) も
+    // 最新注文の financial_status / fulfillment_status からカードに進捗を出せるよう、
+    // 未発送でも最新注文 1 件を返す (発送済みなら fulfillments 側の hero が優先される)。
+    const latestOrder = await c.env.DB
+      .prepare(
+        `SELECT order_number, financial_status, fulfillment_status, total_price, line_items, created_at
+         FROM shopify_orders WHERE friend_id = ?
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .bind(user.friendId)
+      .first<Record<string, unknown>>();
+
     return c.json({
       success: true,
       data: {
@@ -631,6 +643,16 @@ liffPortal.post('/api/liff/fulfillments', async (c) => {
           lineItems: f.line_items ? JSON.parse(f.line_items as string) : [],
           createdAt: f.created_at,
         })),
+        latestOrder: latestOrder
+          ? {
+              orderNumber: latestOrder.order_number,
+              financialStatus: latestOrder.financial_status,
+              fulfillmentStatus: latestOrder.fulfillment_status,
+              totalPrice: latestOrder.total_price,
+              lineItems: latestOrder.line_items ? JSON.parse(latestOrder.line_items as string) : [],
+              createdAt: latestOrder.created_at,
+            }
+          : null,
       },
     });
   } catch (err) {

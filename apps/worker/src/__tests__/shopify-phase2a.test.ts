@@ -463,6 +463,39 @@ describe('Shopify Phase 2A Routes', () => {
       );
     });
 
+    it('order.friend_id 既存時も fulfillment に friend_id を書く (2026-07-30 障害修正: LIFF 配送状況が常に空)', async () => {
+      mockGetShopifyOrderByShopifyId.mockResolvedValueOnce({ id: 'so-1', shopify_order_id: '5551234567890' });
+      mockUpsertShopifyFulfillment.mockResolvedValueOnce({ id: 'sf-1', shopify_fulfillment_id: 'ful_001' });
+
+      // sql 認識モック: 注文行は friend_id 済み。UPDATE shopify_fulfillments SET friend_id を捕捉
+      const sqls: string[] = [];
+      const stmt = {
+        bind: vi.fn().mockReturnThis(),
+        first: vi.fn(async () => ({ email: 'a@example.com', phone: null, friend_id: 'f-99', line_user_id: 'U_test' })),
+        all: vi.fn(async () => ({ results: [] })),
+        run: vi.fn(async () => ({ success: true })),
+      };
+      const db = { prepare: vi.fn((sql: string) => { sqls.push(sql); return stmt; }) } as unknown as D1Database;
+      const envLinked = createMockEnv({ SHOPIFY_WEBHOOK_SECRET: SHOPIFY_SECRET, DB: db });
+
+      const rawBody = JSON.stringify(makeFulfillmentBody());
+      const hmac = await generateShopifyHmac(SHOPIFY_SECRET, rawBody);
+
+      const res = await app.request(
+        '/api/integrations/shopify/webhook/fulfillment',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Shopify-Hmac-Sha256': hmac },
+          body: rawBody,
+        },
+        envLinked,
+      );
+      expect(res.status).toBe(200);
+      // 非同期処理 (waitUntil 相当) の完了を待つ
+      await new Promise((r) => setTimeout(r, 20));
+      expect(sqls.some((s) => s.includes('UPDATE shopify_fulfillments SET friend_id'))).toBe(true);
+    });
+
     it('returns 401 with invalid signature', async () => {
       const rawBody = JSON.stringify(makeFulfillmentBody());
 

@@ -406,6 +406,43 @@ describe('LIFF Portal Routes', () => {
       const res = await post(app, '/api/liff/fulfillments', { lineUserId: 'U_UNKNOWN' });
       expect(res.status).toBe(404);
     });
+
+    it('発送前でも latestOrder (financial_status 等) を返す — ゼロクリック配送状況 (2026-07-30)', async () => {
+      // fulfillments は空、最新注文は入金待ち (銀行振込) の想定
+      const orderRow = {
+        order_number: 1234,
+        financial_status: 'pending',
+        fulfillment_status: null,
+        total_price: '2376.00',
+        line_items: JSON.stringify([{ name: 'naturism Blue 180粒' }]),
+        created_at: '2026-07-30T10:00:00+09:00',
+      };
+      const stmt = {
+        bind: vi.fn().mockReturnThis(),
+        all: vi.fn(async () => ({ results: [] })),
+        first: vi.fn(async () => orderRow),
+        run: vi.fn(async () => ({ success: true })),
+      };
+      const env = { ...mockEnv(), DB: { prepare: vi.fn(() => stmt) } as unknown as D1Database };
+      const res = await app.request('/api/liff/fulfillments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_EXISTING' }),
+      }, env);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { fulfillments: unknown[]; latestOrder: { orderNumber: number; financialStatus: string; lineItems: Array<{ name: string }> } } };
+      expect(json.data.fulfillments).toEqual([]);
+      expect(json.data.latestOrder.orderNumber).toBe(1234);
+      expect(json.data.latestOrder.financialStatus).toBe('pending');
+      expect(json.data.latestOrder.lineItems[0].name).toBe('naturism Blue 180粒');
+    });
+
+    it('注文が無ければ latestOrder は null', async () => {
+      const res = await post(app, '/api/liff/fulfillments', { lineUserId: 'U_EXISTING' });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { latestOrder: unknown } };
+      expect(json.data.latestOrder).toBeNull();
+    });
   });
 
   // ─── Intake ───────────────────────────────────
