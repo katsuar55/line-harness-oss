@@ -737,7 +737,7 @@ function portalPage(
       <!-- 再注文ショートカット (採点R1 HIGH: 旧実装は同タブへの full reload だった → 注文カードへスクロール。
            実際の再注文は各注文行の「🔄 この注文を再注文」= Draft Order ワンタップ) -->
       <div class="card p-4">
-        <a href="javascript:void(0)" onclick="var el=document.getElementById('orders-card');if(el)el.scrollIntoView({behavior:'smooth'})" class="tap flex items-center justify-center gap-2 p-3 rounded-xl bg-emerald-50 text-emerald-700 text-sm font-bold hover:bg-emerald-100 transition-colors">
+        <a href="javascript:void(0)" onclick="reorderShortcut()" class="tap flex items-center justify-center gap-2 p-3 rounded-xl bg-emerald-50 text-emerald-700 text-sm font-bold hover:bg-emerald-100 transition-colors">
           <span class="text-lg">🔄</span> 購入履歴から再注文する
         </a>
       </div>
@@ -3020,6 +3020,26 @@ async function loadShopData() {
     window.__pendingReorderScroll = false;
     setTimeout(function() { if (oel) oel.scrollIntoView({ behavior: 'smooth' }); }, 80);
   }
+}
+
+// 再注文ショートカット (2026-07-30 オーナー実機FB「タップしても何も起きない」):
+// 旧実装は素の scrollIntoView のみで、①注文履歴が空だと何も起きないように見える
+// ②着地位置が sticky ヘッダー+タブ (約110px) に隠れる ③着地後に何をすべきか案内が無い。
+// → 空なら誘導トースト / 有れば オフセット付きスクロール + カードを一時ハイライト + 使い方トースト。
+function reorderShortcut() {
+  var el = document.getElementById('orders-card');
+  if (!el) return;
+  var hasOrders = !!el.querySelector('[data-order-id]');
+  if (!hasOrders) {
+    showToast('まだ注文履歴がありません。初回のご注文後にご利用いただけます');
+    return;
+  }
+  var y = el.getBoundingClientRect().top + window.pageYOffset - 110; /* sticky header+tab 分 */
+  window.scrollTo({ top: y, behavior: 'smooth' });
+  el.style.transition = 'box-shadow .4s';
+  el.style.boxShadow = '0 0 0 3px rgba(47,168,173,.55)';
+  setTimeout(function () { el.style.boxShadow = ''; }, 1600);
+  showToast('ご注文の「🔄 この注文を再注文」からワンタップで再注文できます');
 }
 
 // ワンタップ再注文 (採点R1 HIGH): 注文行 → Draft Order 作成 → チェックアウトを開く。
