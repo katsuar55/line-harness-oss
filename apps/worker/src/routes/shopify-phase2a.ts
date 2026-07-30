@@ -319,13 +319,19 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/fulfillment', async (c) =
           if (match) {
             friendId = match.friendId;
             lineUserId = match.lineUserId;
-
-            // fulfillment にフレンドIDを紐付け
-            await db
-              .prepare(`UPDATE shopify_fulfillments SET friend_id = ?, updated_at = ? WHERE shopify_fulfillment_id = ?`)
-              .bind(friendId, jstNow(), shopifyFulfillmentId)
-              .run();
           }
+        }
+
+        // fulfillment へのフレンド紐付けは解決経路に関わらず必ず書く。
+        // 2026-07-30 障害修正: 旧実装は「注文が未紐付け → email/phone 照合で見つかった」分岐
+        // でしか書いておらず、注文側に friend_id が既に付いている通常ケースで
+        // shopify_fulfillments.friend_id が NULL のまま → LIFF 配送状況 (WHERE sf.friend_id = ?)
+        // が発送後も常に空になっていた。
+        if (friendId) {
+          await db
+            .prepare(`UPDATE shopify_fulfillments SET friend_id = ?, updated_at = ? WHERE shopify_fulfillment_id = ? AND (friend_id IS NULL OR friend_id != ?)`)
+            .bind(friendId, jstNow(), shopifyFulfillmentId, friendId)
+            .run();
         }
 
         // LINE通知送信（SHOPIFY_LINE_NOTIFY_ENABLED が 'true' の場合のみ）

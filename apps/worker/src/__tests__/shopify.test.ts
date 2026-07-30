@@ -392,6 +392,51 @@ describe('Shopify Routes', () => {
         }),
       );
     });
+
+    it('email/phone 不一致でも連携済み顧客は shopify_customer_id で friend に紐付く (2026-07-30 fallback)', async () => {
+      const secret = 'test_hmac_secret';
+      // sql 認識モック: users 照合 (email/phone) は不一致 (null)、
+      // friends.shopify_customer_id 照合だけヒットさせ、後続の UPDATE を捕捉する
+      const sqls: string[] = [];
+      const makeStmt = (sql: string) => ({
+        bind: vi.fn().mockReturnThis(),
+        first: vi.fn(async () =>
+          sql.includes('FROM friends WHERE shopify_customer_id') ? { id: 'f-linked-1' } : null,
+        ),
+        all: vi.fn(async () => ({ results: [] })),
+        run: vi.fn(async () => ({ success: true })),
+      });
+      const db = {
+        prepare: vi.fn((sql: string) => { sqls.push(sql); return makeStmt(sql); }),
+        batch: vi.fn(async () => []),
+      } as unknown as D1Database;
+      const envWithSecret = createMockEnv({ SHOPIFY_WEBHOOK_SECRET: secret, DB: db });
+      mockGetShopifyOrderByShopifyId.mockResolvedValueOnce(null);
+      mockUpsertShopifyOrder.mockResolvedValueOnce({ id: 'so-1', shopify_order_id: '5551234567890' });
+
+      const rawBody = JSON.stringify(makeOrderWebhookBody({ email: 'unknown@example.com', phone: null, customer: { id: 7771234567890, email: 'unknown@example.com' } }));
+      const hmac = await generateShopifyHmac(secret, rawBody);
+
+      const res = await app.request(
+        '/api/integrations/shopify/webhook',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Shopify-Topic': 'orders/create',
+            'X-Shopify-Hmac-Sha256': hmac,
+          },
+          body: rawBody,
+        },
+        envWithSecret,
+      );
+      expect(res.status).toBe(200);
+      // 非同期処理 (waitUntil 相当) の完了を待つ
+      await new Promise((r) => setTimeout(r, 20));
+      expect(sqls.some((s) => s.includes('FROM friends WHERE shopify_customer_id'))).toBe(true);
+      expect(sqls.some((s) => s.includes('UPDATE shopify_orders SET friend_id'))).toBe(true);
+      expect(mockLinkShopifyCustomerToFriend).toHaveBeenCalledWith(db, '7771234567890', 'f-linked-1');
+    });
   });
 
   // =========================================================================

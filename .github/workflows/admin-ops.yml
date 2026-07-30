@@ -79,6 +79,11 @@ name: Admin Ops
 #   backfill-customer-friend-id:
 #     連携済み friends (shopify_customer_id 保持) から shopify_customers.friend_id への
 #     逆方向リンクを一括補完する (redeem 側は 2026-07-29 以降自動書込。これは既存分の後追い)。
+#   delivery-status-diagnose:
+#     read-only。LIFF 配送状況カードのデータ経路を件数のみで診断する:
+#     直近14日の webhook 到達 (topic×status 件数) / 注文の friend 紐付け率 /
+#     financial_status 内訳 / fulfillments の friend 紐付け率。PII なし。
+#     「注文したのにミニアプリに出ない」時の一次切り分け用 (webhook 未達 vs 紐付け失敗)。
 #
 # ⚠️ repo は PUBLIC = workflow ログ/サマリは公開される。secret の値・顧客データ (PII) を
 #    echo/サマリ出力する op を追加してはならない (名前・件数のみ可)。
@@ -114,6 +119,7 @@ on:
           - disable-app-proxy-link
           - app-proxy-status
           - backfill-customer-friend-id
+          - delivery-status-diagnose
           - release-billing-hold
           - custom-domain-status
           - attach-custom-domain
@@ -734,6 +740,53 @@ jobs:
           echo '### After (customers + orders)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT (SELECT COUNT(*) FROM friends WHERE shopify_customer_id IS NOT NULL) AS linked_friends, (SELECT COUNT(*) FROM shopify_customers WHERE friend_id IS NOT NULL) AS backlinked_customers, (SELECT COUNT(*) FROM shopify_orders WHERE friend_id IS NULL AND shopify_customer_id IN (SELECT shopify_customer_id FROM friends WHERE shopify_customer_id IS NOT NULL)) AS orders_still_unlinked" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Delivery status diagnose (counts only, read-only)
+        if: inputs.op == 'delivery-status-diagnose'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # LIFF 配送状況カードのデータ経路診断 (件数のみ・PII なし)。
+          # 経路: Shopify webhook → shopify_orders/shopify_fulfillments (+friend_id 紐付け) → LIFF カード
+          echo '### 1. Webhook 到達 (直近14日, topic×status 件数)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            SELECT topic, status, COUNT(*) AS n
+            FROM shopify_webhook_log
+            WHERE received_at >= datetime('now','-14 day')
+            GROUP BY topic, status ORDER BY topic, status
+          " | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '### 2. 注文の friend 紐付け率 + financial_status 内訳 (直近14日)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            SELECT
+              COUNT(*) AS orders_total,
+              SUM(CASE WHEN friend_id IS NOT NULL THEN 1 ELSE 0 END) AS orders_linked,
+              SUM(CASE WHEN friend_id IS NULL THEN 1 ELSE 0 END) AS orders_unlinked
+            FROM shopify_orders WHERE created_at >= datetime('now','-14 day')
+          " | tee -a "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            SELECT financial_status, fulfillment_status,
+              COUNT(*) AS n,
+              SUM(CASE WHEN friend_id IS NOT NULL THEN 1 ELSE 0 END) AS linked
+            FROM shopify_orders WHERE created_at >= datetime('now','-14 day')
+            GROUP BY financial_status, fulfillment_status
+          " | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '### 3. fulfillments の friend 紐付け率 (全期間)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            SELECT
+              COUNT(*) AS fulfillments_total,
+              SUM(CASE WHEN friend_id IS NOT NULL THEN 1 ELSE 0 END) AS linked,
+              SUM(CASE WHEN friend_id IS NULL THEN 1 ELSE 0 END) AS unlinked
+            FROM shopify_fulfillments
+          " | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo '### 読み方'
+            echo '- 1 に orders/create が無い → webhook 未達 (Shopify 側の webhook 登録を確認)'
+            echo '- orders_unlinked > 0 → 注文はあるが LINE 友だちに紐付いていない (メール/電話不一致。ストアログイン連携 or backfill-customer-friend-id で解消)'
+            echo '- fulfillments unlinked > 0 → 発送レコードの紐付け漏れ (2026-07-30 修正デプロイ後の新規発送では発生しない想定)'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Rank discount status (counts only, read-only)
         if: inputs.op == 'rank-discount-status'

@@ -367,13 +367,28 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
           try {
             // Round 4 PR-0: 共通ヘルパーで match + back-fill (email/phone 相互補完)
             const matchResult = await findFriendAndBackfill(db, email, phone);
-            const friendId = matchResult.friendId;
+            let friendId = matchResult.friendId;
 
             if (matchResult.backfilled !== 'none') {
               await logWebhook(
                 db, topic, shopifyOrderId, 'backfilled',
                 `users.${matchResult.backfilled} populated from Shopify ${topic}`,
               );
+            }
+
+            // 2026-07-30 fallback: email/phone で見つからなくても、アカウント連携
+            // (App Proxy / magic-link) 済みの顧客は friends.shopify_customer_id で確定紐付けできる。
+            // これが無いと「LINE 側にメール未登録の連携済み顧客」の注文が unlinked のまま残り、
+            // LIFF の注文履歴・配送状況・購買セグメントから静かに漏れる。
+            if (!friendId && shopifyCustomerId) {
+              const linked = await db
+                .prepare(`SELECT id FROM friends WHERE shopify_customer_id = ?`)
+                .bind(shopifyCustomerId)
+                .first<{ id: string }>();
+              if (linked) {
+                friendId = linked.id;
+                await logWebhook(db, topic, shopifyOrderId, 'matched', 'friend matched via shopify_customer_id link');
+              }
             }
 
             if (friendId) {
