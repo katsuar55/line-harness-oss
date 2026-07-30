@@ -148,24 +148,43 @@ vi.mock('../services/shopify-token.js', () => ({
   getShopifyAccessToken: vi.fn(async () => 'test-shopify-token'),
 }));
 
-// Mock global fetch for Shopify API calls (Draft Orders)
+// Mock global fetch for Shopify API calls (Draft Orders — 2026-07-30 GraphQL 移行)
 const originalFetch = globalThis.fetch;
 vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-  if (typeof url === 'string' && url.includes('/admin/api/') && url.includes('draft_orders')) {
-    return new Response(JSON.stringify({
-      draft_order: {
-        id: 12345,
-        invoice_url: 'https://naturism-diet.com/checkout/draft/12345',
-        status: 'open',
-        total_price: '6415.00',
-        currency: 'JPY',
-        line_items: [{ title: 'naturism Blue VP', quantity: 1, price: '6415.00' }],
-      },
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (typeof url === 'string' && url.includes('/admin/api/') && url.includes('graphql.json')) {
+    const reqBody = init?.body ? String(init.body) : '';
+    if (reqBody.includes('draftOrderCreate')) {
+      return new Response(JSON.stringify({
+        data: {
+          draftOrderCreate: {
+            draftOrder: {
+              id: 'gid://shopify/DraftOrder/12345',
+              invoiceUrl: 'https://naturism-diet.com/checkout/draft/12345',
+              status: 'OPEN',
+              totalPriceSet: { shopMoney: { amount: '6415.00', currencyCode: 'JPY' } },
+              lineItems: { nodes: [{ name: 'naturism Blue VP', quantity: 1 }] },
+            },
+            userErrors: [],
+          },
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
   }
   // Fallback for other URLs (shouldn't hit in tests)
   return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
 }));
+
+/** 直近の draftOrderCreate リクエスト body (GraphQL variables) を取り出すヘルパー */
+function lastDraftOrderCall(): { query: string; variables: { input: Record<string, unknown> } } | null {
+  const calls = (globalThis.fetch as unknown as { mock: { calls: Array<[string, RequestInit?]> } }).mock.calls;
+  for (let i = calls.length - 1; i >= 0; i--) {
+    const [url, init] = calls[i];
+    if (typeof url === 'string' && url.includes('graphql.json') && init?.body && String(init.body).includes('draftOrderCreate')) {
+      return JSON.parse(String(init.body));
+    }
+  }
+  return null;
+}
 
 // Mock quiz engine
 vi.mock('../services/quiz-engine.js', () => ({
@@ -397,6 +416,68 @@ describe('LIFF Portal Routes', () => {
       expect(res.status).toBe(404);
       const json = await res.json() as { success: boolean };
       expect(json.success).toBe(false);
+    });
+
+    // ─── 再注文シート (2026-07-30): 配送オプションの検証 + customAttributes 配管 ───
+    it('rejects unknown shippingMethod with 400 (固定語彙のみ)', async () => {
+      const res = await post(app, '/api/liff/reorder/create', {
+        lineUserId: 'U_EXISTING', orderId: 'o1', shippingMethod: 'dokodemo-door',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects unknown deliveryTime with 400 (固定語彙のみ)', async () => {
+      const res = await post(app, '/api/liff/reorder/create', {
+        lineUserId: 'U_EXISTING', orderId: 'o1', shippingMethod: 'takkyubin', deliveryTime: '深夜2時',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects past deliveryDate with 400', async () => {
+      const res = await post(app, '/api/liff/reorder/create', {
+        lineUserId: 'U_EXISTING', orderId: 'o1', shippingMethod: 'takkyubin', deliveryDate: '2020-01-01',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('passes 配送方法/配送希望日/時間帯 as customAttributes (宅配便)', async () => {
+      const future = new Date(Date.now() + 10 * 86400 * 1000).toISOString().slice(0, 10);
+      const res = await post(app, '/api/liff/reorder/create', {
+        lineUserId: 'U_EXISTING', orderId: 'o1',
+        shippingMethod: 'takkyubin', deliveryDate: future, deliveryTime: '午前中',
+      });
+      expect(res.status).toBe(200);
+      const call = lastDraftOrderCall();
+      expect(call).not.toBeNull();
+      const attrs = call!.variables.input.customAttributes as Array<{ key: string; value: string }>;
+      expect(attrs).toContainEqual({ key: '配送方法', value: '宅配便' });
+      expect(attrs).toContainEqual({ key: '配送希望日', value: future });
+      expect(attrs).toContainEqual({ key: '配送希望時間帯', value: '午前中' });
+    });
+
+    it('ネコポスは日時指定を無視する (ポスト投函 = 日時指定不可のサーバー側ガード)', async () => {
+      const future = new Date(Date.now() + 10 * 86400 * 1000).toISOString().slice(0, 10);
+      const res = await post(app, '/api/liff/reorder/create', {
+        lineUserId: 'U_EXISTING', orderId: 'o1',
+        shippingMethod: 'nekopos', deliveryDate: future, deliveryTime: '午前中',
+      });
+      expect(res.status).toBe(200);
+      const call = lastDraftOrderCall();
+      const attrs = (call!.variables.input.customAttributes ?? []) as Array<{ key: string; value: string }>;
+      expect(attrs).toContainEqual({ key: '配送方法', value: 'ネコポス' });
+      expect(attrs.some((a) => a.key === '配送希望日')).toBe(false);
+      expect(attrs.some((a) => a.key === '配送希望時間帯')).toBe(false);
+    });
+
+    it('GraphQL userErrors/errors は 502 + 顧客向けメッセージに変換される', async () => {
+      const fetchMock = globalThis.fetch as unknown as { mockImplementationOnce: (fn: () => Promise<Response>) => void };
+      fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({
+        errors: [{ message: 'Access denied for draftOrderCreate', extensions: { code: 'ACCESS_DENIED' } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      const res = await post(app, '/api/liff/reorder/create', { lineUserId: 'U_EXISTING', orderId: 'o1' });
+      expect(res.status).toBe(502);
+      const json = await res.json() as { error: string };
+      expect(json.error).toContain('再注文機能の準備中');
     });
   });
 

@@ -147,6 +147,24 @@ function portalPage(
     .nxq-rcta{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;min-height:48px;padding:12px 28px;border-radius:99px;font-size:15px;font-weight:700;color:#fff;background:linear-gradient(135deg,#2fa8ad,#1d7d82);box-shadow:0 8px 22px rgba(47,168,173,.35);text-decoration:none;transition:transform .25s cubic-bezier(.22,1,.36,1),box-shadow .25s}
     .nxq-rcta:active{transform:scale(.97)}
     @media(prefers-reduced-motion:reduce){.nxq-bfill,.nxq-progress span,.nxq-opt{transition:none}}
+    /* ===== 再注文シート (2026-07-30) — ティファニーブルー系 =====
+       ブランドのティファニーブルー原色は白文字 2.5:1 で §7-1 AA 不足のため、
+       ディープティファニー #0d827d (白 4.66:1 ✓) へ写像 (btn-primary #0f766e と同系の解決) */
+    #reorder-sheet .ros-panel{position:absolute;left:0;right:0;bottom:0;background:#fff;border-radius:24px 24px 0 0;padding:18px 18px calc(18px + env(safe-area-inset-bottom));box-shadow:0 -8px 32px rgba(0,0,0,.16);animation:rosUp .3s cubic-bezier(.22,1,.36,1);max-height:86vh;overflow-y:auto}
+    @keyframes rosUp{from{transform:translateY(48px);opacity:0}to{transform:none;opacity:1}}
+    .ros-label{font-size:12px;font-weight:700;color:#374151;margin:12px 0 6px}
+    .ros-optional{font-weight:400;color:#94a3b8;margin-left:6px;font-size:11px}
+    .ros-seg{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .ros-seg-btn{border:1.5px solid #cbd5e1;background:#fff;color:#475569;border-radius:14px;padding:11px 8px;font-size:14px;font-weight:700;transition:border-color .15s,background .15s,color .15s,box-shadow .15s}
+    .ros-seg-btn .ros-seg-sub{display:block;font-size:10px;font-weight:400;color:#94a3b8;margin-top:2px}
+    .ros-seg-btn.is-on{border-color:#0d827d;background:#0d827d;color:#fff;box-shadow:0 4px 14px rgba(13,130,125,.35)}
+    .ros-seg-btn.is-on .ros-seg-sub{color:#fff}
+    .ros-primary{display:block;width:100%;border:0;border-radius:999px;padding:14px;font-size:15px;font-weight:700;color:#fff;background:#0d827d;box-shadow:0 8px 22px rgba(13,130,125,.4);cursor:pointer;transition:transform .15s}
+    .ros-primary:active{transform:scale(.97)}
+    .ros-primary:disabled{opacity:.55}
+    .ros-gray{border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:12px;padding:10px 4px;font-size:11px;font-weight:600;line-height:1.5}
+    #ros-datetime.is-disabled{opacity:.4;pointer-events:none}
+    @media(prefers-reduced-motion:reduce){#reorder-sheet .ros-panel{animation:none}}
     .card{background:#ffffff;border-radius:20px;border:1px solid #e3ecec;box-shadow:0 2px 6px rgba(24,34,41,.05),0 12px 32px rgba(24,34,41,.06)}
     .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:8px}
     @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
@@ -907,6 +925,50 @@ function portalPage(
 
   </main>
 
+  <!-- 再注文シート (2026-07-30): 前回と同じ内容で最少タップ再注文。
+       迷いポイントを「配送方法」「お届け日時」の2つに絞り、住所・支払いは
+       Shopify チェックアウト (前回情報が事前入力) に委ねる。 -->
+  <div id="reorder-sheet" data-no-tab-swipe style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:60;background:rgba(15,23,42,.45)" role="dialog" aria-modal="true" aria-label="再注文" onclick="if(event.target===this)closeReorderSheet()">
+    <div class="ros-panel">
+      <div class="flex items-center justify-between mb-1">
+        <p class="text-base font-bold text-gray-800">🔄 再注文</p>
+        <button onclick="closeReorderSheet()" aria-label="閉じる" class="text-gray-400 text-lg leading-none px-2 py-1">✕</button>
+      </div>
+      <p class="text-xs text-gray-500 mb-2" id="ros-summary"></p>
+
+      <p class="ros-label">配送方法</p>
+      <div class="ros-seg" id="ros-ship">
+        <button type="button" data-ship="takkyubin" onclick="rosPickShip('takkyubin')" class="ros-seg-btn is-on">宅配便<span class="ros-seg-sub">日時指定OK</span></button>
+        <button type="button" data-ship="nekopos" onclick="rosPickShip('nekopos')" class="ros-seg-btn">ネコポス<span class="ros-seg-sub">ポスト投函</span></button>
+      </div>
+
+      <div id="ros-datetime">
+        <p class="ros-label">お届け日時<span class="ros-optional">指定なしでもOK</span></p>
+        <div class="flex gap-2">
+          <input type="date" id="ros-date" class="flex-1" style="min-width:0">
+          <select id="ros-time" class="flex-1" style="min-width:0">
+            <option value="">時間帯の指定なし</option>
+            <option>午前中</option>
+            <option>14〜16時</option>
+            <option>16〜18時</option>
+            <option>18〜20時</option>
+            <option>19〜21時</option>
+          </select>
+        </div>
+      </div>
+      <p id="ros-nekopos-note" style="display:none" class="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mt-2">ネコポスはポスト投函のため、お届け日時の指定はできません</p>
+
+      <button id="ros-submit" onclick="submitReorder()" class="ros-primary mt-4">この内容で注文へ進む →</button>
+      <p class="text-xs text-gray-400 text-center mt-2 mb-3">お届け先・お支払い方法は前回と同じなら、次の画面でそのまま進むだけでOKです</p>
+
+      <div class="grid grid-cols-3 gap-2">
+        <button onclick="submitReorder('address')" class="ros-gray">送り先を<br>変更する</button>
+        <button onclick="rosEditItems()" class="ros-gray">注文内容を<br>変更する</button>
+        <button onclick="submitReorder('payment')" class="ros-gray">支払い方法を<br>変更する</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Loading overlay -->
   <div id="loading" class="fixed inset-0 flex items-center justify-center z-50" style="background:linear-gradient(160deg,#f2fafa 0%,#f8fafc 40%,#faf5ff 100%)">
     <div class="text-center">
@@ -916,7 +978,8 @@ function portalPage(
   </div>
 
   <!-- Toast -->
-  <div id="toast" role="status" aria-live="polite" class="fixed bottom-24 left-1/2 -translate-x-1/2 text-white px-5 py-2.5 rounded-2xl text-sm shadow-xl opacity-0 transition-opacity pointer-events-none z-50"></div>
+  <!-- z-index:70 = 再注文シート (60) の上にも出す (シート内のエラー通知が隠れない) -->
+  <div id="toast" role="status" aria-live="polite" style="z-index:70" class="fixed bottom-24 left-1/2 -translate-x-1/2 text-white px-5 py-2.5 rounded-2xl text-sm shadow-xl opacity-0 transition-opacity pointer-events-none z-50"></div>
 
   <!-- Confetti overlay (採点R1: section-intake 内にあると home のワンタップ記録で紙吹雪が出なかった → body 直下へ) -->
   <div id="confetti-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:9999;"></div>
@@ -2935,6 +2998,8 @@ async function loadShopData() {
   } catch (e) { /* 個別 catch 済のため到達しない */ }
   if (res && res.data) {
     var data = res.data;
+    // 再注文シートが参照する注文リスト (variant_id 入り lineItems を保持)
+    window.__liffOrders = data.recentOrders || [];
     // Products
     if (data.products && data.products.length > 0) {
       pel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-3">商品ラインナップ</p>' +
@@ -3042,31 +3107,127 @@ function reorderShortcut() {
   showToast('ご注文の「🔄 この注文を再注文」からワンタップで再注文できます');
 }
 
-// ワンタップ再注文 (採点R1 HIGH): 注文行 → Draft Order 作成 → チェックアウトを開く。
-// 失敗 (429 の 5分レート制限含む) はサーバ message をトーストで可視化し、ボタンを復帰する。
-async function reorderFromOrder(btn) {
+// ─── 再注文シート (2026-07-30): 前回と同じ内容で最少タップ再注文 ───
+// 「この注文を再注文」→ シートで 配送方法 (宅配便/ネコポス) と お届け日時 だけ選び
+// 「この内容で注文へ進む」→ Draft Order 作成 → チェックアウト (住所・支払いは前回情報のまま)。
+// 迷いポイントを2つに絞り、変更系 (送り先/内容/支払い) はグレーの脇役ボタンに退避。
+var rosOrder = null;        // シート対象の注文 (window.__liffOrders の行)
+var rosShip = 'takkyubin';  // 既定=宅配便 (そのまま進めば最短2タップでチェックアウト)
+var rosSubmitting = false;
+
+function reorderFromOrder(btn) {
   var orderId = btn && btn.getAttribute('data-order-id');
-  if (!orderId || btn.disabled) return;
-  var orig = btn.textContent;
-  btn.disabled = true; btn.textContent = '作成中…';
+  if (!orderId) return;
+  var list = window.__liffOrders || [];
+  rosOrder = null;
+  for (var i = 0; i < list.length; i++) {
+    if (String(list[i].id) === String(orderId)) { rosOrder = list[i]; break; }
+  }
+  if (!rosOrder) { showToast('注文情報を取得できませんでした。再読み込みしてお試しください'); return; }
+  openReorderSheet();
+}
+
+function openReorderSheet() {
+  rosShip = 'takkyubin';
+  rosSubmitting = false;
+  rosApplyShip();
+  var items = rosOrder.lineItems || [];
+  var label = items.length ? (items[0].name || items[0].title || '') + (items.length > 1 ? ' 他' + (items.length - 1) + '点' : '') : '';
+  document.getElementById('ros-summary').textContent =
+    '前回のご注文 #' + rosOrder.orderNumber + (label ? '（' + label + '）' : '') +
+    ' ¥' + Number(rosOrder.totalPrice).toLocaleString() + ' と同じ内容でご用意します';
+  // お届け希望日の範囲: 3日後〜30日後 (JST)。既定は指定なし = 追加タップ0
+  var jstNowMs = Date.now() + 9 * 3600 * 1000;
+  function fmt(ms) { return new Date(ms).toISOString().slice(0, 10); }
+  var dateEl = document.getElementById('ros-date');
+  dateEl.value = '';
+  dateEl.min = fmt(jstNowMs + 3 * 86400 * 1000);
+  dateEl.max = fmt(jstNowMs + 30 * 86400 * 1000);
+  document.getElementById('ros-time').value = '';
+  var btn = document.getElementById('ros-submit');
+  btn.disabled = false;
+  btn.textContent = 'この内容で注文へ進む →';
+  document.getElementById('reorder-sheet').style.display = 'block';
+}
+
+function closeReorderSheet() {
+  document.getElementById('reorder-sheet').style.display = 'none';
+}
+
+function rosPickShip(method) {
+  rosShip = method;
+  rosApplyShip();
+}
+
+function rosApplyShip() {
+  var btns = document.querySelectorAll('#ros-ship .ros-seg-btn');
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].classList.toggle('is-on', btns[i].getAttribute('data-ship') === rosShip);
+  }
+  // ネコポスはポスト投函 = 日時指定不可 (ヤマトの実仕様。サーバー側でも同じガードあり)
+  var isNeko = rosShip === 'nekopos';
+  document.getElementById('ros-datetime').classList.toggle('is-disabled', isNeko);
+  document.getElementById('ros-nekopos-note').style.display = isNeko ? 'block' : 'none';
+}
+
+// 注文内容を変更 → 前回と同じ中身を積んだカートを開く (数量変更・追加はストア側で自由に)
+function rosEditItems() {
+  var items = (rosOrder && rosOrder.lineItems) || [];
+  var parts = [];
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].variant_id) parts.push(items[i].variant_id + ':' + (Number(items[i].quantity) || 1));
+  }
+  var url = parts.length ? 'https://naturism-diet.com/cart/' + parts.join(',') : 'https://naturism-diet.com/';
+  closeReorderSheet();
+  openExternalUrl(url);
+}
+
+// 採点R2 前例踏襲: LINE iOS in-app browser の popup block 対策で liff.openWindow 優先 →
+// window.open は戻り値 null 判定 → 最後は同タブ遷移に degrade
+function openExternalUrl(url) {
   try {
-    var res = await api('/api/liff/reorder/create', { orderId: orderId });
+    if (typeof liff !== 'undefined' && liff.openWindow) {
+      liff.openWindow({ url: url, external: true });
+      return;
+    }
+  } catch (e) { /* fallthrough */ }
+  var w = null;
+  try { w = window.open(url, '_blank'); } catch (e) { w = null; }
+  if (!w) { window.location.href = url; }
+}
+
+// focus: 'address' | 'payment' | undefined。グレーボタンも同じ最短経路
+// (住所・支払いはどのみち次のチェックアウト画面で変更できるため、行き先を変えず案内だけ変える)
+async function submitReorder(focus) {
+  if (!rosOrder || rosSubmitting) return;
+  rosSubmitting = true;
+  var btn = document.getElementById('ros-submit');
+  btn.disabled = true;
+  btn.textContent = 'ご注文の準備中…';
+  var payload = { orderId: rosOrder.id, shippingMethod: rosShip };
+  if (rosShip !== 'nekopos') {
+    var dt = document.getElementById('ros-date').value;
+    var tm = document.getElementById('ros-time').value;
+    if (dt) payload.deliveryDate = dt;
+    if (tm) payload.deliveryTime = tm;
+  }
+  try {
+    var res = await api('/api/liff/reorder/create', payload);
     if (apiFailed(res)) {
       showToast((res && res.error) || '再注文の作成に失敗しました');
     } else if (res.data && res.data.invoiceUrl) {
-      showToast('ご注文ページを開きます');
-      // 採点R2: await 後の window.open は LINE iOS in-app browser で popup block されうる →
-      //   gesture 非依存の liff.openWindow を優先し、無ければ同タブ遷移に degrade
-      if (typeof liff !== 'undefined' && liff.openWindow) {
-        liff.openWindow({ url: res.data.invoiceUrl, external: true });
-      } else {
-        window.location.href = res.data.invoiceUrl;
-      }
+      if (focus === 'address') showToast('お届け先は次の画面の「配送先」で変更できます');
+      else if (focus === 'payment') showToast('お支払い方法は次の画面で選べます');
+      else showToast('ご注文ページを開きます');
+      closeReorderSheet();
+      openExternalUrl(res.data.invoiceUrl);
     } else {
       showToast('再注文の作成に失敗しました');
     }
   } catch (e) { showToast('再注文の作成に失敗しました'); }
-  btn.disabled = false; btn.textContent = orig;
+  rosSubmitting = false;
+  btn.disabled = false;
+  btn.textContent = 'この内容で注文へ進む →';
 }
 
 // 配送ステータスの日本語化 (Shopify fulfillment/shipment status → 顧客向け表現)
