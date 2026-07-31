@@ -22,6 +22,16 @@ import {
 } from '@line-crm/db';
 import { addDays } from './subscription-contracts.js';
 
+/**
+ * 変更・スキップ・解約の締切 = 次回決済日の **3 日前**。
+ *
+ * リマインドの送信窓 (`subscription-billing-reminder.ts` の LEAD_DAYS_MIN/MAX = 3/7) の
+ * **下限がこの値と一致している**ことが設計の前提: 下限 = 締切当日が最後のレーンになる。
+ * どちらかを動かす時は必ず両方を見ること (片方だけ動かすと「締切を過ぎた契約に
+ * まだ間に合う体の案内を送る」か「まだ間に合う契約に 1 通も送らない」のどちらかになる)。
+ */
+export const BILLING_DEADLINE_LEAD_DAYS = 3;
+
 const TEAL_DARK = '#0f766e';
 const TEAL = '#0ABAB5';
 const TEXT_MAIN = '#334155';
@@ -154,7 +164,7 @@ export function buildConciergeErrorMessages(): ReadonlyArray<Message> {
 }
 
 /**
- * 決済4日前リマインド push (WI-2)。「変更・スキップの締切は明日」を、締切前に届く
+ * 決済7日前リマインド push (WI-2)。「変更・スキップの締切」を、締切前に届く
  * 唯一の事前通知として送る (既存の事前案内メールはお届け3日前 ≈ 決済後で間に合わない)。
  * リード文 + 操作ボタンつき契約カードの 2 メッセージ。
  */
@@ -163,12 +173,20 @@ export function buildBillingReminderMessages(
   daysUntilBilling?: number,
 ): ReadonlyArray<Message> {
   const estimate = formatJpDate(contract.next_billing_estimate);
-  // 締切 = 決済3日前。4日前送信なら「明日まで」、catch-up の3日前送信なら「本日中」。
+  // 締切 = 決済3日前 (据置)。送信は決済 3〜7 日前の窓で起きるので、締切までの残り日数は
+  // 0〜4 日の幅を取る。ここを「明日まで」固定にすると、7日前送信で**実際は4日あるのに
+  // 「明日まで」と伝える嘘**になる (窓を [3,4] から [3,7] へ広げた際の副作用)。
   // 推定値なので断定を避け「お手続きの目安」として案内する (採点R1: 推定ズレ時の誤誘導防止)。
+  const daysUntilDeadline =
+    daysUntilBilling === undefined ? undefined : daysUntilBilling - BILLING_DEADLINE_LEAD_DAYS;
   const deadlinePhrase =
-    daysUntilBilling !== undefined && daysUntilBilling <= 3
-      ? '本日中のお手続きをおすすめします'
-      : '明日までのお手続きをおすすめします';
+    daysUntilDeadline === undefined
+      ? 'お早めのお手続きをおすすめします'
+      : daysUntilDeadline <= 0
+        ? '本日中のお手続きをおすすめします'
+        : daysUntilDeadline === 1
+          ? '明日までのお手続きをおすすめします'
+          : `あと${daysUntilDeadline}日以内のお手続きをおすすめします`;
   const lead = estimate
     ? `📦 まもなく定期便の次回お届け準備が始まります (${estimate}ごろ決済予定)。\n変更・スキップ・解約をご希望の場合は、${deadlinePhrase}🌿\n※正確な締切はマイページでご確認いただけます`
     : `📦 まもなく定期便の次回お届け準備が始まります。\n変更・スキップ・解約をご希望の場合は、お早めにお手続きください🌿`;
@@ -555,7 +573,7 @@ function deadlineText(contract: SubscriptionContractRow): string | null {
   if (contract.cancelled_at || contract.paused_at) return null;
   const estimate = contract.next_billing_estimate;
   if (estimate && !isStaleEstimate(estimate)) {
-    const deadlineDate = addDays(estimate, -3);
+    const deadlineDate = addDays(estimate, -BILLING_DEADLINE_LEAD_DAYS);
     if (deadlineDate < todayJst()) {
       return '⏰ 今回分の変更受付は締め切られている可能性があります。正確な状況はマイページでご確認ください';
     }

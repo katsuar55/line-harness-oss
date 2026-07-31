@@ -1,13 +1,15 @@
 /**
- * サブスク決済4日前リマインド + 決済失敗リカバリ通知 cron (WI-2)
+ * サブスク決済7日前リマインド + 決済失敗リカバリ通知 cron (WI-2)
  * docs/SUBSCRIPTION_ULTRAPLAN_2026-07-14.md / 設計改訂: 採点R1 (scratchpad/wi2-fix-round1.md)
+ * 窓の拡張 [3,4] → [3,7]: docs/SUBSCRIPTION_UX_TAP_MINIMAL_2026-07-25.md §10-0 ④
  *
  * フェーズ1 — 決済リマインド:
  *   マイページ操作の締切は「次回決済日の3日前」。既存の事前案内メールは「お届け3日前」≈ 決済後で
  *   間に合わないため、本 cron が締切前に届く唯一の事前通知。
- *   - 対象: 推定次回決済日 ∈ [今日+3, 今日+4] (catch-up: 4日前の窓を障害・gate OFF 等で
- *     逃しても締切当日 = 3日前までは通知価値が残る。claim が推定日単位なので二重送信なし)
- *   - 文言: 4日前「明日までに」/ 3日前「本日中に」
+ *   - 対象: 推定次回決済日 ∈ [今日+3, 今日+7] (通常 = 7日前カード。catch-up: 窓の前半を障害・
+ *     gate OFF 等で逃しても締切当日 = 3日前までは通知価値が残る。claim が推定日単位なので
+ *     二重送信なし = 窓を広げても通数は増えず、届くタイミングが早くなるだけ)
+ *   - 文言: 締切までの残り日数で切替 (7日前「あと4日以内」/ 4日前「明日まで」/ 3日前「本日中」)
  *
  * フェーズ2 — 決済失敗リカバリ:
  *   Huckleberry は決済失敗で自動一時停止 (再決済なし)。検知 (customers/update の pause タグ
@@ -40,14 +42,30 @@ import { dispatch } from './channel-dispatcher.js';
 import {
   buildBillingReminderMessages,
   buildPaymentRecoveryMessages,
+  BILLING_DEADLINE_LEAD_DAYS,
 } from './subscription-concierge.js';
 import { addDays } from './subscription-contracts.js';
 
 export const BILLING_REMINDER_JOB_NAME = 'teiki-billing-reminder';
 
-/** 通常送信 = 決済日の4日前 (締切前日)。catch-up 下限 = 3日前 (締切当日) */
-const LEAD_DAYS_MAX = 4;
-const LEAD_DAYS_MIN = 3;
+/**
+ * リマインド対象の窓 (決済推定日までの日数、両端 inclusive)。
+ *
+ * 通常送信 = 決済日の **7日前** (= 設計書の「7日前リマインドカード」)。
+ * catch-up 下限 = 3日前 (= 締切当日。締切は決済3日前で据置)。
+ *
+ * MAX を 7 にした理由 (SUBSCRIPTION_UX_TAP_MINIMAL §10-0 ④): 締切当日に届いても
+ * 「今回は間に合わない」ケースが日常的に出るため、締切まで 4 日の余裕を作る。
+ * **MIN は 3 から上げないこと** — 上げると「決済3日前に初めて連携した顧客」や
+ * 「窓の前半で gate OFF / 障害だった契約」が、まだ行動できるのにリマインドを
+ * 1 通も受け取れない (しかも失われたことに誰も気づけない)。
+ *
+ * 契約あたりの送信は `reminded_for_estimate` の claim により **同一推定日で 1 通**。
+ * 窓を広げても通数は増えず、届く**タイミングが早くなる**だけである。
+ */
+const LEAD_DAYS_MAX = 7;
+/** 締切当日を最後のレーンにする = 締切リード日数と一致させる (定数を共有して drift を構造的に防ぐ)。 */
+const LEAD_DAYS_MIN = BILLING_DEADLINE_LEAD_DAYS;
 /** 送信窓 (JST hour, inclusive-exclusive) */
 const WINDOW_START_HOUR = 10;
 const WINDOW_END_HOUR = 20;

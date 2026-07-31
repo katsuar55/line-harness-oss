@@ -116,7 +116,7 @@ adminDashboard.get('/api/admin/dashboard', async (c) => {
     { label: '友達紹介の「紹介した人に500円」特典', on: on(c.env.REFERRAL_REWARD_ENABLED), offText: '未公開 — 案内NG' },
     { label: 'LINE 一斉配信 (ブロードキャスト)', on: on(c.env.BROADCAST_ALL_ENABLED), offText: '未公開 (開発者に依頼)' },
     { label: 'トーク内サブスク管理カード', on: on(c.env.SUBSCRIPTION_MENU_ENABLED), offText: '近日公開 — 案内NG' },
-    { label: 'サブスク決済 4日前リマインド', on: on(c.env.SUBSCRIPTION_REMINDER_ENABLED), offText: '近日公開 — 案内NG' },
+    { label: 'サブスク決済 7日前リマインド', on: on(c.env.SUBSCRIPTION_REMINDER_ENABLED), offText: '近日公開 — 案内NG' },
   ];
 
   return c.json({

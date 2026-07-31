@@ -91,7 +91,9 @@ describe('GET /admin (ページ shell)', () => {
     // 未公開機能のロードマップ (機能名・案内NG 注記) は公開 shell に静的に埋め込まない
     // (API_KEY 保護のレスポンスからのみ描画)
     expect(html).not.toContain('紹介した人に500円');
-    expect(html).not.toContain('決済 4日前リマインド');
+    // ラベル文字列は実装と一致させること — 古い文言のまま残すと「もう存在しない文字列の
+    // 不在」を確かめるだけのトートロジーになり、公開 shell への漏洩を検出できなくなる
+    expect(html).not.toContain('決済 7日前リマインド');
   });
 
   it('POST /admin は skip されず 401 (GET 限定 skip — method 非依存穴を作らない)', async () => {

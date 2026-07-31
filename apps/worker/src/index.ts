@@ -221,7 +221,7 @@ export type Env = {
     //     read-model を温める。gate ON 後の再実行は ?force=1 必須 = スキップ先送りを消しうる) →
     //     ③本 gate ON → ④実機確認 → ⑤リッチメニュー v4 反映 (setup-naturism)。
     SUBSCRIPTION_MENU_ENABLED?: string;
-    // サブスク決済4日前リマインド + 決済失敗リカバリ通知 gate (WI-2 2026-07-14):
+    // サブスク決済7日前リマインド + 決済失敗リカバリ通知 gate (WI-2 2026-07-14):
     //   'true' で teiki-billing-reminder cron と pause 遷移時の LINE push が有効。
     //   SUBSCRIPTION_MENU_ENABLED=true (read-model 稼働) が前提。
     SUBSCRIPTION_REMINDER_ENABLED?: string;
@@ -516,7 +516,7 @@ async function scheduled(
         processWeeklyReports(env.DB, lineClient)),
       // subscription-reminder は内部で insertCronRunLog 呼ぶため wrap しない
       processSubscriptionReminders(env.DB, lineClient, env.LIFF_URL || ''),
-      // WI-2 (2026-07-14): サブスク決済4日前リマインド (gate/送信窓/CAS 冪等はサービス内。
+      // WI-2 (2026-07-14): サブスク決済7日前リマインド (gate/送信窓/CAS 冪等はサービス内。
       // 内部で insertCronRunLog を呼ぶため wrap しない。multi-account は CAS で二重送信なし)
       processBillingReminders(env, lineClient),
       withHeartbeat(env.DB, 'abandoned-cart-notify', () =>
