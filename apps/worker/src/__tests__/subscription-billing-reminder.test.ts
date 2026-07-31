@@ -1,5 +1,6 @@
 /**
- * サブスク決済4日前リマインド + 決済失敗リカバリ cron のテスト (WI-2, 採点R1 対応版)
+ * サブスク決済7日前リマインド + 決済失敗リカバリ cron のテスト (WI-2, 採点R1 対応版)
+ * 送信窓 [3,7] への拡張は SUBSCRIPTION_UX_TAP_MINIMAL §10-0 ④
  *
  * fake D1 は claim/解放 SQL の WHERE 述語を実際に評価する stateful 実装
  * (採点R1: claimChanges を返すだけの自己言及モックでは述語の退行を検出できない)。
@@ -46,8 +47,9 @@ import type { LineClient } from '@line-crm/line-sdk';
 
 // JST 2026-07-14 12:00
 const NOW_NOON = Date.parse('2026-07-14T12:00:00+09:00');
-const TARGET_FROM = '2026-07-17'; // today+3 (catch-up 下限)
-const TARGET_TO = '2026-07-18'; // today+4 (通常送信)
+const TARGET_FROM = '2026-07-17'; // today+3 (catch-up 下限 = 締切当日)
+const TARGET_TO = '2026-07-21'; // today+7 (通常送信 = 7日前リマインドカード)
+const TARGET_DEADLINE_TOMORROW = '2026-07-18'; // today+4 (締切は明日)
 
 interface ContractState {
   contract_id: string;
@@ -248,12 +250,75 @@ describe('processBillingReminders — フェーズ1 リマインド', () => {
     expect(r.sent).toBe(1);
     expect(row.reminded_for_estimate).toBe(TARGET_TO);
     const payload = JSON.stringify(mockDispatch.mock.calls[0][1].linePayload);
-    expect(payload).toContain('明日までのお手続き');
-    expect(payload).toContain('7月18日ごろ');
+    // 7日前送信 = 締切 (決済3日前) までまだ4日ある。「明日まで」と言ってはいけない
+    expect(payload).toContain('あと4日以内のお手続き');
+    expect(payload).not.toContain('明日までのお手続き');
+    expect(payload).toContain('7月21日ごろ');
     // 決定的 retryKey (UUID形式) が付与される
     expect(mockDispatch.mock.calls[0][1].linePayload.retryKey).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
     );
+  });
+
+  // ───────────────────────────────────────────────
+  // 送信窓 [3, 7] (SUBSCRIPTION_UX_TAP_MINIMAL §10-0 ④)
+  //
+  // 設計書が明示的に要求する回帰: 「MIN 変更で締切当日送信が消えないこと」。
+  // MIN を 4 に上げると、決済3日前に初めて連携した顧客や、窓の前半が gate OFF /
+  // 障害だった契約が **まだ行動できるのにリマインドを 1 通も受け取れない** (しかも
+  // 失われたことに誰も気づけない)。ここを緩めた退行を必ず検出する。
+  // ───────────────────────────────────────────────
+
+  it('締切当日 (今日+3) が窓に含まれる — MIN を上げる退行を検出する', async () => {
+    const row = contract({ next_billing_estimate: TARGET_FROM });
+    const db = createStatefulDb([row]);
+    mockListDue.mockResolvedValue([row]);
+    mockGetFriendByCustomer.mockResolvedValue(FRIEND);
+    mockDispatch.mockResolvedValue(SENT);
+
+    const r = await processBillingReminders(env(db), lineClient, NOW_NOON);
+
+    // 窓の下限が today+3 (締切当日) ちょうどであること = MIN 引き上げの退行検出
+    expect(mockListDue).toHaveBeenCalledWith(db, '2026-07-17', '2026-07-21');
+    expect(r.sent).toBe(1); // 締切当日でも実際に送られる (窓に入るだけでは足りない)
+    expect(row.reminded_for_estimate).toBe(TARGET_FROM);
+  });
+
+  it.each([
+    ['2026-07-21', 7, 'あと4日以内のお手続き'], // 通常送信 (7日前カード)
+    ['2026-07-20', 6, 'あと3日以内のお手続き'],
+    ['2026-07-19', 5, 'あと2日以内のお手続き'],
+    ['2026-07-18', 4, '明日までのお手続き'],
+    ['2026-07-17', 3, '本日中のお手続き'], // 締切当日
+  ])(
+    '窓の全域で締切文言が実際の残り日数と一致する (推定日 %s = 決済%i日前)',
+    async (estimate, _days, expected) => {
+      const row = contract({ next_billing_estimate: estimate });
+      const db = createStatefulDb([row]);
+      mockListDue.mockResolvedValue([row]);
+      mockGetFriendByCustomer.mockResolvedValue(FRIEND);
+      mockDispatch.mockResolvedValue(SENT);
+
+      await processBillingReminders(env(db), lineClient, NOW_NOON);
+      expect(JSON.stringify(mockDispatch.mock.calls[0][1].linePayload)).toContain(expected);
+    },
+  );
+
+  it('7日前に送った契約は窓の後半 (締切前日) で再送しない — 1推定日1通の claim 意味論', async () => {
+    // 窓を広げても通数は増えず、届くタイミングが早くなるだけであることを固定する。
+    // ここが壊れると同一顧客に最大 5 通届き、ブロック要因になる (§8-1)。
+    const row = contract({
+      next_billing_estimate: TARGET_DEADLINE_TOMORROW,
+      reminded_for_estimate: TARGET_DEADLINE_TOMORROW, // 7日前時点で送信済み
+    });
+    const db = createStatefulDb([row]);
+    mockListDue.mockResolvedValue([row]);
+    mockGetFriendByCustomer.mockResolvedValue(FRIEND);
+
+    const r = await processBillingReminders(env(db), lineClient, NOW_NOON);
+
+    expect(r.claimedLost).toBe(1);
+    expect(mockDispatch).not.toHaveBeenCalled();
   });
 
   it('catch-up (今日+3 = 締切当日) は「本日中」文言に切り替わる', async () => {
