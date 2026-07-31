@@ -199,16 +199,18 @@ async function defaultFetchHtml(url, signal) {
 
 /**
  * 全ページを順に fetch して健全性判定。
- * 戻り値: { ok, results: [{ path, problems }] } — problems 空 = healthy。
- * fetch 失敗は 1 回だけリトライ (deploy 直後の瞬断対策)。それでも失敗なら fail
+ * 戻り値: { ok, results: [{ path, problems, fetchFailed }] } — problems 空 = healthy。
+ * fetch 失敗も**不健全な結果も**リトライする (deploy 直後は旧コードの propagation 遅延で
+ * 「watchdog がまだ無い」等の一過性 unhealthy が出る — c6a54d7 の初回デプロイで実発生)。
+ * リトライを使い切っても不健全なら fail
  * (73 日障害の教訓: 「確認できなかった」を成功扱いにしない = fail-closed)。
  */
 export async function runLiffHealth({
   workerUrl,
   pages = HEALTH_PAGES,
   fetchHtml = defaultFetchHtml,
-  maxAttemptsPerPage = 2,
-  retryDelayMs = 3_000,
+  maxAttemptsPerPage = 4,
+  retryDelayMs = 8_000,
   fetchTimeoutMs = 10_000,
   onProgress = null,
 } = {}) {
@@ -223,7 +225,7 @@ export async function runLiffHealth({
         const html = await fetchHtml(workerUrl + page.path, ac.signal);
         problems = checkPageHealth(html, page);
         lastError = null;
-        break;
+        if (problems.length === 0) break; // healthy — 不健全なら残り試行でリトライ
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
       } finally {
