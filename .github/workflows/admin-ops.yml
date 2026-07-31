@@ -834,6 +834,28 @@ jobs:
           set -euo pipefail
           echo '### 決済リマインド dry-run (送信しません / 件数のみ)' >> "$GITHUB_STEP_SUMMARY"
           echo '窓 = 推定次回決済日が JST 今日+3 〜 +7 日。除外 = 解約済 / 一時停止中 / 同一推定日で送信済。' >> "$GITHUB_STEP_SUMMARY"
+          # migration 069/070 未適用なら fail せず「今どの段階か」を出して終了する
+          # (billing-status と同じ ergonomics。テーブル不在で SQLITE_ERROR を投げても何も分からない)
+          HAS=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='subscription_contracts'")
+          if ! echo "$HAS" | grep -Eq '"n": *1'; then
+            {
+              echo ''
+              echo '⚠️ **`subscription_contracts` テーブルが本番に存在しません** (migration 069/070 未適用)。'
+              echo ''
+              echo 'サブスク機能は「gate OFF」ではなく **未活性** の状態です。有効化は secret 1 つでは終わらず、'
+              echo '次の順序が必要です (各段階で承認を取ること):'
+              echo ''
+              echo '1. migration 069 + 070 を適用 (テーブル作成のみ = additive・live-safe)'
+              echo '2. `SUBSCRIPTION_MENU_ENABLED=true` — Shopify webhook から契約状態の収集を開始'
+              echo '3. `POST /api/shopify/subscription-contracts/rebuild` で既存顧客タグから backfill'
+              echo '   (gate ON 後は `?force=1` が必要。bootstrap は recovery マーカーを抑止する実装済み)'
+              echo '4. 本 op を再実行して到達件数を確認'
+              echo '5. `SUBSCRIPTION_REMINDER_ENABLED=true` — ここで初めて push が飛び始める'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo 'subscription_contracts not found — see summary for the activation sequence'
+            exit 0
+          fi
           npx wrangler d1 execute naturism-line-crm --remote --json --command "
             WITH t AS (SELECT date('now','+9 hours') AS today),
             due AS (
