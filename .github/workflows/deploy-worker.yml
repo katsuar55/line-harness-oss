@@ -42,11 +42,19 @@ jobs:
           workingDirectory: apps/worker
           command: deploy
 
+      # deploy 後に本番が実際に配っている HTML を検証する。
+      # ローカル deploy (pnpm --filter worker deploy) では走っていたが、この自動デプロイ経路には
+      # 検証が一切無かった (= /liff/opt-in の打ち切り障害に 73 日気付けなかった一因)。
+      # bundle ID 照合 + LIFF/管理ページ一式 (台帳 = scripts/liff-health-check.mjs の HEALTH_PAGES) の
+      # inline script 健全性 (打ち切り / parse / watchdog 配置)。
+      - name: Post-deploy verification (bundle + LIFF health)
+        run: node scripts/post-deploy-check.mjs
+
       - name: Notify deploy result
         if: always()
         run: |
           if [ "${{ job.status }}" = "success" ]; then
-            echo "::notice title=Worker deployed::Successfully deployed to Cloudflare Workers"
+            echo "::notice title=Worker deployed::Successfully deployed and verified (bundle + LIFF health)"
           else
-            echo "::error title=Deploy failed::Worker deployment failed — investigate the log above"
+            echo "::error title=Deploy failed::Deploy or post-deploy verification failed — if verification failed, production may be serving a broken page; consider wrangler rollback"
           fi

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { translations as i18nData } from '@line-crm/shared';
 import type { Env } from '../index.js';
 import { BRAND_LOGO_PNG_BASE64 } from './brand-logo.js';
+import { liffWatchdogScriptTag } from '../utils/liff-watchdog.js';
 
 const liffPages = new Hono<Env>();
 
@@ -62,6 +63,7 @@ function portalPage(
   <link rel="preconnect" href="https://static.line-scdn.net" crossorigin>
   <link rel="dns-prefetch" href="https://cdn.tailwindcss.com">
   <link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
+  ${liffWatchdogScriptTag()}
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
@@ -1528,6 +1530,8 @@ function showFatalError(msg){
     '<p class="text-sm text-gray-600 font-medium leading-relaxed mb-5">' + msg + '</p>' +
     '<button onclick="location.reload()" class="btn-primary px-6 py-2.5 rounded-xl text-sm font-bold">再読み込み</button>' +
     '</div>';
+  var wd = document.getElementById('liff-watchdog-overlay');
+  if (wd && wd.parentNode) { wd.parentNode.removeChild(wd); }
 }
 
 // ?demo=1 を明示指定した時だけサンプル表示する。本物の API 失敗を偽データ (偽クーポン/偽注文/偽紹介実績) で隠さない。

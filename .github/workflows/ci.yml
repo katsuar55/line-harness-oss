@@ -67,6 +67,12 @@ jobs:
       - name: SDK tests
         run: pnpm --filter @line-harness/sdk test
 
+      # scripts/*.mjs (preflight / post-deploy-check / cutover-prep-A / liff-health-check)。
+      # deploy-worker.yml の post-deploy 検証が使う測定器なので、壊れた測定器での
+      # deploy を防ぐためにここでゲートする (2026-07-31 まで CI 外だった)
+      - name: Script tests
+        run: pnpm test:scripts
+
       # schema.sql drift check: migrations から再生成して diff が無いことを確認
       - name: schema.sql drift check
         run: |

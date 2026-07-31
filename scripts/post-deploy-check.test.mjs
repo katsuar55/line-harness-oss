@@ -10,7 +10,25 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { extractBundleId, buildResult, runCheck, isAllowedWorkerUrl } from './post-deploy-check.mjs';
+import { extractBundleId, buildResult, runCheck, isAllowedWorkerUrl, combineExitCodes } from './post-deploy-check.mjs';
+
+// ─────────────────────────────────────
+// combineExitCodes — 「実測の障害 (1)」は「確認不能 (2)」より常に優先
+// (Math.max だと bundle=1 + health=2 の混在で 1 が 2 に降格し、rollback すべき局面で
+//  「ネットワーク確認」の初動コードが返る — 採点 R2)
+// ─────────────────────────────────────
+test('combineExitCodes: 全て 0 なら 0', () => {
+  assert.equal(combineExitCodes([0, 0]), 0);
+});
+test('combineExitCodes: 1 が混ざれば常に 1 (2 との混在でも降格しない)', () => {
+  assert.equal(combineExitCodes([1, 0]), 1);
+  assert.equal(combineExitCodes([1, 2]), 1);
+  assert.equal(combineExitCodes([2, 1]), 1);
+});
+test('combineExitCodes: 2 のみなら 2', () => {
+  assert.equal(combineExitCodes([2, 0]), 2);
+  assert.equal(combineExitCodes([2, 2]), 2);
+});
 
 // ─────────────────────────────────────
 // extractBundleId
