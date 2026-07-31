@@ -310,6 +310,39 @@ test('runLiffHealth: 1 回目失敗 → 2 回目成功なら healthy (deploy 直
   assert.equal(health.ok, true);
 });
 
+test('runLiffHealth: 1 回目「不健全」→ 2 回目健全なら healthy (旧コード propagation 遅延の誤警報対策)', async () => {
+  // deploy 直後は edge がまだ旧 worker を配ることがある (c6a54d7 初回デプロイで実発生:
+  // watchdog 配備直後の検証が「マーカー 0 個」を観測して赤になった)。
+  // fetch 成功でも不健全なら残り試行でリトライすることを固定する。
+  let calls = 0;
+  const health = await runLiffHealth({
+    workerUrl: 'https://example.workers.dev',
+    pages: [LIFF_PAGE_DEF],
+    fetchHtml: async () => {
+      calls++;
+      return calls === 1 ? buildPage({ watchdog: '' }) : buildPage();
+    },
+    ...FAST,
+  });
+  assert.equal(calls, 2);
+  assert.equal(health.ok, true);
+});
+
+test('runLiffHealth: 全試行で不健全のままなら fail-closed を維持', async () => {
+  let calls = 0;
+  const health = await runLiffHealth({
+    workerUrl: 'https://example.workers.dev',
+    pages: [LIFF_PAGE_DEF],
+    fetchHtml: async () => {
+      calls++;
+      return buildPage({ watchdog: '' });
+    },
+    ...FAST,
+  });
+  assert.equal(calls, 2); // maxAttemptsPerPage を使い切る
+  assert.equal(health.ok, false);
+});
+
 // ─────────────────────────────────────
 // 台帳の整合
 // ─────────────────────────────────────
