@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
+import { liffWatchdogScriptTag } from '../utils/liff-watchdog.js';
 
 /**
  * LIFF Email Opt-In Page (Phase 5β-1b)
@@ -65,6 +66,7 @@ function optInPage(liffId: string, apiBase: string): string {
   <meta name="theme-color" content="#2fa8ad">
   <meta name="robots" content="noindex,nofollow">
   <title>メール配信登録 — naturism</title>
+  ${liffWatchdogScriptTag()}
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -259,6 +261,8 @@ function showFatalError(msg) {
     '<p class="text-sm text-gray-600 font-medium leading-relaxed mb-5">' + msg + '</p>' +
     '<button onclick="location.reload()" class="btn-primary px-6 py-2.5 rounded-xl text-sm font-bold">再読み込み</button>' +
     '</div>';
+  var wd = document.getElementById('liff-watchdog-overlay');
+  if (wd && wd.parentNode) { wd.parentNode.removeChild(wd); }
 }
 
 async function initLiff() {

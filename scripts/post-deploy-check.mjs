@@ -27,6 +27,8 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { runLiffHealth, printHealthResults, healthExitCode } from './liff-health-check.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
 
@@ -212,6 +214,16 @@ export async function runCheck({
   return buildResult({ localBundle, prodBundle, attempts, lastError });
 }
 
+/**
+ * 複数チェックの exit code 合成。「実測の障害 (1)」は「確認不能 (2)」より常に優先する
+ * (healthExitCode の混在規則と同じ。Math.max だと 1 が 2 に降格し初動指示が誤る — 採点 R2)。
+ */
+export function combineExitCodes(codes) {
+  if (codes.includes(1)) return 1;
+  if (codes.includes(2)) return 2;
+  return 0;
+}
+
 // ============================================================
 // CLI 出力
 // ============================================================
@@ -257,7 +269,20 @@ async function main() {
     },
   });
   printResult(result, workerUrl);
-  return result.exitCode;
+
+  // LIFF/管理ページ健全性 — bundle 照合とは独立に必ず実行する。
+  // bundle が一致していても「inline script が打ち切られた HTML」を配っている形
+  // (= /liff/opt-in の 73 日障害) がありうるため、bundle 結果に関わらず見る。
+  // 確認できなかった (allowlist 外 / fetch 全滅) を成功扱いにしない = fail-closed。
+  let healthExit = 2;
+  if (isAllowedWorkerUrl(workerUrl)) {
+    const health = await runLiffHealth({ workerUrl });
+    printHealthResults(health, workerUrl);
+    healthExit = healthExitCode(health);
+  } else {
+    console.error('✗ LIFF health check skipped: WORKER_URL not allowed by host pattern.');
+  }
+  return combineExitCodes([result.exitCode, healthExit]);
 }
 
 const isMain =

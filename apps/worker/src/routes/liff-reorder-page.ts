@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
+import { liffWatchdogScriptTag } from '../utils/liff-watchdog.js';
 
 /**
  * LIFF 再購入リマインダー管理ページ (Phase 6 PR-4)
@@ -40,6 +41,7 @@ function reorderPage(liffId: string, apiBase: string): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#2fa8ad">
   <title>再購入リマインダー — naturism</title>
+  ${liffWatchdogScriptTag()}
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -326,12 +328,15 @@ async function loadList() {
 function showFatalError(msg) {
   var el = document.getElementById('loading');
   if (!el) return;
+  window.__fatalShown = true;
   el.style.display = 'flex';
   el.innerHTML = '<div class="text-center px-8">' +
     '<p class="text-3xl mb-3">🌿</p>' +
     '<p class="text-sm text-gray-600 font-medium leading-relaxed mb-5">' + msg + '</p>' +
     '<button onclick="location.reload()" class="btn-primary px-6 py-2.5 rounded-xl text-sm font-bold">再読み込み</button>' +
     '</div>';
+  var wd = document.getElementById('liff-watchdog-overlay');
+  if (wd && wd.parentNode) { wd.parentNode.removeChild(wd); }
 }
 
 async function initLiff() {

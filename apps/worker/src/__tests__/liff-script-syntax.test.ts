@@ -14,6 +14,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { Hono } from 'hono';
+import { liffWatchdogScriptTag, LIFF_WATCHDOG_ATTR } from '../utils/liff-watchdog.js';
 import { liffPages } from '../routes/liff-pages.js';
 import { liffOptInPage } from '../routes/liff-opt-in-page.js';
 import { liffMyRank } from '../routes/liff-my-rank.js';
@@ -25,6 +26,8 @@ import { adminDashboard } from '../routes/admin-dashboard.js';
 import { adminStaff } from '../routes/admin-staff.js';
 import { faqAdmin } from '../routes/faq-admin.js';
 import { friendCoupon } from '../routes/friend-coupon.js';
+import { contactEmailPage } from '../routes/contact-email-page.js';
+import { openapi } from '../routes/openapi.js';
 
 interface MinimalEnv {
   LIFF_URL: string;
@@ -106,7 +109,32 @@ function assertNoScriptTruncation(html: string, label: string): void {
       /<script\b/i,
     );
   }
+
+  // 第 3 軸: HTML コメントの釣り合い。未閉鎖の <!-- が 1 個あると tokenizer は EOF まで
+  // 全てを呑み、watchdog も本体も実行されない。script タグ数は釣り合ったままなので
+  // 上 2 軸では原理的に見えない (採点 R1)。inline script 本体は除去してから数える
+  // (JS の i-->0 等の誤検出防止)。規則を変える時は scripts/liff-health-check.mjs も必ず更新。
+  const stripped = html.replace(/(<script(?![^>]*\bsrc=)[^>]*>)[\s\S]*?(<\/script>)/g, '$1$2');
+  const cOpens = (stripped.match(/<!--/g) ?? []).length;
+  const cCloses = (stripped.match(/-->/g) ?? []).length;
+  expect(
+    cCloses,
+    `${label}: HTML コメント不釣合い (<!-- ${cOpens} / --> ${cCloses}) — 未閉鎖コメントが後続 script を呑む`,
+  ).toBe(cOpens);
+
+  // 第 4 軸: 釣り合ったコメントで script を丸ごと包む形。コメント数もタグ数も釣り合い、
+  // 抽出・parse も通るが、ブラウザでは一切実行されない (採点 R2)。
+  for (const span of stripped.match(/<!--[\s\S]*?-->/g) ?? []) {
+    expect(span, `${label}: HTML コメント内に script タグ — コメントアウトされた script は実行されない`).not.toMatch(
+      /<script\b/i,
+    );
+  }
 }
+
+// watchdog script 本体の識別子 (liff-watchdog.ts の WATCHDOG_JS 先頭コメント)。
+// sentinel / 最小長の測定から watchdog を除外するのに使う — 含めると watchdog 自身
+// (~1,900 文字) が常に閾値を超え、「本体が断片だけ残った形」の軸が死ぬ (採点 R1)。
+const WATCHDOG_BODY_SIGNATURE = 'liff-watchdog v1';
 
 const LIFF_PAGES: Array<{ path: string; router: Hono; sentinel: string }> = [
   { path: '/liff/portal', router: liffPages as unknown as Hono, sentinel: 'liff.init' },
@@ -128,7 +156,10 @@ describe('LIFF 全ページの inline script が打ち切られていない', ()
   it.each(LIFF_PAGES)('$path — script 本体が丸ごと出ている (断片で終わっていない)', async ({ path, router, sentinel }) => {
     const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
     const html = await res.text();
-    const src = extractInlineScripts(html).join('\n');
+    // watchdog は除外して測る (含めると watchdog 自身の長さで最小長軸が恒久 pass になる)
+    const src = extractInlineScripts(html)
+      .filter((s) => !s.includes(WATCHDOG_BODY_SIGNATURE))
+      .join('\n');
 
     // 打ち切られた断片は「コメント数十文字」で終わる。本体があることを sentinel で確認する。
     expect(src).toContain(sentinel);
@@ -166,6 +197,134 @@ describe('LIFF 全ページの inline script が打ち切られていない', ()
 });
 
 // ============================================================
+// 外部 watchdog (liff-watchdog.ts) — 本体 script が全滅しても生き残る最終防衛線。
+// 73 日障害では in-script watchdog が守るべき script 自身の中にあり、打ち切りと
+// 一緒に死んだ。「CDN script より前・本体より前の独立した <script> 要素」という
+// 配置こそが防御なので、存在だけでなく順序と、打ち切り再注入時の生存をここで固定する。
+// ============================================================
+
+describe('外部 watchdog — 全 LIFF ページで本体より前に配置され、本体全滅時も生き残る', () => {
+  it.each(LIFF_PAGES)('$path — watchdog script が本体より前に 1 つある', async ({ path, router }) => {
+    const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const markers = html.match(new RegExp(LIFF_WATCHDOG_ATTR, 'g')) ?? [];
+    expect(markers.length, `${path}: watchdog マーカーは 1 個`).toBe(1);
+    const wdIdx = html.indexOf(LIFF_WATCHDOG_ATTR);
+    const mainIdx = html.indexOf('liff.init');
+    expect(mainIdx).toBeGreaterThan(-1);
+    // 後ろに置くと本体の打ち切りで watchdog 自身が HTML テキスト化して消える
+    expect(wdIdx, `${path}: watchdog は本体 script より前に置く`).toBeLessThan(mainIdx);
+    // CDN (tailwind/LIFF SDK) は同期ロードで parser をブロックする。CDN より後ろだと
+    // 「CDN ハング」クラスで watchdog が arm すらされない (採点 R1 HIGH)
+    const cdnIdx = html.indexOf('<script src=');
+    expect(cdnIdx).toBeGreaterThan(-1);
+    expect(wdIdx, `${path}: watchdog は最初の外部 CDN script より前に置く`).toBeLessThan(cdnIdx);
+  });
+
+  it.each(LIFF_PAGES)(
+    '$path — watchdog 直前への未閉鎖 <!-- 注入も検出する (呑み込みドリル)',
+    async ({ path, router }) => {
+      const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
+      const html = await res.text();
+      const injected = html.replace('<script ' + LIFF_WATCHDOG_ATTR, '<!--' + '<script ' + LIFF_WATCHDOG_ATTR);
+      expect(injected).not.toBe(html);
+      expect(() => assertNoScriptTruncation(injected, path)).toThrowError();
+    },
+  );
+
+  it.each(LIFF_PAGES)(
+    '$path — watchdog を釣り合ったコメントで包む形も検出する (コメントアウト・ドリル)',
+    async ({ path, router }) => {
+      const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
+      const html = await res.text();
+      const tag = liffWatchdogScriptTag();
+      const wrapped = html.replace(tag, () => '<!--' + tag + '-->');
+      expect(wrapped).not.toBe(html);
+      expect(() => assertNoScriptTruncation(wrapped, path)).toThrowError();
+    },
+  );
+
+  // watchdog の発火/解除判定が依存する 2 つの暗黙契約を固定する。将来 1 ページが
+  // #loading を改名するか classList 方式へ変えると、そのページの watchdog は静かに
+  // 無力化する — 「測定器が対象の前提を見ていない」73 日障害と同型の芽 (採点 R2)。
+  it.each(LIFF_PAGES)(
+    '$path — watchdog の前提契約: #loading が存在し、本体が style.display で隠す',
+    async ({ path, router }) => {
+      const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
+      const html = await res.text();
+      expect(html).toContain('id="loading"');
+      const main = extractInlineScripts(html)
+        .filter((s) => !s.includes(WATCHDOG_BODY_SIGNATURE))
+        .join('\n');
+      expect(main).toMatch(/getElementById\('loading'\)/);
+      expect(main).toMatch(/style\.display\s*=\s*'none'/);
+    },
+  );
+
+  it.each(LIFF_PAGES)(
+    '$path — 本体 script に打ち切りを再注入しても watchdog は無傷で parse 可能 (生存ドリル)',
+    async ({ path, router }) => {
+      const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
+      const html = await res.text();
+      const scripts = extractInlineScripts(html);
+      const watchdog = scripts.find((s) => s.includes(WATCHDOG_BODY_SIGNATURE));
+      const main = scripts.find((s) => !s.includes(WATCHDOG_BODY_SIGNATURE) && s.includes('liff.init'));
+      expect(watchdog, `${path}: watchdog script 本体がある`).toBeTruthy();
+      expect(main, `${path}: 本体 script がある`).toBeTruthy();
+
+      // 73 日障害の実形態を再現: 本体の途中に終了タグを注入して打ち切る
+      const closeTag = '</' + 'script>';
+      const broken = html.replace(main!, () => main!.slice(0, 120) + closeTag + main!.slice(120));
+      expect(broken).not.toBe(html);
+      const brokenScripts = extractInlineScripts(broken);
+
+      // watchdog は独立要素かつ本体より前なので、打ち切り後もバイト単位で不変のまま残る
+      expect(brokenScripts.find((s) => s.includes(WATCHDOG_BODY_SIGNATURE))).toBe(watchdog);
+      expect(() => new Function(watchdog!)).not.toThrow();
+    },
+  );
+
+  it('watchdog タグ自体が安全: 終了タグ literal 無し / 補間残骸無し / parse 可能', () => {
+    const tag = liffWatchdogScriptTag();
+    const body = /<script[^>]*>([\s\S]*)<\/script>$/.exec(tag)?.[1];
+    expect(body).toBeTruthy();
+    // 本体に終了タグが literal で入っていたら watchdog 自身が打ち切りの起点になる
+    expect(body!).not.toMatch(/<\/script[\s/>]/i);
+    expect(body!).not.toMatch(/<script\b/i);
+    // TS 側の補間ミス (未解決の ${...} が残る形) の検出
+    expect(body!).not.toContain('${');
+    expect(() => new Function(body!)).not.toThrow();
+    // 発火条件と発火時の必須動作 (誤爆防止 3 条件 + 二重表示防止の印)
+    expect(body!).toContain('__fatalShown');
+    expect(body!).toContain("getElementById('loading')");
+    expect(body!).toContain('location.reload');
+    // 再武装窓 (+2 分) を使い切った後の最終トリガ (2 分超の CDN ハング回復対策)
+    expect(body!).toContain('DOMContentLoaded');
+  });
+
+  // 外部 watchdog は __fatalShown を見て「ページ自身のエラー表示」を上書きしない設計。
+  // showFatalError を持つ 6 ページ全てが印を立てることを固定する (立てないページがあると
+  // 15 秒後にブランド文言のエラーが汎用 overlay に差し替わる退行が起きる)。
+  const PAGES_WITH_FATAL_ERROR = LIFF_PAGES.filter((p) => p.path !== '/liff/my-rank');
+  it.each(PAGES_WITH_FATAL_ERROR)(
+    '$path — showFatalError が __fatalShown を立てる (watchdog の上書き抑止)',
+    async ({ path, router }) => {
+      const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
+      const html = await res.text();
+      const main = extractInlineScripts(html).find(
+        (s) => !s.includes(WATCHDOG_BODY_SIGNATURE) && s.includes('liff.init'),
+      );
+      expect(main).toBeTruthy();
+      expect(main!).toMatch(/function showFatalError\(msg\)\s*\{[\s\S]{0,220}__fatalShown = true/);
+      // 逆方向の契約: 15 秒以降に showFatalError が走った場合はブランド文言を優先するため、
+      // showFatalError 側が watchdog overlay を撤去する (無いと汎用 overlay の下に隠れる)
+      expect(main!).toMatch(/function showFatalError\(msg\)\s*\{[\s\S]{0,800}liff-watchdog-overlay/);
+    },
+  );
+});
+
+// ============================================================
 // LIFF 以外で inline script を吐くルートも同じガードで守る。
 // 今回の監査で /t/:linkId が同型の欠陥 (かつユーザ入力経由の注入) を抱えたまま
 // LIVE だったことが判明した。「LIFF だけ」の allowlist が穴になっていた。
@@ -177,6 +336,8 @@ const OTHER_HTML_PAGES: Array<{ path: string; router: Hono }> = [
   { path: '/admin/logs', router: adminStaff as unknown as Hono },
   { path: '/admin/faq', router: faqAdmin as unknown as Hono },
   { path: '/admin/friend-coupon', router: friendCoupon as unknown as Hono },
+  { path: '/contact/email', router: contactEmailPage as unknown as Hono },
+  { path: '/docs', router: openapi as unknown as Hono },
 ];
 
 describe('LIFF 以外の HTML ページも script が打ち切られていない', () => {
@@ -184,6 +345,14 @@ describe('LIFF 以外の HTML ページも script が打ち切られていない
     const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
     expect(res.status).toBe(200);
     assertNoScriptTruncation(await res.text(), path);
+  });
+
+  // parse 検証が deploy 後の health check にしかないと「CI green → deploy で初めて赤」の
+  // 非対称になる (採点 R1)。出荷前ゲートにも同じ軸を置く。
+  it.each(OTHER_HTML_PAGES)('$path — 吐き出された JS が parse できる', async ({ path, router }) => {
+    const res = await router.request(path, {}, baseEnv as unknown as Record<string, unknown>);
+    expect(res.status).toBe(200);
+    assertParses(extractInlineScripts(await res.text()), path);
   });
 });
 

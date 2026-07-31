@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
+import { liffWatchdogScriptTag } from '../utils/liff-watchdog.js';
 import {
   NATURISM_RANK_DEFS,
   resolveFriendRank,
@@ -197,6 +198,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#2fa8ad">
   <title>マイランク — naturism</title>
+  ${liffWatchdogScriptTag()}
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
