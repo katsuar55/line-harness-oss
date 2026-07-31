@@ -123,6 +123,7 @@ on:
           - shopify-scope-probe
           - release-billing-hold
           - custom-domain-status
+          - reminder-dry-run
           - attach-custom-domain
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
@@ -818,3 +819,47 @@ jobs:
           echo '### loyalty_rank_discounts (counts by status, no PII)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT status, COUNT(*) AS n FROM loyalty_rank_discounts GROUP BY status" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # 決済リマインド gate (SUBSCRIPTION_REMINDER_ENABLED) を入れた場合の影響範囲を
+      # 送信せずに見積もる read-only op。窓・除外条件・到達判定は実装
+      # (subscription-billing-reminder.ts / channel-dispatcher.ts) と同じ述語を使う。
+      # 出力は件数のみ (本リポジトリは public なので PII を出さない)。
+      - name: Reminder dry-run (counts only, read-only, no sending)
+        if: inputs.op == 'reminder-dry-run'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          echo '### 決済リマインド dry-run (送信しません / 件数のみ)' >> "$GITHUB_STEP_SUMMARY"
+          echo '窓 = 推定次回決済日が JST 今日+3 〜 +7 日。除外 = 解約済 / 一時停止中 / 同一推定日で送信済。' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            WITH t AS (SELECT date('now','+9 hours') AS today),
+            due AS (
+              SELECT sc.contract_id, sc.shopify_customer_id, sc.next_billing_estimate, sc.estimate_source
+              FROM subscription_contracts sc, t
+              WHERE sc.next_billing_estimate >= date(t.today,'+3 day')
+                AND sc.next_billing_estimate <= date(t.today,'+7 day')
+                AND sc.cancelled_at IS NULL
+                AND sc.paused_at IS NULL
+                AND (sc.reminded_for_estimate IS NULL OR sc.reminded_for_estimate != sc.next_billing_estimate)
+            )
+            SELECT
+              (SELECT COUNT(*) FROM due) AS due_in_window,
+              (SELECT COUNT(*) FROM due WHERE shopify_customer_id IS NULL) AS no_customer_id,
+              (SELECT COUNT(*) FROM due d JOIN friends f ON f.shopify_customer_id = d.shopify_customer_id) AS linked_to_friend,
+              (SELECT COUNT(*) FROM due d JOIN friends f ON f.shopify_customer_id = d.shopify_customer_id
+                 WHERE f.line_user_id IS NOT NULL AND f.is_following = 1 AND COALESCE(f.is_blacklisted,0) = 0)
+                AS would_actually_send,
+              (SELECT COUNT(*) FROM due WHERE estimate_source = 'flow') AS estimate_from_flow,
+              (SELECT COUNT(*) FROM due WHERE estimate_source != 'flow') AS estimate_derived
+          " | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '### 参考: 全契約の内訳 (窓に関係なく)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            SELECT
+              COUNT(*) AS contracts_total,
+              SUM(CASE WHEN cancelled_at IS NULL AND paused_at IS NULL THEN 1 ELSE 0 END) AS active,
+              SUM(CASE WHEN next_billing_estimate IS NULL THEN 1 ELSE 0 END) AS no_estimate
+            FROM subscription_contracts
+          " | tee -a "$GITHUB_STEP_SUMMARY"
