@@ -887,6 +887,31 @@ jobs:
               SUM(CASE WHEN next_billing_estimate IS NULL THEN 1 ELSE 0 END) AS no_estimate
             FROM subscription_contracts
           " | tee -a "$GITHUB_STEP_SUMMARY"
+          # 窓が 0 件だったとき「推定日が古いのか / 先なのか / そもそも出せないのか」を切り分ける。
+          # ここが無いと 0 の意味 (機能が壊れている / まだデータが無い / 単に該当者不在) が読めない。
+          echo '### 推定日の分布 (active のみ・件数)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            WITH t AS (SELECT date('now','+9 hours') AS today)
+            SELECT
+              SUM(CASE WHEN sc.next_billing_estimate < t.today THEN 1 ELSE 0 END) AS past,
+              SUM(CASE WHEN sc.next_billing_estimate >= t.today AND sc.next_billing_estimate < date(t.today,'+3 day') THEN 1 ELSE 0 END) AS d0_2,
+              SUM(CASE WHEN sc.next_billing_estimate >= date(t.today,'+3 day') AND sc.next_billing_estimate <= date(t.today,'+7 day') THEN 1 ELSE 0 END) AS d3_7_window,
+              SUM(CASE WHEN sc.next_billing_estimate > date(t.today,'+7 day') AND sc.next_billing_estimate <= date(t.today,'+30 day') THEN 1 ELSE 0 END) AS d8_30,
+              SUM(CASE WHEN sc.next_billing_estimate > date(t.today,'+30 day') THEN 1 ELSE 0 END) AS beyond_30
+            FROM subscription_contracts sc, t
+            WHERE sc.next_billing_estimate IS NOT NULL
+              AND sc.cancelled_at IS NULL AND sc.paused_at IS NULL
+          " | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '### 推定日を出せない理由 (active のみ・件数)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            SELECT
+              COUNT(*) AS active_total,
+              SUM(CASE WHEN next_billing_estimate IS NULL AND interval_days IS NULL THEN 1 ELSE 0 END) AS no_interval,
+              SUM(CASE WHEN next_billing_estimate IS NULL AND last_order_at IS NULL THEN 1 ELSE 0 END) AS no_last_order,
+              SUM(CASE WHEN next_billing_estimate IS NULL THEN 1 ELSE 0 END) AS no_estimate_total
+            FROM subscription_contracts
+            WHERE cancelled_at IS NULL AND paused_at IS NULL
+          " | tee -a "$GITHUB_STEP_SUMMARY"
 
       # サブスク契約テーブルの活性化 step 1/5 (SESSION_HANDOFF「活性化シーケンス」)。
       # 069 = CREATE TABLE IF NOT EXISTS + index (完全 idempotent)
