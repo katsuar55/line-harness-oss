@@ -126,6 +126,8 @@ on:
           - reminder-dry-run
           - apply-migration-069-070
           - rebuild-subscription-contracts
+          - enable-subscription-ingest
+          - disable-subscription-ingest
           - attach-custom-domain
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
@@ -902,6 +904,17 @@ jobs:
             WHERE sc.next_billing_estimate IS NOT NULL
               AND sc.cancelled_at IS NULL AND sc.paused_at IS NULL
           " | tee -a "$GITHUB_STEP_SUMMARY"
+          # §10-0 ①: TEIKI_FLOW を設定したら実測 (flow) が増えることをここで確認する。
+          # active 全体で見るのは、実測が最も効く層 (推定日を出せない契約) が窓の外にいるため。
+          echo '### 日付ソースの内訳 (active のみ・件数) — TEIKI_FLOW 設定の効果測定' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            SELECT
+              SUM(CASE WHEN estimate_source = 'flow' AND next_billing_estimate IS NOT NULL THEN 1 ELSE 0 END) AS measured_by_flow,
+              SUM(CASE WHEN estimate_source != 'flow' AND next_billing_estimate IS NOT NULL THEN 1 ELSE 0 END) AS derived_estimate,
+              SUM(CASE WHEN next_billing_estimate IS NULL THEN 1 ELSE 0 END) AS no_date
+            FROM subscription_contracts
+            WHERE cancelled_at IS NULL AND paused_at IS NULL
+          " | tee -a "$GITHUB_STEP_SUMMARY"
           echo '### 推定日を出せない理由 (active のみ・件数)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json --command "
             SELECT
@@ -985,3 +998,50 @@ jobs:
           ' | tee -a "$GITHUB_STEP_SUMMARY"
           echo '### 検証: 作成された契約行数' >> "$GITHUB_STEP_SUMMARY"
           cd apps/worker && npx wrangler d1 execute naturism-line-crm --remote --json             --command "SELECT COUNT(*) AS contracts, SUM(CASE WHEN cancelled_at IS NULL AND paused_at IS NULL THEN 1 ELSE 0 END) AS active, SUM(CASE WHEN next_billing_estimate IS NOT NULL THEN 1 ELSE 0 END) AS with_estimate FROM subscription_contracts" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # §10-0 ①: 契約データの「収集」だけを先に開始する gate。
+      # 顧客に見える面 (トーク内の契約カード / サブスク intent / リッチメニュー v4) は
+      # SUBSCRIPTION_MENU_ENABLED のままなので、この op では顧客の体験は一切変わらない。
+      # 収集を先に回して TEIKI_FLOW の実測日を貯めてから MENU を開けるのが正しい順序
+      # (逆にすると、推定日を出せない契約のカードを顧客に見せることになる)。
+      - name: Enable subscription ingest (collection only, no customer-visible change)
+        if: inputs.op == 'enable-subscription-ingest'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # secret bulk (JSON) で投入する — `"値" | wrangler secret put` は末尾 CR が残り
+          # gate の厳密一致 (=== 'true') を静かに外す (memory: wrangler_secret_powershell_crlf)
+          TMP="$RUNNER_TEMP/secrets.sub-ingest-on.json"
+          printf '{"SUBSCRIPTION_INGEST_ENABLED":"true"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          {
+            echo '✅ SUBSCRIPTION_INGEST_ENABLED=true を投入'
+            echo ''
+            echo '- Shopify webhook (orders/customers) からの契約 read-model 導出が開始'
+            echo '- `/api/integrations/teiki-flow` が Flow の実測値を受理開始 (要 TEIKI_FLOW_SECRET)'
+            echo '- **顧客に見える変化なし** (契約カード / intent / リマインドは別 gate のまま)'
+            echo '- 収集のみの期間はリカバリマーカーを立てない = MENU を開けた瞬間の一斉送信を防ぐ'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Disable subscription ingest (kill switch)
+        if: inputs.op == 'disable-subscription-ingest'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          TMP="$RUNNER_TEMP/secrets.sub-ingest-off.json"
+          printf '{"SUBSCRIPTION_INGEST_ENABLED":"false"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          {
+            echo '✅ SUBSCRIPTION_INGEST_ENABLED=false を投入'
+            echo ''
+            echo '⚠️ SUBSCRIPTION_MENU_ENABLED=true が別に入っている場合、収集は MENU 側で'
+            echo '継続する (MENU は収集を含む)。完全停止するには MENU も落とすこと。'
+          } >> "$GITHUB_STEP_SUMMARY"

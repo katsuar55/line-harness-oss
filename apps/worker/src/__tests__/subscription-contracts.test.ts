@@ -19,6 +19,7 @@ import {
   applyCustomerTagsToContracts,
   rebuildContractsFromD1,
   resolveRebuildAnchor,
+  isSubscriptionIngestEnabled,
 } from '../services/subscription-contracts.js';
 import { getContractForFriend } from '../services/subscription-concierge.js';
 import {
@@ -917,5 +918,71 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
     const row = db.contracts.get('100')!;
     expect(row.estimate_source).toBe('derived');
     expect(row.next_billing_estimate).toBe('2026-09-09'); // 8/10 + 30
+  });
+
+  // ---- ルール4 (§10-0 ①): last_order_at を持たない契約の実測値を守る ----
+  //
+  // 本番の active 139 件中 65 件は last_order_at が無い (ローカル shopify_orders が
+  // 直近60日分しか無いため)。まさにこの層が TEIKI_FLOW の実測を唯一の日付ソースにする。
+  // last_order_at が null だと isNewerOrder が無条件 true になるので、Huckleberry の
+  // タグ後付け・出荷更新で飛んでくる `orders/updated` (過去注文) が実測を derived へ
+  // 差し戻し、過去日の推定に置き換えてしまう = ① の成果が静かに消える。
+  const flowOnlyContract = async (db: ReturnType<typeof createFakeDb>) =>
+    upsertSubscriptionContract(db, {
+      contractId: '200',
+      nextBillingEstimate: '2026-08-10',
+      estimateSource: 'flow',
+    });
+
+  it('ルール4: last_order_at 無しの実測契約に過去注文が届いても実測を保持する', async () => {
+    const db = createFakeDb();
+    await flowOnlyContract(db);
+    await deriveContractFromOrder(db, {
+      tags: 'subscription-id:200, subscription-count:3',
+      lineItemsJson: ITEMS_30,
+      shopifyOrderId: 'ord-old',
+      shopifyCustomerId: 'cust-2',
+      // 実測した次回決済日 (8/10) より前 = サイクルは進んでいない
+      orderCreatedAt: '2026-07-20T10:00:00+09:00',
+    });
+    const row = db.contracts.get('200')!;
+    expect(row.estimate_source).toBe('flow');
+    expect(row.next_billing_estimate).toBe('2026-08-10');
+  });
+
+  it('ルール4: 実測日以降の注文なら derived へ復帰する (本物の決済成功は取りこぼさない)', async () => {
+    const db = createFakeDb();
+    await flowOnlyContract(db);
+    await deriveContractFromOrder(db, {
+      tags: 'subscription-id:200, subscription-count:3',
+      lineItemsJson: ITEMS_30,
+      shopifyOrderId: 'ord-new',
+      shopifyCustomerId: 'cust-2',
+      orderCreatedAt: '2026-08-10T10:00:00+09:00',
+    });
+    const row = db.contracts.get('200')!;
+    expect(row.estimate_source).toBe('derived');
+    expect(row.next_billing_estimate).toBe('2026-09-09'); // 8/10 + 30
+  });
+});
+
+describe('isSubscriptionIngestEnabled (§10-0 ①: 収集と顧客可視面の分離)', () => {
+  it('既定 (両方未設定) は false = 挙動ゼロ変更', () => {
+    expect(isSubscriptionIngestEnabled({})).toBe(false);
+  });
+
+  it('MENU=true は収集も含む (既存の単一 gate 運用と後方互換)', () => {
+    expect(isSubscriptionIngestEnabled({ SUBSCRIPTION_MENU_ENABLED: 'true' })).toBe(true);
+  });
+
+  it('INGEST=true 単独で収集が動く (顧客可視面は閉じたまま)', () => {
+    expect(isSubscriptionIngestEnabled({ SUBSCRIPTION_INGEST_ENABLED: 'true' })).toBe(true);
+  });
+
+  it("'true' 以外の値では有効にならない (typo / 'false' / 空文字で誤作動しない)", () => {
+    expect(isSubscriptionIngestEnabled({ SUBSCRIPTION_INGEST_ENABLED: 'false' })).toBe(false);
+    expect(isSubscriptionIngestEnabled({ SUBSCRIPTION_INGEST_ENABLED: '1' })).toBe(false);
+    expect(isSubscriptionIngestEnabled({ SUBSCRIPTION_INGEST_ENABLED: 'TRUE' })).toBe(false);
+    expect(isSubscriptionIngestEnabled({ SUBSCRIPTION_INGEST_ENABLED: '' })).toBe(false);
   });
 });

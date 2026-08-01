@@ -526,7 +526,7 @@ describe('Shopify Routes', () => {
       expect((await postFlow({}, null)).status).toBe(401);
     });
 
-    it('gate OFF → 202 skipped (read-model 非接触・Flow にリトライさせない)', async () => {
+    it('gate 全 OFF → 202 skipped (read-model 非接触・Flow にリトライさせない)', async () => {
       const res = await postFlow(
         { contract_id: '100', next_billing_date: '2026-08-04' },
         FLOW_SECRET,
@@ -534,6 +534,58 @@ describe('Shopify Routes', () => {
       );
       expect(res.status).toBe(202);
       expect(mockGetSubContract).not.toHaveBeenCalled();
+      expect(mockUpsertSubContract).not.toHaveBeenCalled();
+    });
+
+    it('🚨収集のみ ON (MENU OFF) でも受理する — 実測を貯めてから可視面を開ける順序の要', async () => {
+      // MENU を条件にしていると「実測を貯めるには先に顧客可視面を開ける」しかなくなる
+      // (= 日付の無い契約カードを顧客に見せることになる)。§10-0 ① の循環依存そのもの。
+      mockGetSubContract.mockResolvedValueOnce({ contract_id: '100' });
+      mockUpsertSubContract.mockResolvedValueOnce({ contract_id: '100' });
+      const res = await postFlow(
+        { contract_id: '100', next_billing_date: '2026-08-04' },
+        FLOW_SECRET,
+        flowEnv({ SUBSCRIPTION_MENU_ENABLED: undefined, SUBSCRIPTION_INGEST_ENABLED: 'true' }),
+      );
+      expect(res.status).toBe(200);
+      expect(mockUpsertSubContract).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ contractId: '100', estimateSource: 'flow' }),
+      );
+    });
+
+    it('GID 形式の契約 ID は末尾セグメントで実在行に解決する (Flow の変数が GID を返す場合)', async () => {
+      mockGetSubContract
+        .mockResolvedValueOnce(null) // 素の GID では引けない
+        .mockResolvedValueOnce({ contract_id: '100' }); // 末尾セグメントで一致
+      mockUpsertSubContract.mockResolvedValueOnce({ contract_id: '100' });
+      const res = await postFlow(
+        {
+          contract_id: 'gid://shopify/SubscriptionContract/100',
+          next_billing_date: '2026-08-04',
+        },
+        FLOW_SECRET,
+      );
+      expect(res.status).toBe(200);
+      // 書込先は D1 に実在する行のキー (GID で phantom 行を作らない)
+      expect(mockUpsertSubContract).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ contractId: '100', estimateSource: 'flow' }),
+      );
+    });
+
+    it('GID 形式でも実在しなければ 200 + skipped (末尾セグメントで phantom 行を作らない)', async () => {
+      mockGetSubContract.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+      const res = await postFlow(
+        {
+          contract_id: 'gid://shopify/SubscriptionContract/999',
+          next_billing_date: '2026-08-04',
+        },
+        FLOW_SECRET,
+      );
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { data: { skipped: string } };
+      expect(json.data.skipped).toBe('unknown_contract');
       expect(mockUpsertSubContract).not.toHaveBeenCalled();
     });
 
@@ -657,6 +709,8 @@ describe('Shopify Routes', () => {
         expect.anything(),
         '7771234567890',
         'subscription-100-pause:2026-07-14',
+        // MENU ON = 通知面が生きている → 遷移マーカーを立てて cron に拾わせる
+        { suppressRecoveryMarkers: false },
       );
       // 深夜送信・送信失敗での喪失・二重送信を避けるため、webhook 経路では push しない
       // (pending マーカー設定は applyCustomerTagsToContracts 内で pause 書込と原子 —
@@ -664,11 +718,29 @@ describe('Shopify Routes', () => {
       expect(mockChannelDispatch).not.toHaveBeenCalled();
     });
 
-    it('MENU gate OFF → タグ反映を行わない (挙動ゼロ変更)', async () => {
+    it('gate 全 OFF → タグ反映を行わない (挙動ゼロ変更)', async () => {
       mockUpsertShopifyCustomer.mockResolvedValueOnce({ id: 'sc-1', shopify_customer_id: '7771234567890' });
 
       await postCustomerUpdate(recoveryEnv({ SUBSCRIPTION_MENU_ENABLED: undefined }));
       expect(mockApplyCustomerTags).not.toHaveBeenCalled();
+    });
+
+    it('🚨収集のみ ON (MENU OFF) → タグは反映するがリカバリマーカーは立てない', async () => {
+      // これが無いと、収集期間中に溜まった pause 遷移が MENU を開けた瞬間に
+      // 「決済に失敗しました」の一斉送信になる (rebuild の suppressRecoveryMarkers と同じ罠)。
+      mockUpsertShopifyCustomer.mockResolvedValueOnce({ id: 'sc-1', shopify_customer_id: '7771234567890' });
+      mockApplyCustomerTags.mockResolvedValueOnce({ applied: 1, transitions: [] });
+
+      await postCustomerUpdate(
+        recoveryEnv({ SUBSCRIPTION_MENU_ENABLED: undefined, SUBSCRIPTION_INGEST_ENABLED: 'true' }),
+      );
+      expect(mockApplyCustomerTags).toHaveBeenCalledWith(
+        expect.anything(),
+        '7771234567890',
+        'subscription-100-pause:2026-07-14',
+        { suppressRecoveryMarkers: true },
+      );
+      expect(mockChannelDispatch).not.toHaveBeenCalled();
     });
   });
 

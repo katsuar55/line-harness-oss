@@ -221,6 +221,12 @@ export type Env = {
     //     read-model を温める。gate ON 後の再実行は ?force=1 必須 = スキップ先送りを消しうる) →
     //     ③本 gate ON → ④実機確認 → ⑤リッチメニュー v4 反映 (setup-naturism)。
     SUBSCRIPTION_MENU_ENABLED?: string;
+    // サブスク契約 read-model の**収集のみ**を先行して有効化する gate (§10-0 ①)。
+    //   'true' で Shopify webhook の derive と /api/integrations/teiki-flow の受信が動く。
+    //   顧客に見える面 (契約カード / intent / リッチメニュー) は SUBSCRIPTION_MENU_ENABLED のまま。
+    //   MENU=true は収集も含む (OR) ので、既存の単一 gate 運用と後方互換。
+    //   TEIKI_FLOW の実測値を貯めてから可視面を開ける、が正しい順序: docs/TEIKI_FLOW_SETUP.md
+    SUBSCRIPTION_INGEST_ENABLED?: string;
     // サブスク決済7日前リマインド + 決済失敗リカバリ通知 gate (WI-2 2026-07-14):
     //   'true' で teiki-billing-reminder cron と pause 遷移時の LINE push が有効。
     //   SUBSCRIPTION_MENU_ENABLED=true (read-model 稼働) が前提。

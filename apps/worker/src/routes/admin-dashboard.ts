@@ -116,6 +116,13 @@ adminDashboard.get('/api/admin/dashboard', async (c) => {
     { label: '友達紹介の「紹介した人に500円」特典', on: on(c.env.REFERRAL_REWARD_ENABLED), offText: '未公開 — 案内NG' },
     { label: 'LINE 一斉配信 (ブロードキャスト)', on: on(c.env.BROADCAST_ALL_ENABLED), offText: '未公開 (開発者に依頼)' },
     { label: 'トーク内サブスク管理カード', on: on(c.env.SUBSCRIPTION_MENU_ENABLED), offText: '近日公開 — 案内NG' },
+    // 収集は顧客から見えない準備工程 (定期便の契約データを裏で貯めている状態)。
+    // 「公開されたのか」と誤読されないよう、ラベルと offText の両方で内部工程と分かるようにする。
+    {
+      label: '(準備) 定期便データの収集',
+      on: on(c.env.SUBSCRIPTION_INGEST_ENABLED) || on(c.env.SUBSCRIPTION_MENU_ENABLED),
+      offText: '停止中 — 顧客影響なし',
+    },
     { label: 'サブスク決済 7日前リマインド', on: on(c.env.SUBSCRIPTION_REMINDER_ENABLED), offText: '近日公開 — 案内NG' },
   ];
 

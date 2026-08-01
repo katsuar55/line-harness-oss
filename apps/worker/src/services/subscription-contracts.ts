@@ -21,6 +21,33 @@ import {
   type SubscriptionContractRow,
 } from '@line-crm/db';
 
+// ===== gate =====
+
+export interface SubscriptionIngestEnv {
+  readonly SUBSCRIPTION_INGEST_ENABLED?: string;
+  readonly SUBSCRIPTION_MENU_ENABLED?: string;
+}
+
+/**
+ * read-model への**収集**が有効か (§10-0 ①)。
+ *
+ * `SUBSCRIPTION_MENU_ENABLED` は「顧客に見える面」(トーク内の契約カード・サブスク intent・
+ * リッチメニュー v4) の gate であり、収集と可視化を 1 つの secret で束ねていた。
+ * その結果 **TEIKI_FLOW の実測値を貯めるには先に顧客可視面を開けるしかない**という
+ * 循環になっていた (Flow の POST は gate OFF 中 202 で捨てられる)。
+ * 収集だけを先に ON にできるよう分離する。
+ *
+ * - `SUBSCRIPTION_INGEST_ENABLED=true` … 収集のみ (顧客からは何も変わらない)
+ * - `SUBSCRIPTION_MENU_ENABLED=true` … 可視面 ON。収集は当然必要なので OR で含める
+ *   (= 既存の単一 gate 運用と後方互換。MENU だけ立っている本番設定でも挙動は変わらない)
+ *
+ * 収集の書込先は `subscription_contracts` のみで、読む経路は全て MENU / REMINDER gate の
+ * 内側にある = ingest 単独 ON は顧客挙動・送信を一切変えない。
+ */
+export function isSubscriptionIngestEnabled(env: SubscriptionIngestEnv): boolean {
+  return env.SUBSCRIPTION_INGEST_ENABLED === 'true' || env.SUBSCRIPTION_MENU_ENABLED === 'true';
+}
+
 // ===== 純粋関数 (テスト容易性のため export) =====
 
 export interface ParsedOrderSubscription {
@@ -228,6 +255,20 @@ export async function deriveContractFromOrder(
     !isSameOrder &&
     (!existing?.last_order_at || (orderAt !== null && orderAt >= existing.last_order_at));
 
+  // Flow 実測値 (§10-0 ①) を過去日の導出で潰さないためのガード。
+  //
+  // `last_order_at` が無い契約 (= ローカル shopify_orders が直近60日分しか無いため
+  // 実測が唯一の日付ソースになっている、まさに TEIKI_FLOW の主対象) では
+  // `isNewerOrder` が無条件 true になる。そこへ `orders/updated` (Huckleberry の
+  // タグ後付け・出荷更新で過去注文にも飛ぶ) が届くと、実測が「決済済み」扱いで
+  // derived へ差し戻され、過去日の推定に置き換わる = ① の成果が静かに消える。
+  //
+  // 判定: 到着注文が**実測した次回決済日以降**なら本当にサイクルが進んだ (derived へ戻す)。
+  // それより前の注文はサイクル途中の再送とみなし、実測を保持する。
+  const flowEstimate = existing?.estimate_source === 'flow' ? existing.next_billing_estimate : null;
+  const supersedesFlowMeasurement =
+    flowEstimate === null || (orderAt !== null && orderAt.slice(0, 10) >= flowEstimate);
+
   const row = await upsertSubscriptionContract(db, {
     contractId: parsed.contractId,
     shopifyCustomerId: input.shopifyCustomerId ?? undefined,
@@ -244,7 +285,7 @@ export async function deriveContractFromOrder(
           // Flow 実測値 (estimate_source='flow') も役目を終えるため導出モードへ戻す (WI-2)。
           // 決済成功 = 支払い問題は解消済みなのでリカバリマーカーも掃除する (stale pending 防止)
           skipCountAtLastOrder: existing ? existing.skip_count : undefined,
-          estimateSource: 'derived',
+          ...(supersedesFlowMeasurement ? { estimateSource: 'derived' as const } : {}),
           ...(existing ? { recoveryPendingAt: null, recoveryNotifiedAt: null } : {}),
         }
       : isSameOrder
