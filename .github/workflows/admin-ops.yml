@@ -856,11 +856,13 @@ jobs:
               echo '次の順序が必要です (各段階で承認を取ること):'
               echo ''
               echo '1. migration 069 + 070 を適用 (テーブル作成のみ = additive・live-safe)'
-              echo '2. `SUBSCRIPTION_MENU_ENABLED=true` — Shopify webhook から契約状態の収集を開始'
-              echo '3. `POST /api/shopify/subscription-contracts/rebuild` で既存顧客タグから backfill'
-              echo '   (gate ON 後は `?force=1` が必要。bootstrap は recovery マーカーを抑止する実装済み)'
-              echo '4. 本 op を再実行して到達件数を確認'
-              echo '5. `SUBSCRIPTION_REMINDER_ENABLED=true` — ここで初めて push が飛び始める'
+              echo '2. `rebuild-subscription-contracts` で既存顧客タグから backfill'
+              echo '   (**全 gate OFF のうちに済ませるのが最短**。収集 gate ON 後は force 入力が必要)'
+              echo '3. `enable-subscription-ingest` — 収集のみ開始。**顧客に見える変化なし**'
+              echo '   (ここで TEIKI_FLOW の実測日を貯める: docs/TEIKI_FLOW_SETUP.md)'
+              echo '4. 本 op を再実行して「日付ソースの内訳」と到達件数を確認'
+              echo '5. (日付が十分に埋まってから) `SUBSCRIPTION_MENU_ENABLED=true` — 顧客可視面を公開'
+              echo '6. `SUBSCRIPTION_REMINDER_ENABLED=true` — ここで初めて push が飛び始める'
             } >> "$GITHUB_STEP_SUMMARY"
             echo 'subscription_contracts not found — see summary for the activation sequence'
             exit 0
@@ -1006,7 +1008,15 @@ jobs:
             process.stdin.on("end", () => {
               let j;
               try { j = JSON.parse(raw); } catch { console.log("JSON parse 失敗 (本文は伏せます)"); process.exit(1); }
-              if (!j.success) { console.log("success=false (詳細は伏せます)"); process.exit(1); }
+              if (!j.success) {
+                // 409 (収集 gate ON による拒否) だけは脱出口を出す。固定文言なので PII は混ざらない。
+                // これが無いと operator には赤い step と「詳細は伏せます」しか残らない。
+                const gated = typeof j.error === "string" && /force=1/.test(j.error);
+                console.log(gated
+                  ? "⏸ 収集 gate が ON のため拒否されました (未消化スキップの先送りを消す恐れ)。意図的に実行する場合は Run workflow の force に true を指定して再実行してください。"
+                  : "success=false (詳細は伏せます)");
+                process.exit(1);
+              }
               const d = j.data || {};
               const keys = ["ordersScanned","ordersFailed","skippedNonWebhook","contractsSeen","customersScanned","customersFailed","baselinesNormalized","truncated"];
               for (const k of keys) console.log(`- ${k}: ${d[k]}`);
