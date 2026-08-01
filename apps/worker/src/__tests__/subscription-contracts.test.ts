@@ -19,6 +19,7 @@ import {
   applyCustomerTagsToContracts,
   rebuildContractsFromD1,
   resolveRebuildAnchor,
+  isSubscriptionIngestEnabled,
 } from '../services/subscription-contracts.js';
 import { getContractForFriend } from '../services/subscription-concierge.js';
 import {
@@ -917,5 +918,73 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
     const row = db.contracts.get('100')!;
     expect(row.estimate_source).toBe('derived');
     expect(row.next_billing_estimate).toBe('2026-09-09'); // 8/10 + 30
+  });
+
+  // ---- 「実測を守る」変更を棄却したことの記録 (§10-0 ① 採点で確定) ----
+  //
+  // last_order_at が無い契約 (Flow 実測が唯一の日付ソース = ① の主対象) では isNewerOrder が
+  // 無条件 true になるため、過去注文の orders/updated が実測を derived へ差し戻し、過去日の
+  // 推定に置き換える。これを「実測日以降の注文だけが derived に戻す」で塞ごうとしたが、
+  // **実測を保持した行はその後のスキップを一切反映しない** (refreshEstimate の flow 分岐が
+  // 早期 return する) ため、スキップ済みの顧客に古い決済日でリマインドを送る経路ができた。
+  // 過去日への差し戻しは窓の外＝無送信で自然回復する。誤った push は回復しない。
+  // よって main の挙動を維持する。下記 2 件はその選択を固定する回帰テスト。
+  const flowOnlyContract = async (db: ReturnType<typeof createFakeDb>) =>
+    upsertSubscriptionContract(db, {
+      contractId: '200',
+      nextBillingEstimate: '2026-09-19',
+      estimateSource: 'flow',
+    });
+
+  it('棄却の記録: 実測契約に過去注文が届くと derived に戻る (過去日になりうるが送信はされない)', async () => {
+    const db = createFakeDb();
+    await flowOnlyContract(db);
+    await deriveContractFromOrder(db, {
+      tags: 'subscription-id:200, subscription-count:3',
+      lineItemsJson: ITEMS_30,
+      shopifyOrderId: 'ord-old',
+      shopifyCustomerId: 'cust-2',
+      orderCreatedAt: '2026-08-20T10:00:00+09:00',
+    });
+    const row = db.contracts.get('200')!;
+    expect(row.estimate_source).toBe('derived');
+    expect(row.next_billing_estimate).toBe('2026-09-19'); // 8/20 + 30
+  });
+
+  it('🚨これを壊すと誤送信になる: 差し戻し後のスキップが先送りとして反映される', async () => {
+    const db = createFakeDb();
+    await flowOnlyContract(db);
+    await deriveContractFromOrder(db, {
+      tags: 'subscription-id:200, subscription-count:3',
+      lineItemsJson: ITEMS_30,
+      shopifyOrderId: 'ord-old',
+      shopifyCustomerId: 'cust-2',
+      orderCreatedAt: '2026-08-20T10:00:00+09:00',
+    });
+    await applyCustomerTagsToContracts(db, 'cust-2', 'subscription-200-skip-count:1');
+    const row = db.contracts.get('200')!;
+    // 実測を保持していると 9/19 のまま = スキップ済み顧客に「9/19 に決済されます」を送ってしまう
+    expect(row.next_billing_estimate).toBe('2026-10-19'); // 8/20 + 30*(1+1)
+  });
+});
+
+describe('isSubscriptionIngestEnabled (§10-0 ①: 収集と顧客可視面の分離)', () => {
+  it('既定 (両方未設定) は false = 挙動ゼロ変更', () => {
+    expect(isSubscriptionIngestEnabled({})).toBe(false);
+  });
+
+  it('MENU=true は収集も含む (既存の単一 gate 運用と後方互換)', () => {
+    expect(isSubscriptionIngestEnabled({ SUBSCRIPTION_MENU_ENABLED: 'true' })).toBe(true);
+  });
+
+  it('INGEST=true 単独で収集が動く (顧客可視面は閉じたまま)', () => {
+    expect(isSubscriptionIngestEnabled({ SUBSCRIPTION_INGEST_ENABLED: 'true' })).toBe(true);
+  });
+
+  it("'true' 以外の値では有効にならない (typo / 'false' / 空文字で誤作動しない)", () => {
+    expect(isSubscriptionIngestEnabled({ SUBSCRIPTION_INGEST_ENABLED: 'false' })).toBe(false);
+    expect(isSubscriptionIngestEnabled({ SUBSCRIPTION_INGEST_ENABLED: '1' })).toBe(false);
+    expect(isSubscriptionIngestEnabled({ SUBSCRIPTION_INGEST_ENABLED: 'TRUE' })).toBe(false);
+    expect(isSubscriptionIngestEnabled({ SUBSCRIPTION_INGEST_ENABLED: '' })).toBe(false);
   });
 });

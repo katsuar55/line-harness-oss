@@ -25,6 +25,7 @@ import {
   applyCustomerTagsToContracts,
   rebuildContractsFromD1,
   toJstDate,
+  isSubscriptionIngestEnabled,
 } from '../services/subscription-contracts.js';
 import { LineClient } from '@line-crm/line-sdk';
 
@@ -53,8 +54,10 @@ shopify.post('/api/integrations/teiki-flow', async (c) => {
   if (!(await constantTimeEqual(provided, secret))) {
     return c.json({ success: false, error: 'unauthorized' }, 401);
   }
-  // gate OFF 中は read-model を触らない (202 = Flow 側にリトライさせない)
-  if (c.env.SUBSCRIPTION_MENU_ENABLED !== 'true') {
+  // gate OFF 中は read-model を触らない (202 = Flow 側にリトライさせない)。
+  // 収集 gate (INGEST) で判定する — 顧客可視 gate (MENU) を開ける前に実測値を貯めたい
+  // (貯めないと日付の無い契約カードを顧客に見せることになる) ため。
+  if (!isSubscriptionIngestEnabled(c.env)) {
     return c.json({ success: true, data: { skipped: 'gate_off' } }, 202);
   }
 
@@ -79,25 +82,49 @@ shopify.post('/api/integrations/teiki-flow', async (c) => {
     // 未知の契約 ID では phantom 行を作らない (注文 webhook 由来の既知契約のみ実測を受ける)。
     // 200 で受けるのは意図的 (採点R2): 契約作成トリガーが orders webhook より先着する race で
     // 4xx を返すと Shopify Flow は再試行せず実行ログも赤くなる。次のトリガーで自然回復する。
-    const existing = await getSubscriptionContract(c.env.DB, contractId);
-    if (!existing) {
+    // read-model の契約 ID は Huckleberry のタグ (`subscription-{ID}-plan` 等) 由来の素の ID。
+    // Flow の変数ピッカーが GID (`gid://shopify/SubscriptionContract/123`) を返す可能性があるため、
+    // 素の値で引けなければ末尾セグメントでも引く (取り違えないよう照合先は D1 の実在行のみ)。
+    const resolved = await resolveContractRow(c.env.DB, contractId);
+    if (!resolved) {
       console.info(`teiki-flow: unknown contract ${contractId} (derive 前の race の可能性)`);
-      return c.json({ success: true, data: { skipped: 'unknown_contract', contractId } });
+      return c.json({
+        success: true,
+        data: {
+          skipped: 'unknown_contract',
+          contractId,
+          // Flow の実行ログに出る唯一の手掛かり。設定直後の「全件 skipped」が
+          // 「変数の選び間違い」なのか「新規契約の race」なのか切り分けられるようにする。
+          hint: 'この契約IDに一致する行がありません。Body の contract_id に「契約ID」変数が入っているか確認してください (新規契約直後なら次回発火で自然回復します)',
+        },
+      });
     }
     await upsertSubscriptionContract(c.env.DB, {
-      contractId,
+      contractId: resolved,
       nextBillingEstimate: date,
       estimateSource: 'flow',
     });
     return c.json({
       success: true,
-      data: { contractId, nextBillingEstimate: date, source: 'flow' },
+      data: { contractId: resolved, nextBillingEstimate: date, source: 'flow' },
     });
   } catch (err) {
     console.error('POST /api/integrations/teiki-flow error:', err);
     return c.json({ success: false, error: 'internal error' }, 500);
   }
 });
+
+/**
+ * Flow から届いた契約 ID を D1 の実在行へ解決する。見つからなければ null。
+ * 素の ID → GID の末尾セグメント の順に試す (phantom 行は作らないので、
+ * 実在しない ID がどちらの形式で来ても結果は unknown_contract のまま)。
+ */
+async function resolveContractRow(db: D1Database, contractId: string): Promise<string | null> {
+  if (await getSubscriptionContract(db, contractId)) return contractId;
+  const tail = contractId.includes('/') ? contractId.slice(contractId.lastIndexOf('/') + 1) : '';
+  if (tail && (await getSubscriptionContract(db, tail))) return tail;
+  return null;
+}
 
 /** 共有シークレットの定数時間比較 (SHA-256 digest 同士を比較して長さ・内容の timing 差を消す)。 */
 async function constantTimeEqual(a: string, b: string): Promise<boolean> {
@@ -120,12 +147,18 @@ async function constantTimeEqual(a: string, b: string): Promise<boolean> {
 // gate ON 前に read-model を温めておく必要がある (gate ON 直後に空カードを出さないため)。
 // read-model への書込は gate OFF 中の本番挙動に一切影響しない (読む経路が全て gate 内)。
 // ⚠️ gate ON 後の再実行は「未消化スキップの先送り」を恒久的に消すため ?force=1 を要求する (採点R2)。
+//    判定は **収集 gate** で行う (§10-0 ①): 先送り (skip_count と skip_count_at_last_order の drift) を
+//    作るのは customers/update → applyCustomerTagsToContracts であり、gate 分離後その経路は
+//    INGEST 側にある。MENU で判定したままだと「収集のみ ON」の期間に drift が溜まっているのに
+//    409 が出ず、rebuild の pass3 が baseline を正規化して先送りを**恒久的に**消してしまう
+//    (履歴から復元不能 → スキップ済みの顧客に 1 周期早いリマインドが飛ぶ)。
+//    全 gate OFF での bootstrap (migration → rebuild → gate ON) は従来どおり force 不要で通る。
 shopify.post('/api/integrations/shopify/subscription-contracts/rebuild', async (c) => {
-  if (c.env.SUBSCRIPTION_MENU_ENABLED === 'true' && c.req.query('force') !== '1') {
+  if (isSubscriptionIngestEnabled(c.env) && c.req.query('force') !== '1') {
     return c.json({
       success: false,
       error:
-        'gate ON 中の rebuild は、顧客がスキップ済みの先送り推定を巻き戻す可能性があります。承知の上で実行する場合は ?force=1 を付けてください。',
+        '収集 gate ON 中の rebuild は、顧客がスキップ済みの先送り推定を巻き戻す可能性があります。承知の上で実行する場合は ?force=1 を付けてください。',
     }, 409);
   }
   try {
@@ -348,7 +381,7 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
 
       // サブスク契約 read-model 導出 (WI-1, docs/SUBSCRIPTION_ULTRAPLAN_2026-07-14.md)。
       // gate OFF なら完全 no-op (= migration 069 未適用でも安全)。失敗しても注文処理は継続。
-      if (c.env.SUBSCRIPTION_MENU_ENABLED === 'true') {
+      if (isSubscriptionIngestEnabled(c.env)) {
         try {
           await deriveContractFromOrder(db, {
             tags: (body.tags as string) ?? null,
@@ -524,12 +557,19 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
 
       // サブスク契約状態の反映 (WI-1): 顧客タグ subscription-{ID}-cancel/-pause/-skip-count/-plan。
       // 解約・一時停止・スキップの検知経路。gate OFF なら完全 no-op。
-      if (c.env.SUBSCRIPTION_MENU_ENABLED === 'true') {
+      if (isSubscriptionIngestEnabled(c.env)) {
         try {
           // WI-2 (採点R1/R2 再設計): pause/resume 遷移のリカバリマーカーは
           // applyCustomerTagsToContracts が pause 書込と同一 upsert で原子的に管理する。
           // 送信は teiki-billing-reminder cron (JST 10-20時窓・CAS claim・失敗リトライ) が担う。
-          await applyCustomerTagsToContracts(db, shopifyCustomerId, (body.tags as string) ?? null);
+          //
+          // ⚠️ 収集のみ ON (MENU OFF) の期間はマーカーを立てない。cron は MENU も必須なので
+          // 立てても送られず、MENU を開けた瞬間に数週間前の一時停止まで遡って
+          // 「決済に失敗しました」が一斉送信される (rebuild の suppressRecoveryMarkers と同じ罠)。
+          // 検知は「通知面が生きている」期間だけ意味を持つ。
+          await applyCustomerTagsToContracts(db, shopifyCustomerId, (body.tags as string) ?? null, {
+            suppressRecoveryMarkers: c.env.SUBSCRIPTION_MENU_ENABLED !== 'true',
+          });
         } catch (err) {
           console.error('subscription contract derive (customer) failed:', err);
         }

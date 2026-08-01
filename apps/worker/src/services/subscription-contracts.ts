@@ -21,6 +21,33 @@ import {
   type SubscriptionContractRow,
 } from '@line-crm/db';
 
+// ===== gate =====
+
+export interface SubscriptionIngestEnv {
+  readonly SUBSCRIPTION_INGEST_ENABLED?: string;
+  readonly SUBSCRIPTION_MENU_ENABLED?: string;
+}
+
+/**
+ * read-model への**収集**が有効か (§10-0 ①)。
+ *
+ * `SUBSCRIPTION_MENU_ENABLED` は「顧客に見える面」(トーク内の契約カード・サブスク intent・
+ * リッチメニュー v4) の gate であり、収集と可視化を 1 つの secret で束ねていた。
+ * その結果 **TEIKI_FLOW の実測値を貯めるには先に顧客可視面を開けるしかない**という
+ * 循環になっていた (Flow の POST は gate OFF 中 202 で捨てられる)。
+ * 収集だけを先に ON にできるよう分離する。
+ *
+ * - `SUBSCRIPTION_INGEST_ENABLED=true` … 収集のみ (顧客からは何も変わらない)
+ * - `SUBSCRIPTION_MENU_ENABLED=true` … 可視面 ON。収集は当然必要なので OR で含める
+ *   (= 既存の単一 gate 運用と後方互換。MENU だけ立っている本番設定でも挙動は変わらない)
+ *
+ * 収集の書込先は `subscription_contracts` のみで、読む経路は全て MENU / REMINDER gate の
+ * 内側にある = ingest 単独 ON は顧客挙動・送信を一切変えない。
+ */
+export function isSubscriptionIngestEnabled(env: SubscriptionIngestEnv): boolean {
+  return env.SUBSCRIPTION_INGEST_ENABLED === 'true' || env.SUBSCRIPTION_MENU_ENABLED === 'true';
+}
+
 // ===== 純粋関数 (テスト容易性のため export) =====
 
 export interface ParsedOrderSubscription {
@@ -227,6 +254,22 @@ export async function deriveContractFromOrder(
   const isNewerOrder =
     !isSameOrder &&
     (!existing?.last_order_at || (orderAt !== null && orderAt >= existing.last_order_at));
+
+  // ⚠️ `last_order_at` が無い契約 (= ローカル shopify_orders が直近60日分しか無いため
+  // Flow 実測が唯一の日付ソースになっている、まさに §10-0 ① の主対象) では
+  // `isNewerOrder` が無条件 true になる。そこへ過去注文の `orders/updated` が届くと
+  // 実測が derived へ差し戻され、過去日の推定に置き換わる。
+  //
+  // これを「実測日以降の注文だけが derived に戻す」で塞ごうとしたが **採点で棄却した**:
+  // 実測を保持したまま後続のスキップが来ると、refreshEstimate の flow 分岐が早期 return して
+  // 先送りが反映されず、**スキップ済みの顧客に古い決済日でリマインドを送る**経路ができる
+  // (実測が derived に戻っていれば skip delta が効いていた)。
+  // 差し戻し先が窓 (`[3,7]` 日前) の外なら無送信で、次の Flow 発火 (7日前通知/スキップ/
+  // お届け日変更) で自然回復する。直近注文 + 周期が偶然窓に入れば誤送信は起こりうるので
+  // どちらの案も誤送信ゼロにはならないが、棄却した案は**スキップ済みと分かっている顧客へ
+  // 確実に古い日付を送る**のに対し、こちらは偶然の一致に限られる。
+  // 根本原因は「flow 行がスキップ差分を一切反映しない」という既存仕様側にあるため、
+  // そちらを直すまでは main の挙動 (新しく見える注文で derived に戻す) を維持する。
 
   const row = await upsertSubscriptionContract(db, {
     contractId: parsed.contractId,

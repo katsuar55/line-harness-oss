@@ -18,8 +18,8 @@
  *   構造的に排除する。
  *
  * 共通設計:
- *   - gate: SUBSCRIPTION_REMINDER_ENABLED && SUBSCRIPTION_MENU_ENABLED (read-model 凍結中の
- *     誤送信防止。MENU OFF なら derive も止まっており推定/解約状態が古い)
+ *   - gate: SUBSCRIPTION_REMINDER_ENABLED && SUBSCRIPTION_MENU_ENABLED (顧客可視面が閉じた
+ *     まま push だけ届く事態を防ぐ。収集のみの SUBSCRIPTION_INGEST_ENABLED では送信しない)
  *   - 送信窓: JST 10:00-19:59
  *   - CAS claim + 送信失敗 (transient) は解放して再試行 / 恒久 4xx は claim 維持 /
  *     claim 後の throw も解放を試み、漏れは leakedClaims として可視化
@@ -124,8 +124,11 @@ export async function processBillingReminders(
   };
   const db = env.DB;
 
-  // MENU gate も必須 (採点R1): MENU OFF = derive 停止 = read-model 凍結。凍結中に
-  // リマインドを送ると解約済み顧客への誤送信が構成できる。
+  // MENU gate も必須 (採点R1): 元の理由は「MENU OFF = derive 停止 = read-model 凍結。
+  // 凍結中に送ると解約済み顧客へ誤送信しうる」。収集 gate 分離後 (§10-0 ①) は
+  // `SUBSCRIPTION_INGEST_ENABLED` 単独でも read-model は生きうるが、**MENU 必須は据え置く**:
+  // 顧客可視面が閉じたまま push だけ届くと、カードを開けない相手に締切を告げることになる。
+  // = ここは「read-model が新鮮か」より強い条件を意図的に課している。
   if (
     env.SUBSCRIPTION_REMINDER_ENABLED !== 'true' ||
     env.SUBSCRIPTION_MENU_ENABLED !== 'true'
