@@ -124,6 +124,7 @@ on:
           - release-billing-hold
           - custom-domain-status
           - reminder-dry-run
+          - apply-migration-069-070
           - attach-custom-domain
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
@@ -885,3 +886,40 @@ jobs:
               SUM(CASE WHEN next_billing_estimate IS NULL THEN 1 ELSE 0 END) AS no_estimate
             FROM subscription_contracts
           " | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # サブスク契約テーブルの活性化 step 1/5 (SESSION_HANDOFF「活性化シーケンス」)。
+      # 069 = CREATE TABLE IF NOT EXISTS + index (完全 idempotent)
+      # 070 = ALTER TABLE ADD COLUMN ×2 (**idempotent でない** — 既に列があると
+      #       "duplicate column name" で落ちるので、列の有無を見てから流す)
+      # どちらも additive で既存データに触れない (DROP/DELETE/UPDATE を含まない)。
+      - name: Apply migration 069 + 070 (subscription contracts, additive)
+        if: inputs.op == 'apply-migration-069-070'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          echo '### 069 (subscription_contracts + index)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote \
+            --file ../../packages/db/migrations/069_subscription_contracts.sql
+
+          # 070 は ADD COLUMN なので、適用済みなら skip する (再実行で落とさない)
+          COLS=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS n FROM pragma_table_info('subscription_contracts') WHERE name IN ('recovery_pending_at','recovery_notified_at')")
+          if echo "$COLS" | grep -Eq '"n": *2'; then
+            echo '### 070: 適用済み (recovery 列が既に存在) — skip' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '### 070 (recovery_pending_at / recovery_notified_at)' >> "$GITHUB_STEP_SUMMARY"
+            npx wrangler d1 execute naturism-line-crm --remote \
+              --file ../../packages/db/migrations/070_subscription_recovery.sql
+          fi
+
+          echo '### 検証: テーブルと列' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name='subscription_contracts'" | tee -a "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS columns_total, SUM(CASE WHEN name LIKE 'recovery_%' THEN 1 ELSE 0 END) AS recovery_columns FROM pragma_table_info('subscription_contracts')" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '### 検証: 行数 (適用直後は 0 のはず = 既存データに触れていない)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS rows FROM subscription_contracts" | tee -a "$GITHUB_STEP_SUMMARY"
