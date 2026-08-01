@@ -147,12 +147,18 @@ async function constantTimeEqual(a: string, b: string): Promise<boolean> {
 // gate ON 前に read-model を温めておく必要がある (gate ON 直後に空カードを出さないため)。
 // read-model への書込は gate OFF 中の本番挙動に一切影響しない (読む経路が全て gate 内)。
 // ⚠️ gate ON 後の再実行は「未消化スキップの先送り」を恒久的に消すため ?force=1 を要求する (採点R2)。
+//    判定は **収集 gate** で行う (§10-0 ①): 先送り (skip_count と skip_count_at_last_order の drift) を
+//    作るのは customers/update → applyCustomerTagsToContracts であり、gate 分離後その経路は
+//    INGEST 側にある。MENU で判定したままだと「収集のみ ON」の期間に drift が溜まっているのに
+//    409 が出ず、rebuild の pass3 が baseline を正規化して先送りを**恒久的に**消してしまう
+//    (履歴から復元不能 → スキップ済みの顧客に 1 周期早いリマインドが飛ぶ)。
+//    全 gate OFF での bootstrap (migration → rebuild → gate ON) は従来どおり force 不要で通る。
 shopify.post('/api/integrations/shopify/subscription-contracts/rebuild', async (c) => {
-  if (c.env.SUBSCRIPTION_MENU_ENABLED === 'true' && c.req.query('force') !== '1') {
+  if (isSubscriptionIngestEnabled(c.env) && c.req.query('force') !== '1') {
     return c.json({
       success: false,
       error:
-        'gate ON 中の rebuild は、顧客がスキップ済みの先送り推定を巻き戻す可能性があります。承知の上で実行する場合は ?force=1 を付けてください。',
+        '収集 gate ON 中の rebuild は、顧客がスキップ済みの先送り推定を巻き戻す可能性があります。承知の上で実行する場合は ?force=1 を付けてください。',
     }, 409);
   }
   try {

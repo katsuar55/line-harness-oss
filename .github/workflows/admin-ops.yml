@@ -137,6 +137,11 @@ on:
         description: 'enable-app-proxy-link 用: storefront 公開 URL (例 https://naturism-diet.com)。省略時は gate のみ ON'
         required: false
         type: string
+      force:
+        description: 'rebuild-subscription-contracts 用: 収集 gate ON 中でも実行する (未消化スキップの先送りを消す可能性あり)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -969,19 +974,31 @@ jobs:
       # gate ON 前に read-model を温めておかないと gate ON 直後に空カードが出る。
       # 出力は件数のみ (本リポジトリは public。firstError は生データ混入の恐れがあるため
       # 有無のみを出す)。
+      #
+      # ⚠️ **収集 gate (INGEST / MENU) が ON の状態での再実行は 409 で拒否される**。
+      # 収集中は customers/update がスキップの先送り (skip_count と skip_count_at_last_order の
+      # drift) を書き続けており、rebuild の pass3 はそれを正規化して**恒久的に消す**ため
+      # (履歴から復元不能 = スキップ済みの顧客に 1 周期早いリマインドが飛ぶ)。
+      # 承知の上で実行する場合のみ入力 `force` に true を指定すること。
       - name: Rebuild subscription contracts (backfill, no sending)
         if: inputs.op == 'rebuild-subscription-contracts'
         env:
           WORKER_API_KEY_VALUE: ${{ secrets.WORKER_API_KEY }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
           if [ -z "${WORKER_API_KEY_VALUE:-}" ]; then
             echo "Repository secret WORKER_API_KEY が未設定です" >&2
             exit 1
           fi
-          RESP=$(curl -sS -X POST             "https://naturism-line-crm.katsu-7d5.workers.dev/api/integrations/shopify/subscription-contracts/rebuild"             -H "Authorization: Bearer $WORKER_API_KEY_VALUE")
+          URL="https://naturism-line-crm.katsu-7d5.workers.dev/api/integrations/shopify/subscription-contracts/rebuild"
+          if [ "${FORCE:-false}" = "true" ]; then
+            URL="$URL?force=1"
+            echo '⚠️ force=1 で実行 (未消化スキップの先送りを巻き戻す可能性を承知の上)' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          RESP=$(curl -sS -X POST "$URL" -H "Authorization: Bearer $WORKER_API_KEY_VALUE")
           echo '### rebuild 結果 (件数のみ)' >> "$GITHUB_STEP_SUMMARY"
           echo "$RESP" | node -e '
             let raw = "";

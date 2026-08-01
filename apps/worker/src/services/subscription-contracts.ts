@@ -255,19 +255,19 @@ export async function deriveContractFromOrder(
     !isSameOrder &&
     (!existing?.last_order_at || (orderAt !== null && orderAt >= existing.last_order_at));
 
-  // Flow 実測値 (§10-0 ①) を過去日の導出で潰さないためのガード。
+  // ⚠️ `last_order_at` が無い契約 (= ローカル shopify_orders が直近60日分しか無いため
+  // Flow 実測が唯一の日付ソースになっている、まさに §10-0 ① の主対象) では
+  // `isNewerOrder` が無条件 true になる。そこへ過去注文の `orders/updated` が届くと
+  // 実測が derived へ差し戻され、過去日の推定に置き換わる。
   //
-  // `last_order_at` が無い契約 (= ローカル shopify_orders が直近60日分しか無いため
-  // 実測が唯一の日付ソースになっている、まさに TEIKI_FLOW の主対象) では
-  // `isNewerOrder` が無条件 true になる。そこへ `orders/updated` (Huckleberry の
-  // タグ後付け・出荷更新で過去注文にも飛ぶ) が届くと、実測が「決済済み」扱いで
-  // derived へ差し戻され、過去日の推定に置き換わる = ① の成果が静かに消える。
-  //
-  // 判定: 到着注文が**実測した次回決済日以降**なら本当にサイクルが進んだ (derived へ戻す)。
-  // それより前の注文はサイクル途中の再送とみなし、実測を保持する。
-  const flowEstimate = existing?.estimate_source === 'flow' ? existing.next_billing_estimate : null;
-  const supersedesFlowMeasurement =
-    flowEstimate === null || (orderAt !== null && orderAt.slice(0, 10) >= flowEstimate);
+  // これを「実測日以降の注文だけが derived に戻す」で塞ごうとしたが **採点で棄却した**:
+  // 実測を保持したまま後続のスキップが来ると、refreshEstimate の flow 分岐が早期 return して
+  // 先送りが反映されず、**スキップ済みの顧客に古い決済日でリマインドを送る**経路ができる
+  // (実測が derived に戻っていれば skip delta が効いていた)。
+  // 過去日への差し戻しは「窓の外＝送信されない」で済み、次の Flow 発火 (7日前通知/スキップ/
+  // お届け日変更) で自然回復するのに対し、誤った push は取り返しがつかない。
+  // 根本原因は「flow 行がスキップ差分を一切反映しない」という既存仕様側にあるため、
+  // そちらを直すまでは main の挙動 (新しく見える注文で derived に戻す) を維持する。
 
   const row = await upsertSubscriptionContract(db, {
     contractId: parsed.contractId,
@@ -285,7 +285,7 @@ export async function deriveContractFromOrder(
           // Flow 実測値 (estimate_source='flow') も役目を終えるため導出モードへ戻す (WI-2)。
           // 決済成功 = 支払い問題は解消済みなのでリカバリマーカーも掃除する (stale pending 防止)
           skipCountAtLastOrder: existing ? existing.skip_count : undefined,
-          ...(supersedesFlowMeasurement ? { estimateSource: 'derived' as const } : {}),
+          estimateSource: 'derived',
           ...(existing ? { recoveryPendingAt: null, recoveryNotifiedAt: null } : {}),
         }
       : isSameOrder

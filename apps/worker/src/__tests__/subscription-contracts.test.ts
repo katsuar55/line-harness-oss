@@ -920,21 +920,23 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
     expect(row.next_billing_estimate).toBe('2026-09-09'); // 8/10 + 30
   });
 
-  // ---- ルール4 (§10-0 ①): last_order_at を持たない契約の実測値を守る ----
+  // ---- 「実測を守る」変更を棄却したことの記録 (§10-0 ① 採点で確定) ----
   //
-  // 本番の active 139 件中 65 件は last_order_at が無い (ローカル shopify_orders が
-  // 直近60日分しか無いため)。まさにこの層が TEIKI_FLOW の実測を唯一の日付ソースにする。
-  // last_order_at が null だと isNewerOrder が無条件 true になるので、Huckleberry の
-  // タグ後付け・出荷更新で飛んでくる `orders/updated` (過去注文) が実測を derived へ
-  // 差し戻し、過去日の推定に置き換えてしまう = ① の成果が静かに消える。
+  // last_order_at が無い契約 (Flow 実測が唯一の日付ソース = ① の主対象) では isNewerOrder が
+  // 無条件 true になるため、過去注文の orders/updated が実測を derived へ差し戻し、過去日の
+  // 推定に置き換える。これを「実測日以降の注文だけが derived に戻す」で塞ごうとしたが、
+  // **実測を保持した行はその後のスキップを一切反映しない** (refreshEstimate の flow 分岐が
+  // 早期 return する) ため、スキップ済みの顧客に古い決済日でリマインドを送る経路ができた。
+  // 過去日への差し戻しは窓の外＝無送信で自然回復する。誤った push は回復しない。
+  // よって main の挙動を維持する。下記 2 件はその選択を固定する回帰テスト。
   const flowOnlyContract = async (db: ReturnType<typeof createFakeDb>) =>
     upsertSubscriptionContract(db, {
       contractId: '200',
-      nextBillingEstimate: '2026-08-10',
+      nextBillingEstimate: '2026-09-19',
       estimateSource: 'flow',
     });
 
-  it('ルール4: last_order_at 無しの実測契約に過去注文が届いても実測を保持する', async () => {
+  it('棄却の記録: 実測契約に過去注文が届くと derived に戻る (過去日になりうるが送信はされない)', async () => {
     const db = createFakeDb();
     await flowOnlyContract(db);
     await deriveContractFromOrder(db, {
@@ -942,27 +944,27 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
       lineItemsJson: ITEMS_30,
       shopifyOrderId: 'ord-old',
       shopifyCustomerId: 'cust-2',
-      // 実測した次回決済日 (8/10) より前 = サイクルは進んでいない
-      orderCreatedAt: '2026-07-20T10:00:00+09:00',
+      orderCreatedAt: '2026-08-20T10:00:00+09:00',
     });
     const row = db.contracts.get('200')!;
-    expect(row.estimate_source).toBe('flow');
-    expect(row.next_billing_estimate).toBe('2026-08-10');
+    expect(row.estimate_source).toBe('derived');
+    expect(row.next_billing_estimate).toBe('2026-09-19'); // 8/20 + 30
   });
 
-  it('ルール4: 実測日以降の注文なら derived へ復帰する (本物の決済成功は取りこぼさない)', async () => {
+  it('🚨これを壊すと誤送信になる: 差し戻し後のスキップが先送りとして反映される', async () => {
     const db = createFakeDb();
     await flowOnlyContract(db);
     await deriveContractFromOrder(db, {
       tags: 'subscription-id:200, subscription-count:3',
       lineItemsJson: ITEMS_30,
-      shopifyOrderId: 'ord-new',
+      shopifyOrderId: 'ord-old',
       shopifyCustomerId: 'cust-2',
-      orderCreatedAt: '2026-08-10T10:00:00+09:00',
+      orderCreatedAt: '2026-08-20T10:00:00+09:00',
     });
+    await applyCustomerTagsToContracts(db, 'cust-2', 'subscription-200-skip-count:1');
     const row = db.contracts.get('200')!;
-    expect(row.estimate_source).toBe('derived');
-    expect(row.next_billing_estimate).toBe('2026-09-09'); // 8/10 + 30
+    // 実測を保持していると 9/19 のまま = スキップ済み顧客に「9/19 に決済されます」を送ってしまう
+    expect(row.next_billing_estimate).toBe('2026-10-19'); // 8/20 + 30*(1+1)
   });
 });
 

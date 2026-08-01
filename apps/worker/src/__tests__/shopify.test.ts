@@ -472,6 +472,19 @@ describe('Shopify Routes', () => {
       expect(mockRebuildContracts).not.toHaveBeenCalled();
     });
 
+    it('🚨収集のみ ON + force なし → 409 (先送りを作るのは収集経路。MENU 判定のままだと素通りする)', async () => {
+      // gate 分離で drift の発生条件が INGEST 側へ移った。ガードを MENU のままにしていると
+      // 「収集のみ ON」の数日〜1ヶ月の間に溜まったスキップ先送りを、既存の Admin Ops
+      // (force を付けない) が無警告で恒久消去し、1 周期早いリマインドが飛ぶ。
+      const res = await app.request(
+        REBUILD_PATH,
+        { method: 'POST', headers: authHeaders },
+        createMockEnv({ SUBSCRIPTION_INGEST_ENABLED: 'true' }),
+      );
+      expect(res.status).toBe(409);
+      expect(mockRebuildContracts).not.toHaveBeenCalled();
+    });
+
     it('gate ON + ?force=1 → 200 で実行できる (明示 override)', async () => {
       mockRebuildContracts.mockResolvedValueOnce({ ordersScanned: 0, contractsSeen: 0 });
       const res = await app.request(

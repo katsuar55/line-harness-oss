@@ -45,3 +45,6 @@ STAFF_GUIDE_naturism_LINE.html
 # スタッフ手引き (naturism 固有・連絡先等の PII を含む)。
 # 記入済み版など派生ファイルも必ず除外する — 本リポジトリは public。
 ADMIN_GUIDE_naturism*.html
+# Shopify Flow 設定手引き (naturism の store handle・管理画面直リンクを含む社内向け資料)。
+# 技術仕様は docs/TEIKI_FLOW_SETUP.md 側に置き、こちらはコミットしない。
+TEIKI_FLOW_SETUP_GUIDE*.html
