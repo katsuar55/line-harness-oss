@@ -204,7 +204,14 @@ export async function listContractsDueForReminder(
  * paused/cancelled 述語により、検知〜送信の窓 (最大14時間) 内に再開/解約した顧客へ
  * stale な「一時停止しました」を送らない (採点R2)。マーカーは resume 遷移・新規決済成功で
  * リセットされるため、2回目以降の決済失敗も通知される (永久ラッチしない)。
+ *
+ * さらに **鮮度 (TTL) 述語**を課す: 文面「定期便のお届けを一時停止しました」は
+ * 「たった今」の含意を持つので、検知から日が経ったマーカーは送らない方が正しい。
+ * これは gate の投入順序に依存しない恒久ガードでもある — 送信面が閉じている期間に
+ * マーカーが溜まっていても、開けた瞬間に古い分が一斉に飛ぶことはなくなる。
  */
+const RECOVERY_PENDING_TTL_DAYS = 3;
+
 export async function listContractsPendingRecovery(
   db: D1Database,
   limit = 50,
@@ -216,6 +223,7 @@ export async function listContractsPendingRecovery(
          AND recovery_notified_at IS NULL
          AND paused_at IS NOT NULL
          AND cancelled_at IS NULL
+         AND recovery_pending_at >= datetime('now','+9 hours','-${RECOVERY_PENDING_TTL_DAYS} day')
        LIMIT ?`,
     )
     .bind(limit)

@@ -135,16 +135,24 @@ function createFakeDb(seed?: {
               'recovery_notified_at IS NULL',
               'paused_at IS NOT NULL',
               'cancelled_at IS NULL',
+              // 鮮度 (TTL) 述語。これが消えると、送信面が閉じている間に溜まった古いマーカーが
+              // gate を開けた瞬間に一斉 flush される (「たった今一時停止しました」を数週間後に送る)
+              "recovery_pending_at >= datetime('now','+9 hours','-3 day')",
             ]) {
               if (!sql.includes(p)) throw new Error(`list SQL から述語が消えている: ${p}`);
             }
             const limit = binds[0] as number;
+            const ttlFloor = new Date(Date.now() + 9 * 3600_000 - 3 * 86_400_000)
+              .toISOString()
+              .replace('T', ' ')
+              .slice(0, 19);
             const rows = [...contracts.values()].filter(
               (r) =>
                 r.recovery_pending_at !== null &&
                 r.recovery_notified_at === null &&
                 r.paused_at !== null &&
-                r.cancelled_at === null,
+                r.cancelled_at === null &&
+                (r.recovery_pending_at as string) >= ttlFloor,
             );
             return { results: rows.slice(0, limit) };
           }
@@ -843,26 +851,55 @@ describe('listContractsDueForReminder / listContractsPendingRecovery — 実 SQL
     expect(due.map((r) => r.contract_id).sort()).toEqual(['in-from', 'in-to', 're-remind']);
   });
 
+  // マーカー時刻は **実時計からの相対**で作る。固定日付だとその日を過ぎた瞬間に
+  // TTL 述語で全件落ちて CI が確定 red になる (時限爆弾)。
+  const jstAgo = (hours: number) =>
+    new Date(Date.now() + 9 * 3600_000 - hours * 3600_000)
+      .toISOString()
+      .replace('T', ' ')
+      .slice(0, 19);
+
   it('リカバリ対象: pending 有り・未送信・一時停止中・未解約のみ', async () => {
     const db = createFakeDb();
     const seed = (id: string, patch: Record<string, unknown>) =>
       upsertSubscriptionContract(db, { contractId: id, shopifyCustomerId: 'c1', ...patch });
-    await seed('target', { pausedAt: '2026-07-14', recoveryPendingAt: '2026-07-14 03:00:00' });
-    await seed('no-pending', { pausedAt: '2026-07-14' });
+    const paused = jstAgo(10);
+    await seed('target', { pausedAt: paused, recoveryPendingAt: jstAgo(9) });
+    await seed('no-pending', { pausedAt: paused });
     await seed('notified', {
-      pausedAt: '2026-07-14',
-      recoveryPendingAt: '2026-07-14 03:00:00',
-      recoveryNotifiedAt: '2026-07-14 12:00:00',
+      pausedAt: paused,
+      recoveryPendingAt: jstAgo(9),
+      recoveryNotifiedAt: jstAgo(1),
     });
-    await seed('resumed', { recoveryPendingAt: '2026-07-14 03:00:00' }); // paused_at null
+    await seed('resumed', { recoveryPendingAt: jstAgo(9) }); // paused_at null
     await seed('cancelled', {
-      pausedAt: '2026-07-14',
-      recoveryPendingAt: '2026-07-14 03:00:00',
-      cancelledAt: '2026-07-14',
+      pausedAt: paused,
+      recoveryPendingAt: jstAgo(9),
+      cancelledAt: paused,
     });
 
     const pending = await listContractsPendingRecovery(db);
     expect(pending.map((r) => r.contract_id)).toEqual(['target']);
+  });
+
+  it('🚨これを壊すと誤送信になる: 3日を超えた古いマーカーは送信対象にしない', async () => {
+    // 送信面が閉じている期間に溜まったマーカーが、gate を開けた瞬間に一斉 flush されると
+    // 「たった今一時停止しました」を数週間後に送ることになる。TTL はその恒久ガード。
+    const db = createFakeDb();
+    const seed = (id: string, hoursAgo: number) =>
+      upsertSubscriptionContract(db, {
+        contractId: id,
+        shopifyCustomerId: 'c1',
+        pausedAt: jstAgo(hoursAgo),
+        recoveryPendingAt: jstAgo(hoursAgo),
+      });
+    await seed('fresh', 12);
+    await seed('edge-inside', 24 * 3 - 2); // 3日の内側
+    await seed('stale', 24 * 4); // 4日前 = 期限切れ
+    await seed('very-stale', 24 * 30);
+
+    const pending = await listContractsPendingRecovery(db);
+    expect(pending.map((r) => r.contract_id).sort()).toEqual(['edge-inside', 'fresh']);
   });
 });
 
@@ -1076,29 +1113,32 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
     expect(row.flow_estimate_anchor).toBeNull();
   });
 
-  // ---- 「実測を守る」変更を棄却したことの記録 (§10-0 ① 採点で確定) ----
+  // ---- 前例なし層 (last_order_at 欠落) の非対称ルール ----
   //
-  // last_order_at が無い契約 (Flow 実測が唯一の日付ソース = ① の主対象) では isNewerOrder が
-  // 無条件 true になるため、過去注文の orders/updated が実測を derived へ差し戻し、過去日の
-  // 推定に置き換える。これを「実測日以降の注文だけが derived に戻す」で塞ごうとしたが、
-  // **実測を保持した行はその後のスキップを一切反映しない** (refreshEstimate の flow 分岐が
-  // 早期 return する) ため、スキップ済みの顧客に古い決済日でリマインドを送る経路ができた。
-  // 過去日への差し戻しは窓の外＝無送信で自然回復する。誤った push は回復しない。
-  // よって main の挙動を維持する。下記 2 件はその選択を固定する回帰テスト。
+  // 本番 active 139 件中 65 件が last_order_at を持たない (ローカル shopify_orders が
+  // 直近60日分しか無いため)。この層では isNewerOrder が **orderAt の新旧を問わず true** になる。
   //
-  // 📌 2026-08-02 追記 (migration 074): 棄却の**理由だった根本原因は解消済み** —
-  // flow 行もスキップ増分を反映するようになった (上の「実測後のスキップが…先送り」参照)。
-  // ただし実測保持そのものは別判断のまま据え置く。差し戻しの是非は
-  // 「お届け日の前倒し変更」等も絡む独立した設計判断で、本変更の射程外。
-  // 下記 2 件は現在の挙動 (新しく見える注文で derived に戻す) を引き続き固定する。
+  // 以前はここで実測アンカーを破棄し skip 基準値をリセットしていたため、過去注文の
+  // orders/updated が 1 通届くだけで推定日が**顧客が既にスキップしたサイクル**へ巻き戻った
+  // (= その日付でリマインドが飛ぶ = 回復不能な誤送信)。
+  // その挙動を維持していた理由 (「実測を保持すると後続スキップを反映しない」) は
+  // migration 074 で解消済みなので、非対称ルールへ改めた:
+  //   前例なし → 注文の事実だけ記録し、基準値・アンカー・source には触らない。
+  // 基準値を残すと推定日は**未来へ**動きうる (窓の外 = 無送信 = 回復可能) が、
+  // リセットすると過去へ動く (誤送信 = 回復不能)。安全側は「触らない」。
   const flowOnlyContract = async (db: ReturnType<typeof createFakeDb>) => {
-    await upsertSubscriptionContract(db, { contractId: '200', shopifyCustomerId: 'cust-2' });
+    // 周期はタグ経由で判明済み・注文はローカルに無い = 本番の 65 件と同じ形
+    await upsertSubscriptionContract(db, {
+      contractId: '200',
+      shopifyCustomerId: 'cust-2',
+      intervalDays: 30,
+    });
     return measure(db, '200', '2026-09-19');
   };
 
-  it('棄却の記録: 実測契約に過去注文が届くと derived に戻る (過去日になりうるが送信はされない)', async () => {
+  it('🚨これを壊すと誤送信になる: 前例なし契約に過去注文が届いても実測が生き残る', async () => {
     const db = createFakeDb();
-    await flowOnlyContract(db);
+    await flowOnlyContract(db); // 実測 9/19 のみ (last_order_at なし)
     await deriveContractFromOrder(db, {
       tags: 'subscription-id:200, subscription-count:3',
       lineItemsJson: ITEMS_30,
@@ -1107,13 +1147,25 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
       orderCreatedAt: '2026-08-20T10:00:00+09:00',
     });
     const row = db.contracts.get('200')!;
-    expect(row.estimate_source).toBe('derived');
-    expect(row.next_billing_estimate).toBe('2026-09-19'); // 8/20 + 30
+    // 旧挙動では derived + 9/19 (8/20+30) に差し戻っていた。日付が偶然一致していても
+    // 「実測が破棄されたか」は source とアンカーで判別する
+    expect(row.estimate_source).toBe('flow');
+    expect(row.flow_estimate_anchor).toBe('2026-09-19');
+    expect(row.next_billing_estimate).toBe('2026-09-19');
+    // 注文の「事実」自体は記録される (次回以降の判定材料になる)
+    expect(row.last_order_id).toBe('ord-old');
+    expect(row.last_order_at).toBe('2026-08-20T10:00:00+09:00');
   });
 
-  it('🚨これを壊すと誤送信になる: 差し戻し後のスキップが先送りとして反映される', async () => {
+  it('🚨これを壊すと誤送信になる: 過去注文でスキップ基準値がリセットされない', async () => {
     const db = createFakeDb();
     await flowOnlyContract(db);
+    // 顧客は既に 1 回スキップ済み → 実測後の増分として先送りされている
+    await applyCustomerTagsToContracts(db, 'cust-2', 'subscription-200-skip-count:1');
+    expect(db.contracts.get('200')!.next_billing_estimate).toBe('2026-10-19'); // 9/19 + 30
+
+    // ここへ過去注文が届く。基準値をリセットすると先送りが消え、
+    // 顧客が既にスキップしたサイクルの日付へ巻き戻る
     await deriveContractFromOrder(db, {
       tags: 'subscription-id:200, subscription-count:3',
       lineItemsJson: ITEMS_30,
@@ -1121,10 +1173,41 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
       shopifyCustomerId: 'cust-2',
       orderCreatedAt: '2026-08-20T10:00:00+09:00',
     });
-    await applyCustomerTagsToContracts(db, 'cust-2', 'subscription-200-skip-count:1');
     const row = db.contracts.get('200')!;
-    // 実測を保持していると 9/19 のまま = スキップ済み顧客に「9/19 に決済されます」を送ってしまう
-    expect(row.next_billing_estimate).toBe('2026-10-19'); // 8/20 + 30*(1+1)
+    expect(row.skip_count_at_estimate).toBe(0); // リセットされていない
+    expect(row.next_billing_estimate).toBe('2026-10-19'); // 先送りが生き残る
+  });
+
+  it('前例あり契約では従来どおり: 新しい注文で derived に戻り基準値もリセットされる', async () => {
+    const db = createFakeDb();
+    await seedOrder(db); // last_order_at = 2026-07-05 (前例あり)
+    await promoteToFlow(db);
+    await deriveContractFromOrder(db, {
+      tags: 'subscription-id:100, subscription-count:2',
+      lineItemsJson: ITEMS_30,
+      shopifyOrderId: 'ord-2',
+      shopifyCustomerId: 'cust-1',
+      orderCreatedAt: '2026-08-10T10:00:00+09:00',
+    });
+    const row = db.contracts.get('100')!;
+    expect(row.estimate_source).toBe('derived');
+    expect(row.flow_estimate_anchor).toBeNull();
+    expect(row.next_billing_estimate).toBe('2026-09-09');
+  });
+
+  it('前例あり契約に古い注文が届いても巻き戻らない (従来の isNewerOrder ガード)', async () => {
+    const db = createFakeDb();
+    await seedOrder(db); // 7/05
+    await deriveContractFromOrder(db, {
+      tags: 'subscription-id:100, subscription-count:1',
+      lineItemsJson: ITEMS_30,
+      shopifyOrderId: 'ord-older',
+      shopifyCustomerId: 'cust-1',
+      orderCreatedAt: '2026-05-01T10:00:00+09:00',
+    });
+    const row = db.contracts.get('100')!;
+    expect(row.last_order_at).toBe('2026-07-05T10:00:00+09:00');
+    expect(row.next_billing_estimate).toBe('2026-08-04');
   });
 });
 
