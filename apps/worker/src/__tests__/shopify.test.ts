@@ -616,6 +616,11 @@ describe('Shopify Routes', () => {
           contractId: '100',
           nextBillingEstimate: '2026-08-04',
           estimateSource: 'flow',
+          // 🚨 アンカーと基準値は estimate_source='flow' と**必ず同時に**書く (migration 074)。
+          // 基準値を伴わない flow 行は、次の refreshEstimate で skip 累計ぶんを
+          // 丸ごと先送りする (誤った未来日 → リマインドが実決済後にずれる)
+          flowEstimateAnchor: '2026-08-04',
+          skipCountAtEstimate: 0,
         }),
       );
     });

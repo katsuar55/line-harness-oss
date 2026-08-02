@@ -17,8 +17,13 @@ export interface SubscriptionContractRow {
   skip_count_at_last_order: number;
   paused_at: string | null;
   cancelled_at: string | null;
+  /** 実効値 (= リマインド SQL が引く値)。flow 行では anchor にスキップ増分を足した結果 */
   next_billing_estimate: string | null;
   estimate_source: string;
+  /** migration 074: Flow 実測日そのもの (先送り前)。estimate_source='flow' のときだけ意味を持つ */
+  flow_estimate_anchor: string | null;
+  /** migration 074: 実測を受けた時点の skip 累計。これ以降の増分だけが先送りになる */
+  skip_count_at_estimate: number;
   reminded_for_estimate: string | null;
   /** WI-2 (migration 070): 決済失敗リカバリ通知の検知マーカー (送信は cron が担当) */
   recovery_pending_at: string | null;
@@ -43,6 +48,13 @@ export interface SubscriptionContractPatch {
   cancelledAt?: string | null;
   nextBillingEstimate?: string | null;
   estimateSource?: string;
+  /**
+   * migration 074。**`estimateSource: 'flow'` を単独で書かないこと** —
+   * アンカーと基準値が伴わない flow 行は、次の refreshEstimate で skip 累計ぶんを
+   * 丸ごと先送りする。書込は services の `recordFlowMeasurement()` に一本化してある。
+   */
+  flowEstimateAnchor?: string | null;
+  skipCountAtEstimate?: number;
   remindedForEstimate?: string | null;
   /** WI-2: pause 遷移の検知と同一 upsert で原子的に設定/解除する (別 UPDATE に分けない) */
   recoveryPendingAt?: string | null;
@@ -77,6 +89,8 @@ export async function upsertSubscriptionContract(
     patch.cancelledAt ?? null,
     patch.nextBillingEstimate ?? null,
     patch.estimateSource ?? 'derived',
+    patch.flowEstimateAnchor ?? null,
+    patch.skipCountAtEstimate ?? 0,
     patch.remindedForEstimate ?? null,
     patch.recoveryPendingAt ?? null,
     patch.recoveryNotifiedAt ?? null,
@@ -103,6 +117,8 @@ export async function upsertSubscriptionContract(
   if (patch.cancelledAt !== undefined) set('cancelled_at', patch.cancelledAt);
   if (patch.nextBillingEstimate !== undefined) set('next_billing_estimate', patch.nextBillingEstimate);
   if (patch.estimateSource !== undefined) set('estimate_source', patch.estimateSource);
+  if (patch.flowEstimateAnchor !== undefined) set('flow_estimate_anchor', patch.flowEstimateAnchor);
+  if (patch.skipCountAtEstimate !== undefined) set('skip_count_at_estimate', patch.skipCountAtEstimate);
   if (patch.remindedForEstimate !== undefined) set('reminded_for_estimate', patch.remindedForEstimate);
   if (patch.recoveryPendingAt !== undefined) set('recovery_pending_at', patch.recoveryPendingAt);
   if (patch.recoveryNotifiedAt !== undefined) set('recovery_notified_at', patch.recoveryNotifiedAt);
@@ -114,10 +130,11 @@ export async function upsertSubscriptionContract(
          contract_id, shopify_customer_id, plan_name, interval_days, order_count,
          last_order_id, last_order_at, last_delivery_date,
          skip_count, skip_count_at_last_order, paused_at, cancelled_at,
-         next_billing_estimate, estimate_source, reminded_for_estimate,
+         next_billing_estimate, estimate_source,
+         flow_estimate_anchor, skip_count_at_estimate, reminded_for_estimate,
          recovery_pending_at, recovery_notified_at,
          created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(contract_id) DO UPDATE SET ${sets.join(', ')}`,
     )
     .bind(...insertBinds, ...setBinds)
@@ -206,7 +223,11 @@ export async function listContractsPendingRecovery(
   return result.results;
 }
 
-/** rebuild 用: skip 基準値が累計とズレている契約 (正規化対象) を列挙。 */
+/**
+ * rebuild 用: skip 基準値が累計とズレている契約 (正規化対象) を列挙。
+ * 基準値は 2 本ある (導出用の skip_count_at_last_order / 実測用の skip_count_at_estimate)。
+ * **両方を見ること** — 片方だけだと flow 行の drift が残り、rebuild が冪等でなくなる。
+ */
 export async function listContractsWithSkipBaselineDrift(
   db: D1Database,
   limit = 1000,
@@ -215,6 +236,7 @@ export async function listContractsWithSkipBaselineDrift(
     .prepare(
       `SELECT * FROM subscription_contracts
        WHERE skip_count_at_last_order != skip_count
+          OR skip_count_at_estimate != skip_count
        LIMIT ?`,
     )
     .bind(limit)

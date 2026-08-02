@@ -15,6 +15,8 @@ import {
   toJstDate,
   addDays,
   computeNextBillingEstimate,
+  computeFlowBillingEstimate,
+  recordFlowMeasurement,
   deriveContractFromOrder,
   applyCustomerTagsToContracts,
   rebuildContractsFromD1,
@@ -24,9 +26,20 @@ import {
 import { getContractForFriend } from '../services/subscription-concierge.js';
 import {
   upsertSubscriptionContract,
+  getSubscriptionContract,
   listContractsDueForReminder,
   listContractsPendingRecovery,
 } from '@line-crm/db';
+
+/**
+ * 実測の記録。route と同じく「実在行を解決してから渡す」形をなぞる
+ * (recordFlowMeasurement は phantom 行を作らないよう行を受け取る)。
+ */
+async function measure(db: D1Database, contractId: string, date: string) {
+  const row = await getSubscriptionContract(db, contractId);
+  if (!row) throw new Error(`契約 ${contractId} が存在しない (テストの前提ミス)`);
+  return recordFlowMeasurement(db, row, date);
+}
 
 // ===== fake D1 =====
 
@@ -45,6 +58,8 @@ interface ContractRow {
   cancelled_at: string | null;
   next_billing_estimate: string | null;
   estimate_source: string;
+  flow_estimate_anchor: string | null;
+  skip_count_at_estimate: number;
   reminded_for_estimate: string | null;
   recovery_pending_at: string | null;
   recovery_notified_at: string | null;
@@ -76,9 +91,16 @@ function createFakeDb(seed?: {
         },
         async all() {
           if (sql.includes('skip_count_at_last_order != skip_count')) {
+            // 基準値は 2 本 (導出用/実測用)。片方だけ見る実装に戻ると flow 行の drift が
+            // 残って rebuild が冪等でなくなるため、SQL 文字列の実在も検証する
+            if (!sql.includes('skip_count_at_estimate != skip_count')) {
+              throw new Error('drift SQL から実測側の基準値 (skip_count_at_estimate) が消えている');
+            }
             return {
               results: [...contracts.values()].filter(
-                (r) => r.skip_count_at_last_order !== r.skip_count,
+                (r) =>
+                  r.skip_count_at_last_order !== r.skip_count ||
+                  r.skip_count_at_estimate !== r.skip_count,
               ),
             };
           }
@@ -172,37 +194,39 @@ function createFakeDb(seed?: {
         },
         async run() {
           if (sql.includes('INSERT INTO subscription_contracts')) {
+            // 列と bind の対応は **SQL の列リストから導出**する。添字を手書きすると、
+            // 列追加のたびにズレて「静かに間違った行を作る fake」になりうる
+            const insertCols = sql
+              .slice(sql.indexOf('(') + 1, sql.indexOf(') VALUES'))
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean);
+            // VALUES(...) の ? だけを数える (ON CONFLICT 以降の SET 句の ? を含めない)
+            const valuesPart = sql.slice(sql.indexOf(') VALUES'), sql.indexOf('ON CONFLICT'));
+            const placeholders = (valuesPart.match(/\?/g) ?? []).length;
+            if (insertCols.length !== placeholders) {
+              throw new Error(
+                `fake: INSERT 列数 ${insertCols.length} と placeholder 数 ${placeholders} が不一致`,
+              );
+            }
             const contractId = binds[0] as string;
             const existing = contracts.get(contractId);
             if (!existing) {
-              const row: ContractRow = {
-                contract_id: contractId,
-                shopify_customer_id: binds[1] as string | null,
-                plan_name: binds[2] as string | null,
-                interval_days: binds[3] as number | null,
-                order_count: binds[4] as number | null,
-                last_order_id: binds[5] as string | null,
-                last_order_at: binds[6] as string | null,
-                last_delivery_date: binds[7] as string | null,
-                skip_count: (binds[8] as number) ?? 0,
-                skip_count_at_last_order: (binds[9] as number) ?? 0,
-                paused_at: binds[10] as string | null,
-                cancelled_at: binds[11] as string | null,
-                next_billing_estimate: binds[12] as string | null,
-                estimate_source: (binds[13] as string) ?? 'derived',
-                reminded_for_estimate: binds[14] as string | null,
-                recovery_pending_at: binds[15] as string | null,
-                recovery_notified_at: binds[16] as string | null,
-                created_at: binds[17] as string,
-                updated_at: binds[18] as string,
-              };
+              const row = Object.fromEntries(
+                insertCols.map((col, i) => [col, binds[i]]),
+              ) as unknown as ContractRow;
+              // NOT NULL DEFAULT を持つ列は null 束縛でも既定値になる
+              row.skip_count ??= 0;
+              row.skip_count_at_last_order ??= 0;
+              row.skip_count_at_estimate ??= 0;
+              row.estimate_source ??= 'derived';
               contracts.set(contractId, row);
             } else {
               // ON CONFLICT DO UPDATE SET a = ?, b = ? … を実際の SET 句から再現する
               const setPart = sql.split('DO UPDATE SET')[1];
               if (!setPart) throw new Error('fake: DO UPDATE SET missing');
               const cols = setPart.split(',').map((s) => s.trim().split(' ')[0]);
-              const setBinds = binds.slice(19);
+              const setBinds = binds.slice(insertCols.length);
               cols.forEach((col, i) => {
                 (existing as Record<string, unknown>)[col] = setBinds[i];
               });
@@ -340,6 +364,54 @@ describe('computeNextBillingEstimate', () => {
     expect(computeNextBillingEstimate({ ...base, paused_at: '2026-07-10' })).toBeNull();
     expect(computeNextBillingEstimate({ ...base, interval_days: null })).toBeNull();
     expect(computeNextBillingEstimate({ ...base, last_order_at: null })).toBeNull();
+  });
+});
+
+describe('computeFlowBillingEstimate (migration 074: 実測アンカー + スキップ増分)', () => {
+  const base = {
+    flow_estimate_anchor: '2026-08-10',
+    interval_days: 30,
+    skip_count: 0,
+    skip_count_at_estimate: 0,
+    cancelled_at: null,
+    paused_at: null,
+  };
+
+  it('増分ゼロならアンカーそのもの (実測を動かさない)', () => {
+    expect(computeFlowBillingEstimate(base)).toBe('2026-08-10');
+    // 実測受信時点で既にあったスキップは織り込み済み = 影響しない
+    expect(
+      computeFlowBillingEstimate({ ...base, skip_count: 3, skip_count_at_estimate: 3 }),
+    ).toBe('2026-08-10');
+  });
+
+  it('実測後のスキップだけが周期ぶん先送りされる (導出の 1+delta とは違い delta のみ)', () => {
+    expect(computeFlowBillingEstimate({ ...base, skip_count: 1 })).toBe('2026-09-09');
+    expect(computeFlowBillingEstimate({ ...base, skip_count: 2 })).toBe('2026-10-09');
+    expect(
+      computeFlowBillingEstimate({ ...base, skip_count: 4, skip_count_at_estimate: 3 }),
+    ).toBe('2026-09-09');
+  });
+
+  it('累計の減少 (スキップ取消) では前倒ししない', () => {
+    expect(
+      computeFlowBillingEstimate({ ...base, skip_count: 1, skip_count_at_estimate: 3 }),
+    ).toBe('2026-08-10');
+  });
+
+  it('解約・一時停止・アンカー無しは null', () => {
+    expect(computeFlowBillingEstimate({ ...base, cancelled_at: '2026-08-01' })).toBeNull();
+    expect(computeFlowBillingEstimate({ ...base, paused_at: '2026-08-01' })).toBeNull();
+    expect(computeFlowBillingEstimate({ ...base, flow_estimate_anchor: null })).toBeNull();
+  });
+
+  it('🚨周期不明: 未消化スキップがあるなら null、無いならアンカー保持', () => {
+    // 先送り幅が計算できないのに古い日付を保持すると誤送信になる
+    expect(
+      computeFlowBillingEstimate({ ...base, interval_days: null, skip_count: 1 }),
+    ).toBeNull();
+    // スキップが無ければ実測はそのまま正しい (周期は先送り計算にしか要らない)
+    expect(computeFlowBillingEstimate({ ...base, interval_days: null })).toBe('2026-08-10');
   });
 });
 
@@ -858,22 +930,104 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
       shopifyCustomerId: 'cust-1',
       orderCreatedAt: '2026-07-05T10:00:00+09:00',
     });
+  // 実測の書込は必ず recordFlowMeasurement を通す (= 本番と同じ経路)。raw upsert で
+  // estimate_source='flow' を書くとアンカーと基準値が伴わない行になる (migration 074)。
   const promoteToFlow = async (db: Parameters<typeof deriveContractFromOrder>[0]) =>
-    upsertSubscriptionContract(db, {
-      contractId: '100',
-      nextBillingEstimate: '2026-08-10',
-      estimateSource: 'flow',
-    });
+    measure(db, '100', '2026-08-10');
 
   it('ルール1: Flow 実測値は導出 (顧客タグ由来の再計算) で上書きされない', async () => {
     const db = createFakeDb();
     await seedOrder(db);
     await promoteToFlow(db);
-    // skip-count 変化で refreshEstimate が走っても flow 値は不変
-    await applyCustomerTagsToContracts(db, 'cust-1', 'subscription-100-skip-count:1');
+    // スキップを伴わない再計算 (plan タグの補完等) では flow 値は不変。
+    // 導出値は 2026-08-04 (7/5 + 30) なので、上書きされていれば検出できる
+    await applyCustomerTagsToContracts(db, 'cust-1', `subscription-100-plan:${PLAN_30}`);
     const row = db.contracts.get('100')!;
     expect(row.next_billing_estimate).toBe('2026-08-10');
     expect(row.estimate_source).toBe('flow');
+  });
+
+  // ---- migration 074: 実測をアンカーとして、実測後のスキップ増分だけ先送りする ----
+  //
+  // 以前はここが早期 return で、flow 行はスキップを一切反映しなかった。その結果
+  // **スキップ済みの顧客に 1 周期古い決済日でリマインドが push される**経路があった。
+  // 「実測は導出で上書きしない」は維持したまま、スキップという新しい事実だけを足す。
+  it('🚨これを壊すと誤送信になる: 実測後のスキップが実測日を1周期先送りする', async () => {
+    const db = createFakeDb();
+    await seedOrder(db);
+    await promoteToFlow(db); // 実測 8/10、この時点の skip 累計 = 0
+    await applyCustomerTagsToContracts(db, 'cust-1', 'subscription-100-skip-count:1');
+    const row = db.contracts.get('100')!;
+    // 8/10 のままだと「スキップ済みと分かっている顧客」へ 8/10 で決済リマインドを送る
+    expect(row.next_billing_estimate).toBe('2026-09-09'); // 8/10 + 30×1
+    expect(row.estimate_source).toBe('flow'); // 実測であることは失わない
+    expect(row.flow_estimate_anchor).toBe('2026-08-10'); // アンカーは動かさない
+  });
+
+  it('スキップ 2 回は 2 周期ぶん先送りする (増分が累積する)', async () => {
+    const db = createFakeDb();
+    await seedOrder(db);
+    await promoteToFlow(db);
+    await applyCustomerTagsToContracts(db, 'cust-1', 'subscription-100-skip-count:2');
+    expect(db.contracts.get('100')!.next_billing_estimate).toBe('2026-10-09'); // 8/10 + 60
+  });
+
+  it('同じ skip-count の再受信では二重に先送りしない (customers/update は高頻度)', async () => {
+    const db = createFakeDb();
+    await seedOrder(db);
+    await promoteToFlow(db);
+    await applyCustomerTagsToContracts(db, 'cust-1', 'subscription-100-skip-count:1');
+    await applyCustomerTagsToContracts(db, 'cust-1', 'subscription-100-skip-count:1');
+    await applyCustomerTagsToContracts(db, 'cust-1', 'subscription-100-skip-count:1');
+    expect(db.contracts.get('100')!.next_billing_estimate).toBe('2026-09-09');
+  });
+
+  it('実測受信時点で既にスキップ済みなら二重計上しない (実測が織り込み済み)', async () => {
+    const db = createFakeDb();
+    await seedOrder(db);
+    // 先にスキップが届き、そのあと Huckleberry が先送り後の日付を送ってくる順序
+    await applyCustomerTagsToContracts(db, 'cust-1', 'subscription-100-skip-count:1');
+    await measure(db, '100', '2026-09-04');
+    const row = db.contracts.get('100')!;
+    // 基準値が「直近注文時点」(=0) だと 10/04 になる = skip_count_at_last_order 流用の罠
+    expect(row.next_billing_estimate).toBe('2026-09-04');
+    expect(row.skip_count_at_estimate).toBe(1);
+  });
+
+  it('スキップ取消 (累計の減少) では実測日より前に戻さない', async () => {
+    const db = createFakeDb();
+    await seedOrder(db);
+    await applyCustomerTagsToContracts(db, 'cust-1', 'subscription-100-skip-count:2');
+    await measure(db, '100', '2026-09-04');
+    await applyCustomerTagsToContracts(db, 'cust-1', 'subscription-100-skip-count:1');
+    // 実測前のスキップが何日ぶんだったかは復元不能。前倒しは誤送信を生むのでアンカー据置
+    expect(db.contracts.get('100')!.next_billing_estimate).toBe('2026-09-04');
+  });
+
+  it('一時停止中に実測が届いても日付は復活しない (停止中の契約にリマインドを出さない)', async () => {
+    const db = createFakeDb();
+    await seedOrder(db);
+    await applyCustomerTagsToContracts(
+      db,
+      'cust-1',
+      `subscription-100-plan:${PLAN_30}, subscription-100-pause:2026-07-12`,
+    );
+    await measure(db, '100', '2026-08-10');
+    const row = db.contracts.get('100')!;
+    expect(row.next_billing_estimate).toBeNull();
+    expect(row.flow_estimate_anchor).toBeNull(); // 再開時は Huckleberry が引き直す
+  });
+
+  it('🚨周期不明 + 未消化スキップでは日付を出さない (古い日付で送らない)', async () => {
+    const db = createFakeDb();
+    // interval_days を解析できない契約 (プラン名が無い/読めない) に実測だけが入っている状態
+    await upsertSubscriptionContract(db, { contractId: '300', shopifyCustomerId: 'cust-3' });
+    await measure(db, '300', '2026-09-19');
+    expect(db.contracts.get('300')!.next_billing_estimate).toBe('2026-09-19');
+    await applyCustomerTagsToContracts(db, 'cust-3', 'subscription-300-skip-count:1');
+    // 先送り幅が計算できない。保持すると「スキップ済み顧客へ 9/19 で送信」になるため null。
+    // null = 窓に入らず無送信 + カードは「マイページでご確認ください」→ 次の Flow 発火で復帰
+    expect(db.contracts.get('300')!.next_billing_estimate).toBeNull();
   });
 
   it('ルール2: pause/cancel は flow でも null を強制 (停止中にリマインドしない)', async () => {
@@ -918,6 +1072,8 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
     const row = db.contracts.get('100')!;
     expect(row.estimate_source).toBe('derived');
     expect(row.next_billing_estimate).toBe('2026-09-09'); // 8/10 + 30
+    // 実測アンカーも役目を終える (残すと、後で再び flow になった際に古い日付が蘇りうる)
+    expect(row.flow_estimate_anchor).toBeNull();
   });
 
   // ---- 「実測を守る」変更を棄却したことの記録 (§10-0 ① 採点で確定) ----
@@ -929,12 +1085,16 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
   // 早期 return する) ため、スキップ済みの顧客に古い決済日でリマインドを送る経路ができた。
   // 過去日への差し戻しは窓の外＝無送信で自然回復する。誤った push は回復しない。
   // よって main の挙動を維持する。下記 2 件はその選択を固定する回帰テスト。
-  const flowOnlyContract = async (db: ReturnType<typeof createFakeDb>) =>
-    upsertSubscriptionContract(db, {
-      contractId: '200',
-      nextBillingEstimate: '2026-09-19',
-      estimateSource: 'flow',
-    });
+  //
+  // 📌 2026-08-02 追記 (migration 074): 棄却の**理由だった根本原因は解消済み** —
+  // flow 行もスキップ増分を反映するようになった (上の「実測後のスキップが…先送り」参照)。
+  // ただし実測保持そのものは別判断のまま据え置く。差し戻しの是非は
+  // 「お届け日の前倒し変更」等も絡む独立した設計判断で、本変更の射程外。
+  // 下記 2 件は現在の挙動 (新しく見える注文で derived に戻す) を引き続き固定する。
+  const flowOnlyContract = async (db: ReturnType<typeof createFakeDb>) => {
+    await upsertSubscriptionContract(db, { contractId: '200', shopifyCustomerId: 'cust-2' });
+    return measure(db, '200', '2026-09-19');
+  };
 
   it('棄却の記録: 実測契約に過去注文が届くと derived に戻る (過去日になりうるが送信はされない)', async () => {
     const db = createFakeDb();

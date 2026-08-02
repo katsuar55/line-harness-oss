@@ -41,6 +41,8 @@ function contract(overrides: Partial<SubscriptionContractRow> = {}): Subscriptio
     cancelled_at: null,
     next_billing_estimate: FUTURE_ESTIMATE,
     estimate_source: 'derived',
+    flow_estimate_anchor: null,
+    skip_count_at_estimate: 0,
     reminded_for_estimate: null,
     recovery_pending_at: null,
     recovery_notified_at: null,
