@@ -208,6 +208,42 @@ export function computeNextBillingEstimate(row: {
   return addDays(base, row.interval_days * (1 + skipDelta));
 }
 
+/**
+ * Flow 実測値 (estimate_source='flow') の実効次回決済日。
+ *
+ * 実測は「導出で上書きしない」が、**スキップは導出ではなく新しい事実**なので、
+ * 実測をアンカーとして残したまま実測受信後の増分だけ先送りする (migration 074):
+ *
+ *   実効値 = flow_estimate_anchor + interval_days × max(0, skip_count - skip_count_at_estimate)
+ *
+ * `1 +` を付けないのは、実測が「次回」そのものを指すため (導出は直近注文からの逆算なので `1 +`)。
+ *
+ * 戻り値の意味:
+ *   - string … 実効日 (増分ゼロならアンカーそのもの)
+ *   - null   … 日付を出してはいけない (停止/解約中、アンカー消失、
+ *              **未消化のスキップがあるのに周期が不明**)
+ *
+ * ⚠️ 周期不明 + 未消化スキップで null に倒すのが要点。先送り幅を計算できないのに
+ * アンカーを保持すると、**スキップ済みと分かっている顧客へ古い決済日を送る**
+ * (= 本修正が消そうとしている誤送信そのもの)。null なら窓に入らず無送信で、
+ * カードも「マイページでご確認ください」に落ち、次の Flow 発火で復帰する。
+ */
+export function computeFlowBillingEstimate(row: {
+  flow_estimate_anchor: string | null;
+  interval_days: number | null;
+  skip_count: number;
+  skip_count_at_estimate: number;
+  cancelled_at: string | null;
+  paused_at: string | null;
+}): string | null {
+  if (row.cancelled_at || row.paused_at) return null;
+  if (!row.flow_estimate_anchor) return null;
+  const skipDelta = Math.max(0, (row.skip_count ?? 0) - (row.skip_count_at_estimate ?? 0));
+  if (skipDelta === 0) return row.flow_estimate_anchor;
+  if (!row.interval_days) return null;
+  return addDays(row.flow_estimate_anchor, row.interval_days * skipDelta);
+}
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -288,6 +324,10 @@ export async function deriveContractFromOrder(
           // 決済成功 = 支払い問題は解消済みなのでリカバリマーカーも掃除する (stale pending 防止)
           skipCountAtLastOrder: existing ? existing.skip_count : undefined,
           estimateSource: 'derived',
+          // 実測アンカーも役目を終える (migration 074)。残すと、後で再び 'flow' になった際に
+          // 古いアンカー + 新しい基準値の組み合わせが復活しうる
+          flowEstimateAnchor: null,
+          skipCountAtEstimate: existing ? existing.skip_count : undefined,
           ...(existing ? { recoveryPendingAt: null, recoveryNotifiedAt: null } : {}),
         }
       : isSameOrder
@@ -385,32 +425,92 @@ async function refreshEstimate(
 ): Promise<SubscriptionContractRow> {
   const estimate = computeNextBillingEstimate(row);
   // Flow 実測値 (estimate_source='flow'、WI-2) は導出値で上書きしない。
-  // ただし解約/一時停止による null 化だけは強制する (停止中の契約にリマインドを出さない)。
   // 次の実注文 (deriveContractFromOrder の isNewerOrder) で 'derived' に戻り導出が再開する。
   if (row.estimate_source === 'flow') {
-    // null 強制は「停止/解約が理由」の時だけ (採点R2)。導出不能 (interval や last_order 欠落 —
-    // まさに Flow 実測が唯一の日付ソースの契約クラス) では実測値を保持する。
-    if ((row.cancelled_at || row.paused_at) && row.next_billing_estimate !== null) {
+    // 停止/解約は null 強制 (停止中の契約にリマインドを出さない)。
+    // アンカーも同時に消費する (migration 074): 再開時に Huckleberry 側は決済日を
+    // 引き直しているため、古いアンカーを復元すると停止前の日付が蘇る。
+    if (row.cancelled_at || row.paused_at) {
+      if (row.next_billing_estimate !== null || row.flow_estimate_anchor !== null) {
+        return upsertSubscriptionContract(db, {
+          contractId: row.contract_id,
+          nextBillingEstimate: null,
+          flowEstimateAnchor: null,
+        });
+      }
+      return row;
+    }
+    if (row.flow_estimate_anchor !== null) {
+      // 実測後に増えたスキップを先送りとして反映する (migration 074)。
+      // 「実測は導出で上書きしない」は維持したまま、**スキップという新しい事実**だけを足す。
+      // ここが早期 return だった頃は、スキップ済みの顧客に 1 周期古い決済日で
+      // リマインドが飛ぶ経路があった (§10-0 ① の chip)。
+      const flowEstimate = computeFlowBillingEstimate(row);
+      if (flowEstimate === row.next_billing_estimate) return row;
       return upsertSubscriptionContract(db, {
         contractId: row.contract_id,
-        nextBillingEstimate: null,
+        nextBillingEstimate: flowEstimate,
       });
     }
-    // pause→resume 後: flow 実測値は null 強制で消費済み → derived に復帰して再計算する
-    // (採点R1: null のまま固着すると再開後サイクルのカード日付とリマインドが欠落する)
-    if (!row.cancelled_at && !row.paused_at && estimate !== null && row.next_billing_estimate === null) {
-      return upsertSubscriptionContract(db, {
-        contractId: row.contract_id,
-        nextBillingEstimate: estimate,
-        estimateSource: 'derived',
-      });
-    }
-    return row;
+    // アンカーが無い flow 行 = 実測としての裏付けを失っている (pause で消費済み等)。
+    // 導出へ復帰させる (採点R1: null のまま固着すると再開後サイクルのカード日付と
+    // リマインドが欠落する)。導出も出せなければ日付は消える — flow 行の日付は
+    // 「アンカーか導出のどちらかに裏付けられる」を不変条件にする。
+    return upsertSubscriptionContract(db, {
+      contractId: row.contract_id,
+      nextBillingEstimate: estimate,
+      estimateSource: 'derived',
+      skipCountAtEstimate: row.skip_count,
+    });
   }
   if (estimate === row.next_billing_estimate) return row;
   return upsertSubscriptionContract(db, {
     contractId: row.contract_id,
     nextBillingEstimate: estimate,
+  });
+}
+
+/**
+ * Flow 実測値の記録 (§10-0 ①)。**`estimate_source='flow'` を書く唯一の経路**。
+ *
+ * アンカー・基準値・実効値・source を **1 回の upsert で原子的に**書く。
+ * 分けたり route 側で raw upsert したりすると、基準値 0 のまま 'flow' になった行が
+ * 次の refreshEstimate で skip 累計ぶんを丸ごと先送りする (= 誤った未来日)。
+ *
+ * 基準値には**受信時点の skip 累計**を入れる。Huckleberry が送ってくる日付は
+ * その時点のスキップを既に織り込んでいるため、ここを `skip_count_at_last_order`
+ * (直近注文時点) にすると注文〜実測間のスキップを二重計上する。
+ *
+ * 既知の残存レース: 「スキップ時」トリガーの POST が `customers/update`
+ * (skip-count タグ) より先着すると、基準値がスキップ前の値になり 1 周期**後ろ**へずれる。
+ * ずれる向きが後ろ = 窓に入らず無送信、かつ実決済 7 日前の必須トリガーで再アンカーされるため、
+ * **送信が必要になるまさにその時点で自己修復する**。
+ *
+ * @param existing 実在が確認済みの契約行。**id ではなく行を受ける** — phantom 行を作らない
+ *   責務を呼び出し側の解決処理 (GID 対応) に集約し、同じ行を二度読まないため
+ */
+export async function recordFlowMeasurement(
+  db: D1Database,
+  existing: SubscriptionContractRow,
+  measuredDate: string,
+): Promise<SubscriptionContractRow> {
+  // 停止/解約中はアンカーを持たない (「停止中の行に日付は無い」を不変条件にする)。
+  // 再開時は Huckleberry が決済日を引き直すので、この実測はどのみち使えない。
+  const blocked = existing.cancelled_at != null || existing.paused_at != null;
+  const anchor = blocked ? null : measuredDate;
+  // `?? 0` は必須: undefined を渡すと upsert が「この列は更新しない」と解釈し、
+  // 古い基準値が残ったまま新しいアンカーだけが入る (= 実測後に先送りが誤発生する)
+  const baseline = existing.skip_count ?? 0;
+  return upsertSubscriptionContract(db, {
+    contractId: existing.contract_id,
+    nextBillingEstimate: computeFlowBillingEstimate({
+      ...existing,
+      flow_estimate_anchor: anchor,
+      skip_count_at_estimate: baseline,
+    }),
+    estimateSource: 'flow',
+    flowEstimateAnchor: anchor,
+    skipCountAtEstimate: baseline,
   });
 }
 
@@ -464,8 +564,9 @@ const REBUILD_MAX_ROWS = 20000;
  *     のため推定の根拠にせず skippedNonWebhook に計上する
  *   - keyset pagination で全件処理 (LIMIT 切り捨てで最新注文を落とさない)。上限 20,000 行で truncated 報告
  *   - 注文/顧客とも per-item try/catch (部分失敗でも顧客 pass = 解約/一時停止の反映は必ず実行)
- *   - 最終 pass で skip 基準値を現累計に正規化 (= 過去のスキップは消化済みとみなす。履歴から
- *     「直近注文以降のスキップ数」は復元不能なため安全側 delta=0 に倒す)。これにより **rebuild は冪等**
+ *   - 最終 pass で skip 基準値 (導出用・実測用の 2 本) を現累計に正規化 (= 過去のスキップは
+ *     消化済みとみなす。履歴から「直近注文以降のスキップ数」は復元不能なため安全側 delta=0 に倒す)。
+ *     これにより **rebuild は冪等**
  *     (2回実行しても同じ結果)。⚠️ 本番稼働後に「未消化のスキップ」がある状態で再実行すると
  *     その先送りは**恒久的に消える** (customers/update は同じ累計値を書くだけで delta は復元されない。
  *     次の実注文 or 追加スキップまで推定日が誤る)。このため endpoint は gate ON 中の実行を
@@ -589,6 +690,9 @@ export async function rebuildContractsFromD1(db: D1Database): Promise<RebuildRes
           const updated = await upsertSubscriptionContract(db, {
             contractId: row.contract_id,
             skipCountAtLastOrder: row.skip_count,
+            // 実測側の基準値も同時に正規化する (migration 074)。片方だけだと drift クエリが
+            // 同じ行を返し続け、pass3 が終わらない/冪等でなくなる
+            skipCountAtEstimate: row.skip_count,
           });
           await refreshEstimate(db, updated);
           result.baselinesNormalized += 1;

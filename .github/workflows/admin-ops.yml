@@ -56,6 +56,11 @@ name: Admin Ops
 #     CREATE TABLE IF NOT EXISTS + CREATE INDEX のみ = 冪等・additive。
 #     未適用でも本番は無害 (gate OFF・enqueue 失敗は握って alert のみ) だが、
 #     SELF_BILLING_ENABLED を ON にする前に必ず適用しておくこと。
+#   apply-migration-074:
+#     migration 074 (Flow 実測アンカー flow_estimate_anchor / skip_count_at_estimate)。
+#     ADD COLUMN ×2 + 既存行の基準値初期化。列の有無を見てから流すので再実行可。
+#     **実測値を受け始める前 (Flow 設定前) に適用しておくこと** — 未適用のまま実測が入ると
+#     アンカー無しの flow 行ができ、その後のスキップが推定へ反映されない。
 #   apply-migration-073:
 #     migration 073 (サブスク連携獲得キット sub_link_tokens) を同方式で適用。
 #     CREATE TABLE IF NOT EXISTS + CREATE INDEX のみ = 冪等・additive。
@@ -125,6 +130,7 @@ on:
           - custom-domain-status
           - reminder-dry-run
           - apply-migration-069-070
+          - apply-migration-074
           - rebuild-subscription-contracts
           - enable-subscription-ingest
           - disable-subscription-ingest
@@ -856,6 +862,7 @@ jobs:
               echo '次の順序が必要です (各段階で承認を取ること):'
               echo ''
               echo '1. migration 069 + 070 を適用 (テーブル作成のみ = additive・live-safe)'
+              echo '   続けて `apply-migration-074` (実測アンカー列。実測を受け始める前に必須)'
               echo '2. `rebuild-subscription-contracts` で既存顧客タグから backfill'
               echo '   (**全 gate OFF のうちに済ませるのが最短**。収集 gate ON 後は force 入力が必要)'
               echo '3. `enable-subscription-ingest` — 収集のみ開始。**顧客に見える変化なし**'
@@ -922,6 +929,26 @@ jobs:
             FROM subscription_contracts
             WHERE cancelled_at IS NULL AND paused_at IS NULL
           " | tee -a "$GITHUB_STEP_SUMMARY"
+          # migration 074 の健全性。実測アンカーが無い flow 行は、スキップが推定へ反映されない
+          # (= スキップ済みの顧客へ古い決済日を送る経路)。0 であるべき数値を明示する。
+          HAS_ANCHOR=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS n FROM pragma_table_info('subscription_contracts') WHERE name='flow_estimate_anchor'")
+          if echo "$HAS_ANCHOR" | grep -Eq '"n": *1'; then
+            echo '### 実測アンカーの健全性 (migration 074) — anchor_missing は 0 であるべき' >> "$GITHUB_STEP_SUMMARY"
+            npx wrangler d1 execute naturism-line-crm --remote --json --command "
+              SELECT
+                SUM(CASE WHEN estimate_source='flow' AND next_billing_estimate IS NOT NULL
+                          AND flow_estimate_anchor IS NULL THEN 1 ELSE 0 END) AS anchor_missing,
+                SUM(CASE WHEN estimate_source='flow' AND skip_count > skip_count_at_estimate THEN 1 ELSE 0 END) AS pending_skip_shift,
+                SUM(CASE WHEN estimate_source='flow' AND skip_count > skip_count_at_estimate
+                          AND interval_days IS NULL THEN 1 ELSE 0 END) AS shift_blocked_no_interval
+              FROM subscription_contracts
+              WHERE cancelled_at IS NULL AND paused_at IS NULL
+            " | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo '### ⚠️ migration 074 未適用 — `apply-migration-074` を実行してください' >> "$GITHUB_STEP_SUMMARY"
+            echo '(実測を受け始める前に必須。未適用のまま実測が入ると、その後のスキップが推定に反映されません)' >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo '### 推定日を出せない理由 (active のみ・件数)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json --command "
             SELECT
@@ -969,6 +996,50 @@ jobs:
           echo '### 検証: 行数 (適用直後は 0 のはず = 既存データに触れていない)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT COUNT(*) AS rows FROM subscription_contracts" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # 実測アンカー列の追加 (migration 074)。ALTER TABLE ADD COLUMN ×2 なので
+      # **idempotent でない** — 069+070 と同じく列の有無を見てから流す。
+      # 末尾の UPDATE は既存行の基準値を現累計に揃えるだけ (行の追加・削除・日付の変更なし)。
+      # これが無いと、適用直後の refreshEstimate が「基準値 0 vs skip 累計 n」を
+      # 未消化スキップと誤認し、n 周期ぶん一気に先送りする。
+      - name: Apply migration 074 (flow estimate anchor, additive)
+        if: inputs.op == 'apply-migration-074'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          HAS_TABLE=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='subscription_contracts'")
+          if ! echo "$HAS_TABLE" | grep -Eq '"n": *1'; then
+            echo '❌ subscription_contracts がありません — apply-migration-069-070 を先に実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          COLS=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS n FROM pragma_table_info('subscription_contracts') WHERE name IN ('flow_estimate_anchor','skip_count_at_estimate')")
+          if echo "$COLS" | grep -Eq '"n": *2'; then
+            echo '### 074: 適用済み (anchor 列が既に存在) — skip' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '### 074 (flow_estimate_anchor / skip_count_at_estimate)' >> "$GITHUB_STEP_SUMMARY"
+            npx wrangler d1 execute naturism-line-crm --remote \
+              --file ../../packages/db/migrations/074_subscription_flow_anchor.sql
+          fi
+
+          echo '### 検証: 列と初期化状態' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS anchor_columns FROM pragma_table_info('subscription_contracts') WHERE name IN ('flow_estimate_anchor','skip_count_at_estimate')" | tee -a "$GITHUB_STEP_SUMMARY"
+          # baseline_drift は 0 であるべき (>0 なら初期化 UPDATE が流れていない = 先送り誤発生の恐れ)。
+          # anchor_missing は「実測なのにアンカーが無い行」= 0 であるべき。
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "
+              SELECT
+                SUM(CASE WHEN skip_count_at_estimate != skip_count THEN 1 ELSE 0 END) AS baseline_drift,
+                SUM(CASE WHEN estimate_source='flow' AND next_billing_estimate IS NOT NULL
+                          AND flow_estimate_anchor IS NULL THEN 1 ELSE 0 END) AS anchor_missing,
+                COUNT(*) AS contracts_total
+              FROM subscription_contracts
+            " | tee -a "$GITHUB_STEP_SUMMARY"
 
       # サブスク契約テーブルの活性化 step 2/5。既存 D1 (shopify_orders / shopify_customers) の
       # タグから read-model を導出する backfill。**Shopify API は叩かない**・冪等・送信ゼロ。

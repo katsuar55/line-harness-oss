@@ -10,8 +10,8 @@ import {
   getShopifyCustomerByShopifyId,
   linkShopifyCustomerToFriend,
   getSubscriptionContract,
-  upsertSubscriptionContract,
   jstNow,
+  type SubscriptionContractRow,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { verifyShopifySignature } from '../utils/shopify-hmac.js';
@@ -24,6 +24,7 @@ import {
   deriveContractFromOrder,
   applyCustomerTagsToContracts,
   rebuildContractsFromD1,
+  recordFlowMeasurement,
   toJstDate,
   isSubscriptionIngestEnabled,
 } from '../services/subscription-contracts.js';
@@ -99,14 +100,20 @@ shopify.post('/api/integrations/teiki-flow', async (c) => {
         },
       });
     }
-    await upsertSubscriptionContract(c.env.DB, {
-      contractId: resolved,
-      nextBillingEstimate: date,
-      estimateSource: 'flow',
-    });
+    // 実測はアンカーとして記録し、実効値 (= 未消化スキップぶんの先送り後) は service が決める。
+    // raw upsert で estimate_source='flow' を書かないこと — 基準値が伴わない flow 行は
+    // 次の refreshEstimate で skip 累計ぶんを丸ごと先送りする (migration 074)。
+    const updated = await recordFlowMeasurement(c.env.DB, resolved, date);
     return c.json({
       success: true,
-      data: { contractId: resolved, nextBillingEstimate: date, source: 'flow' },
+      data: {
+        contractId: resolved.contract_id,
+        // measured = 受け取った実測日。nextBillingEstimate = 実際に採用した日付。
+        // 未消化スキップがあると先送りされ、周期不明なら null になる (日付を出さない誠実側)。
+        measured: date,
+        nextBillingEstimate: updated.next_billing_estimate,
+        source: 'flow',
+      },
     });
   } catch (err) {
     console.error('POST /api/integrations/teiki-flow error:', err);
@@ -119,10 +126,14 @@ shopify.post('/api/integrations/teiki-flow', async (c) => {
  * 素の ID → GID の末尾セグメント の順に試す (phantom 行は作らないので、
  * 実在しない ID がどちらの形式で来ても結果は unknown_contract のまま)。
  */
-async function resolveContractRow(db: D1Database, contractId: string): Promise<string | null> {
-  if (await getSubscriptionContract(db, contractId)) return contractId;
+async function resolveContractRow(
+  db: D1Database,
+  contractId: string,
+): Promise<SubscriptionContractRow | null> {
+  const direct = await getSubscriptionContract(db, contractId);
+  if (direct) return direct;
   const tail = contractId.includes('/') ? contractId.slice(contractId.lastIndexOf('/') + 1) : '';
-  if (tail && (await getSubscriptionContract(db, tail))) return tail;
+  if (tail) return getSubscriptionContract(db, tail);
   return null;
 }
 
