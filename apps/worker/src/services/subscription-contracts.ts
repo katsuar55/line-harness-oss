@@ -287,25 +287,32 @@ export async function deriveContractFromOrder(
   const orderAt = input.orderCreatedAt ?? null;
 
   const isSameOrder = existing?.last_order_id === input.shopifyOrderId;
+  // 「前例がある」= 既に last_order_at を持っている契約。この有無で扱いを変える (下記)。
+  const hasPrior = existing?.last_order_at != null;
   const isNewerOrder =
-    !isSameOrder &&
-    (!existing?.last_order_at || (orderAt !== null && orderAt >= existing.last_order_at));
+    !isSameOrder && (!hasPrior || (orderAt !== null && orderAt >= existing!.last_order_at!));
 
   // ⚠️ `last_order_at` が無い契約 (= ローカル shopify_orders が直近60日分しか無いため
-  // Flow 実測が唯一の日付ソースになっている、まさに §10-0 ① の主対象) では
-  // `isNewerOrder` が無条件 true になる。そこへ過去注文の `orders/updated` が届くと
-  // 実測が derived へ差し戻され、過去日の推定に置き換わる。
+  // Flow 実測が唯一の日付ソースになっている、まさに §10-0 ① の主対象。本番 active 139 中 65 件)
+  // では `isNewerOrder` が **orderAt の新旧を問わず無条件 true** になる。
   //
-  // これを「実測日以降の注文だけが derived に戻す」で塞ごうとしたが **採点で棄却した**:
-  // 実測を保持したまま後続のスキップが来ると、refreshEstimate の flow 分岐が早期 return して
-  // 先送りが反映されず、**スキップ済みの顧客に古い決済日でリマインドを送る**経路ができる
-  // (実測が derived に戻っていれば skip delta が効いていた)。
-  // 差し戻し先が窓 (`[3,7]` 日前) の外なら無送信で、次の Flow 発火 (7日前通知/スキップ/
-  // お届け日変更) で自然回復する。直近注文 + 周期が偶然窓に入れば誤送信は起こりうるので
-  // どちらの案も誤送信ゼロにはならないが、棄却した案は**スキップ済みと分かっている顧客へ
-  // 確実に古い日付を送る**のに対し、こちらは偶然の一致に限られる。
-  // 根本原因は「flow 行がスキップ差分を一切反映しない」という既存仕様側にあるため、
-  // そちらを直すまでは main の挙動 (新しく見える注文で derived に戻す) を維持する。
+  // そのため、この層に過去注文の `orders/updated` (返金・出荷更新・タグ後付け等) が 1 通届くと
+  // 実測アンカーが破棄され、skip 基準値が「消化済み」へリセットされ、推定日が
+  // **顧客が既にスキップしたサイクル**へ巻き戻る → その日付でリマインドが飛ぶ。
+  //
+  // 以前は「実測を保持すると後続のスキップを一切反映しない」ことを理由にこの巻き戻しを
+  // 維持していたが、**その根本原因は migration 074 で解消済み** (flow 行もスキップ増分を
+  // 反映する)。棄却理由が消えたので、ここは非対称ルールへ改める:
+  //
+  //   前例あり (hasPrior)  … 従来どおり。新しい注文 = このサイクルの決済完了なので
+  //                          skip 基準値をリセットし導出モードへ戻す
+  //   前例なし (!hasPrior) … 注文の**事実だけ**を記録する。skip 基準値・実測アンカー・
+  //                          estimate_source には触らない
+  //
+  // 倒し方の根拠 (判断軸): 前例なし層で基準値を残すとスキップが二重計上されうるが、
+  // その向きは推定日が**未来へ**動く = 窓 `[3,7]` から外れて無送信 (次の Flow 発火で回復)。
+  // 逆にリセットすると過去へ動いて**誤送信** (回復不能)。安全側は「触らない」。
+  const claimsCycleComplete = isNewerOrder && hasPrior;
 
   const row = await upsertSubscriptionContract(db, {
     contractId: parsed.contractId,
@@ -315,20 +322,29 @@ export async function deriveContractFromOrder(
     intervalDays: intervalDays ?? undefined,
     ...(isNewerOrder
       ? {
+          // 注文の「事実」は前例の有無にかかわらず記録する
           orderCount: parsed.orderCount ?? undefined,
           lastOrderId: input.shopifyOrderId,
           lastOrderAt: orderAt ?? undefined,
           lastDeliveryDate: parsed.deliveryDate ?? undefined,
-          // 新しい注文 = このサイクルの決済完了 → skip 基準値を現累計にリセットし、
-          // Flow 実測値 (estimate_source='flow') も役目を終えるため導出モードへ戻す (WI-2)。
-          // 決済成功 = 支払い問題は解消済みなのでリカバリマーカーも掃除する (stale pending 防止)
-          skipCountAtLastOrder: existing ? existing.skip_count : undefined,
-          estimateSource: 'derived',
-          // 実測アンカーも役目を終える (migration 074)。残すと、後で再び 'flow' になった際に
-          // 古いアンカー + 新しい基準値の組み合わせが復活しうる
-          flowEstimateAnchor: null,
-          skipCountAtEstimate: existing ? existing.skip_count : undefined,
-          ...(existing ? { recoveryPendingAt: null, recoveryNotifiedAt: null } : {}),
+          // ここから下は「このサイクルの決済が完了した」と解釈できる場合のみ。
+          // 前例なし層 (last_order_at 欠落) では届いた注文が新しいのか古いのか判定できないため、
+          // skip 基準値・実測アンカー・estimate_source には触らない (undefined = 列を更新しない)。
+          ...(claimsCycleComplete
+            ? {
+                // 新しい注文 = このサイクルの決済完了 → skip 基準値を現累計にリセットし、
+                // Flow 実測値 (estimate_source='flow') も役目を終えるため導出モードへ戻す (WI-2)。
+                // 決済成功 = 支払い問題は解消済みなのでリカバリマーカーも掃除する (stale pending 防止)
+                skipCountAtLastOrder: existing!.skip_count,
+                estimateSource: 'derived',
+                // 実測アンカーも役目を終える (migration 074)。残すと、後で再び 'flow' になった際に
+                // 古いアンカー + 新しい基準値の組み合わせが復活しうる
+                flowEstimateAnchor: null,
+                skipCountAtEstimate: existing!.skip_count,
+                recoveryPendingAt: null,
+                recoveryNotifiedAt: null,
+              }
+            : {}),
         }
       : isSameOrder
         ? {

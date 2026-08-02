@@ -35,6 +35,43 @@ afterEach(() => {
 // DEFAULT_RULES 登録 (= 監視対象から漏れると silent 失敗を検知できない)
 // ============================================================
 
+describe('conditionalRules — teiki-flow ingest 監視', () => {
+  const load = async () => (await import('../services/cron-monitor.js')).conditionalRules;
+
+  it('Flow 未配線の環境では登録しない (一度も記録が無い = 即アラートになるため)', async () => {
+    const conditionalRules = await load();
+    // OSS の既定 / 他ブランド: 収集も secret も無い
+    expect(conditionalRules({ DB: {} as D1Database })).toEqual([]);
+    // gate だけ ON (Flow は未設定) — 受信口は全て 401 を返すので沈黙が正常
+    expect(
+      conditionalRules({ DB: {} as D1Database, SUBSCRIPTION_INGEST_ENABLED: 'true' }),
+    ).toEqual([]);
+    // secret だけあって収集 gate が OFF なら受信しない
+    expect(conditionalRules({ DB: {} as D1Database, TEIKI_FLOW_SECRET: 's' })).toEqual([]);
+  });
+
+  it('🚨配線済み環境では 72h 沈黙で検知する (実測 0 件の原因を切り分ける唯一の自動手段)', async () => {
+    const conditionalRules = await load();
+    const rules = conditionalRules({
+      DB: {} as D1Database,
+      SUBSCRIPTION_INGEST_ENABLED: 'true',
+      TEIKI_FLOW_SECRET: 's',
+    });
+    expect(rules).toEqual([{ jobName: 'teiki-flow-ingest', maxSilentHours: 72 }]);
+  });
+
+  it('MENU 単独 (後方互換の収集 ON) でも配線済みとみなす', async () => {
+    const conditionalRules = await load();
+    expect(
+      conditionalRules({
+        DB: {} as D1Database,
+        SUBSCRIPTION_MENU_ENABLED: 'true',
+        TEIKI_FLOW_SECRET: 's',
+      }),
+    ).toHaveLength(1);
+  });
+});
+
 describe('DEFAULT_RULES registration', () => {
   it('webhook-delivery-cleanup が登録済 (= 1 日 1 回 cron、 maxSilentHours=30)', async () => {
     const { DEFAULT_RULES } = await import('../services/cron-monitor.js');

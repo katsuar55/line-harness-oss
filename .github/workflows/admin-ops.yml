@@ -1110,6 +1110,21 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+          # 前提 migration の確認 (兄弟 op と同じ ergonomics)。
+          # 069/070 未適用なら書込が `no such table`、074 未適用なら INSERT が
+          # `no such column: flow_estimate_anchor` で全例外になる。webhook 経路は catch で
+          # 完全に無音、teiki-flow は 500 で Flow に無駄な 5xx リトライをさせるため、
+          # 「収集を開始したのに 1 件も入らない」状態を作ってしまう。ON にする前に止める。
+          COLS=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS n FROM pragma_table_info('subscription_contracts') WHERE name IN ('flow_estimate_anchor','skip_count_at_estimate')")
+          if ! echo "$COLS" | grep -Eq '"n": *2'; then
+            {
+              echo '❌ 前提 migration が未適用です (収集を開始しても書込が全て失敗します)'
+              echo ''
+              echo '`apply-migration-069-070` → `apply-migration-074` を先に実行してください。'
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           # secret bulk (JSON) で投入する — `"値" | wrangler secret put` は末尾 CR が残り
           # gate の厳密一致 (=== 'true') を静かに外す (memory: wrangler_secret_powershell_crlf)
           TMP="$RUNNER_TEMP/secrets.sub-ingest-on.json"

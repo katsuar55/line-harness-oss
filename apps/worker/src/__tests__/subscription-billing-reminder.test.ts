@@ -43,6 +43,7 @@ import {
   BILLING_REMINDER_JOB_NAME,
 } from '../services/subscription-billing-reminder.js';
 import { DEFAULT_RULES } from '../services/cron-monitor.js';
+import { addDays } from '../services/subscription-contracts.js';
 import type { LineClient } from '@line-crm/line-sdk';
 
 // JST 2026-07-14 12:00
@@ -59,6 +60,14 @@ interface ContractState {
   reminded_for_estimate: string | null;
   recovery_pending_at: string | null;
   recovery_notified_at: string | null;
+  // 送信直前の再導出検算 (staleEstimate ガード) が読む列。fixture の自己整合に必要
+  interval_days: number | null;
+  last_order_at: string | null;
+  skip_count: number;
+  skip_count_at_last_order: number;
+  estimate_source: string;
+  flow_estimate_anchor: string | null;
+  skip_count_at_estimate: number;
   [key: string]: unknown;
 }
 
@@ -143,15 +152,25 @@ function createStatefulDb(rows: ContractState[]) {
   return db as unknown as D1Database & { byId: Map<string, ContractState> };
 }
 
+/**
+ * 契約フィクスチャ。
+ *
+ * ⚠️ **自己整合させること**: 送信直前の再導出検算 (staleEstimate ガード) が
+ * 「next_billing_estimate 列 == 今の状態から導ける値」を要求する。これは本番では
+ * refreshEstimate が常に保たせている不変条件なので、破れた fixture は
+ * **本番に存在しえない行**であり、それでテストを通すと検算ガードが素通りしてしまう。
+ * そのため last_order_at / flow_estimate_anchor は推定日から逆算して埋める
+ * (明示的に override した場合はその値を尊重する = 検算ガード自体のテストに使える)。
+ */
 function contract(overrides: Partial<ContractState> = {}): ContractState {
-  return {
+  const base: ContractState = {
     contract_id: '100',
     shopify_customer_id: 'cust-1',
     plan_name: '[5％OFF定期便] 30日に1回配送（2回目からは5%OFF)',
     interval_days: 30,
     order_count: 2,
     last_order_id: 'ord-1',
-    last_order_at: '2026-06-18T10:00:00+09:00',
+    last_order_at: null,
     last_delivery_date: '2026-06-21',
     skip_count: 0,
     skip_count_at_last_order: 0,
@@ -159,6 +178,8 @@ function contract(overrides: Partial<ContractState> = {}): ContractState {
     cancelled_at: null,
     next_billing_estimate: TARGET_TO,
     estimate_source: 'derived',
+    flow_estimate_anchor: null,
+    skip_count_at_estimate: 0,
     reminded_for_estimate: null,
     recovery_pending_at: null,
     recovery_notified_at: null,
@@ -166,6 +187,22 @@ function contract(overrides: Partial<ContractState> = {}): ContractState {
     updated_at: 'x',
     ...overrides,
   };
+
+  const estimate = base.next_billing_estimate;
+  if (estimate && base.interval_days && !base.cancelled_at && !base.paused_at) {
+    if (base.estimate_source === 'flow') {
+      // 実効値 = anchor + interval × (skip_count - skip_count_at_estimate)
+      if (overrides.flow_estimate_anchor === undefined) {
+        const delta = Math.max(0, base.skip_count - base.skip_count_at_estimate);
+        base.flow_estimate_anchor = addDays(estimate, -base.interval_days * delta);
+      }
+    } else if (overrides.last_order_at === undefined) {
+      // 導出値 = last_order_at + interval × (1 + skipDelta)
+      const delta = Math.max(0, base.skip_count - base.skip_count_at_last_order);
+      base.last_order_at = `${addDays(estimate, -base.interval_days * (1 + delta))}T10:00:00+09:00`;
+    }
+  }
+  return base;
 }
 
 const FRIEND = { id: 'f1', line_user_id: 'U_line_1' };
@@ -233,6 +270,62 @@ describe('processBillingReminders — gate / 送信窓', () => {
     expect(r.skippedWindow ?? false).toBe(skipped);
     // 窓外でも heartbeat は記録される (採点R3: 夜間 silent を cron-monitor が誤検知しない)
     expect(mockInsertCronRunLog).toHaveBeenCalled();
+  });
+});
+
+// 送信直前の再導出検算 — **全誤送信経路の合流点にある関門**。
+// 既知の drift 経路 (過去注文による実測差し戻し / rebuild pass3 の基準値正規化 /
+// 送信面が閉じている間に溜まった状態) はいずれも発生源が別なのに、顧客に届く瞬間はここを通る。
+// 「誤送信 (回復不能) → 無送信 (次の Flow 発火で回復)」への一括変換弁なので、
+// ここが緩むと未知の drift 経路がそのまま顧客へ抜ける。
+describe('🚨processBillingReminders — 送信直前の再導出検算 (staleEstimate)', () => {
+  it('derived 行: 列が導出値と食い違うなら送らず claim も消費しない', async () => {
+    // last_order_at を明示 override して不整合を作る (6/18 + 30 = 7/18 ≠ 7/21)
+    const row = contract({ last_order_at: '2026-06-18T10:00:00+09:00' });
+    const db = createStatefulDb([row]);
+    mockListDue.mockResolvedValue([row]);
+    mockGetFriendByCustomer.mockResolvedValue(FRIEND);
+
+    const r = await processBillingReminders(env(db), lineClient, NOW_NOON);
+
+    expect(r.staleEstimate).toBe(1);
+    expect(r.sent).toBe(0);
+    expect(mockDispatch).not.toHaveBeenCalled();
+    // claim を消費しない = 列が訂正されれば次の tick で正しい日付を送れる
+    expect(row.reminded_for_estimate).toBeNull();
+  });
+
+  it('flow 行: アンカー + スキップ増分と食い違うなら送らない', async () => {
+    // アンカー 7/21・skip 増分 1 なら実効値は 8/20。列が 7/21 のままなのは
+    // 「スキップは記録されたが推定日が更新されていない」状態 = 送ると 1 周期古い日付になる
+    const row = contract({
+      estimate_source: 'flow',
+      flow_estimate_anchor: TARGET_TO,
+      skip_count: 1,
+      skip_count_at_estimate: 0,
+    });
+    const db = createStatefulDb([row]);
+    mockListDue.mockResolvedValue([row]);
+    mockGetFriendByCustomer.mockResolvedValue(FRIEND);
+
+    const r = await processBillingReminders(env(db), lineClient, NOW_NOON);
+
+    expect(r.staleEstimate).toBe(1);
+    expect(mockDispatch).not.toHaveBeenCalled();
+    expect(row.reminded_for_estimate).toBeNull();
+  });
+
+  it('flow 行: 整合していれば通常どおり送る (検算がすべてを止めない)', async () => {
+    const row = contract({ estimate_source: 'flow' }); // anchor は factory が自己整合させる
+    const db = createStatefulDb([row]);
+    mockListDue.mockResolvedValue([row]);
+    mockGetFriendByCustomer.mockResolvedValue(FRIEND);
+    mockDispatch.mockResolvedValue(SENT);
+
+    const r = await processBillingReminders(env(db), lineClient, NOW_NOON);
+
+    expect(r.staleEstimate).toBe(0);
+    expect(r.sent).toBe(1);
   });
 });
 

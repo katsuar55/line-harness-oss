@@ -44,7 +44,11 @@ import {
   buildPaymentRecoveryMessages,
   BILLING_DEADLINE_LEAD_DAYS,
 } from './subscription-concierge.js';
-import { addDays } from './subscription-contracts.js';
+import {
+  addDays,
+  computeNextBillingEstimate,
+  computeFlowBillingEstimate,
+} from './subscription-contracts.js';
 
 export const BILLING_REMINDER_JOB_NAME = 'teiki-billing-reminder';
 
@@ -87,6 +91,12 @@ export interface BillingReminderResult {
   failed: number;
   leakedClaims: number;
   /**
+   * 送信直前の再導出検算で `next_billing_estimate` 列が状態と食い違っていた件数。
+   * **誤送信 → 無送信への一括変換弁**なので、>0 は「read-model に drift がある」の警報。
+   * claim は消費しないため、列が訂正されれば次の tick で正しい日付で送れる。
+   */
+  staleEstimate: number;
+  /**
    * 恒久 4xx (無効 userId 等)。outcome としては skippedRecipient / recoverySkipped に
    * 計上される (= claim 維持) が、恒久エラー起因の件数を監視で判別できるよう
    * **内数として別カウント**する。
@@ -115,6 +125,7 @@ export async function processBillingReminders(
     skippedRecipient: 0,
     failed: 0,
     leakedClaims: 0,
+    staleEstimate: 0,
     permanentError: 0,
     recoveryDue: 0,
     recoverySent: 0,
@@ -211,7 +222,39 @@ async function remindOne(
   contract: SubscriptionContractRow,
   todayJst: string,
   result: BillingReminderResult,
-): Promise<'sent' | 'claimedLost' | 'unlinked' | 'skippedRecipient' | 'failed'> {
+): Promise<'sent' | 'claimedLost' | 'unlinked' | 'skippedRecipient' | 'failed' | 'staleEstimate'> {
+  // 🚨 送信直前の再導出検算 — **全誤送信経路の合流点にある唯一の関門**。
+  //
+  // listContractsDueForReminder は `next_billing_estimate` 列だけで対象を選び、
+  // その列を最新化するのは webhook 駆動の refreshEstimate しかない。列がアンカー
+  // (flow_estimate_anchor / skip_count_at_estimate) や導出材料と食い違ったまま
+  // 窓に入ると、そのまま顧客へ push される。
+  //
+  // 既知の drift 経路 (過去注文による実測差し戻し / rebuild pass3 の基準値正規化 /
+  // 収集中に溜まった状態) はいずれも発生源が別なのに、届く瞬間はここを通る。
+  // よってここで「列 == 今の状態から導ける値」を検算し、食い違えば送らない。
+  // **未知の drift 経路も含めて「誤送信 (回復不能) → 無送信 (次の発火で回復)」へ倒す。**
+  //
+  // claim は消費しない (return が claim より手前) ので、列が訂正されれば次の tick で送れる。
+  //
+  // 解約/一時停止中の行はここでは判定しない: どちらの導出関数も null を返すので必ず
+  // stale 扱いになってしまうが、停止状態は **claim SQL の述語 (cancelled/paused IS NULL) が
+  // 原子的に**弾く。claim 時点で読み直す分そちらの方が正確なので、判定を奪わない。
+  if (!contract.cancelled_at && !contract.paused_at) {
+    const expected =
+      contract.estimate_source === 'flow'
+        ? computeFlowBillingEstimate(contract)
+        : computeNextBillingEstimate(contract);
+    if (expected !== contract.next_billing_estimate) {
+      console.warn(
+        `[${BILLING_REMINDER_JOB_NAME}] stale estimate: contract=${contract.contract_id} ` +
+          `stored=${contract.next_billing_estimate} expected=${expected} source=${contract.estimate_source}`,
+      );
+      // 集計は呼び出し側が outcome から行う (ここで足すと二重計上になる)
+      return 'staleEstimate';
+    }
+  }
+
   if (!contract.shopify_customer_id) return 'unlinked';
 
   // 未連携なら claim を消費しない (将来連携されたサイクルから届けたい)

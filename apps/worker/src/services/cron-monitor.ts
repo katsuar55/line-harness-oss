@@ -33,6 +33,10 @@ export interface CronMonitorEnv {
   ACCOUNT_NAME?: string;
   /** 'true' で gating bypass (テスト/手動実行用) */
   CRON_MONITOR_FORCE?: string;
+  /** teiki-flow ingest 監視の起動条件 (下記 conditionalRules を参照) */
+  SUBSCRIPTION_INGEST_ENABLED?: string;
+  SUBSCRIPTION_MENU_ENABLED?: string;
+  TEIKI_FLOW_SECRET?: string;
 }
 
 export interface CronMonitorRule {
@@ -138,6 +142,26 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
   { jobName: 'teiki-billing-reminder', maxSilentHours: 2 },
 ];
 
+/**
+ * 条件付きルール: **Flow 連携を実際に配線した環境でだけ**有効になる監視。
+ *
+ * `teiki-flow-ingest` は cron ではなく Shopify Flow からの受信 (routes/shopify.ts) で
+ * 記録される。DEFAULT_RULES に静的に置くと、Flow を使わない環境 (OSS の既定・他ブランド) で
+ * 「一度も記録が無い = 即アラート」になり永久に鳴り続ける。
+ *
+ * 逆に配線済みの環境では沈黙こそが最重要のシグナルになる: 受信口は secret 不一致で 401 を
+ * 返し続けても Flow 側のログにしか出ないため、**全送信が失敗していても D1 からは
+ * 「まだ発火していない」と区別できない** (実測 0 件と同じ見え方)。
+ * 稼働契約数 × 周期からは日に数件の受信が期待できるので、72h の沈黙は異常と断定してよい。
+ */
+export function conditionalRules(env: CronMonitorEnv): CronMonitorRule[] {
+  const ingestOn =
+    env.SUBSCRIPTION_INGEST_ENABLED === 'true' || env.SUBSCRIPTION_MENU_ENABLED === 'true';
+  // secret 未設定 = 受信口が全て 401 を返す = そもそも配線されていない
+  if (!ingestOn || !env.TEIKI_FLOW_SECRET) return [];
+  return [{ jobName: 'teiki-flow-ingest', maxSilentHours: 72 }];
+}
+
 // ============================================================
 // 公開 API
 // ============================================================
@@ -147,7 +171,7 @@ export async function processCronMonitor(
   options: CronMonitorOptions = {},
 ): Promise<CronMonitorResult> {
   const now = options.now ?? new Date();
-  const rules = options.rules ?? DEFAULT_RULES;
+  const rules = options.rules ?? [...DEFAULT_RULES, ...conditionalRules(env)];
   const fetchImpl = options.fetchImpl ?? fetch;
   const force = env.CRON_MONITOR_FORCE === 'true';
 

@@ -37,6 +37,8 @@ const {
   mockApplyCustomerTags,
   mockGetSubContract,
   mockUpsertSubContract,
+  mockListSkipDrift,
+  mockInsertCronRunLog,
   mockGetFriendByCustomer,
   mockChannelDispatch,
 } = vi.hoisted(() => ({
@@ -53,6 +55,8 @@ const {
   mockApplyCustomerTags: vi.fn(),
   mockGetSubContract: vi.fn(),
   mockUpsertSubContract: vi.fn(),
+  mockListSkipDrift: vi.fn(async (): Promise<Array<{ contract_id: string }>> => []),
+  mockInsertCronRunLog: vi.fn(),
   mockGetFriendByCustomer: vi.fn(),
   mockChannelDispatch: vi.fn(),
 }));
@@ -95,6 +99,8 @@ vi.mock('@line-crm/db', async (importOriginal) => {
     linkShopifyCustomerToFriend: mockLinkShopifyCustomerToFriend,
     getSubscriptionContract: mockGetSubContract,
     upsertSubscriptionContract: mockUpsertSubContract,
+    listContractsWithSkipBaselineDrift: mockListSkipDrift,
+    insertCronRunLog: mockInsertCronRunLog,
     getFriendByShopifyCustomerId: mockGetFriendByCustomer,
     jstNow: vi.fn(() => '2026-01-01T00:00:00+09:00'),
     // Stubs needed by other mounted routes
@@ -447,11 +453,16 @@ describe('Shopify Routes', () => {
     const REBUILD_PATH = '/api/integrations/shopify/subscription-contracts/rebuild';
     const authHeaders = { Authorization: `Bearer ${TEST_API_KEY}` };
 
+    // ガードの判定は **gate 状態ではなく drift の実在**。gate を条件にしていた頃は
+    // `disable-subscription-ingest` を先に実行するとガードが丸ごと消えて素通りした。
+    const drifted = [{ contract_id: '1' }, { contract_id: '2' }];
+
     beforeEach(() => {
       mockRebuildContracts.mockReset();
+      mockListSkipDrift.mockReset().mockResolvedValue([]);
     });
 
-    it('gate OFF → 200 で実行できる (bootstrap 用、gate 非連動)', async () => {
+    it('drift なし → 200 で実行できる (bootstrap: migration → rebuild → gate ON)', async () => {
       mockRebuildContracts.mockResolvedValueOnce({ ordersScanned: 3, contractsSeen: 1 });
       const res = await app.request(
         REBUILD_PATH,
@@ -462,20 +473,8 @@ describe('Shopify Routes', () => {
       expect(mockRebuildContracts).toHaveBeenCalledTimes(1);
     });
 
-    it('gate ON + force なし → 409 で拒否 (未消化スキップ先送りの恒久消去ガード、採点R2)', async () => {
-      const res = await app.request(
-        REBUILD_PATH,
-        { method: 'POST', headers: authHeaders },
-        createMockEnv({ SUBSCRIPTION_MENU_ENABLED: 'true' }),
-      );
-      expect(res.status).toBe(409);
-      expect(mockRebuildContracts).not.toHaveBeenCalled();
-    });
-
-    it('🚨収集のみ ON + force なし → 409 (先送りを作るのは収集経路。MENU 判定のままだと素通りする)', async () => {
-      // gate 分離で drift の発生条件が INGEST 側へ移った。ガードを MENU のままにしていると
-      // 「収集のみ ON」の数日〜1ヶ月の間に溜まったスキップ先送りを、既存の Admin Ops
-      // (force を付けない) が無警告で恒久消去し、1 周期早いリマインドが飛ぶ。
+    it('drift あり + force なし → 409 で拒否 (未消化スキップ先送りの恒久消去ガード)', async () => {
+      mockListSkipDrift.mockResolvedValueOnce(drifted);
       const res = await app.request(
         REBUILD_PATH,
         { method: 'POST', headers: authHeaders },
@@ -483,9 +482,26 @@ describe('Shopify Routes', () => {
       );
       expect(res.status).toBe(409);
       expect(mockRebuildContracts).not.toHaveBeenCalled();
+      const json = (await res.json()) as { error: string };
+      expect(json.error).toContain('2');
     });
 
-    it('gate ON + ?force=1 → 200 で実行できる (明示 override)', async () => {
+    it('🚨これを壊すと誤送信になる: gate を OFF にしてから実行してもガードは効く', async () => {
+      // 「rebuild 前に収集を止めておこう」は自然な判断で踏みやすい。ガードを gate 状態で
+      // 判定していると、disable-subscription-ingest の直後にガードが消えて force 未指定でも
+      // 素通りし、pass3 が溜まった先送りを恒久消去する (履歴から復元不能)。
+      mockListSkipDrift.mockResolvedValueOnce(drifted);
+      const res = await app.request(
+        REBUILD_PATH,
+        { method: 'POST', headers: authHeaders },
+        createMockEnv({ SUBSCRIPTION_INGEST_ENABLED: 'false' }),
+      );
+      expect(res.status).toBe(409);
+      expect(mockRebuildContracts).not.toHaveBeenCalled();
+    });
+
+    it('drift あり + ?force=1 → 200 で実行できる (明示 override)', async () => {
+      mockListSkipDrift.mockResolvedValueOnce(drifted);
       mockRebuildContracts.mockResolvedValueOnce({ ordersScanned: 0, contractsSeen: 0 });
       const res = await app.request(
         `${REBUILD_PATH}?force=1`,
@@ -721,13 +737,13 @@ describe('Shopify Routes', () => {
         ],
       });
 
-      const res = await postCustomerUpdate(recoveryEnv());
+      const res = await postCustomerUpdate(recoveryEnv({ SUBSCRIPTION_REMINDER_ENABLED: 'true' }));
       expect(res.status).toBe(200);
       expect(mockApplyCustomerTags).toHaveBeenCalledWith(
         expect.anything(),
         '7771234567890',
         'subscription-100-pause:2026-07-14',
-        // MENU ON = 通知面が生きている → 遷移マーカーを立てて cron に拾わせる
+        // MENU + REMINDER 両方 ON = 送信面が生きている → 遷移マーカーを立てて cron に拾わせる
         { suppressRecoveryMarkers: false },
       );
       // 深夜送信・送信失敗での喪失・二重送信を避けるため、webhook 経路では push しない
@@ -759,6 +775,22 @@ describe('Shopify Routes', () => {
         { suppressRecoveryMarkers: true },
       );
       expect(mockChannelDispatch).not.toHaveBeenCalled();
+    });
+
+    it('🚨これを壊すと誤送信になる: MENU ON / REMINDER OFF の期間もマーカーを立てない', async () => {
+      // 手順は MENU → (数日〜数週の実機確認) → REMINDER と段階投入する。抑止条件を MENU だけで
+      // 判定していると、この差分期間に溜まった pause 遷移が REMINDER 投入の瞬間に
+      // 「決済に失敗しました」として一斉送信される。抑止条件は**送信条件の否定と一致**させる。
+      mockUpsertShopifyCustomer.mockResolvedValueOnce({ id: 'sc-1', shopify_customer_id: '7771234567890' });
+      mockApplyCustomerTags.mockResolvedValueOnce({ applied: 1, transitions: [] });
+
+      await postCustomerUpdate(recoveryEnv({ SUBSCRIPTION_REMINDER_ENABLED: undefined }));
+      expect(mockApplyCustomerTags).toHaveBeenCalledWith(
+        expect.anything(),
+        '7771234567890',
+        'subscription-100-pause:2026-07-14',
+        { suppressRecoveryMarkers: true },
+      );
     });
   });
 

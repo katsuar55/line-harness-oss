@@ -10,6 +10,8 @@ import {
   getShopifyCustomerByShopifyId,
   linkShopifyCustomerToFriend,
   getSubscriptionContract,
+  listContractsWithSkipBaselineDrift,
+  insertCronRunLog,
   jstNow,
   type SubscriptionContractRow,
 } from '@line-crm/db';
@@ -34,12 +36,45 @@ const shopify = new Hono<Env>();
 
 // teiki-flow secret 未設定ログの flood 抑制フラグ (isolate ごと初回のみ、採点R4)
 let warnedTeikiFlowSecretMissing = false;
+/**
+ * 401 の cron_run_logs 記録も isolate ごと初回のみに絞る。
+ * この endpoint は auth skip-list に載っていて**誰でも叩ける**ため、無条件に記録すると
+ * 未認証リクエストで D1 を膨らませられる。診断に必要なのは「401 が起きているか」であって
+ * 回数ではないので、isolate ごと 1 回で十分 (isolate は頻繁に入れ替わる)。
+ */
+let loggedTeikiFlowUnauthorized = false;
+
+/** teiki-flow 受信の outcome を記録する cron_run_logs の jobName (cron-monitor の監視対象) */
+const TEIKI_FLOW_INGEST_JOB_NAME = 'teiki-flow-ingest';
 
 // POST /api/integrations/teiki-flow — Shopify Flow「HTTP リクエストを送信」からの
 // サブスク実測値受信 (WI-2)。Huckleberry の Flow Trigger が持つ「次回決済日」を受け取り、
 // 推定 (derived) を実測 (flow) に昇格させる。設定手順: docs/TEIKI_FLOW_SETUP.md。
 // 認可: 共有シークレットヘッダ (auth skip-list に POST 限定で登録済み、ここで検証)。
 shopify.post('/api/integrations/teiki-flow', async (c) => {
+  /**
+   * 受信結果を cron_run_logs に残す (best-effort)。
+   *
+   * これが無いと「実測 0 件」の原因が **D1 からは一切切り分けられない**:
+   * 「まだ発火していない」も「全送信が secret 不一致で 401」も「契約ID の変数間違いで
+   * 全件 unknown_contract」も、どれも estimate_source='flow' が 0 件という同じ見え方になる。
+   * これはこのプロジェクトが 2.5 ヶ月間気付かなかった障害と同じ「静かな失敗」の形。
+   *
+   * ⚠️ body の値 (契約ID・日付) は記録しない。件数と outcome だけで切り分けられる。
+   */
+  const logOutcome = async (outcome: string): Promise<void> => {
+    try {
+      await insertCronRunLog(c.env.DB, {
+        jobName: TEIKI_FLOW_INGEST_JOB_NAME,
+        status: outcome === 'measured' ? 'success' : 'partial',
+        metrics: { outcome },
+      });
+    } catch (err) {
+      // 記録の失敗で受信そのものを落とさない (Flow に不要な 5xx リトライをさせない)
+      console.error('teiki-flow: outcome log failed:', err);
+    }
+  };
+
   const secret = c.env.TEIKI_FLOW_SECRET;
   if (!secret) {
     // 未設定も 401 に畳む (採点R3: 503 だと未認証呼び出し元に secret の設定状態が開示される)。
@@ -53,12 +88,17 @@ shopify.post('/api/integrations/teiki-flow', async (c) => {
   }
   const provided = c.req.header('x-teiki-flow-secret') ?? '';
   if (!(await constantTimeEqual(provided, secret))) {
+    if (!loggedTeikiFlowUnauthorized) {
+      loggedTeikiFlowUnauthorized = true;
+      await logOutcome('unauthorized');
+    }
     return c.json({ success: false, error: 'unauthorized' }, 401);
   }
   // gate OFF 中は read-model を触らない (202 = Flow 側にリトライさせない)。
   // 収集 gate (INGEST) で判定する — 顧客可視 gate (MENU) を開ける前に実測値を貯めたい
   // (貯めないと日付の無い契約カードを顧客に見せることになる) ため。
   if (!isSubscriptionIngestEnabled(c.env)) {
+    await logOutcome('gate_off');
     return c.json({ success: true, data: { skipped: 'gate_off' } }, 202);
   }
 
@@ -70,9 +110,11 @@ shopify.post('/api/integrations/teiki-flow', async (c) => {
     contractId = body.contract_id != null ? String(body.contract_id).trim() : '';
     date = toJstDate(body.next_billing_date ?? null);
   } catch {
+    await logOutcome('bad_request');
     return c.json({ success: false, error: 'JSON body を解釈できません' }, 400);
   }
   if (!contractId || !date) {
+    await logOutcome('bad_request');
     return c.json(
       { success: false, error: 'contract_id と next_billing_date (日付) が必要です' },
       400,
@@ -89,6 +131,7 @@ shopify.post('/api/integrations/teiki-flow', async (c) => {
     const resolved = await resolveContractRow(c.env.DB, contractId);
     if (!resolved) {
       console.info(`teiki-flow: unknown contract ${contractId} (derive 前の race の可能性)`);
+      await logOutcome('unknown_contract');
       return c.json({
         success: true,
         data: {
@@ -104,6 +147,7 @@ shopify.post('/api/integrations/teiki-flow', async (c) => {
     // raw upsert で estimate_source='flow' を書かないこと — 基準値が伴わない flow 行は
     // 次の refreshEstimate で skip 累計ぶんを丸ごと先送りする (migration 074)。
     const updated = await recordFlowMeasurement(c.env.DB, resolved, date);
+    await logOutcome('measured');
     return c.json({
       success: true,
       data: {
@@ -117,6 +161,7 @@ shopify.post('/api/integrations/teiki-flow', async (c) => {
     });
   } catch (err) {
     console.error('POST /api/integrations/teiki-flow error:', err);
+    await logOutcome('error');
     return c.json({ success: false, error: 'internal error' }, 500);
   }
 });
@@ -157,20 +202,27 @@ async function constantTimeEqual(a: string, b: string): Promise<boolean> {
 // **gate 非連動** (採点R1 修正): 有効化手順は migration 069 → rebuild → gate ON の順であり、
 // gate ON 前に read-model を温めておく必要がある (gate ON 直後に空カードを出さないため)。
 // read-model への書込は gate OFF 中の本番挙動に一切影響しない (読む経路が全て gate 内)。
-// ⚠️ gate ON 後の再実行は「未消化スキップの先送り」を恒久的に消すため ?force=1 を要求する (採点R2)。
-//    判定は **収集 gate** で行う (§10-0 ①): 先送り (skip_count と skip_count_at_last_order の drift) を
-//    作るのは customers/update → applyCustomerTagsToContracts であり、gate 分離後その経路は
-//    INGEST 側にある。MENU で判定したままだと「収集のみ ON」の期間に drift が溜まっているのに
-//    409 が出ず、rebuild の pass3 が baseline を正規化して先送りを**恒久的に**消してしまう
-//    (履歴から復元不能 → スキップ済みの顧客に 1 周期早いリマインドが飛ぶ)。
-//    全 gate OFF での bootstrap (migration → rebuild → gate ON) は従来どおり force 不要で通る。
+// ⚠️ 再実行は「未消化スキップの先送り」を恒久的に消すため ?force=1 を要求する (採点R2)。
+//    判定は **gate 状態ではなく drift の実在** で行う。
+//    以前は収集 gate (INGEST || MENU) を条件にしていたが、`disable-subscription-ingest` を
+//    先に実行してから rebuild すると第一項が false になり、**ガードが丸ごと消えて**
+//    force 未指定でも素通りした (「rebuild 前に収集を止めておこう」は自然な判断なので踏みやすい)。
+//    守りたいのは gate ではなく「消えると復元できない drift」そのものなので、直接それを見る。
+//    全 gate OFF での bootstrap (migration → rebuild → gate ON) は drift 0 なので従来どおり通る。
 shopify.post('/api/integrations/shopify/subscription-contracts/rebuild', async (c) => {
-  if (isSubscriptionIngestEnabled(c.env) && c.req.query('force') !== '1') {
-    return c.json({
-      success: false,
-      error:
-        '収集 gate ON 中の rebuild は、顧客がスキップ済みの先送り推定を巻き戻す可能性があります。承知の上で実行する場合は ?force=1 を付けてください。',
-    }, 409);
+  if (c.req.query('force') !== '1') {
+    // 1 件でもあれば拒否する (件数は報告のために取得。LIMIT で全件走査は避ける)
+    const drifted = await listContractsWithSkipBaselineDrift(c.env.DB, 100);
+    if (drifted.length > 0) {
+      return c.json({
+        success: false,
+        error:
+          `未消化のスキップ先送りが ${drifted.length}${drifted.length >= 100 ? '+' : ''} 件あります。` +
+          'rebuild はこれを恒久的に消去し (履歴から復元不能)、スキップ済みの顧客へ 1 周期早い' +
+          'リマインドが飛ぶ状態を作ります。Flow 実測アンカーの先送りも同様に巻き戻ります。' +
+          '承知の上で実行する場合は ?force=1 を付けてください。',
+      }, 409);
+    }
   }
   try {
     const result = await rebuildContractsFromD1(c.env.DB);
@@ -574,12 +626,19 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
           // applyCustomerTagsToContracts が pause 書込と同一 upsert で原子的に管理する。
           // 送信は teiki-billing-reminder cron (JST 10-20時窓・CAS claim・失敗リトライ) が担う。
           //
-          // ⚠️ 収集のみ ON (MENU OFF) の期間はマーカーを立てない。cron は MENU も必須なので
-          // 立てても送られず、MENU を開けた瞬間に数週間前の一時停止まで遡って
-          // 「決済に失敗しました」が一斉送信される (rebuild の suppressRecoveryMarkers と同じ罠)。
-          // 検知は「通知面が生きている」期間だけ意味を持つ。
+          // ⚠️ 送信面が生きていない期間はマーカーを立てない。立てても送られず、
+          // 送信面を開けた瞬間に数週間前の一時停止まで遡って「決済に失敗しました」が
+          // 一斉送信される (rebuild の suppressRecoveryMarkers と同じ罠)。
+          //
+          // 抑止条件は **送信条件の否定と厳密に一致させる**こと。
+          // 以前は MENU だけを見ていたが、cron の送信条件は REMINDER && MENU (2 gate) なので、
+          // 手順どおり MENU → (数日〜数週の実機確認) → REMINDER と段階投入すると、
+          // その差分期間がまるごと無防備になり、REMINDER を入れた瞬間に溜まった分が一斉に飛ぶ。
+          const sendingLive =
+            c.env.SUBSCRIPTION_MENU_ENABLED === 'true' &&
+            c.env.SUBSCRIPTION_REMINDER_ENABLED === 'true';
           await applyCustomerTagsToContracts(db, shopifyCustomerId, (body.tags as string) ?? null, {
-            suppressRecoveryMarkers: c.env.SUBSCRIPTION_MENU_ENABLED !== 'true',
+            suppressRecoveryMarkers: !sendingLive,
           });
         } catch (err) {
           console.error('subscription contract derive (customer) failed:', err);
