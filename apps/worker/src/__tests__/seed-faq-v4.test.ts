@@ -77,6 +77,24 @@ describe('seed-faq-v4 — 実ラベル準拠の新ファクト', () => {
   });
 });
 
+describe('seed-faq-v4 — D1 実行制約', () => {
+  // Cloudflare D1 は LIKE/GLOB パターン最大 50 バイト。超えると
+  // 「LIKE or GLOB pattern too complex: SQLITE_ERROR」になり seed 全体がロールバックする
+  // (2026-08-03 apply-faq-v4 run 30792841182 で日本語パターン 52〜61B が実際に失敗)。
+  const FILES = [
+    resolve(here, '../../../../packages/db/seed-naturism-faq-v4.sql'),
+    resolve(here, '../../../../.github/workflows/admin-ops.yml'),
+  ];
+  it.each(FILES)('%s の全 LIKE パターンが 50 バイト未満', (file) => {
+    const src = readFileSync(file, 'utf8');
+    const patterns = [...src.matchAll(/LIKE '([^']*)'/g)].map((m) => m[1]);
+    expect(patterns.length).toBeGreaterThan(0);
+    for (const p of patterns) {
+      expect(Buffer.byteLength(p, 'utf8'), `LIKE '${p}'`).toBeLessThan(50);
+    }
+  });
+});
+
 // 撤回済み・NG 表現は seed とソースの両方から排除された状態を固定する。
 // 出典: 消費者庁「食品添加物の不使用表示に関するガイドライン」類型2 /
 //       naturism 3SKU の原材料表示 (ショ糖脂肪酸エステル等を含むため「天然由来100%」は不成立)

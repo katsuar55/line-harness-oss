@@ -122,8 +122,8 @@ UPDATE scenario_steps SET message_content = replace(message_content, 'Blue ＋�
 -- 3-3. 届出範囲外の機能表示 (H975 の届出機能は「腹部の脂肪」であって「糖質ケア」ではない)
 --      purchase_cross_sell_map / nutrition_sku_map は定期リマインド等でそのまま表示される。
 UPDATE purchase_cross_sell_map SET reason = replace(reason, '16成分の機能性表示食品で糖質ケアも一緒に', '全16成分のシリーズ最高峰')
- WHERE reason LIKE '%16成分の機能性表示食品で糖質ケアも一緒に%';
+ WHERE reason LIKE '%糖質ケアも一緒に%';
 UPDATE purchase_cross_sell_map SET reason = replace(reason, '16成分の機能性表示食品で糖質ケアも', '全16成分のシリーズ最高峰')
- WHERE reason LIKE '%16成分の機能性表示食品で糖質ケアも%';
+ WHERE reason LIKE '%機能性表示食品で糖質ケアも%';
 UPDATE nutrition_sku_map SET copy_template = replace(copy_template, '糖質対応の機能性表示食品で食事ケアに', '全16成分のシリーズ最高峰で食事ケアに')
- WHERE copy_template LIKE '%糖質対応の機能性表示食品で食事ケアに%';
+ WHERE copy_template LIKE '%糖質対応の機能性表示食品%';

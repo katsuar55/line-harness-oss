@@ -1191,7 +1191,7 @@ jobs:
           # (誤検知するため、% を含まない一意な部分文字列で判定する)。
           echo '### 検証: 撤回済み表現の残存 (0 であること)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
-            --command "SELECT COUNT(*) AS stale FROM auto_replies WHERE is_active=1 AND (response_content LIKE '%天然由来・国内製造%' OR response_content LIKE '%天然由来成分のみ%' OR response_content LIKE '%人工甘味料%' OR response_content LIKE '%脂質カット特化%' OR response_content LIKE '%糖質カット最強%' OR response_content LIKE '%Blue（8成分）%' OR response_content LIKE '%動物性原料は一切%' OR response_content LIKE '%フォトカードキャンペーンも実施中%')" \
+            --command "SELECT COUNT(*) AS stale FROM auto_replies WHERE is_active=1 AND (response_content LIKE '%天然由来・国内製造%' OR response_content LIKE '%天然由来成分のみ%' OR response_content LIKE '%人工甘味料%' OR response_content LIKE '%脂質カット特化%' OR response_content LIKE '%糖質カット最強%' OR response_content LIKE '%Blue（8成分）%' OR response_content LIKE '%動物性原料は一切%' OR response_content LIKE '%フォトカードキャンペーン%')" \
             >> "$GITHUB_STEP_SUMMARY"
           echo '### 検証: auto_replies 以外の D1 (0 であること)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json \
