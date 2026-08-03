@@ -98,7 +98,7 @@ function build6JunePinkFlex(): FlexContainer {
       spacing: 'md',
       contents: [
         { type: 'text', text: '梅雨は肌コンディションも崩れがち。', size: 'sm', color: '#1e293b', wrap: true },
-        { type: 'text', text: 'Pink は Blue ＋ 活きた酵素配合で、 美容も気になる方におすすめ。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'text', text: 'Pink は Blue から玄米外皮・胚芽を除き活きた酵素を配合した全10成分。 美容も気になる方におすすめ。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '1日¥75〜 / 7日分お試し可', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' },
       ],
@@ -230,7 +230,7 @@ function build7JulyBlueFlex(): FlexContainer {
       backgroundColor: '#cffafe',
       paddingAll: '14px',
       contents: [
-        { type: 'text', text: '🩵 Blue — BBQ・焼肉 に安心の 8 成分', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
+        { type: 'text', text: '🩵 Blue — BBQ・焼肉 に安心の 9 成分', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
       ],
     },
     body: {
@@ -240,7 +240,7 @@ function build7JulyBlueFlex(): FlexContainer {
       spacing: 'md',
       contents: [
         { type: 'text', text: '夏の外食は脂質が高め。 Blue は脂っこい食事が好きな方の naturism エントリーモデル。', size: 'sm', color: '#1e293b', wrap: true },
-        { type: 'text', text: '8 成分配合 (= ウーロン茶ポリフェノール / アロエベラ / サンザシ 等)。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'text', text: '9 成分配合 (= 玄米外皮・胚芽 / ウーロン茶ポリフェノール / アロエベラ / サンザシ 等)。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '1日¥64〜 / 7日分お試し ¥696', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
       ],
@@ -382,7 +382,7 @@ function build8AugustPinkFlex(): FlexContainer {
       spacing: 'md',
       contents: [
         { type: 'text', text: '夏の紫外線・疲労で代謝が落ちると、 食事の重さを感じやすい時期。', size: 'sm', color: '#1e293b', wrap: true },
-        { type: 'text', text: 'Pink は Blue (8 成分) + 活きた酵素 を配合した上位モデル。 美容を気にする方へ。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'text', text: 'Pink は Blue から玄米外皮・胚芽を除き 活きた酵素 等を加えた 10 成分モデル。 美容を気にする方へ。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '1日¥75〜 / 7日分お試し ¥816', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' },
       ],
@@ -525,8 +525,8 @@ function build9SeptemberCompareFlex(): FlexContainer {
       paddingAll: '16px',
       spacing: 'md',
       contents: [
-        { type: 'text', text: '🩵 Blue は 8 成分配合 — 焼肉 / 揚げ物 等の脂っこい食事が好きな方に', size: 'sm', color: '#1e293b', wrap: true },
-        { type: 'text', text: '💗 Pink は Blue + 酵素 — 美容も気になる方、 食事量が多い方に', size: 'sm', color: '#1e293b', wrap: true, margin: 'sm' },
+        { type: 'text', text: '🩵 Blue は 9 成分配合 — 焼肉 / 揚げ物 等の脂っこい食事が好きな方に', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '💗 Pink は活きた酵素配合の全10成分 — 美容も気になる方、 食事量が多い方に', size: 'sm', color: '#1e293b', wrap: true, margin: 'sm' },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '秋は外食 + 旬食材の食べ過ぎが増えるので、 二刀流で使い分けるユーザーも多数。', size: 'xs', color: '#475569', wrap: true },
         { type: 'text', text: '1日¥64〜 (Blue) / ¥75〜 (Pink)', size: 'sm', weight: 'bold', color: '#3730a3', align: 'center', margin: 'sm' },
@@ -820,7 +820,7 @@ function build11NovemberBlueBoostFlex(): FlexContainer {
       spacing: 'md',
       contents: [
         { type: 'text', text: '11 月-12 月は飲み会が連続しがち。 「いつでも 1 包」 をバッグに入れる習慣を🌿', size: 'sm', color: '#1e293b', wrap: true },
-        { type: 'text', text: '8 成分配合 (= ウーロン茶ポリフェノール / アロエベラ / サンザシ 等)。 脂っこい食事が好きな方に。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'text', text: '9 成分配合 (= 玄米外皮・胚芽 / ウーロン茶ポリフェノール / アロエベラ / サンザシ 等)。 脂っこい食事が好きな方に。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '💡 1 ヶ月分 (30 袋) でほぼ毎晩カバー可', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
         { type: 'text', text: '1日¥64〜 / 30日分 ¥1,980', size: 'xs', color: '#475569', align: 'center' },
@@ -1109,7 +1109,7 @@ function build1JanuaryPinkFlex(): FlexContainer {
       paddingAll: '16px',
       spacing: 'md',
       contents: [
-        { type: 'text', text: '年末年始で胃腸も肌コンディションも乱れがち。 Pink は Blue + 活きた酵素で総合ケア。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: '年末年始は食事が続きがち。 Pink は Blue から玄米外皮・胚芽を除き活きた酵素を配合した全10成分。', size: 'sm', color: '#1e293b', wrap: true },
         { type: 'text', text: '🌸 新年から「自分への投資」 を始める方に', size: 'xs', weight: 'bold', color: '#9d174d', margin: 'sm' },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '1日¥75〜 / 30日分 ¥2,250', size: 'sm', weight: 'bold', color: '#9d174d', align: 'center' },
@@ -1228,7 +1228,7 @@ function build2FebruaryBlueFlex(): FlexContainer {
       contents: [{ type: 'text', text: '🩵 Blue — 甘いものの強い味方', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' }] },
     body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
       contents: [
-        { type: 'text', text: 'チョコ・ケーキ・クッキーは「砂糖+脂質」 のダブル。 Blue の 8 成分でケア。', size: 'sm', color: '#1e293b', wrap: true },
+        { type: 'text', text: 'チョコ・ケーキ・クッキーは「砂糖+脂質」 のダブル。 Blue の 9 成分でケア。', size: 'sm', color: '#1e293b', wrap: true },
         { type: 'text', text: '💡 バレンタイン期は「食後に Blue」 を意識すると気持ち的にも罪悪感少なく楽しめる', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '1日¥64〜 / 7日分お試し ¥696', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
@@ -1535,7 +1535,7 @@ function build4AprilBlueFlex(): FlexContainer {
     body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md',
       contents: [
         { type: 'text', text: '4 月は歓迎会が連続。 「飲み会の日は持ち歩く」 を習慣に。', size: 'sm', color: '#1e293b', wrap: true },
-        { type: 'text', text: '8 成分配合で脂質高めの居酒屋メニューにも◎ コース料理時に Blue 6 粒。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'text', text: '9 成分配合で脂質高めの居酒屋メニューにも◎ コース料理時に Blue 6 粒。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '💡 新生活初月の習慣化に最適タイミング', size: 'sm', weight: 'bold', color: '#0ABAB5', align: 'center' },
         { type: 'text', text: '1日¥64〜 / 30日分 ¥1,980', size: 'xs', color: '#475569', align: 'center' },
