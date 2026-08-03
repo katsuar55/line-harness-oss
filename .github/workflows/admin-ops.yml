@@ -135,6 +135,7 @@ on:
           - enable-subscription-ingest
           - disable-subscription-ingest
           - attach-custom-domain
+          - apply-faq-v4
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
         required: false
@@ -1158,3 +1159,41 @@ jobs:
             echo '⚠️ SUBSCRIPTION_MENU_ENABLED=true が別に入っている場合、収集は MENU 側で'
             echo '継続する (MENU は収集を含む)。完全停止するには MENU も落とすこと。'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # 商品ファクト系 auto_replies (違い/アレルギー/成分) を公式サイトの単一真実へ更新。
+      # auto_replies は intent-router / AI 応答より優先して返るため、ソースを直すだけでは
+      # 本番の回答が変わらない。v3 と同じ非破壊パターン (旧行 is_active=0 → 新行 INSERT)。
+      # 冪等ではない (再実行すると新行も無効化される) ので、適用済みなら skip する。
+      - name: Apply naturism FAQ v4 (product facts)
+        if: inputs.op == 'apply-faq-v4'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          APPLIED=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS n FROM auto_replies WHERE is_active=1 AND response_content LIKE '%Blue（9成分）%'")
+          if echo "$APPLIED" | grep -Eq '"n": *[1-9]'; then
+            echo '### FAQ v4: 適用済み (Blue（9成分）の行が有効) — skip' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '### FAQ v4 を適用 (違い / アレルギー / 成分)' >> "$GITHUB_STEP_SUMMARY"
+            npx wrangler d1 execute naturism-line-crm --remote \
+              --file ../../packages/db/seed-naturism-faq-v4.sql
+          fi
+
+          echo '### 検証: 対象キーワードの有効行 (件数のみ)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT keyword, COUNT(*) AS active_rows FROM auto_replies WHERE is_active=1 AND keyword IN ('違い','アレルギー','成分') GROUP BY keyword" \
+            >> "$GITHUB_STEP_SUMMARY"
+          # 撤回済み表現の残存チェック。SQLite の LIKE では % がワイルドカードなので、
+          # 「100%天然由来」のように文字列自体に % を含むパターンは使わない
+          # (誤検知するため、% を含まない一意な部分文字列で判定する)。
+          echo '### 検証: 撤回済み表現の残存 (0 であること)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT COUNT(*) AS stale FROM auto_replies WHERE is_active=1 AND (response_content LIKE '%天然由来・国内製造%' OR response_content LIKE '%天然由来成分のみ%' OR response_content LIKE '%人工甘味料%' OR response_content LIKE '%脂質カット特化%' OR response_content LIKE '%糖質カット最強%' OR response_content LIKE '%Blue（8成分）%' OR response_content LIKE '%動物性原料は一切%' OR response_content LIKE '%フォトカードキャンペーンも実施中%')" \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo '### 検証: auto_replies 以外の D1 (0 であること)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT (SELECT COUNT(*) FROM purchase_cross_sell_map WHERE reason LIKE '%8成分のシンプル定番ライン%' OR reason LIKE '%酵素360mg%' OR reason LIKE '%糖質ケア%') AS cross_sell_stale, (SELECT COUNT(*) FROM scenario_steps WHERE message_content LIKE '%成分配合%' AND message_content NOT LIKE '%9 成分配合%') AS scenario_stale, (SELECT COUNT(*) FROM nutrition_sku_map WHERE copy_template LIKE '%糖質対応%') AS nutrition_stale" \
+            >> "$GITHUB_STEP_SUMMARY"

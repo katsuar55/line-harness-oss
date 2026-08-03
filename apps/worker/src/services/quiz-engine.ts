@@ -10,7 +10,7 @@
  *   Q2        = 好きな料理ランキング (1位+2, 2位+1, 3位+1 を料理→タイプ対応で加点)
  *   Q9        = 加点なし。同点処理のみ (初めて → blue>pink>premium / それ以外 → premium>blue>pink)
  *
- * 商品情報 (Blue=8成分¥64/日, Pink=10成分¥75/日, Premium=16成分¥149/日) は
+ * 商品情報 (Blue=9成分¥64/日, Pink=10成分¥75/日, Premium=16成分¥149/日) は
  * ナレッジベース (ai-response.ts) と同期。薬機法準拠: 効能効果の断定表現なし。
  */
 
@@ -81,7 +81,7 @@ export const NATURISM_QUIZ_CONFIG: QuizConfig = {
       name: 'naturism Blue',
       emoji: '🩵',
       price: '¥64/日〜',
-      components: 8,
+      components: 9,
       reason:
         '脂っこい食事や外食が多いあなたには、黒烏龍茶で「食べたあと」をケアするブルーがぴったり。',
       storeUrl: 'https://naturism-diet.com/products/naturism-blue-180-30days',

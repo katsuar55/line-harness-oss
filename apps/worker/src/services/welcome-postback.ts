@@ -161,7 +161,7 @@ export function buildProductCompareFlex(): FlexContainer {
           type: 'box', layout: 'vertical', spacing: 'sm',
           contents: [
             { type: 'text', text: '🩵 Blue — まずはここから', size: 'sm', weight: 'bold', color: '#0ABAB5' },
-            { type: 'text', text: '脂っこい食事が好きな方に。 8 成分配合、 1日¥64〜', size: 'xs', color: '#475569', wrap: true },
+            { type: 'text', text: '脂っこい食事が好きな方に。 9 成分配合、 1日¥64〜', size: 'xs', color: '#475569', wrap: true },
           ],
         },
         { type: 'separator' },
@@ -169,7 +169,7 @@ export function buildProductCompareFlex(): FlexContainer {
           type: 'box', layout: 'vertical', spacing: 'sm',
           contents: [
             { type: 'text', text: '💗 Pink — 酵素で美容もケア', size: 'sm', weight: 'bold', color: '#1e293b' },
-            { type: 'text', text: 'Blue ＋活きた酵素配合。 美容も気になる方に。 1日¥75〜', size: 'xs', color: '#475569', wrap: true },
+            { type: 'text', text: 'Blue から玄米外皮・胚芽を除き活きた酵素を配合した全10成分。 美容も気になる方に。 1日¥75〜', size: 'xs', color: '#475569', wrap: true },
           ],
         },
         { type: 'separator' },
