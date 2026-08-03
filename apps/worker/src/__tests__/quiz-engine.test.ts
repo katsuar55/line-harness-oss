@@ -21,8 +21,8 @@ describe('Quiz Engine — naturism 商品診断 (9問版)', () => {
       q1: '揚げ物・脂っこい料理が好き', // blue2 premium2
       q2: ['中華', '焼肉', '和食'], // blue2 + blue1 + pink1
       q3: '体型を維持したい', // pink1 blue2
-      q4: 'よく便秘する・お腹が張る', // pink1 blue3 premium2
-      q5: '消化・胃もたれ・お腹周り', // blue2 premium1
+      q4: '外食・会食がとても多い', // pink1 blue3 premium2
+      q5: '食事の量が多くなりがち', // blue2 premium1
       q6: 'ほとんど食べない', // pink2
       q7: 'しっかり運動している', // pink2
       q8: 'まずは手軽に・コスパ重視', // pink1 blue2
@@ -37,8 +37,8 @@ describe('Quiz Engine — naturism 商品診断 (9問版)', () => {
       q1: 'バランスを意識', // pink2 blue1
       q2: ['和食', 'イタリアン', '中華'], // pink2 + pink1 + blue1
       q3: '美容のため', // pink1 premium2
-      q4: '快調だけど維持したい', // pink1 blue1
-      q5: '肌のハリ・ツヤ', // pink3
+      q4: '自炊中心・今の食習慣を保ちたい', // pink1 blue1
+      q5: '美容も一緒に考えたい', // pink3
       q6: 'ほとんど食べない', // pink2
       q7: 'しっかり運動している', // pink2
       q8: 'まずは手軽に・コスパ重視', // pink1 blue2
@@ -53,7 +53,7 @@ describe('Quiz Engine — naturism 商品診断 (9問版)', () => {
       q1: 'ご飯・パン・麺類が多い', // pink1 premium2
       q2: ['ラーメン／麺類', '中華', '焼肉'], // premium2 + blue1 + blue1
       q3: '体重を落としたい', // blue1 premium2
-      q4: 'たまに便秘・不規則', // blue2 premium1
+      q4: '食事の時間が不規則になりがち', // blue2 premium1
       q5: '全体的にケアしたい', // premium3
       q6: 'ほぼ毎日食べる', // blue1 premium3
       q7: 'ほとんど運動しない', // blue1 premium2

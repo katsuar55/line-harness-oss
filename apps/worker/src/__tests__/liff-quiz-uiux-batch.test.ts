@@ -35,9 +35,10 @@ function fnBlock(name: string): string {
 }
 
 describe('quiz UX batch', () => {
-  it('回答 state を sessionStorage に保存し、リロード/中断から再開できる (v2=9問版キー: 旧8問版 state を世代交代で無効化)', () => {
-    expect(pages).toContain("'quiz_state_v2'");
+  it('回答 state を sessionStorage に保存し、リロード/中断から再開できる (v3=食事シーン軸キー: 旧ラベルの保存 state を世代交代で無効化)', () => {
+    expect(pages).toContain("'quiz_state_v3'");
     expect(pages).not.toContain("'quiz_state_v1'");
+    expect(pages).not.toContain("'quiz_state_v2'");
     expect(pages).toContain('function saveQuizState(');
     expect(pages).toContain('function loadQuizState(');
     expect(pages).toContain('function clearQuizState(');

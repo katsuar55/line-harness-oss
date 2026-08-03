@@ -38,8 +38,8 @@ describe('quick-quiz — scoring rule', () => {
     expect(result.scores.premium).toBe(3 + 3 + 2 + 2); // = 10
   });
 
-  it('Pink: バランス + 美容 + 肌ハリ + アレルギー無し + 飲んだことある → Pink', () => {
-    // Q1=C (バランス +2 Pink), Q2=D (美容 +3 Pink), Q3=A (肌ハリ +3 Pink),
+  it('Pink: バランス + 美容 + 美容も一緒に + アレルギー無し + 飲んだことある → Pink', () => {
+    // Q1=C (バランス +2 Pink), Q2=D (美容 +3 Pink), Q3=A (美容も一緒に考えたい +3 Pink),
     // Q4=B, Q5=B (飲んだことある +1 Pink +1 Premium)
     const result = scoreQuickQuiz('CDABB');
     expect(result.recommended).toBe('Pink');
@@ -47,7 +47,7 @@ describe('quick-quiz — scoring rule', () => {
   });
 
   it('allergy A forces Blue regardless of other scores', () => {
-    // Q1=C (バランス +2 Pink), Q2=D (美容 +3 Pink), Q3=A (肌ハリ +3 Pink),
+    // Q1=C (バランス +2 Pink), Q2=D (美容 +3 Pink), Q3=A (美容も一緒に考えたい +3 Pink),
     // Q4=A (アレルギーあり → 強制 Blue), Q5=B (飲んだ +1 Pink +1 Premium)
     const result = scoreQuickQuiz('CDAAB');
     expect(result.recommended).toBe('Blue');

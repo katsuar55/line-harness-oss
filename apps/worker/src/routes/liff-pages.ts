@@ -4155,15 +4155,15 @@ var QUIZ_QUESTIONS = [
     { label: '健康のため', pts: { pink: 1, blue: 0, premium: 2 } },
     { label: '美容のため', pts: { pink: 1, blue: 0, premium: 2 } },
   ]},
-  { id: 'q4', text: 'Q4. お通じ・お腹の悩みは?', kind: 'single', options: [
-    { label: 'よく便秘する・お腹が張る', pts: { pink: 1, blue: 3, premium: 2 } },
-    { label: 'たまに便秘・不規則', pts: { pink: 0, blue: 2, premium: 1 } },
-    { label: '快調だけど維持したい', pts: { pink: 1, blue: 1, premium: 0 } },
+  { id: 'q4', text: 'Q4. 食事のリズムで当てはまるのは?', kind: 'single', options: [
+    { label: '外食・会食がとても多い', pts: { pink: 1, blue: 3, premium: 2 } },
+    { label: '食事の時間が不規則になりがち', pts: { pink: 0, blue: 2, premium: 1 } },
+    { label: '自炊中心・今の食習慣を保ちたい', pts: { pink: 1, blue: 1, premium: 0 } },
     { label: '特に悩みはない', pts: { pink: 1, blue: 0, premium: 0 } },
   ]},
-  { id: 'q5', text: 'Q5. 美容・体で一番気になるのは?', kind: 'single', options: [
-    { label: '肌のハリ・ツヤ', pts: { pink: 3, blue: 0, premium: 0 } },
-    { label: '消化・胃もたれ・お腹周り', pts: { pink: 0, blue: 2, premium: 1 } },
+  { id: 'q5', text: 'Q5. 続けるうえで重視したいのは?', kind: 'single', options: [
+    { label: '美容も一緒に考えたい', pts: { pink: 3, blue: 0, premium: 0 } },
+    { label: '食事の量が多くなりがち', pts: { pink: 0, blue: 2, premium: 1 } },
     { label: '全体的にケアしたい', pts: { pink: 0, blue: 0, premium: 3 } },
     { label: '特になし', pts: { pink: 1, blue: 0, premium: 0 } },
   ]},
@@ -4195,7 +4195,7 @@ var QUIZ_Q2_CUISINE = { '和食': 'pink', 'イタリアン': 'pink', '中華': '
 var QUIZ_Q2_RANK_PTS = [2, 1, 1]; /* 1位, 2位, 3位 */
 
 var QUIZ_PRODUCTS = {
-  blue: { name: 'naturism Blue', desc: '脂っこい食事やお通じの悩みが気になるあなたには、黒烏龍茶で「食べたあと」をケアするブルーがぴったり。', storeUrl: 'https://naturism-diet.com/products/naturism-blue-180-30days', compareUrl: 'https://naturism-diet.com/pages/compare#nxcp-blue' },
+  blue: { name: 'naturism Blue', desc: '脂っこい食事や外食が多いあなたには、黒烏龍茶で「食べたあと」をケアするブルーがぴったり。', storeUrl: 'https://naturism-diet.com/products/naturism-blue-180-30days', compareUrl: 'https://naturism-diet.com/pages/compare#nxcp-blue' },
   pink: { name: 'KOSO in naturism Pink', desc: '美容やバランスを大切にするあなたには、酵素で内側からととのえるピンクがぴったり。', storeUrl: 'https://naturism-diet.com/products/koso-in-naturism-pink-180-30days', compareUrl: 'https://naturism-diet.com/pages/compare#nxcp-pink' },
   premium: { name: 'naturism Premium', desc: '糖質も脂質もしっかりケアして結果を出したいあなたには、トータルケアのプレミアムがぴったり。', storeUrl: 'https://naturism-diet.com/products/naturism-premium-180-20days', compareUrl: 'https://naturism-diet.com/pages/compare#nxcp-premium' },
 };
@@ -4207,7 +4207,9 @@ var quizAdvanceTimer = null;
 
 // 中断・誤リロードしても途中から再開できるように sessionStorage へ保存。
 // v2 = 9問版 (q2 は配列)。旧 v1 (8問版) とは形が違うためキーごと世代交代して無効化。
-var QUIZ_STATE_KEY = 'quiz_state_v2';
+// v3 = 2026-08-03 Q4/Q5 食事シーン軸へ文言改定。旧ラベルの保存回答が新configに不一致で
+//      無音0点になるのを防ぐためキーごと世代交代。
+var QUIZ_STATE_KEY = 'quiz_state_v3';
 function saveQuizState() {
   try { sessionStorage.setItem(QUIZ_STATE_KEY, JSON.stringify({ step: quizCurrentStep, answers: quizAnswers })); } catch (e) { /* private mode 等 */ }
 }

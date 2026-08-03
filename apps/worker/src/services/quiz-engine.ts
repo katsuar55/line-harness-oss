@@ -83,7 +83,7 @@ export const NATURISM_QUIZ_CONFIG: QuizConfig = {
       price: '¥64/日〜',
       components: 8,
       reason:
-        '脂っこい食事やお通じの悩みが気になるあなたには、黒烏龍茶で「食べたあと」をケアするブルーがぴったり。',
+        '脂っこい食事や外食が多いあなたには、黒烏龍茶で「食べたあと」をケアするブルーがぴったり。',
       storeUrl: 'https://naturism-diet.com/products/naturism-blue-180-30days',
       compareUrl: 'https://naturism-diet.com/pages/compare#nxcp-blue',
     },
@@ -141,22 +141,22 @@ export const NATURISM_QUIZ_CONFIG: QuizConfig = {
     },
     {
       id: 'q4',
-      text: 'Q4. お通じ・お腹の悩みは?',
+      text: 'Q4. 食事のリズムで当てはまるのは?',
       kind: 'single',
       options: [
-        { label: 'よく便秘する・お腹が張る', pts: { pink: 1, blue: 3, premium: 2 } },
-        { label: 'たまに便秘・不規則', pts: { pink: 0, blue: 2, premium: 1 } },
-        { label: '快調だけど維持したい', pts: { pink: 1, blue: 1, premium: 0 } },
+        { label: '外食・会食がとても多い', pts: { pink: 1, blue: 3, premium: 2 } },
+        { label: '食事の時間が不規則になりがち', pts: { pink: 0, blue: 2, premium: 1 } },
+        { label: '自炊中心・今の食習慣を保ちたい', pts: { pink: 1, blue: 1, premium: 0 } },
         { label: '特に悩みはない', pts: { pink: 1, blue: 0, premium: 0 } },
       ],
     },
     {
       id: 'q5',
-      text: 'Q5. 美容・体で一番気になるのは?',
+      text: 'Q5. 続けるうえで重視したいのは?',
       kind: 'single',
       options: [
-        { label: '肌のハリ・ツヤ', pts: { pink: 3, blue: 0, premium: 0 } },
-        { label: '消化・胃もたれ・お腹周り', pts: { pink: 0, blue: 2, premium: 1 } },
+        { label: '美容も一緒に考えたい', pts: { pink: 3, blue: 0, premium: 0 } },
+        { label: '食事の量が多くなりがち', pts: { pink: 0, blue: 2, premium: 1 } },
         { label: '全体的にケアしたい', pts: { pink: 0, blue: 0, premium: 3 } },
         { label: '特になし', pts: { pink: 1, blue: 0, premium: 0 } },
       ],
