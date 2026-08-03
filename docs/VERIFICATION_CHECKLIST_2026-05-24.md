@@ -32,7 +32,7 @@
 1. **step 1**: 招待 flex (`🌿 あなたにぴったり診断` header + 「診断スタート ▶」 button)
 2. button tap → **step 2 (Q1)**: 「Q1. 普段の食事の傾向は?」 flex + 4 button (= 揚げ物 / 炭水化物 / バランス / 外食)
 3. button tap → **step 3 (Q2)**: 「Q2. 体型管理の目標は?」 flex + 4 button
-4. button tap → **step 4 (Q3)**: 「Q3. 美容で気になることは?」 flex + 4 button
+4. button tap → **step 4 (Q3)**: 「Q3. 続けるうえで重視したいのは?」 flex + 4 button (※2026-08-03 文言改定。当時は「Q3. 美容で気になることは?」)
 5. button tap → **step 5 (Q4)**: 「Q4. アレルギーで気になるものは?」 flex + 2 button
 6. button tap → **step 6 (Q5)**: 「Q5. naturism を試すのは?」 flex + 3 button
 7. button tap → **step 7 (結果)**: 「🎁 あなたへのおすすめ」 flex + 推奨商品 (🩵 Blue / 💗 Pink / 🩶 Premium) + 公式ストア button + 「AI に詳しく聞く」 button

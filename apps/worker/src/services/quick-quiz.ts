@@ -65,10 +65,10 @@ export const QUICK_QUIZ_QUESTIONS: ReadonlyArray<QuickQuizQuestion> = [
   },
   {
     id: 3,
-    text: 'Q3. 美容で気になることは?',
+    text: 'Q3. 続けるうえで重視したいのは?',
     options: [
-      { letter: 'A', label: '肌のハリ・ツヤ' },
-      { letter: 'B', label: '消化・胃もたれ' },
+      { letter: 'A', label: '美容も一緒に考えたい' },
+      { letter: 'B', label: '食事のバランスを意識したい' },
       { letter: 'C', label: '全体ケア' },
       { letter: 'D', label: '特になし' },
     ],
@@ -243,7 +243,7 @@ export function buildQuickQuizInviteFlex(): FlexContainer {
       spacing: 'md',
       contents: [
         { type: 'text', text: '5 つの質問で 30 秒で診断できます💚', size: 'sm', color: '#1e293b', wrap: true },
-        { type: 'text', text: '食生活 / 体型 / 美容 / アレルギー / 経験 から、 あなたに最適な naturism を提案します。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
+        { type: 'text', text: '食生活 / 体型 / 重視したいこと / アレルギー / 経験 から、 あなたに最適な naturism を提案します。', size: 'xs', color: '#475569', wrap: true, margin: 'sm' },
       ],
     },
     footer: {

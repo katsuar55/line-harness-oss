@@ -27,7 +27,26 @@ describe('診断クイズ 商品コピー 薬機法ガード (非届出商品の
 
   it('対象者ベースの安全表現になっている (liff-pages の Blue desc = 本サイト9問版と同一コピー)', () => {
     const src = readFileSync(FILES[0], 'utf8');
-    // 2026-07-29: 本サイト SELF CHECK (nx-lineup-v2.js LINE_META) と同一の対象者ベース表現
-    expect(src).toContain('脂っこい食事やお通じの悩みが気になるあなたには');
+    // 2026-08-03: 本サイト側 (nx-lineup-v2.js) の食事シーン軸コピーと同一の対象者ベース表現
+    expect(src).toContain('脂っこい食事や外食が多いあなたには');
+  });
+
+  // 2026-08-03 (本サイト c74415e ミラー): 症状に配点して一般食品(Blue/Pink)を推奨する構造は
+  // 医薬品的効能効果の示唆に当たるため、診断系ソースから症状語を排除した状態を固定する。
+  // (体調記録日記の「お通じ」等セルフトラッキングUIは推奨に繋がらないため対象外 = 語を限定)
+  it.each(FILES)('%s は症状語(便秘/胃もたれ/肌のハリ)に配点しない', (file) => {
+    const src = readFileSync(file, 'utf8');
+    for (const word of ['便秘', '胃もたれ', '肌のハリ']) {
+      expect(src).not.toContain(word);
+    }
+  });
+
+  // 診断サービス側2ファイルは日記UIを含まないため、より広い症状語彙で固定できる
+  // (liff-pages.ts は体調記録日記に「お通じ」等の自己記録ラベルがあるため対象外)
+  it.each([FILES[1], FILES[2]])('%s は広義の症状語(お通じ/お腹が張る/快調/消化/整腸)も含まない', (file) => {
+    const src = readFileSync(file, 'utf8');
+    for (const word of ['お通じ', 'お腹が張る', '快調', '消化', '整腸']) {
+      expect(src).not.toContain(word);
+    }
   });
 });
