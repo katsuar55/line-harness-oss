@@ -15,7 +15,8 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
 import { getFriendCouponConfig } from '../services/friend-coupon-config.js';
-import { listUnansweredQuestions, jstIsoDaysAgo } from '@line-crm/db';
+import { auditAdminAction } from '../services/admin-audit.js';
+import { listUnansweredQuestions, jstIsoDaysAgo, jstNow } from '@line-crm/db';
 
 export const adminDashboard = new Hono<Env>();
 
@@ -83,27 +84,98 @@ adminDashboard.get('/api/admin/dashboard', async (c) => {
   });
 
   const ai7d = await section('ai7d', async () => {
+    // ngWords = 薬機法 NG 語で表現がブロックされた件数。NG ブロック行は ai_layer='ai' の
+    // まま記録されるため、fallback だけを「要改善」と数えると実態より良く見える
+    // (機能性表示食品ブランドで唯一の法務指標がどこにも表示されていなかった)
     const row = await db
       .prepare(
         `SELECT COUNT(*) AS total,
-                SUM(CASE WHEN ai_layer = 'fallback' THEN 1 ELSE 0 END) AS fallback
+                SUM(CASE WHEN ai_layer = 'fallback' THEN 1 ELSE 0 END) AS fallback,
+                SUM(CASE WHEN ng_words_detected IS NOT NULL THEN 1 ELSE 0 END) AS ngWords
            FROM conversation_logs WHERE created_at >= ?`,
       )
       .bind(since7d)
-      .first<{ total: number; fallback: number }>();
+      .first<{ total: number; fallback: number; ngWords: number }>();
     return row;
   });
 
   const friendCoupon = await section('friendCoupon', async () => {
     const cfg = await getFriendCouponConfig(db);
-    return { enabled: !!cfg.enabled, percent: cfg.percent ?? null, label: cfg.label ?? null };
+    // codeSet: 顧客側 (liff-portal) は enabled でも code が空なら非表示にする。
+    // /admin が enabled だけ見て「表示中」と言うと、コード未設定のとき嘘になる
+    return {
+      enabled: !!cfg.enabled,
+      percent: cfg.percent ?? null,
+      label: cfg.label ?? null,
+      codeSet: !!cfg.code,
+    };
+  });
+
+  // 人間の確認が必要なキュー。返信そのものは LINE公式アカウントマネージャーが
+  // 本来の面 (apps/web にも /chats がある) なので、ここは件数と導線だけを出す。
+  //
+  // ⚠️ 計数の実体に注意 (採点で確定した2つの嘘を塞いだ):
+  //   - 'unread' は webhook が **AI 応答より前に** 全ての自発メッセージへ立てる
+  //     (AI が完答した分も含む) = 「AI が答えられなかった件数」ではなく
+  //     「スタッフがまだ確認していないメッセージ」。ラベルはこの実体に合わせること
+  //   - LINE公式マネージャーで返信しても D1 の status は変わらない (Manager は D1 を知らない)。
+  //     解除経路が無いと警告が永久残留して狼少年化するため、下の mark-resolved を対で設ける
+  const chats = await section('chats', async () => {
+    const row = await db
+      .prepare(
+        `SELECT COUNT(*) AS unread, MIN(last_message_at) AS oldestAt
+           FROM chats WHERE status = 'unread'`,
+      )
+      .first<{ unread: number; oldestAt: string | null }>();
+    return row;
   });
 
   const system = await section('system', async () => {
     const row = await db
       .prepare(`SELECT MAX(ran_at) AS lastCronAt FROM cron_run_logs`)
       .first<{ lastCronAt: string | null }>();
-    return { lastCronAt: row?.lastCronAt ?? null };
+    // MAX(ran_at) だけだと per-tick job が 1 本でも生きていれば全体が緑に見える
+    // (27 本中 26 本死んでいても「たった今 ✅」)。job 別の失敗を直近24hで拾う
+    const failing = await db
+      .prepare(
+        `SELECT job_name AS jobName, COUNT(*) AS n, MAX(ran_at) AS lastAt
+           FROM cron_run_logs
+          WHERE ran_at >= ? AND status IN ('error', 'partial')
+          GROUP BY job_name ORDER BY n DESC LIMIT 10`,
+      )
+      .bind(jstIsoDaysAgo(1, Date.now()))
+      .all<{ jobName: string; n: number; lastAt: string }>();
+    return { lastCronAt: row?.lastCronAt ?? null, failingJobs: failing.results };
+  });
+
+  // サブスク収集の実測。secret (gate) の値だけを見た表示だと、TEIKI_FLOW_SECRET 不一致で
+  // 全受信が 401 でも「稼働中」と出続ける。実測値 (契約行数 / Flow 実測件数 / 最終受信) を
+  // 併記して「収集が本当に動いているか」を見えるようにする。
+  // subscription_contracts が未作成の環境では section try/catch が null に落とす (部分表示 > 全損)
+  const subscriptionIngest = await section('subscriptionIngest', async () => {
+    const contracts = await db
+      .prepare(
+        `SELECT COUNT(*) AS total,
+                SUM(CASE WHEN cancelled_at IS NULL AND paused_at IS NULL THEN 1 ELSE 0 END) AS active,
+                SUM(CASE WHEN cancelled_at IS NULL AND paused_at IS NULL
+                          AND estimate_source = 'flow' AND next_billing_estimate IS NOT NULL
+                     THEN 1 ELSE 0 END) AS flowMeasured
+           FROM subscription_contracts`,
+      )
+      .first<{ total: number; active: number; flowMeasured: number }>();
+    // 実測の最終受信 (teiki-flow-ingest の success = 実測を1件取り込んだ記録)
+    const lastIngest = await db
+      .prepare(
+        `SELECT MAX(ran_at) AS lastAt FROM cron_run_logs
+          WHERE job_name = 'teiki-flow-ingest' AND status = 'success'`,
+      )
+      .first<{ lastAt: string | null }>();
+    return {
+      total: contracts?.total ?? 0,
+      active: contracts?.active ?? 0,
+      flowMeasured: contracts?.flowMeasured ?? 0,
+      lastMeasuredAt: lastIngest?.lastAt ?? null,
+    };
   });
 
   // 機能ステータス行 (ラベル込みでサーバ側から返す — 未公開機能のロードマップを
@@ -118,20 +190,47 @@ adminDashboard.get('/api/admin/dashboard', async (c) => {
     { label: 'トーク内サブスク管理カード', on: on(c.env.SUBSCRIPTION_MENU_ENABLED), offText: '近日公開 — 案内NG' },
     // 収集は顧客から見えない準備工程 (定期便の契約データを裏で貯めている状態)。
     // 「公開されたのか」と誤読されないよう、ラベルと offText の両方で内部工程と分かるようにする。
+    // dynamic: 実測値 (subscriptionIngest section) を client 側で併記する
     {
       label: '(準備) 定期便データの収集',
       on: on(c.env.SUBSCRIPTION_INGEST_ENABLED) || on(c.env.SUBSCRIPTION_MENU_ENABLED),
       offText: '停止中 — 顧客影響なし',
+      dynamic: 'subscriptionIngest',
     },
     { label: 'サブスク決済 7日前リマインド', on: on(c.env.SUBSCRIPTION_REMINDER_ENABLED), offText: '近日公開 — 案内NG' },
   ];
 
   return c.json({
     success: true,
-    data: { friends, welcomeCoupons, faq, ai7d, friendCoupon, system, features,
+    data: { friends, welcomeCoupons, faq, ai7d, friendCoupon, chats, subscriptionIngest, system, features,
       generatedAt: new Date(Date.now() + 9 * 3600_000).toISOString().replace('Z', '+09:00'),
       ...(Object.keys(errors).length > 0 ? { sectionErrors: errors } : {}) },
   });
+});
+
+// ─── 未確認メッセージの一括「確認済み」化 (API_KEY 保護) ───
+// LINE公式マネージャーでの返信は D1 に反映されないため、確認フローの終点として
+// スタッフ自身が押す。対象は 'unread' のみ ('in_progress' = apps/web で対応中の行は触らない)。
+// 新しいメッセージが届けば upsertChatOnMessage が 'resolved' → 'unread' に戻す = 再表示される。
+adminDashboard.post('/api/admin/chats/mark-resolved', async (c) => {
+  try {
+    const result = await c.env.DB.prepare(
+      `UPDATE chats SET status = 'resolved', updated_at = ? WHERE status = 'unread'`,
+    )
+      .bind(jstNow())
+      .run();
+    const resolved = result.meta?.changes ?? 0;
+    // 「誰がいつ確認済みにしたか」を残す (問い合わせの取りこぼし調査で使う)
+    await auditAdminAction(c, {
+      action: 'admin.chats.mark_all_resolved',
+      targetType: 'chats',
+      after: { resolved },
+    });
+    return c.json({ success: true, data: { resolved } });
+  } catch (err) {
+    console.error('POST /api/admin/chats/mark-resolved error:', err);
+    return c.json({ success: false, error: 'internal error' }, 500);
+  }
 });
 
 // ─── ダッシュボード ページ (公開 shell。実データは上記 API_KEY 保護 API 経由) ───
@@ -210,6 +309,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="stat"><div class="k">アカウント連携済み</div><div class="v skeleton" id="v-linked">—</div><div class="s">ランク判定の対象</div></div>
     <div class="stat"><div class="k">AI対応 (7日)</div><div class="v skeleton" id="v-ai">—</div><div class="s" id="s-ai">自動応答の件数</div></div>
     <div class="stat"><div class="k">FAQ</div><div class="v skeleton" id="v-faq">—</div><div class="s" id="s-faq">有効な質問数</div></div>
+    <div class="stat"><div class="k">スタッフ未確認のメッセージ</div><div class="v skeleton" id="v-chats">—</div><div class="s" id="s-chats">AI の自動応答分も含みます</div></div>
   </div>
 
   <h2>✅ やること</h2>
@@ -224,7 +324,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <a class="link" href="https://manager.line.biz/" target="_blank" rel="noopener"><div class="t">LINE公式アカウントマネージャー ↗</div><div class="d">1:1 チャットの手動返信・友だち数の公式統計</div></a>
     <a class="link" href="https://admin.shopify.com/store/xn-0ckn0a9fxa4a" target="_blank" rel="noopener"><div class="t">Shopify 管理画面 ↗</div><div class="d">注文・顧客・在庫・割引コードの作成</div></a>
     <a class="link" href="https://liff.line.me/2009713578-NbdHyFZf" target="_blank" rel="noopener"><div class="t">お客様ポータル (LIFF) ↗</div><div class="d">お客様が見ているマイページを確認する</div></a>
-    <a class="link" href="https://naturism-diet.com/apps/subscription" target="_blank" rel="noopener"><div class="t">定期便マイページ ↗</div><div class="d">サブスクのお客様を案内する先 (メール+6桁コードでログイン)</div></a>
+    <a class="link" href="https://naturism-diet.com/account" target="_blank" rel="noopener"><div class="t">定期便マイページ ↗</div><div class="d">サブスクのお客様を案内する先 (メール+6桁コードでログイン)。/apps/subscription は 400 になるので案内しない</div></a>
   </div>
 
   <h2>🚦 機能の公開状態</h2>
@@ -235,7 +335,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
   <h2>🛠 システム</h2>
   <div class="card" style="font-size:13px">
-    自動処理 (5分ごと) の最終稼働: <strong id="v-cron" class="skeleton">—</strong><br>
+    自動処理 (5分ごと) の最終稼働: <strong id="v-cron" class="skeleton">—</strong>
+    <div id="cron-fail"></div>
     <span class="hint">1時間以上前の場合はシステム異常の可能性 — 開発者に連絡してください。ポータル障害時の一次確認: <a href="/" target="_blank">トップページ</a> が表示されるか。</span>
   </div>
 
@@ -250,6 +351,23 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <script>
   var $ = function(id){ return document.getElementById(id); };
   var KEY = 'lh_admin_apikey';
+  var lastUnread = 0;
+  // onclick 属性から呼ぶため名前付き関数 (引用符ネスト禁止ルール)。
+  // 対象は unread のみ・新着が来れば自動で未確認へ戻るため、押しても情報は失われない
+  function resolveChats(){
+    var k = $('apikey').value.trim();
+    if(!k){ setStatus('管理APIキーを入力してください', false); return; }
+    if(!window.confirm('LINE公式アカウントマネージャーでの内容確認 (必要な返信) は済みましたか？\\n\\n未確認 ' + lastUnread + ' 件を「確認済み」にします。新しいメッセージが届けば、また未確認として表示されます。')) return;
+    setStatus('確認済みに更新中…', true);
+    fetch('/api/admin/chats/mark-resolved', { method: 'POST', headers: { 'Authorization': 'Bearer ' + k } })
+      .then(function(r){ if(!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(j){
+        var n = (j.data && j.data.resolved) || 0;
+        setStatus('✅ ' + n + ' 件を確認済みにしました', true);
+        load();
+      })
+      .catch(function(e){ setStatus('更新失敗: ' + e.message, false); });
+  }
   // 旧ページで保存済みのキーがあれば引き継ぐ
   $('apikey').value = localStorage.getItem(KEY) || localStorage.getItem('faq_admin_apikey') || localStorage.getItem('fc_admin_apikey') || '';
   function setStatus(msg, ok){ var s=$('status'); s.textContent=msg; s.className= ok?'ok':'err'; }
@@ -295,8 +413,20 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     $(valueId).textContent = '—';
     if(subId) $(subId).textContent = '取得できませんでした';
   }
+  // JST 保存の日時文字列 (タイムゾーン表記なし) を相対表記に。解釈不能なら null
+  function fmtAgo(s){
+    if(!s) return null;
+    var t = new Date(String(s) + (String(s).indexOf('+') < 0 ? '+09:00' : ''));
+    if(isNaN(t.getTime())) return null;
+    var mins = Math.round((Date.now() - t.getTime()) / 60000);
+    if(mins < 60) return (mins <= 1 ? 'たった今' : mins + ' 分前');
+    var hours = Math.floor(mins / 60);
+    if(hours < 24) return hours + ' 時間前';
+    return Math.floor(hours / 24) + ' 日前';
+  }
   function render(d){
     var f = d.friends, w = d.welcomeCoupons, faq = d.faq, ai = d.ai7d, fc = d.friendCoupon, sys = d.system;
+    var ch = d.chats, sub = d.subscriptionIngest;
     if(f){ $('v-following').textContent = Number(f.following||0).toLocaleString(); $('v-following').classList.remove('skeleton');
       $('s-friends').textContent = '累計 ' + Number(f.total||0).toLocaleString() + ' ・ ブロック ' + Number(f.blocked||0).toLocaleString();
       $('v-new7d').textContent = '+' + Number(f.new7d||0).toLocaleString(); $('v-new7d').classList.remove('skeleton');
@@ -306,49 +436,99 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       $('s-coupon').textContent = '発行数 (利用 ' + Number(w.redeemed||0).toLocaleString() + ' ・ 今週 +' + Number(w.issued7d||0) + ')';
     } else { markFailed('v-coupon','s-coupon'); }
     if(ai){ $('v-ai').textContent = Number(ai.total||0).toLocaleString(); $('v-ai').classList.remove('skeleton');
-      $('s-ai').textContent = 'うち要改善 (答えられず) ' + Number(ai.fallback||0) + ' 件';
+      $('s-ai').textContent = '要改善: 答えられず ' + Number(ai.fallback||0) + ' ・ 表現ブロック ' + Number(ai.ngWords||0) + ' 件';
     } else { markFailed('v-ai','s-ai'); }
     if(faq){ $('v-faq').textContent = Number(faq.activeCount||0).toLocaleString(); $('v-faq').classList.remove('skeleton');
       $('s-faq').textContent = '有効な質問数';
     } else { markFailed('v-faq','s-faq'); }
-    // やること (faq と friendCoupon の両方が取得できたときだけ「なし🎉」を出す)
+    if(ch){
+      var unread = Number(ch.unread||0);
+      lastUnread = unread;
+      $('v-chats').textContent = unread.toLocaleString(); $('v-chats').classList.remove('skeleton');
+      var oldest = fmtAgo(ch.oldestAt);
+      $('s-chats').textContent = unread > 0
+        ? ('最も古いもので ' + (oldest || '不明') + ' — 内容は LINE公式マネージャーで確認')
+        : 'すべて確認済みです 🎉';
+    } else { markFailed('v-chats','s-chats'); }
+    // やること (chats / faq / friendCoupon が全て取得できたときだけ「なし🎉」を出す)
     var todos = [];
+    if(ch && Number(ch.unread) > 0){
+      var chAge = fmtAgo(ch.oldestAt);
+      // AI が完答した分も含む (unread は AI 応答より前に立つ)。「未対応」と書くと
+      // 実体 (スタッフ未確認) より悪く見えるので、文言は実体に合わせる。
+      // 確認フローの終点として「確認済みにする」ボタンを必ず対で置く — これが無いと
+      // LINE公式マネージャーで返信しても数字が永久に減らず、警告が狼少年化する
+      todos.push('<div class="todo warn">スタッフ未確認のお客様メッセージが <strong>' + Number(ch.unread) + ' 件</strong>'
+        + (chAge ? '（最も古いもので ' + esc(chAge) + '）' : '') + 'あります。AI が自動応答した分も含みます。<br>'
+        + '① <a href="https://manager.line.biz/" target="_blank" rel="noopener">LINE公式アカウントマネージャーで内容を確認・必要なら返信 ↗</a><br>'
+        + '② 確認が済んだら → <button onclick="resolveChats()" style="padding:6px 14px;font-size:13px">全件を確認済みにする</button></div>');
+    }
     if(faq && faq.unansweredTop && faq.unansweredTop.length){
       var top = faq.unansweredTop.map(function(q){ return '「' + esc(String(q.question).slice(0,30)) + '」(' + Number(q.count) + '回)'; }).join(' ');
       todos.push('<div class="todo warn">AI が答えられなかった質問があります: ' + top + ' → <a href="/admin/faq">FAQ 管理で回答を作る</a></div>');
     }
     if(fc){
-      todos.push(fc.enabled
-        ? '<div class="todo">友だち限定クーポンは <strong>表示中 (' + esc(fc.percent) + '%OFF)</strong> です。キャンペーン終了時は <a href="/admin/friend-coupon">設定画面</a> で OFF に。</div>'
-        : '<div class="todo">友だち限定クーポンは現在 OFF です。キャンペーンを始めるときは <a href="/admin/friend-coupon">設定画面</a> から。</div>');
+      if(fc.enabled && !fc.codeSet){
+        // 顧客側は code 未設定なら非表示にする — ON なのに出ていない状態を放置させない
+        todos.push('<div class="todo warn">友だち限定クーポンは ON ですが、Shopify 割引コードが未設定のため<strong>お客様には表示されていません</strong> → <a href="/admin/friend-coupon">設定画面でコードを入力</a></div>');
+      } else if(fc.enabled){
+        todos.push('<div class="todo">友だち限定クーポンは <strong>表示中 (' + esc(fc.percent) + '%OFF)</strong> です。キャンペーン終了時は <a href="/admin/friend-coupon">設定画面</a> で OFF に。</div>');
+      } else {
+        todos.push('<div class="todo">友だち限定クーポンは現在 OFF です。キャンペーンを始めるときは <a href="/admin/friend-coupon">設定画面</a> から。</div>');
+      }
     }
-    if(!todos.length && faq && fc) todos.push('<div class="todo">今やるべきことはありません 🎉</div>');
+    if(!todos.length && faq && fc && ch) todos.push('<div class="todo">今やるべきことはありません 🎉</div>');
     if(!todos.length) todos.push('<div class="todo warn">一部の情報が取得できていません。再読み込みしても続く場合は開発者に連絡してください。</div>');
     $('todos').innerHTML = todos.join('');
     // 機能ステータス (行はサーバから受信 — 公開 shell には埋め込まない)
     if(Array.isArray(d.features)){
       var rows = d.features.map(function(row){
-        var pillHtml;
+        var pillHtml, detail = '';
         if(row.dynamic === 'friendCoupon' && !fc){
           // 状態不明 (section 取得失敗) を断定 OFF と区別する
           pillHtml = '<span class="pill off">取得できませんでした</span>';
+        } else if(row.dynamic === 'friendCoupon'){
+          // 顧客側の実際の表示条件 (enabled かつ code あり) と同じ判定にする —
+          // enabled だけ見て「表示中」と言うと、コード未設定のとき嘘になる
+          var fcLive = !!(fc.enabled && fc.codeSet);
+          var fcOff = (fc.enabled && !fc.codeSet) ? 'コード未設定 — お客様には非表示' : 'OFF (いつでもONにできます)';
+          pillHtml = fcLive ? '<span class="pill on">表示中</span>' : '<span class="pill off">' + esc(fcOff) + '</span>';
+        } else if(row.dynamic === 'subscriptionIngest' && !sub){
+          // 実測 section の取得失敗を gate だけの緑に落とさない — それでは
+          // 「secret の値しか見ないので 401 全滅でも緑」という、この行を作った理由そのものが復活する
+          pillHtml = '<span class="pill off">取得できませんでした</span>';
         } else {
-          var isOn = row.dynamic === 'friendCoupon' ? !!(fc && fc.enabled) : !!row.on;
-          var onText = row.dynamic === 'friendCoupon' ? '表示中' : '稼働中';
-          var offText = row.dynamic === 'friendCoupon' ? 'OFF (いつでもONにできます)' : (row.offText || '未公開');
-          pillHtml = isOn ? '<span class="pill on">' + esc(onText) + '</span>' : '<span class="pill off">' + esc(offText) + '</span>';
+          pillHtml = row.on ? '<span class="pill on">稼働中</span>' : '<span class="pill off">' + esc(row.offText || '未公開') + '</span>';
+          if(row.dynamic === 'subscriptionIngest'){
+            // gate の値だけでなく実測を併記 — 収集が「本当に」動いているかはここで見る。
+            // 実測日付あり > 0 なのに最終受信が取れないのは cron_run_logs の保持期限切れ
+            // (受信していない証拠ではない) なので「まだなし」とは言わない
+            var lastM = fmtAgo(sub.lastMeasuredAt);
+            var lastMText = lastM ? esc(lastM) : (Number(sub.flowMeasured||0) > 0 ? '30日以上前' : 'まだなし');
+            detail = '<div class="hint">契約 ' + Number(sub.active||0) + ' 件 ・ 実測日付あり ' + Number(sub.flowMeasured||0)
+              + ' 件 ・ 実測の最終受信 ' + lastMText + '</div>';
+          }
         }
-        return '<tr><td>' + esc(row.label) + '</td><td>' + pillHtml + '</td></tr>';
+        return '<tr><td>' + esc(row.label) + detail + '</td><td>' + pillHtml + '</td></tr>';
       });
       $('features').innerHTML = rows.join('');
     }
-    // cron
+    // cron: 最終稼働 (生存) と job 別の失敗 (品質) を別々に出す —
+    // MAX(ran_at) は 1 本でも生きていれば緑になるので、失敗の検出には使えない
     if(sys && sys.lastCronAt){
       var t = new Date(sys.lastCronAt + (String(sys.lastCronAt).indexOf('+')<0 ? '+09:00' : ''));
       var mins = Math.round((Date.now() - t.getTime())/60000);
       $('v-cron').textContent = (mins <= 1 ? 'たった今' : mins + ' 分前') + (mins > 60 ? ' ⚠️' : ' ✅');
       $('v-cron').classList.remove('skeleton');
     } else { $('v-cron').textContent = '取得できませんでした'; }
+    if(sys && Array.isArray(sys.failingJobs) && sys.failingJobs.length){
+      var jobs = sys.failingJobs.map(function(j){
+        return esc(j.jobName) + ' (' + Number(j.n) + '件' + (fmtAgo(j.lastAt) ? '・直近 ' + esc(fmtAgo(j.lastAt)) : '') + ')';
+      }).join('、 ');
+      $('cron-fail').innerHTML = '<div class="todo warn" style="margin:8px 0">⚠️ 24時間以内に失敗した自動処理: ' + jobs + ' — この表示が続く場合は開発者に連絡してください</div>';
+    } else {
+      $('cron-fail').innerHTML = '';
+    }
   }
   $('logout').addEventListener('click', function(){
     if(!window.confirm('この端末に保存されたキーを消します。次に使うときは再度貼り付けが必要です。よろしいですか？')) return;
