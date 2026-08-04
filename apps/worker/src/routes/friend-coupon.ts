@@ -133,12 +133,30 @@ const ADMIN_PAGE_HTML = `<!DOCTYPE html>
     $('save').addEventListener('click', function(){
       var k=$('apikey').value.trim(); if(!k){ setStatus('APIキーを入力してください', false); return; }
       var body = { enabled: $('enabled').checked, percent: Number($('percent').value), code: $('code').value.trim(), label: $('label').value.trim(), note: $('note').value };
+      // 保存は友だち全員 (約6,600人) のポータル表示に即反映される。誤タップ1回で
+      // 実際の割引率と違う表示 (有利誤認) を公開しうるため、送信前に必ず確認を挟む。
+      // 他の破壊的操作 (スタッフ削除 / FAQ 削除) には confirm があり、ここだけ無かった。
+      // ⚠️ 顧客側は「ON かつコードあり」のときだけ表示する — ON でもコード未設定なら
+      // 表示されない。その象限で「表示されます」と断言すると /admin の pill と真逆の嘘になる
+      var confirmMsg;
+      if(body.enabled && !body.code){
+        confirmMsg = 'ON で保存しますが、Shopify 割引コードが未設定のため、お客様のポータルには表示されません。\\n\\nコードを入力してから保存し直すことをおすすめします。このまま保存しますか？';
+      } else if(body.enabled){
+        confirmMsg = 'クーポンを「表示中」で保存します。友だち全員のポータルに表示されます。\\n\\n割引率 ' + ($('percent').value || '?') + '% は、Shopify 側の割引コード「' + body.code + '」の実際の割引率と一致していますか？';
+      } else {
+        confirmMsg = 'クーポンを「OFF」で保存します。お客様のポータルから非表示になります。よろしいですか？';
+      }
+      if(!window.confirm(confirmMsg)){ setStatus('保存を中止しました (変更は反映されていません)', true); return; }
       $('save').disabled=true; setStatus('保存中…', true);
       fetch('/api/admin/friend-coupon',{ method:'PUT', headers: headers(), body: JSON.stringify(body) })
         .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
         .then(function(j){
           localStorage.setItem(KEY,k); localStorage.setItem('lh_admin_apikey',k);
-          var d=j.data||{}; setStatus(d.enabled?('✅ 表示ON / '+d.percent+'%OFF / コード: '+(d.code||'(未設定)')):'⏸ 表示OFF にしました', true); })
+          var d=j.data||{};
+          // 保存後の表示も顧客側の実際の見え方 (ON かつコードあり = 表示) に一致させる
+          if(d.enabled && !d.code){ setStatus('⚠️ ON で保存しましたが、コード未設定のためお客様には表示されていません。コードを入力して保存し直してください', false); }
+          else if(d.enabled){ setStatus('✅ 表示ON / '+d.percent+'%OFF / コード: '+d.code, true); }
+          else { setStatus('⏸ 表示OFF にしました', true); } })
         .catch(function(e){ setStatus('保存失敗: '+e.message, false); })
         .finally(function(){ $('save').disabled=false; });
     });

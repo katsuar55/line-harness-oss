@@ -118,4 +118,25 @@ describe('friend coupon 統合', () => {
     // API パス自体を skip-list に入れていない (無認証改変の穴を作らない)
     expect(auth).not.toMatch(/path === '\/api\/admin\/friend-coupon'/);
   });
+
+  it('🚨保存前に window.confirm を挟む (誤タップ1回で約6,600人に有利誤認表示 — PUT より前で確認)', () => {
+    // save ハンドラの中で、confirm による中断が PUT fetch より前にあることを検証する。
+    // confirm の存在だけでなく順序を見る (fetch の後ろに移すと確認の意味がなくなる)
+    const saveHandler = adminRoute.slice(adminRoute.indexOf("$('save').addEventListener"));
+    const confirmAt = saveHandler.indexOf('window.confirm');
+    const putAt = saveHandler.indexOf("method:'PUT'");
+    expect(confirmAt).toBeGreaterThan(-1);
+    expect(putAt).toBeGreaterThan(-1);
+    expect(confirmAt).toBeLessThan(putAt);
+    // 確認文には割引率とコードの整合を問う文言を含む (有利誤認の防止が目的)
+    expect(saveHandler).toContain('一致していますか');
+  });
+
+  it('🚨ON + コード未設定の象限で「表示されます」と断言しない (顧客側は非表示 — /admin pill と逆の嘘を作らない)', () => {
+    const saveHandler = adminRoute.slice(adminRoute.indexOf("$('save').addEventListener"));
+    // confirm: コード未設定なら「表示されません」と警告する分岐がある
+    expect(saveHandler).toContain('お客様のポータルには表示されません');
+    // 保存後 status: コード未設定なら ✅ ではなく ⚠️ 非表示の旨を出す
+    expect(saveHandler).toContain('コード未設定のためお客様には表示されていません');
+  });
 });
