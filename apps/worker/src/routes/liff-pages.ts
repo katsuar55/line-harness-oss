@@ -3,6 +3,7 @@ import { translations as i18nData } from '@line-crm/shared';
 import type { Env } from '../index.js';
 import { BRAND_LOGO_PNG_BASE64 } from './brand-logo.js';
 import { liffWatchdogScriptTag } from '../utils/liff-watchdog.js';
+import { jsonForScript } from '../utils/inline-script.js';
 
 const liffPages = new Hono<Env>();
 
@@ -322,6 +323,16 @@ function portalPage(
       <div id="referral-coupon-card" class="card p-4" style="display:none"></div>
       <!-- LINE友だち限定クーポン (管理トグル ON 時のみ表示) -->
       <div id="friend-coupon-card" class="card p-4" style="display:none"></div>
+      ${shopifyLinkUrl ? `<!-- C3: オンラインストア連携 (未連携と判明したときだけ出す)。
+           連携が配送状況・再注文・ランク・定期便の全ての前提なので、ホームの上部に置く。
+           既定は非表示 = 既連携ユーザーには一度も見えない (loadRank が linked=false を
+           返したときだけ showShopifyLinkHomeCard() が開く)。連携完了で markShopifyLinked が畳む -->
+      <div id="shopify-link-home-card" data-shopify-link-cta="hide" class="card p-4" style="display:none" role="status" aria-live="polite">
+        <p class="text-base font-bold text-gray-800 mb-1">🛍️ オンラインストアと連携しませんか</p>
+        <p class="text-sm text-gray-600 mb-3">連携すると、ご注文の状況確認や、過去のご注文からの再注文がこの画面でできるようになります。</p>
+        <button onclick="openShopifyLinkPage()" class="tap btn-primary py-3 px-5 rounded-xl text-base font-bold">ストアにログインして連携 →</button>
+        <p class="text-sm text-gray-600 mt-2">ストアのページが開きます。ログイン確認のあと、ボタンをタップするとLINEに戻ります。</p>
+      </div>` : ''}
       <!-- 次の一手 (第2波-⑥: 初回体験の埋没解消。文脈で1つだけ next action を提示・診断ファースト) -->
       <div id="next-move-card" class="card p-4" style="display:none">
         <div class="flex items-start justify-between gap-2">
@@ -827,7 +838,7 @@ function portalPage(
       </div>
 
       ${shopifyLinkUrl ? `<!-- Shopify 連携 (App Proxy, 2026-07-29): gate on + storefront URL 設定時のみ表示 -->
-      <div class="card p-4" id="shopify-link-card" role="status" aria-live="polite">
+      <div class="card p-4" id="shopify-link-card" data-shopify-link-cta="replace" role="status" aria-live="polite">
         <p class="text-base font-bold text-gray-800 mb-1">🛍️ オンラインストアと連携</p>
         <p class="text-sm text-gray-600 mb-3">ストアにログインするだけで、会員特典やお届けのお知らせがLINEで受け取れるようになります。</p>
         <button onclick="openShopifyLinkPage()" class="tap btn-primary py-3 px-5 rounded-xl text-base font-bold">ストアにログインして連携 →</button>
@@ -1792,9 +1803,21 @@ async function loadRank() {
     if (apiFailed(res)) { cardError(el, res, 'loadRank'); return; }
     const data = res.data;
     if (!data) return;
-    // Shopify 連携済みなら、マイアカウントの連携カードを「連携済み」表示へ差し替える
-    // (= 既連携ユーザーの無意味な外部ブラウザ往復と、完了直後の「まだ押せる」不安を消す)
-    if (data.linked) { try { markShopifyLinked(); } catch (e) {} }
+    // Shopify 連携済みなら、全ての連携 CTA を畳む (マイアカウントのカードは「連携済み」表示へ、
+    // 空表示に挿した導線は非表示へ)。= 既連携ユーザーの無意味な外部ブラウザ往復と、
+    // 完了直後の「まだ押せる」不安を消す。
+    // 未連携が確定した場合も記録する (C3: 後から描画される空表示が導線を出せるように)
+    if (data.linked) {
+      try { markShopifyLinked(); } catch (e) {}
+    } else if (data.linked === false && window.__shopifyLinked !== true) {
+      // 🚨 単調性: 一度 true になったら false へ戻さない。
+      // redeem 成功 (markShopifyLinked) の直後に、**redeem 前のスナップショットを読んだ**
+      // loadRank 応答が遅れて着弾しうる。戻すと、連携したばかりの人のショップタブに
+      // 「ストアにログインして連携」が復活する (この変更が潰そうとした失敗そのもの)。
+      // セッション中に連携が外れることはないので、単調で正しい
+      window.__shopifyLinked = false;
+      try { showShopifyLinkHomeCard(); } catch (e) {}
+    }
     if (data.currentRank) {
       const pct = data.progressPercent || 0;
       // Check if user is ambassador (will be set after loadAmbassador runs)
@@ -3035,8 +3058,12 @@ async function loadShopData() {
             '</div></div>';
         }).join('');
     } else {
+      // C3: 注文履歴は friend_id 紐付けが前提なので、未連携だと実績があっても空になる。
+      // ⚠️ 文言は**断定しない**: この面を見るのは圧倒的に「まだ注文したことがない友だち」で、
+      // その人に「連携すれば履歴が出る」と言うのは嘘になる。条件節を必ず付ける
       oel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">最近の注文</p>' +
-        '<p class="text-xs text-gray-400">まだ注文がありません</p>';
+        '<p class="text-xs text-gray-400">まだ注文がありません</p>' +
+        shopifyLinkCtaHtml('オンラインストアでご注文済みの場合は、ストアとの連携がまだかもしれません。');
     }
   } else {
     var auth = shopAuthExpired(res);
@@ -3072,6 +3099,9 @@ async function loadShopData() {
       fel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">🚚 配送状況</p>' +
         renderOrderHero(fres.data.latestOrder);
     } else {
+      // C3: 未連携者はご注文があってもここに落ちるが、**連携導線はここには置かない**。
+      // 注文カード (orders-card) と配送カードは隣接する兄弟で、未連携者は定義上
+      // 必ず両方が空になる = 同じ CTA が 2 枚並ぶ。導線は注文カード側に集約する
       fel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-2">🚚 配送状況</p>' +
         '<p class="text-sm text-gray-500">現在配送中のお荷物はありません。</p>' +
         '<p class="text-xs text-gray-400 mt-1">ご注文いただくと、ここでお届け状況をご確認いただけます。</p>';
@@ -3100,6 +3130,18 @@ function reorderShortcut() {
   if (!el) return;
   var hasOrders = !!el.querySelector('[data-order-id]');
   if (!hasOrders) {
+    // C3: 未連携だと「注文があるのに履歴が空」なので、トーストで打ち切ると行き止まりになる。
+    // 注文カード内に出している連携導線までスクロールして、次の一手を見せる
+    // ⚠️ 畳んだ CTA は display:none で**残る**ので、要素の有無だけで判定すると
+    // 連携済みの人に「連携すると…」と案内してしまう。連携状態を先に見る
+    var cta = window.__shopifyLinked === true ? null : el.querySelector('[data-shopify-link-cta]');
+    if (cta && cta.getAttribute('data-linked') !== '1') {
+      // スクロール先は CTA 自身 (カード上端だと、空表示の見出しぶん下に隠れることがある)
+      var ctaY = cta.getBoundingClientRect().top + window.pageYOffset - 110;
+      window.scrollTo({ top: ctaY, behavior: 'smooth' });
+      showToast('オンラインストアでご注文済みの場合は、連携すると履歴から再注文できます');
+      return;
+    }
     showToast('まだ注文履歴がありません。初回のご注文後にご利用いただけます');
     return;
   }
@@ -3706,26 +3748,76 @@ function checkReferralParam() {
 
 // ─── Shopify 連携ボタン (App Proxy, 2026-07-29) ───
 // gate off / URL 未設定時は null (カード自体も非表示)。 URL は server 側で https + host 形式に
-// 検証済みの値だけが JSON.stringify で埋まる (= 引用符/エスケープ事故を構造的に回避)。
-var SHOPIFY_LINK_URL = ${JSON.stringify(shopifyLinkUrl)};
+// 検証済みだが、 埋め込みは jsonForScript を通す (CLAUDE.md の inline JS ルール)。
+var SHOPIFY_LINK_URL = ${jsonForScript(shopifyLinkUrl)};
 
-// 連携済みが判明したらカードを「✓ 連携済み」に差し替える。 出しっぱなしだと
+// 連携状態は複数の面が参照する (マイアカウントのカード / 配送・注文の空表示 / ホーム)。
+// loadRank() より先に loadShopData() が走る経路があるため (#delivery / #reorder 直行時の
+// prefetch)、 未確定 = undefined を「まだ分からない」として区別する。
+//   undefined … 未確定 (空表示は導線を出しておき、 後から markShopifyLinked が畳む)
+//   true/false … 確定
+window.__shopifyLinked = undefined;
+
+// 連携済みが判明したら全ての連携 CTA を畳む。 出しっぱなしだと
 // ①既連携ユーザーが外部ブラウザを往復して行き止まりページに着く
 // ②連携完了直後に同じ「連携する」ボタンが居座り、 完了したのか不安にさせる (R1 採点 MED)。
+//
+// 面ごとに畳み方が違うので data 属性で指定する:
+//   data-shopify-link-cta="replace" … 「✅ 連携済み」に差し替える (マイアカウントの常設カード)
+//   data-shopify-link-cta="hide"    … 丸ごと隠す (空表示に挿した導線。 空の文脈で
+//                                     「連携済み」と出しても意味がないため)
 function markShopifyLinked() {
-  var card = document.getElementById('shopify-link-card');
+  window.__shopifyLinked = true;
+  var nodes = document.querySelectorAll('[data-shopify-link-cta]');
+  for (var i = 0; i < nodes.length; i++) {
+    var card = nodes[i];
+    if (card.getAttribute('data-linked') === '1') continue;
+    card.setAttribute('data-linked', '1');
+    if (card.getAttribute('data-shopify-link-cta') === 'hide') {
+      card.style.display = 'none';
+      continue;
+    }
+    while (card.firstChild) { card.removeChild(card.firstChild); }
+    var title = document.createElement('p');
+    title.className = 'text-base font-bold text-gray-800 mb-1';
+    title.textContent = '✅ オンラインストアと連携済み';
+    card.appendChild(title);
+    var body = document.createElement('p');
+    body.className = 'text-sm text-gray-600';
+    body.textContent = '会員特典やお届けのお知らせをLINEでお届けしています。';
+    card.appendChild(body);
+  }
+}
+
+// ホームの連携カードを開く (未連携が**確定した**ときだけ)。 既定 display:none なので、
+// 既連携ユーザーには一瞬も出ない。 連携完了後は markShopifyLinked が data-linked を立てて
+// 畳むので、 後から loadRank が遅れて false を返しても再表示しない。
+function showShopifyLinkHomeCard() {
+  var card = document.getElementById('shopify-link-home-card');
   if (!card) return;
   if (card.getAttribute('data-linked') === '1') return;
-  card.setAttribute('data-linked', '1');
-  while (card.firstChild) { card.removeChild(card.firstChild); }
-  var title = document.createElement('p');
-  title.className = 'text-base font-bold text-gray-800 mb-1';
-  title.textContent = '✅ オンラインストアと連携済み';
-  card.appendChild(title);
-  var body = document.createElement('p');
-  body.className = 'text-sm text-gray-600';
-  body.textContent = '会員特典やお届けのお知らせをLINEでお届けしています。';
-  card.appendChild(body);
+  card.style.display = '';
+}
+
+// 空表示 (注文なし) に挿す連携導線。 **連携済みと分かっている時は出さない**。
+// 未確定 (undefined) のときは出す — 出して後から畳む方が、 出さずに取り逃すより良い
+// (未連携者はこの空表示に必ず当たる = ここが連携率の最大の接点)。
+//
+// 判定は flag だけに頼らない: 既に「畳まれた CTA」が DOM にあれば連携済みと見なす。
+// flag は遅れて届いた loadRank 応答で false に巻き戻りうるが、 DOM の data-linked は
+// 一度立つと戻らないため、 read 側でも不変条件を効かせる (採点 race-state)。
+// onclick は名前付き関数のみ (CLAUDE.md: 引用符ネストを属性に書かない)。
+//
+// 文字サイズ・タップ領域は §7 (本文 16px / 48px) に合わせる。 通行量が最も多い面なので、
+// ここだけ 14px / 40px にすると 60代の読者が最初に当たる導線が一番読みにくくなる。
+function shopifyLinkCtaHtml(lead) {
+  if (!SHOPIFY_LINK_URL) return '';
+  if (window.__shopifyLinked === true) return '';
+  if (document.querySelector('[data-shopify-link-cta][data-linked="1"]')) return '';
+  return '<div data-shopify-link-cta="hide" class="mt-3 pt-3" style="border-top:1px solid var(--brand-line)">' +
+    '<p class="text-base text-gray-600 mb-2">' + esc(lead) + '</p>' +
+    '<button onclick="openShopifyLinkPage()" class="tap btn-primary py-3 px-5 rounded-xl text-base font-bold" style="min-height:48px">ストアにログインして連携 →</button>' +
+    '</div>';
 }
 
 function openShopifyLinkPage() {

@@ -46,6 +46,14 @@ interface FakeEl {
   children: FakeEl[];
   parentNode: FakeEl | null;
   disabled?: boolean;
+  /** markShopifyLinked が `while (card.firstChild) removeChild(...)` で中身を空にする。
+   *  これが無いと「差し替え」が「追記」になり、古い CTA が残ったまま緑になる */
+  readonly firstChild: FakeEl | null;
+  /** innerHTML で流し込まれた生 HTML (loadShopData の空表示検証に使う) */
+  _html?: string;
+  innerHTML: string;
+  getBoundingClientRect(): { top: number };
+  querySelector(sel: string): FakeEl | null;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): void;
   setAttribute(k: string, v: string): void;
@@ -66,6 +74,9 @@ function el(tagName: string): FakeEl {
     children: [],
     parentNode: null,
     listeners: {},
+    get firstChild() {
+      return node.children.length ? node.children[0] : null;
+    },
     appendChild(c) {
       c.parentNode = node;
       node.children.push(c);
@@ -84,6 +95,32 @@ function el(tagName: string): FakeEl {
     },
     addEventListener(type, fn) {
       (node.listeners[type] = node.listeners[type] || []).push(fn);
+    },
+    // C3: reorderShortcut がスクロール位置を計算する。実 DOM に無い値なので固定で返す
+    getBoundingClientRect: () => ({ top: 200 }),
+    // innerHTML への代入。生 HTML は文字列としても検査できるよう保持しつつ、
+    // **C3 の CTA だけは実要素として復元する**。文字列のままだと
+    // querySelector / getAttribute / 「畳めているか」が観測できず、
+    // 「出して後から畳む」という設計の中核が構造的に検証不能になる (採点 test-integrity)
+    set innerHTML(html: string) {
+      node.children.length = 0;
+      node._html = html;
+      const m = /data-shopify-link-cta="([^"]*)"/.exec(html);
+      if (m) {
+        const cta = el('div');
+        cta.setAttribute('data-shopify-link-cta', m[1]);
+        // CTA 自身の座標 (カード上端 200 とは別の値にして、スクロール先を区別できるようにする)
+        cta.getBoundingClientRect = () => ({ top: 500 });
+        cta.parentNode = node;
+        node.children.push(cta);
+      }
+    },
+    get innerHTML() {
+      return node._html ?? '';
+    },
+    querySelector(sel: string) {
+      const hit = matchSelector(node, sel);
+      return hit.length ? hit[0] : null;
     },
     fire(type, ev) {
       // ブラウザ準拠: disabled な要素には click が配送されない。
@@ -124,6 +161,28 @@ function buttonsOf(root: FakeEl): FakeEl[] {
   return out;
 }
 
+/**
+ * `[attr]` と `[attr="value"]` の連結だけを解釈する簡易セレクタ照合。
+ * 例: `[data-shopify-link-cta]` / `[data-shopify-link-cta][data-linked="1"]`
+ *
+ * 属性名の部分文字列マッチにしないこと — セレクタを精緻化したときに無言で常に
+ * 空を返すようになり、ガードが効いていないのに緑になる (採点 test-integrity)。
+ */
+function matchSelector(root: FakeEl, selector: string): FakeEl[] {
+  const parts = [...selector.trim().matchAll(/\[([A-Za-z-]+)(?:="([^"]*)")?\]/g)];
+  // セレクタ全体が `[...]` の連結で説明できないなら、解釈できない = 空を返す
+  if (!parts.length || parts.map((p) => p[0]).join('') !== selector.trim()) return [];
+  const out: FakeEl[] = [];
+  walk(root, (n) => {
+    const ok = parts.every(([, attr, val]) => {
+      if (!Object.prototype.hasOwnProperty.call(n.attrs, attr)) return false;
+      return val === undefined || n.attrs[attr] === val;
+    });
+    if (ok) out.push(n);
+  });
+  return out;
+}
+
 interface FetchCall {
   path: string;
   body: Record<string, unknown>;
@@ -144,6 +203,8 @@ interface Sandbox {
   flush(max?: number): void;
   pendingTimers(): number;
   overlay(): FakeEl | null;
+  /** window.scrollTo の呼び出し履歴 (C3: 行き止まり解消の観測) */
+  scrolls: { top: number }[];
 }
 
 function makeStorage(opts: { throwOnWrite?: boolean } = {}) {
@@ -197,11 +258,20 @@ function loadSandbox(
   const doc = {
     addEventListener() {},
     getElementById: (id: string) => findById(body, id),
-    querySelector: () => null,
-    querySelectorAll: () => [],
+    // C3: shopifyLinkCtaHtml が `[data-shopify-link-cta][data-linked="1"]` で
+    // 「既に畳まれた CTA があるか」を見る。null 固定だとそのガードが素通りする
+    querySelector: (sel: string) => {
+      const hit = matchSelector(body, sel);
+      return hit.length ? hit[0] : null;
+    },
+    // C3: markShopifyLinked が `[data-shopify-link-cta]` を全件走査する。
+    // 空配列を返すスタブのままだと「畳めているか」の検証が構造的に必ず真になる
+    querySelectorAll: (sel: string) => matchSelector(body, sel),
     createElement: (t: string) => el(t),
     body,
   };
+  // C3: reorderShortcut がスクロール位置を計算するので、呼ばれたことを観測できるようにする
+  const scrolls: { top: number }[] = [];
   const win: Record<string, unknown> = {
     sessionStorage: storage,
     localStorage: makeStorage(),
@@ -215,6 +285,10 @@ function loadSandbox(
       },
     },
     addEventListener() {},
+    pageYOffset: 0,
+    scrollTo(arg: { top: number }) {
+      scrolls.push(arg);
+    },
   };
   const liff = {
     getDecodedIDToken: () => (opts.sub === null ? null : { sub: opts.sub ?? 'U_alice' }),
@@ -249,6 +323,14 @@ function loadSandbox(
     'subLinkDismiss',
     'subLinkShowLoading',
     'subLinkRedeem',
+    // C3: 連携導線 (呼び出し側も実行して検証する — 関数単体だけだと
+    // 「空表示から呼び出しを消す」変異が生き残る)
+    'markShopifyLinked',
+    'shopifyLinkCtaHtml',
+    'showShopifyLinkHomeCard',
+    'loadShopData',
+    'loadRank',
+    'reorderShortcut',
   ];
 
   const factory = new Function(
@@ -313,6 +395,7 @@ function loadSandbox(
     },
     pendingTimers: () => [...timers.keys()].filter((id) => !preexisting.has(id)).length,
     overlay: () => findById(body, 'sublink-overlay'),
+    scrolls,
   };
 }
 
@@ -958,4 +1041,336 @@ describe('全 LIFF surface の実行ボタンが白文字 AA を満たす (§7-1
       expect(await res.text()).toMatch(/\.btn-primary\{background:#0f766e/);
     },
   );
+});
+
+// ───────────────────────── C3: オンラインストア連携の導線 ─────────────────────────
+//
+// 連携済み 10 人が全機能 (配送状況・再注文・ランク・定期便) の分母になっている。
+// 未連携者が必ず当たる「空表示」を行き止まりにせず、連携への出口にするのが C3。
+// 文字列 contains では「分岐が dead-code 化した」変異を検出できないため、
+// 吐き出された client JS を**実際に実行して** DOM の状態を観測する。
+describe('C3: オンラインストア連携の導線', () => {
+  let proxyScript = '';
+
+  beforeAll(async () => {
+    const env = {
+      ...baseEnv,
+      APP_PROXY_LINK_ENABLED: 'true',
+      SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
+    };
+    const res = await liffPages.request('/liff/portal', {}, env as unknown as Record<string, unknown>);
+    expect(res.status).toBe(200);
+    proxyScript = inlineScript(await res.text());
+  });
+
+  /** 実ページと同じ形の CTA 2 種 (畳み方が違う) を置いた sandbox。 */
+  function withCtas() {
+    const sb = loadSandbox(proxyScript);
+    const home = el('div');
+    home.id = 'shopify-link-home-card';
+    home.setAttribute('data-shopify-link-cta', 'hide');
+    home.style.display = 'none';
+    sb.body.appendChild(home);
+
+    const account = el('div');
+    account.id = 'shopify-link-card';
+    account.setAttribute('data-shopify-link-cta', 'replace');
+    const stale = el('button');
+    stale.textContent = 'ストアにログインして連携 →';
+    account.appendChild(stale);
+    sb.body.appendChild(account);
+
+    return { sb, home, account };
+  }
+
+  /** `fn` は引数型を持たない汎用シグネチャなので、この関数だけ型を付け直して呼ぶ。 */
+  const ctaHtml = (sb: Sandbox, lead: string): string =>
+    (sb.fn.shopifyLinkCtaHtml as unknown as (s: string) => string)(lead);
+
+  it('未確定 (loadRank 前) でも空表示に導線を出す — 出して後から畳む方が取り逃さない', () => {
+    const sb = loadSandbox(proxyScript);
+    const html = ctaHtml(sb, 'ご注文済みの場合は連携がまだかもしれません。');
+    expect(html).toContain('data-shopify-link-cta="hide"');
+    expect(html).toContain('openShopifyLinkPage()');
+    expect(html).toContain('ご注文済みの場合は連携がまだかもしれません。');
+  });
+
+  it('🚨連携済みと分かっている面には導線を出さない (既連携者を外部ブラウザへ往復させない)', () => {
+    const sb = loadSandbox(proxyScript);
+    (sb.win as Record<string, unknown>).__shopifyLinked = true;
+    expect(ctaHtml(sb, 'x')).toBe('');
+  });
+
+  it('markShopifyLinked が hide/replace を面ごとに畳み分ける', () => {
+    const { sb, home, account } = withCtas();
+    home.style.display = ''; // 未連携判明で開いていた状態
+    sb.fn.markShopifyLinked();
+
+    expect(home.style.display).toBe('none'); // 空/ホームの導線は消す
+    expect(home.getAttribute('data-linked')).toBe('1');
+    // 常設カードは「連携済み」へ差し替え (= 古いボタンが残らない)
+    expect(textOf(account)).toContain('連携済み');
+    expect(textOf(account)).not.toContain('ストアにログインして連携');
+    expect(buttonsOf(account)).toHaveLength(0);
+    expect((sb.win as Record<string, unknown>).__shopifyLinked).toBe(true);
+  });
+
+  it('markShopifyLinked は冪等 (二重呼び出しで表示が壊れない)', () => {
+    const { sb, account } = withCtas();
+    sb.fn.markShopifyLinked();
+    const first = textOf(account);
+    sb.fn.markShopifyLinked();
+    expect(textOf(account)).toBe(first);
+  });
+
+  it('🚨畳んだ後に遅れて「未連携」が届いてもホームカードを再表示しない', () => {
+    // redeem 成功 → markShopifyLinked → その後 loadRank の古い応答が linked=false で着弾、
+    // という順序が起きうる。ここで開き直すと「連携したのにまた連携を促される」
+    const { sb, home } = withCtas();
+    sb.fn.markShopifyLinked();
+    sb.fn.showShopifyLinkHomeCard();
+    expect(home.style.display).toBe('none');
+  });
+
+  it('未連携が確定したらホームカードを開く', () => {
+    const { sb, home } = withCtas();
+    expect(home.style.display).toBe('none'); // 既定は非表示 = 既連携者には一瞬も出ない
+    sb.fn.showShopifyLinkHomeCard();
+    expect(home.style.display).toBe('');
+  });
+});
+
+// ───────── C3: 呼び出し側まで実行して検証する (mutation で穴が判明した分) ─────────
+//
+// 関数単体のテストだけでは「空表示から呼び出しを消す」「未連携分岐を消す」といった変異が
+// 生き残る (2026-08-05 の C3 mutation で実測: M1/M2/M7/M9/M10 が SURVIVED)。
+// loadShopData / loadRank / reorderShortcut を**実際に走らせて** DOM を観測する。
+describe('C3: 呼び出し側の実行検証', () => {
+  let proxyScript = '';
+
+  beforeAll(async () => {
+    const env = {
+      ...baseEnv,
+      APP_PROXY_LINK_ENABLED: 'true',
+      SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
+    };
+    const res = await liffPages.request('/liff/portal', {}, env as unknown as Record<string, unknown>);
+    expect(res.status).toBe(200);
+    proxyScript = inlineScript(await res.text());
+  });
+
+  /** Shop タブのカード 3 枚を実ページと同じ id で置いた sandbox。 */
+  function shopSandbox(opts: { orders?: unknown[]; fulfillments?: unknown[] } = {}) {
+    const sb = loadSandbox(proxyScript);
+    // #toast は showToast が無条件に触る (実ページに常在する要素)。
+    // 無いと reorderShortcut が TypeError で落ち、テストが「実装の欠陥」でなく
+    // 「fixture の不足」で赤くなる
+    for (const id of ['products-card', 'orders-card', 'fulfillments-card', 'rank-card', 'toast']) {
+      const card = el('div');
+      card.id = id;
+      sb.body.appendChild(card);
+    }
+    sb.setFetchImpl((url: string) => {
+      const path = String(url);
+      const json = path.includes('/api/liff/reorder')
+        ? { success: true, data: { products: [], orders: opts.orders ?? [] } }
+        : path.includes('/api/liff/fulfillments')
+          ? { success: true, data: { fulfillments: opts.fulfillments ?? [], latestOrder: null } }
+          : { success: true, data: {} };
+      return Promise.resolve({ status: 200, json: () => Promise.resolve(json) });
+    });
+    return sb;
+  }
+
+  it('🚨注文履歴が空のとき、連携導線が実際に描画される', async () => {
+    const sb = shopSandbox();
+    await (sb.fn.loadShopData as unknown as () => Promise<void>)();
+    const oel = findById(sb.body, 'orders-card')!;
+    expect(oel.innerHTML).toContain('まだ注文がありません');
+    expect(oel.innerHTML).toContain('data-shopify-link-cta="hide"');
+    expect(oel.innerHTML).toContain('openShopifyLinkPage()');
+  });
+
+  it('🚨同じ CTA を 2 枚並べない — 配送カード側には出さない', () => {
+    // orders-card と fulfillments-card は section-shop 内の隣接兄弟で、
+    // 未連携者は**定義上必ず両方が空**になる (どちらも friend_id スコープ)。
+    // 両方に挿すと 100% の未連携者が同一 CTA を 2 枚見る
+    return (async () => {
+      const sb = shopSandbox();
+      await (sb.fn.loadShopData as unknown as () => Promise<void>)();
+      expect(findById(sb.body, 'orders-card')!.innerHTML).toContain('data-shopify-link-cta');
+      expect(findById(sb.body, 'fulfillments-card')!.innerHTML).not.toContain('data-shopify-link-cta');
+    })();
+  });
+
+  it('🚨空表示の文言は断定しない (注文したことがない人に「連携すれば履歴が出る」は嘘)', async () => {
+    // この面を見る母集団は圧倒的に「まだ注文したことがない友だち」
+    // (顧客 3,434 / 友だち 6,581 に対し連携 10)。条件節を必ず付ける
+    const sb = shopSandbox();
+    await (sb.fn.loadShopData as unknown as () => Promise<void>)();
+    const html = findById(sb.body, 'orders-card')!.innerHTML;
+    expect(html).toContain('ご注文済みの場合は');
+    expect(html).not.toContain('連携すると表示されます');
+  });
+
+  it('CTA は §7 の可読性トークンを満たす (本文 16px / タップ 48px)', async () => {
+    const sb = shopSandbox();
+    await (sb.fn.loadShopData as unknown as () => Promise<void>)();
+    const html = findById(sb.body, 'orders-card')!.innerHTML;
+    expect(html).toContain('text-base'); // リード文 16px (text-sm=14px にしない)
+    expect(html).toContain('min-height:48px');
+  });
+
+  it('連携済みなら空表示に導線を出さない (実行経路でも既連携者を煩わせない)', async () => {
+    const sb = shopSandbox();
+    (sb.win as Record<string, unknown>).__shopifyLinked = true;
+    await (sb.fn.loadShopData as unknown as () => Promise<void>)();
+    expect(findById(sb.body, 'fulfillments-card')!.innerHTML).not.toContain('data-shopify-link-cta');
+    expect(findById(sb.body, 'orders-card')!.innerHTML).not.toContain('data-shopify-link-cta');
+  });
+
+  it('🚨flag が false に巻き戻っても、畳んだ CTA が DOM にあれば出し直さない', async () => {
+    // redeem 成功 → markShopifyLinked → その後 **redeem 前のスナップショット**を読んだ
+    // loadRank 応答が届く、という順序が実在する。flag だけを見ていると
+    // 連携したばかりの人のショップタブに「連携する」が復活する
+    const sb = shopSandbox();
+    await (sb.fn.loadShopData as unknown as () => Promise<void>)();
+    (sb.fn.markShopifyLinked as unknown as () => void)();
+    (sb.win as Record<string, unknown>).__shopifyLinked = false; // 遅れて届いた false
+    await (sb.fn.loadShopData as unknown as () => Promise<void>)();
+    expect(findById(sb.body, 'orders-card')!.innerHTML).not.toContain('data-shopify-link-cta');
+  });
+
+  it('🚨loadRank が linked=false を返したらホームカードが開く', async () => {
+    const sb = loadSandbox(proxyScript);
+    const rank = el('div');
+    rank.id = 'rank-card';
+    sb.body.appendChild(rank);
+    const home = el('div');
+    home.id = 'shopify-link-home-card';
+    home.setAttribute('data-shopify-link-cta', 'hide');
+    home.style.display = 'none';
+    sb.body.appendChild(home);
+    sb.setFetchImpl(() =>
+      Promise.resolve({ status: 200, json: () => Promise.resolve({ success: true, data: { linked: false } }) }),
+    );
+
+    await (sb.fn.loadRank as unknown as () => Promise<void>)();
+    expect(home.style.display).toBe('');
+    expect((sb.win as Record<string, unknown>).__shopifyLinked).toBe(false);
+  });
+
+  it('loadRank が linked=true を返したらホームカードは閉じたまま畳まれる', async () => {
+    const sb = loadSandbox(proxyScript);
+    const rank = el('div');
+    rank.id = 'rank-card';
+    sb.body.appendChild(rank);
+    const home = el('div');
+    home.id = 'shopify-link-home-card';
+    home.setAttribute('data-shopify-link-cta', 'hide');
+    home.style.display = 'none';
+    sb.body.appendChild(home);
+    sb.setFetchImpl(() =>
+      Promise.resolve({ status: 200, json: () => Promise.resolve({ success: true, data: { linked: true } }) }),
+    );
+
+    await (sb.fn.loadRank as unknown as () => Promise<void>)();
+    expect(home.style.display).toBe('none');
+    expect(home.getAttribute('data-linked')).toBe('1');
+  });
+
+  it('🚨再注文ショートカット: 履歴が空でも導線があれば CTA 自身へ送る (行き止まりにしない)', async () => {
+    const sb = shopSandbox();
+    await (sb.fn.loadShopData as unknown as () => Promise<void>)();
+    (sb.fn.reorderShortcut as unknown as () => void)();
+    // スクロール先は CTA (top:500) — カード上端 (top:200) だと空表示の見出しぶん下に隠れる
+    expect(sb.scrolls).toHaveLength(1);
+    expect(sb.scrolls[0].top).toBe(500 - 110);
+    expect(findById(sb.body, 'toast')!.textContent).toContain('ご注文済みの場合は');
+  });
+
+  it('🚨連携済みなら再注文ショートカットで「連携すると…」と案内しない', async () => {
+    // markShopifyLinked は CTA をノードごと消さず display:none にするだけなので、
+    // 要素の有無だけで判定すると連携済みの人に連携を促してしまう
+    const sb = shopSandbox();
+    await (sb.fn.loadShopData as unknown as () => Promise<void>)();
+    (sb.fn.markShopifyLinked as unknown as () => void)();
+    (sb.fn.reorderShortcut as unknown as () => void)();
+    expect(sb.scrolls).toHaveLength(0); // 隠れた CTA へスクロールしない
+    expect(findById(sb.body, 'toast')!.textContent).toContain('まだ注文履歴がありません');
+  });
+
+  it('gate off (SHOPIFY_LINK_URL=null) では空表示に導線が出ない = ロールバックが効く', async () => {
+    // 本番の kill switch は APP_PROXY_LINK_ENABLED を false に戻すこと。
+    // client 側がその状態で「押しても何も起きないボタン」を出さないことを固定する
+    const sbOff = loadSandbox(inlineScript(await portalHtml())); // gate off の HTML
+    for (const id of ['products-card', 'orders-card', 'fulfillments-card', 'toast']) {
+      const card = el('div');
+      card.id = id;
+      sbOff.body.appendChild(card);
+    }
+    sbOff.setFetchImpl(() =>
+      Promise.resolve({
+        status: 200,
+        json: () => Promise.resolve({ success: true, data: { products: [], orders: [], fulfillments: [], latestOrder: null } }),
+      }),
+    );
+    await (sbOff.fn.loadShopData as unknown as () => Promise<void>)();
+    expect(findById(sbOff.body, 'orders-card')!.innerHTML).not.toContain('data-shopify-link-cta');
+  });
+});
+
+// ───────── C3: server HTML と client セレクタの配線 / gate on のマークアップ ─────────
+//
+// テストの fixture は el() + setAttribute で CTA を自作している。それだけだと
+// 「server が実際に吐く属性」と「client が探すセレクタ」が食い違っても緑になる
+// (採点 test-integrity HIGH)。実 HTML 側からも配線を固定する。
+describe('C3: 配線とブランドガード (gate on の実マークアップ)', () => {
+  let gateOnHtml = '';
+
+  beforeAll(async () => {
+    const env = {
+      ...baseEnv,
+      APP_PROXY_LINK_ENABLED: 'true',
+      SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
+    };
+    const res = await liffPages.request('/liff/portal', {}, env as unknown as Record<string, unknown>);
+    expect(res.status).toBe(200);
+    gateOnHtml = await res.text();
+  });
+
+  it('server が吐く CTA 属性と client が探すセレクタが一致する', () => {
+    // markShopifyLinked が走査するのは `[data-shopify-link-cta]`。
+    // server 側の属性名を変えたらここが落ちる (逆も同じ)
+    expect(gateOnHtml).toContain('data-shopify-link-cta="replace"'); // マイアカウントの常設カード
+    expect(gateOnHtml).toContain('data-shopify-link-cta="hide"'); // ホームカード
+    expect(gateOnHtml).toContain("querySelectorAll('[data-shopify-link-cta]')");
+    expect(gateOnHtml).toContain('[data-shopify-link-cta][data-linked="1"]');
+  });
+
+  it('畳み方の値は replace / hide の 2 種類だけ (client の分岐と対応する)', () => {
+    const values = [...gateOnHtml.matchAll(/data-shopify-link-cta="([^"]*)"/g)].map((m) => m[1]);
+    expect(values.length).toBeGreaterThan(0);
+    expect([...new Set(values)].sort()).toEqual(['hide', 'replace']);
+  });
+
+  it('gate on のマークアップでもブランド色ガードを満たす', () => {
+    // 既存のブランドテストは gate off の HTML しか見ていないため、
+    // 連携カード群 (= この PR が追加した面) が誰にも検査されていなかった
+    expect(gateOnHtml).not.toContain('#059669');
+    expect(gateOnHtml).not.toContain('#0ABAB5');
+    expect(gateOnHtml).not.toContain('#22d3ee');
+    for (const line of gateOnHtml.split('\n').filter((l) => l.includes('#06C755'))) {
+      expect(line, '例外は「LINEで送る」= LINE 機能そのもののボタンのみ').toContain('LINE');
+    }
+  });
+
+  it('連携 CTA のボタンは btn-primary (白文字 AA 5.47:1) を使う', () => {
+    // 関数定義行 (`function openShopifyLinkPage()`) ではなく、onclick で呼ぶ**ボタン**だけを見る
+    const ctaButtons = gateOnHtml
+      .split('\n')
+      .filter((l) => l.includes('onclick="openShopifyLinkPage()"'));
+    expect(ctaButtons.length).toBeGreaterThan(0);
+    for (const line of ctaButtons) expect(line).toContain('btn-primary');
+  });
 });

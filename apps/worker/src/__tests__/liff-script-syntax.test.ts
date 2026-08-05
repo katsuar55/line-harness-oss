@@ -376,12 +376,20 @@ describe('LIFF ポータル inline script は構文的に valid (吐き出され
     const html = await fetchBody('/liff/portal', env);
     assertParses(extractInlineScripts(html), '/liff/portal (app-proxy gate on)');
     expect(html).toContain('id="shopify-link-card"');
-    expect(html).toContain('"https://naturism-diet.com"'); // JSON.stringify 経由の安全な埋め込み
+    // C3: ホームの連携カードも同じ gate 配下。
+    // 🚨 **既定は display:none** が要件 — これを落とすと、既連携ユーザーにも
+    // 「連携しませんか」が一瞬 (loadRank が返るまで) 出てしまう。
+    // 未連携が確定したときだけ showShopifyLinkHomeCard() が開く設計
+    expect(html).toMatch(
+      /<div id="shopify-link-home-card"[^>]*style="display:none"/,
+    );
+    expect(html).toContain('"https://naturism-diet.com"'); // jsonForScript 経由の安全な埋め込み
   });
 
   it('/liff/portal (App Proxy gate off = カード非表示・SHOPIFY_LINK_URL は null)', async () => {
     const html = await fetchBody('/liff/portal');
     expect(html).not.toContain('id="shopify-link-card"');
+    expect(html).not.toContain('id="shopify-link-home-card"');
     expect(html).toContain('var SHOPIFY_LINK_URL = null;');
   });
 
@@ -391,6 +399,7 @@ describe('LIFF ポータル inline script は構文的に valid (吐き出され
     const env = { ...baseEnv, SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com' };
     const html = await fetchBody('/liff/portal', env);
     expect(html).not.toContain('id="shopify-link-card"');
+    expect(html).not.toContain('id="shopify-link-home-card"');
     expect(html).toContain('var SHOPIFY_LINK_URL = null;');
   });
 
@@ -404,6 +413,7 @@ describe('LIFF ポータル inline script は構文的に valid (吐き出され
       };
       const html = await fetchBody('/liff/portal', env);
       expect(html).not.toContain('id="shopify-link-card"');
+      expect(html).not.toContain('id="shopify-link-home-card"');
       expect(html).toContain('var SHOPIFY_LINK_URL = null;');
     },
   );
@@ -429,6 +439,7 @@ describe('LIFF ポータル inline script は構文的に valid (吐き出され
     const html = await fetchBody('/liff/portal', env);
     assertParses(extractInlineScripts(html), `/liff/portal (bad storefront url: ${url})`);
     expect(html).not.toContain('id="shopify-link-card"');
+    expect(html).not.toContain('id="shopify-link-home-card"');
     expect(html).toContain('var SHOPIFY_LINK_URL = null;');
   });
 
