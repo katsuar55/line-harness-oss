@@ -721,6 +721,11 @@ export async function rebuildContractsFromD1(db: D1Database): Promise<RebuildRes
             // 実測側の基準値も同時に正規化する (migration 074)。片方だけだと drift クエリが
             // 同じ行を返し続け、pass3 が終わらない/冪等でなくなる
             skipCountAtEstimate: row.skip_count,
+            // 受信時刻も無効化する (migration 075、C2)。基準値の正規化は flow 行の
+            // **未消化スキップの先送りを恒久的に消す** (= 推定日がアンカーへ巻き戻る)。
+            // 鮮度だけ残すと、巻き戻った古い日付が送信資格を持ったまま窓に入りうる。
+            // null にすれば次の Flow 発火で時刻付き実測が入るまで無送信 = 安全側。
+            flowMeasuredAt: null,
           });
           await refreshEstimate(db, updated);
           result.baselinesNormalized += 1;

@@ -61,6 +61,17 @@ name: Admin Ops
 #     ADD COLUMN ×2 + 既存行の基準値初期化。列の有無を見てから流すので再実行可。
 #     **実測値を受け始める前 (Flow 設定前) に適用しておくこと** — 未適用のまま実測が入ると
 #     アンカー無しの flow 行ができ、その後のスキップが推定へ反映されない。
+#   apply-migration-075:
+#     migration 075 (実測の受信時刻 flow_measured_at)。ADD COLUMN ×1 のみ = additive。
+#     **既存行は NULL のまま = 送信対象外**が意図 (鮮度不明を「新しい」とみなさない)。
+#     🚨 **C2 のコードを deploy する前に適用すること** — upsertSubscriptionContract の
+#     INSERT 列リストに本列が入るため、未適用のまま新コードが動くと契約 read-model への
+#     **全書込** (webhook 導出・teiki-flow 受信・rebuild) が no such column で失敗する。
+#   contract-diagnose:
+#     read-only。契約 1 件の read-model を D1 から読み、Shopify 画面 (定期購買一覧 →
+#     契約詳細の「次回ご注文日」) と照合する。実測検算 (列 == アンカーから導ける値) と
+#     C2 のリマインド資格の内訳も出す。出力は契約 ID・日付・件数・真偽のみ (PII なし)。
+#     入力 contract_id は素の数値でも gid://shopify/SubscriptionContract/<数値> でも可。
 #   apply-migration-073:
 #     migration 073 (サブスク連携獲得キット sub_link_tokens) を同方式で適用。
 #     CREATE TABLE IF NOT EXISTS + CREATE INDEX のみ = 冪等・additive。
@@ -489,11 +500,23 @@ jobs:
             echo "contract_gid 入力が必要です (例 gid://shopify/SubscriptionContract/123)" >&2
             exit 1
           fi
-          # gid 形式の簡易検証 (SQL に渡す前の防御。単一引用符等は拒否)
-          if ! printf '%s' "$CONTRACT_GID" | grep -Eq '^gid://shopify/SubscriptionContract/[0-9]+$'; then
-            echo "contract_gid の形式が不正です: gid://shopify/SubscriptionContract/<数値> のみ受け付けます" >&2
-            exit 1
-          fi
+          # gid 形式の検証 (SQL に渡す前の防御)。
+          # 🚨 grep を使わないこと — grep は**行単位**で評価するため、改行を含む入力は
+          # 1 行目さえ通れば素通りする (`123\n'; UPDATE ...` が検証を抜ける)。
+          # workflow_dispatch の string 入力は REST/gh 経由なら複数行を渡せるうえ、
+          # wrangler の --command は `;` 区切りの複数文を実行する (下の 2 文がその実例)。
+          # case は**文字列全体**をパターンマッチするので改行も非許可文字として弾ける。
+          GID_PREFIX='gid://shopify/SubscriptionContract/'
+          case "$CONTRACT_GID" in
+            "$GID_PREFIX"*) GID_NUM="${CONTRACT_GID#"$GID_PREFIX"}" ;;
+            *) GID_NUM='' ;;
+          esac
+          case "$GID_NUM" in
+            ''|*[!0-9]*)
+              echo "contract_gid の形式が不正です: gid://shopify/SubscriptionContract/<数値> のみ受け付けます" >&2
+              exit 1
+              ;;
+          esac
           # §6.5: 解除は retry_policy→none と dunning_state→none (+dunning 系列のリセット =
           # I-6 解放句と対称) を単一コマンドで実施 (戻し忘れ・部分適用の構造排除)。
           # 再評価は次 tick の due 発行に委譲。本 op は冪等 — 失敗時はそのまま再実行してよい。
@@ -601,10 +624,20 @@ jobs:
           if [ -n "$STOREFRONT_URL" ]; then
             # worker 側 (liff-pages.ts) の判定 ^https://[A-Za-z0-9.-]+$ と揃える。
             # ここを緩くすると「gate は ON なのに LIFF のボタンだけ無音で出ない」乖離が起きる。
-            if ! echo "${STOREFRONT_URL%/}" | grep -Eq '^https://[A-Za-z0-9.-]+$'; then
-              echo '❌ storefront_url は https://<ホスト名> 形式のみ (path / port / query は不可)' | tee -a "$GITHUB_STEP_SUMMARY"
-              exit 1
-            fi
+            # 🚨 grep を使わないこと — 行単位評価なので `https://ok.example\n<ゴミ>` が
+            # 1 行目だけで通り、改行を含んだ値が secret に入る (worker 側の正規表現は
+            # 文字列全体を見るので弾かれ、まさにこの「無音で出ない」乖離になる)。
+            URL_TRIMMED="${STOREFRONT_URL%/}"
+            case "$URL_TRIMMED" in
+              https://*) URL_HOST="${URL_TRIMMED#https://}" ;;
+              *) URL_HOST='' ;;
+            esac
+            case "$URL_HOST" in
+              ''|*[!A-Za-z0-9.-]*)
+                echo '❌ storefront_url は https://<ホスト名> 形式のみ (path / port / query / 改行は不可)' | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 1
+                ;;
+            esac
             node -e 'const fs=require("fs");fs.writeFileSync(process.argv[1],JSON.stringify({APP_PROXY_LINK_ENABLED:"true",SHOPIFY_STOREFRONT_URL:process.env.STOREFRONT_URL.trim().replace(/\/+$/,"")}))' "$TMP"
           else
             printf '{"APP_PROXY_LINK_ENABLED":"true"}' > "$TMP"
@@ -887,7 +920,12 @@ jobs:
           HAS_075=$(npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT COUNT(*) AS n FROM pragma_table_info('subscription_contracts') WHERE name='flow_measured_at'")
           if echo "$HAS_075" | grep -Eq '"n": *1'; then
-            # due = listContractsDueForReminder (packages/db) と同じ述語。片方を変えたら必ず両方変える
+            # due = listContractsDueForReminder (packages/db/src/subscription-contracts.ts) と同じ述語。
+            # 片方を変えたら必ず両方変えること (定数の一致は
+            # apps/worker/src/__tests__/admin-ops-c2-constants.test.ts が CI で検証する)。
+            # ⚠️ due_eligible_c2 は「list が返す件数」であって送信数の上限ではない —
+            # 送信直前の再導出検算 (staleEstimate) と実測限定の関門 (notMeasured) は
+            # cron 内の JS でしか評価できないため、実際の送信数はこれ以下になりうる
             npx wrangler d1 execute naturism-line-crm --remote --json --command "
               WITH t AS (SELECT date('now','+9 hours') AS today, datetime('now','+9 hours','-10 day') AS floor),
               win AS (
@@ -908,8 +946,14 @@ jobs:
                 (SELECT COUNT(*) FROM win) AS in_window_total,
                 (SELECT COUNT(*) FROM due) AS due_eligible_c2,
                 (SELECT COUNT(*) FROM win WHERE estimate_source != 'flow') AS excluded_derived,
+                -- 「受信時刻が無い」(075 適用前からの flow 行 = 初期状態) と「期限切れ」
+                -- (受信から 10 日超 = Flow の取りこぼし) は原因が違うので分けて出す。
+                -- 合算すると 075 適用直後の正常な初期状態が障害に見える
+                (SELECT COUNT(*) FROM win WHERE estimate_source = 'flow' AND flow_measured_at IS NULL)
+                  AS excluded_no_measured_at,
                 (SELECT COUNT(*) FROM win w, t WHERE w.estimate_source = 'flow'
-                   AND (w.flow_measured_at IS NULL OR w.flow_measured_at < t.floor)) AS excluded_stale_measurement,
+                   AND w.flow_measured_at IS NOT NULL AND w.flow_measured_at < t.floor)
+                  AS excluded_stale_measurement,
                 (SELECT COUNT(*) FROM due WHERE shopify_customer_id IS NULL) AS no_customer_id,
                 (SELECT COUNT(*) FROM due d JOIN friends f ON f.shopify_customer_id = d.shopify_customer_id) AS linked_to_friend,
                 (SELECT COUNT(*) FROM due d JOIN friends f ON f.shopify_customer_id = d.shopify_customer_id
@@ -938,25 +982,44 @@ jobs:
 
           # C2: MENU / REMINDER を開ける数値条件 (docs/SUBSCRIPTION_GATE_CRITERIA.md が正)。
           # ここで毎回機械判定することで「条件に達したか」を目視計算せずに追える。
-          echo '### gate 開放条件の判定 (C2) — 両方 1 になるまで MENU / REMINDER は開けない' >> "$GITHUB_STEP_SUMMARY"
-          echo '条件1 = LINE 到達可能な連携済み active 契約 > 30 / 条件2 = active の過半が実測 (flow)。詳細と根拠: docs/SUBSCRIPTION_GATE_CRITERIA.md' >> "$GITHUB_STEP_SUMMARY"
+          #
+          # ⚠️ crit2 に鮮度述語 (flow_measured_at) を**入れないこと**。前例なし層
+          # (last_order_at 欠落・本番 active の約半数) は恒久的に 'flow' で、トリガー1 が
+          # 決済 7 日前にしか発火しないため、周期の大半で実測は正当に「古い」。
+          # 鮮度を crit2 に混ぜると健常時でも過半に届かず、条件が永久に満たされない。
+          # 代わりに fresh_measured_active を**情報列**として併記し、Flow 停止は crit3
+          # (受信の生存) で捕まえる。
+          echo '### gate 開放条件の判定 (C2) — 3 つとも 1 になるまで MENU / REMINDER は開けない' >> "$GITHUB_STEP_SUMMARY"
+          echo '条件1 = LINE 到達可能な連携済み active 契約 > 30 / 条件2 = active の過半が実測 (flow) / 条件3 = 直近 72h に実測受信あり。詳細と根拠: docs/SUBSCRIPTION_GATE_CRITERIA.md' >> "$GITHUB_STEP_SUMMARY"
+          echo '`fresh_measured_active` は参考値 (今この瞬間に送信資格を持つ実測数)。周期の大半で小さいのが正常 — crit2 と混同しないこと。' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json --command "
             WITH a AS (
               SELECT * FROM subscription_contracts
               WHERE cancelled_at IS NULL AND paused_at IS NULL
+            ),
+            reach AS (
+              SELECT COUNT(*) AS n FROM a x JOIN friends f ON f.shopify_customer_id = x.shopify_customer_id
+              WHERE f.line_user_id IS NOT NULL AND f.is_following = 1 AND COALESCE(f.is_blacklisted,0) = 0
+            ),
+            meas AS (
+              SELECT COUNT(*) AS n FROM a WHERE estimate_source = 'flow' AND next_billing_estimate IS NOT NULL
+            ),
+            ingest AS (
+              SELECT COUNT(*) AS n FROM cron_run_logs
+              WHERE job_name = 'teiki-flow-ingest' AND status = 'success'
+                AND datetime(ran_at) >= datetime('now','+9 hours','-72 hours')
             )
             SELECT
               (SELECT COUNT(*) FROM a) AS active_total,
-              (SELECT COUNT(*) FROM a WHERE estimate_source = 'flow' AND next_billing_estimate IS NOT NULL) AS measured_active,
-              (SELECT COUNT(*) FROM a x JOIN friends f ON f.shopify_customer_id = x.shopify_customer_id
-                 WHERE f.line_user_id IS NOT NULL AND f.is_following = 1 AND COALESCE(f.is_blacklisted,0) = 0)
-                AS linked_reachable_active,
-              CASE WHEN (SELECT COUNT(*) FROM a x JOIN friends f ON f.shopify_customer_id = x.shopify_customer_id
-                          WHERE f.line_user_id IS NOT NULL AND f.is_following = 1 AND COALESCE(f.is_blacklisted,0) = 0) > 30
-                   THEN 1 ELSE 0 END AS crit1_linked_over_30,
-              CASE WHEN (SELECT COUNT(*) FROM a WHERE estimate_source = 'flow' AND next_billing_estimate IS NOT NULL) * 2
-                        > (SELECT COUNT(*) FROM a)
-                   THEN 1 ELSE 0 END AS crit2_measured_majority
+              (SELECT n FROM meas) AS measured_active,
+              (SELECT COUNT(*) FROM a WHERE estimate_source = 'flow' AND next_billing_estimate IS NOT NULL
+                 AND flow_measured_at IS NOT NULL
+                 AND flow_measured_at >= datetime('now','+9 hours','-10 day')) AS fresh_measured_active,
+              (SELECT n FROM reach) AS linked_reachable_active,
+              (SELECT n FROM ingest) AS ingest_success_72h,
+              CASE WHEN (SELECT n FROM reach) > 30 THEN 1 ELSE 0 END AS crit1_linked_over_30,
+              CASE WHEN (SELECT n FROM meas) * 2 > (SELECT COUNT(*) FROM a) THEN 1 ELSE 0 END AS crit2_measured_majority,
+              CASE WHEN (SELECT n FROM ingest) > 0 THEN 1 ELSE 0 END AS crit3_ingest_alive_72h
           " | tee -a "$GITHUB_STEP_SUMMARY"
           echo '### 参考: 全契約の内訳 (窓に関係なく)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json --command "
@@ -1108,8 +1171,12 @@ jobs:
       # 既存データに一切触れない (意図的に初期化 UPDATE をしない: 既存 flow 行の受信時刻は
       # 不明であり、不明を「新しい」とみなすのは C2 の趣旨に反する。NULL のままなら
       # 送信対象外で、次の Flow 発火で時刻付き実測に置き換わる)。
-      # ⚠️ **C2 のコード (recordFlowMeasurement が本列に書く) より先に適用すること** —
-      # 未適用のまま新コードが deploy されると teiki-flow の書込が no such column で全例外になる。
+      #
+      # 🚨 **C2 のコードを deploy する前に適用すること**。影響は teiki-flow だけではない —
+      # upsertSubscriptionContract は INSERT 列リストに flow_measured_at を静的に含むため、
+      # 未適用の D1 では **契約 read-model への全書込が no such column で失敗する**
+      # (webhook 由来の導出・teiki-flow 受信・rebuild すべて)。収集は現在 LIVE なので、
+      # 順序を誤ると収集が丸ごと止まる。
       - name: Apply migration 075 (flow measured at, additive)
         if: inputs.op == 'apply-migration-075'
         working-directory: apps/worker
@@ -1162,12 +1229,19 @@ jobs:
             exit 1
           fi
           # GID なら末尾セグメントに正規化 (受信 route の resolveContractRow と同じ規則)。
-          # 英数字のみ許可 = SQL への埋め込みを安全にする (単一引用符等は通らない)
+          # 🚨 検証に grep を使わないこと — grep は**行単位**なので、改行を含む入力は
+          # 1 行目さえ英数字なら通ってしまう。`##*/` は改行をまたいで剥がすため、
+          # `.../123\n'; UPDATE ...` が `123\n'; UPDATE ...` として残り、下の SELECT の
+          # 文字列リテラルを途中終端して**読み取り専用の宣言を破る書込**が本番 D1 に流れる
+          # (wrangler --command は `;` 区切りの複数文を実行する)。
+          # case は文字列全体をパターンマッチするので改行も非許可文字として弾ける。
           CID="${CONTRACT_ID_INPUT##*/}"
-          if ! echo "$CID" | grep -Eq '^[A-Za-z0-9_-]+$'; then
-            echo "contract_id の形式が不正です: $CONTRACT_ID_INPUT" >&2
-            exit 1
-          fi
+          case "$CID" in
+            ''|*[!A-Za-z0-9_-]*)
+              echo "contract_id の形式が不正です (英数字・ハイフン・アンダースコアのみ)" >&2
+              exit 1
+              ;;
+          esac
           HAS_075=$(npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT COUNT(*) AS n FROM pragma_table_info('subscription_contracts') WHERE name='flow_measured_at'")
           if ! echo "$HAS_075" | grep -Eq '"n": *1'; then

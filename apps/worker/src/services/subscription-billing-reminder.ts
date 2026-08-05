@@ -215,12 +215,25 @@ export async function processBillingReminders(
   return result;
 }
 
-/** cron_run_logs へ記録 (subscription-reminder と同じ自前記録方式 → index.ts で二重 wrap しない) */
+/**
+ * cron_run_logs へ記録 (subscription-reminder と同じ自前記録方式 → index.ts で二重 wrap しない)
+ *
+ * `staleEstimate` / `notMeasured` も partial 扱いにする: どちらも「無送信に倒した」= 顧客への
+ * 実害はゼロだが、**送信対象の選び方 (list SQL) と送ってよい条件 (関門) がズレている**という
+ * 警報である。success に畳むと /admin の job 別失敗検知 (#233 C8) に一切出ず、
+ * 二重防壁の片翼が折れたまま運用が続く。
+ */
 async function logRun(db: D1Database, result: BillingReminderResult): Promise<void> {
+  const anomalies =
+    result.failed +
+    result.recoveryFailed +
+    result.leakedClaims +
+    result.staleEstimate +
+    result.notMeasured;
   try {
     await insertCronRunLog(db, {
       jobName: BILLING_REMINDER_JOB_NAME,
-      status: result.failed + result.recoveryFailed + result.leakedClaims > 0 ? 'partial' : 'success',
+      status: anomalies > 0 ? 'partial' : 'success',
       metrics: result,
     });
   } catch (err) {
@@ -295,7 +308,11 @@ async function remindOne(
   const friend = await getFriendByShopifyCustomerId(db, contract.shopify_customer_id);
   if (!friend || !friend.line_user_id) return 'unlinked';
 
-  // 原子的 claim (CAS): この推定日に対する送信権を 1 プロセスだけが獲得する
+  // 原子的 claim (CAS): この推定日に対する送信権を 1 プロセスだけが獲得する。
+  // C2 述語 (実測 + 鮮度) も **原子点で**再評価する: 上の関門は list が返した
+  // スナップショットを見ているだけなので、list〜claim の間に行が flow → derived へ
+  // 遷移し、かつ推定日が同値だった場合に抜けうる (稀だが原理的に開いている)。
+  // ここに置けば「送信権の獲得」と「送ってよい状態か」が 1 つの UPDATE で決まる。
   const claim = await db
     .prepare(
       `UPDATE subscription_contracts
@@ -304,9 +321,12 @@ async function remindOne(
          AND next_billing_estimate = ?
          AND cancelled_at IS NULL
          AND paused_at IS NULL
+         AND estimate_source = 'flow'
+         AND flow_measured_at IS NOT NULL
+         AND flow_measured_at >= ?
          AND (reminded_for_estimate IS NULL OR reminded_for_estimate != next_billing_estimate)`,
     )
-    .bind(jstNow(), contract.contract_id, contract.next_billing_estimate)
+    .bind(jstNow(), contract.contract_id, contract.next_billing_estimate, measuredFloor)
     .run();
   if (!claim.meta || claim.meta.changes !== 1) return 'claimedLost';
 

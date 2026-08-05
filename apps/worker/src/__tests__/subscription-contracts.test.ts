@@ -796,6 +796,34 @@ describe('rebuildContractsFromD1', () => {
     expect(db.contracts.get('200')!.cancelled_at).toBe('2026-07-01');
   });
 
+  it('🚨これを壊すと誤送信になる: pass3 の基準値正規化は実測の受信時刻も無効化する', async () => {
+    // pass3 は skip 基準値を現累計へ揃える = flow 行の**未消化スキップの先送りを恒久的に消す**
+    // (推定日がアンカーへ巻き戻る)。鮮度だけ残すと、巻き戻った古い日付が送信資格を保ったまま
+    // 窓に入りうる。受信時刻も落として「次の Flow 発火まで無送信」に倒すのが安全側。
+    const db = createFakeDb();
+    await upsertSubscriptionContract(db, {
+      contractId: '400',
+      shopifyCustomerId: 'c4',
+      intervalDays: 30,
+      // 未消化スキップがある実測行 (= pass3 の正規化対象)
+      skipCount: 1,
+      skipCountAtLastOrder: 0,
+      estimateSource: 'flow',
+      flowEstimateAnchor: '2026-09-01',
+      skipCountAtEstimate: 0,
+      nextBillingEstimate: '2026-10-01', // 9/01 + 30×1
+      flowMeasuredAt: '2026-08-20 10:00:00',
+    });
+
+    const result = await rebuildContractsFromD1(db);
+
+    const row = db.contracts.get('400')!;
+    expect(result.baselinesNormalized).toBe(1);
+    expect(row.skip_count_at_estimate).toBe(1); // 正規化された = 先送りが消えた
+    expect(row.next_billing_estimate).toBe('2026-09-01'); // アンカーへ巻き戻っている
+    expect(row.flow_measured_at).toBeNull(); // その日付に送信資格を与えない
+  });
+
   it('🚨採点R3: rebuild 経由では recovery_pending_at が立たない (歴史的 pause への一斉通知防止)', async () => {
     // pass1 が契約行を paused_at=null で先に作る → pass2 の pause タグが「遷移」に見える
     // 迂回路。ここでマーカーが立つと gate ON 直後に stale な「一時停止しました」が一斉送信される。
@@ -1132,6 +1160,25 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
     expect(db.contracts.get('100')!.next_billing_estimate).toBeNull();
     // C2: 停止でアンカーを消費する時は受信時刻も消費する (再開後に古い鮮度が蘇らない)
     expect(db.contracts.get('100')!.flow_measured_at).toBeNull();
+  });
+
+  it('アンカー無しの flow 行を derived へ戻すとき受信時刻も消す (鮮度だけ残る行を作らない)', async () => {
+    // 「アンカーは失ったが受信時刻は残っている」不整合行 (pause の途中失敗・手書き更新等) は
+    // 本番でも作りうる。ここで時刻を残すと、日付の裏付けが無いのに鮮度述語だけ通る行になる。
+    // fallback は日付・source・鮮度をまとめて整合させる掃除役なので、時刻も落とすのが不変条件
+    const db = createFakeDb();
+    await seedOrder(db);
+    await upsertSubscriptionContract(db, {
+      contractId: '100',
+      estimateSource: 'flow',
+      flowEstimateAnchor: null,
+      flowMeasuredAt: '2026-08-01 10:00:00',
+    });
+    // 何らかの再計算を通す (顧客タグの再受信 = 本番で最も高頻度な経路)
+    await applyCustomerTagsToContracts(db, 'cust-1', `subscription-100-plan:${PLAN_30}`);
+    const row = db.contracts.get('100')!;
+    expect(row.estimate_source).toBe('derived');
+    expect(row.flow_measured_at).toBeNull();
   });
 
   it('ルール2b: resume 後は null 固着せず derived で推定が復活する', async () => {

@@ -98,14 +98,23 @@ function createStatefulDb(rows: ContractState[]) {
               'next_billing_estimate = ?',
               'cancelled_at IS NULL',
               'paused_at IS NULL',
+              // C2 述語は claim (原子点) でも評価する。list〜claim の間に flow → derived へ
+              // 遷移した行が、推定日が同値だと関門をすり抜けうるため
+              "estimate_source = 'flow'",
+              'flow_measured_at IS NOT NULL',
+              'flow_measured_at >= ?',
               '(reminded_for_estimate IS NULL OR reminded_for_estimate != next_billing_estimate)',
             ]);
             const row = byId.get(binds[1] as string);
+            const measuredFloor = binds[3] as string;
             const ok =
               row &&
               row.next_billing_estimate === binds[2] &&
               row.cancelled_at === null &&
               row.paused_at === null &&
+              row.estimate_source === 'flow' &&
+              row.flow_measured_at !== null &&
+              row.flow_measured_at >= measuredFloor &&
               (row.reminded_for_estimate === null ||
                 row.reminded_for_estimate !== row.next_billing_estimate);
             if (ok && row) row.reminded_for_estimate = row.next_billing_estimate;
@@ -341,6 +350,55 @@ describe('🚨processBillingReminders — C2 実測限定の関門 (notMeasured)
     const r = await processBillingReminders(env(db), lineClient, NOW_NOON);
     expect(r.notMeasured).toBe(1);
     expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it('鮮度の基準時刻が JST である (UTC で計算すると 9 時間ぶん甘くなる)', async () => {
+    // flow_measured_at は JST の 'YYYY-MM-DD HH:MM:SS' で書かれる (jstNowLocal)。
+    // 比較側が JST オフセットを落とすと floor が 9 時間手前へずれ、本来 stale な実測が通る。
+    // 正しい floor = 2026-07-04 12:00:00 (JST) / オフセット欠落時 = 2026-07-04 03:00:00。
+    // 下の値はその**間**にあるので、ズレたときだけ送信されてしまう
+    const row = contract({ flow_measured_at: '2026-07-04 06:00:00' });
+    const db = createStatefulDb([row]);
+    mockListDue.mockResolvedValue([row]);
+    mockGetFriendByCustomer.mockResolvedValue(FRIEND);
+    mockDispatch.mockResolvedValue(SENT);
+
+    const r = await processBillingReminders(env(db), lineClient, NOW_NOON);
+    expect(r.notMeasured).toBe(1);
+    expect(r.sent).toBe(0);
+  });
+
+  it('list〜claim の間に derived へ遷移した契約は claim 述語で弾かれる (原子点の C2 述語)', async () => {
+    // 関門は list が返したスナップショットを見るだけなので、その後の遷移は claim でしか
+    // 捕まえられない。推定日が同値のまま source だけ変わる形を再現する
+    const snapshot = contract(); // list 時点: flow + fresh
+    const dbRow = contract({ estimate_source: 'derived', flow_measured_at: null });
+    dbRow.next_billing_estimate = snapshot.next_billing_estimate; // 推定日は同値
+    const db = createStatefulDb([dbRow]);
+    mockListDue.mockResolvedValue([snapshot]);
+    mockGetFriendByCustomer.mockResolvedValue(FRIEND);
+
+    const r = await processBillingReminders(env(db), lineClient, NOW_NOON);
+    expect(r.claimedLost).toBe(1);
+    expect(r.sent).toBe(0);
+    expect(mockDispatch).not.toHaveBeenCalled();
+    expect(dbRow.reminded_for_estimate).toBeNull();
+  });
+
+  it('notMeasured / staleEstimate は cron_run_logs の status を partial にする (警報が埋もれない)', async () => {
+    const row = contract({ estimate_source: 'derived' });
+    const db = createStatefulDb([row]);
+    mockListDue.mockResolvedValue([row]);
+    mockGetFriendByCustomer.mockResolvedValue(FRIEND);
+
+    await processBillingReminders(env(db), lineClient, NOW_NOON);
+    expect(mockInsertCronRunLog).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        status: 'partial',
+        metrics: expect.objectContaining({ notMeasured: 1 }),
+      }),
+    );
   });
 });
 
