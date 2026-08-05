@@ -100,6 +100,10 @@ name: Admin Ops
 #     直近14日の webhook 到達 (topic×status 件数) / 注文の friend 紐付け率 /
 #     financial_status 内訳 / fulfillments の friend 紐付け率。PII なし。
 #     「注文したのにミニアプリに出ない」時の一次切り分け用 (webhook 未達 vs 紐付け失敗)。
+#   faq-subscription-audit:
+#     read-only。定期便系 FAQ (auto_replies=チャット自動応答 / faq_items=LIFF FAQ タブ) の
+#     有効行を件数+既知文言の指紋で監査する (実態 = 定期便の操作はマイページのみ)。
+#     あわせて AI 応答モデルの実測分布 (conversation_logs) を出す。本文・PII は出さない。
 #
 # ⚠️ repo は PUBLIC = workflow ログ/サマリは公開される。secret の値・顧客データ (PII) を
 #    echo/サマリ出力する op を追加してはならない (名前・件数のみ可)。
@@ -149,6 +153,7 @@ on:
           - disable-subscription-ingest
           - attach-custom-domain
           - apply-faq-v4
+          - faq-subscription-audit
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
         required: false
@@ -1483,3 +1488,43 @@ jobs:
           npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT (SELECT COUNT(*) FROM purchase_cross_sell_map WHERE reason LIKE '%8成分のシンプル定番ライン%' OR reason LIKE '%酵素360mg%' OR reason LIKE '%糖質ケア%') AS cross_sell_stale, (SELECT COUNT(*) FROM scenario_steps WHERE message_content LIKE '%成分配合%' AND message_content NOT LIKE '%9 成分配合%') AS scenario_stale, (SELECT COUNT(*) FROM nutrition_sku_map WHERE copy_template LIKE '%糖質対応%') AS nutrition_stale" \
             >> "$GITHUB_STEP_SUMMARY"
+
+      # 定期便系 FAQ の本番監査 (read-only)。チャット自動応答 (auto_replies) と
+      # LIFF FAQ タブ (faq_items) の「定期/解約/スキップ」有効行が実態
+      # (定期便のスキップ/お届け日変更/解約はマイページ「定期購買一覧」のみ・LINE 内では実行不可、
+      #  Shop タブの「定期お届けリマインダー」は再注文リマインドで定期便契約とは別物) と
+      # 整合しているかを、件数と指紋 (既知文言の LIKE) だけで判定する。
+      # あわせて AI 応答モデルの実測分布 (conversation_logs.ai_model) を出す。
+      # ⚠️ repo は PUBLIC — 回答本文・顧客データはログに出さない (COUNT / keyword / category / model 名のみ)。
+      # ⚠️ LIKE パターンは D1 の 50 バイト制限内に収めること (日本語 1 文字 = 3 バイト)。
+      - name: FAQ subscription audit (read-only)
+        if: inputs.op == 'faq-subscription-audit'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          D1() { npx wrangler d1 execute naturism-line-crm --remote --json --command "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '## FAQ 定期便系監査 (read-only・本文は出さない)' >> "$GITHUB_STEP_SUMMARY"
+
+          echo '### 1. auto_replies: 定期系キーワード行 (keyword × is_active)' >> "$GITHUB_STEP_SUMMARY"
+          D1 "SELECT keyword, is_active, COUNT(*) AS rows FROM auto_replies WHERE keyword LIKE '%定期%' OR keyword LIKE '%解約%' OR keyword LIKE '%スキップ%' OR keyword LIKE '%休止%' OR keyword LIKE '%サブスク%' GROUP BY keyword, is_active ORDER BY keyword, is_active"
+
+          echo '### 2. v3 正文の指紋 (期待値 4 = 解約/定期便/スキップ/休止 の有効行が全て v3 文言)' >> "$GITHUB_STEP_SUMMARY"
+          D1 "SELECT COUNT(*) AS v3_fingerprint_ok FROM auto_replies WHERE is_active=1 AND keyword IN ('解約','定期便','スキップ','休止') AND response_content LIKE '%マイページから24時間%' AND response_content LIKE '%定期購買一覧%'"
+
+          echo '### 3. 旧/誤誘導表現の残存 (期待値 全て 0)' >> "$GITHUB_STEP_SUMMARY"
+          D1 "SELECT SUM(CASE WHEN response_content LIKE '%10日前までにご連絡%' THEN 1 ELSE 0 END) AS old_dmm_cancel, SUM(CASE WHEN response_content LIKE '%お休みプラン%' THEN 1 ELSE 0 END) AS old_rest_plan, SUM(CASE WHEN response_content LIKE '%LINEから解約%' OR response_content LIKE '%LINEで解約%' THEN 1 ELSE 0 END) AS line_cancel_claim, SUM(CASE WHEN response_content LIKE '%定期お届けリマインダー%' THEN 1 ELSE 0 END) AS reminder_confusion FROM auto_replies WHERE is_active=1"
+
+          echo '### 4. 定期の操作に言及する有効行の総数 (期待値 4。5 以上 = 未知の行あり → 本文の個別確認が必要)' >> "$GITHUB_STEP_SUMMARY"
+          D1 "SELECT COUNT(*) AS mentions_subscription_ops FROM auto_replies WHERE is_active=1 AND response_content LIKE '%定期%' AND (response_content LIKE '%解約%' OR response_content LIKE '%スキップ%')"
+
+          echo '### 5. faq_items (LIFF FAQ タブ): category × is_active' >> "$GITHUB_STEP_SUMMARY"
+          D1 "SELECT category, is_active, COUNT(*) AS rows FROM faq_items GROUP BY category, is_active ORDER BY category, is_active"
+
+          echo '### 6. faq_items 定期系有効行の指紋 (without_mypage / line_cancel_claim が 0 でなければ要本文確認)' >> "$GITHUB_STEP_SUMMARY"
+          D1 "SELECT COUNT(*) AS subs_rows, SUM(CASE WHEN answer LIKE '%マイページ%' THEN 1 ELSE 0 END) AS with_mypage, SUM(CASE WHEN answer NOT LIKE '%マイページ%' THEN 1 ELSE 0 END) AS without_mypage, SUM(CASE WHEN answer LIKE '%LINEから解約%' OR answer LIKE '%LINEで解約%' THEN 1 ELSE 0 END) AS line_cancel_claim, SUM(CASE WHEN answer LIKE '%定期お届けリマインダー%' THEN 1 ELSE 0 END) AS mentions_reminder FROM faq_items WHERE is_active=1 AND (question LIKE '%定期%' OR answer LIKE '%定期%' OR question LIKE '%解約%' OR answer LIKE '%解約%' OR question LIKE '%スキップ%' OR answer LIKE '%スキップ%')"
+
+          echo '### 7. AI 応答モデルの実測 (直近30日・conversation_logs・model 名と件数のみ)' >> "$GITHUB_STEP_SUMMARY"
+          D1 "SELECT ai_layer, ai_model, COUNT(*) AS n FROM conversation_logs WHERE created_at >= date('now','-30 day') GROUP BY ai_layer, ai_model ORDER BY n DESC"
