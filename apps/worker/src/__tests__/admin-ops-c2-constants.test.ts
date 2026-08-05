@@ -10,13 +10,16 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FLOW_MEASUREMENT_FRESH_DAYS } from '@line-crm/db';
 import { BILLING_DEADLINE_LEAD_DAYS } from '../services/subscription-concierge.js';
 
-const YML_PATH = fileURLToPath(
-  new URL('../../../../.github/workflows/admin-ops.yml', import.meta.url),
-);
+// `new URL(...)` を fileURLToPath に渡すと、Workers types と node types が混在する
+// この worker の tsconfig で URL 型が衝突する (ローカルは通り CI の clean build で落ちる)。
+// string を受ける形にすれば型解決に依存しない
+const HERE = dirname(fileURLToPath(import.meta.url));
+const YML_PATH = resolve(HERE, '../../../../.github/workflows/admin-ops.yml');
 const yml = readFileSync(YML_PATH, 'utf8');
 
 /** リマインド窓の上限 (subscription-billing-reminder.ts の LEAD_DAYS_MAX と同値であること) */
