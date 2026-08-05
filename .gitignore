@@ -48,3 +48,5 @@ ADMIN_GUIDE_naturism*.html
 # Shopify Flow 設定手引き (naturism の store handle・管理画面直リンクを含む社内向け資料)。
 # 技術仕様は docs/TEIKI_FLOW_SETUP.md 側に置き、こちらはコミットしない。
 TEIKI_FLOW_SETUP_GUIDE*.html
+# 顧客向けメール文面のコピペ用資料 (naturism 固有の文面・管理画面手順を含む社内向け)。
+K2_*.html
