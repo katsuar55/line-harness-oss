@@ -24,6 +24,12 @@ export interface SubscriptionContractRow {
   flow_estimate_anchor: string | null;
   /** migration 074: 実測を受けた時点の skip 累計。これ以降の増分だけが先送りになる */
   skip_count_at_estimate: number;
+  /**
+   * migration 075 (C2): 実測の受信時刻 (JST `YYYY-MM-DD HH:MM:SS`)。
+   * リマインド送信の鮮度述語が読む。アンカー (= 実測が言う日付) と受信時刻 (= いつ届いたか) は
+   * 別物 — 鮮度はこちらでしか判定できない。NULL = 受信時刻が不明 = 送信対象外。
+   */
+  flow_measured_at: string | null;
   reminded_for_estimate: string | null;
   /** WI-2 (migration 070): 決済失敗リカバリ通知の検知マーカー (送信は cron が担当) */
   recovery_pending_at: string | null;
@@ -55,6 +61,8 @@ export interface SubscriptionContractPatch {
    */
   flowEstimateAnchor?: string | null;
   skipCountAtEstimate?: number;
+  /** migration 075 (C2): アンカーと同じライフサイクルで書く (実測記録で設定、derived 復帰・停止/解約で null) */
+  flowMeasuredAt?: string | null;
   remindedForEstimate?: string | null;
   /** WI-2: pause 遷移の検知と同一 upsert で原子的に設定/解除する (別 UPDATE に分けない) */
   recoveryPendingAt?: string | null;
@@ -91,6 +99,7 @@ export async function upsertSubscriptionContract(
     patch.estimateSource ?? 'derived',
     patch.flowEstimateAnchor ?? null,
     patch.skipCountAtEstimate ?? 0,
+    patch.flowMeasuredAt ?? null,
     patch.remindedForEstimate ?? null,
     patch.recoveryPendingAt ?? null,
     patch.recoveryNotifiedAt ?? null,
@@ -119,6 +128,7 @@ export async function upsertSubscriptionContract(
   if (patch.estimateSource !== undefined) set('estimate_source', patch.estimateSource);
   if (patch.flowEstimateAnchor !== undefined) set('flow_estimate_anchor', patch.flowEstimateAnchor);
   if (patch.skipCountAtEstimate !== undefined) set('skip_count_at_estimate', patch.skipCountAtEstimate);
+  if (patch.flowMeasuredAt !== undefined) set('flow_measured_at', patch.flowMeasuredAt);
   if (patch.remindedForEstimate !== undefined) set('reminded_for_estimate', patch.remindedForEstimate);
   if (patch.recoveryPendingAt !== undefined) set('recovery_pending_at', patch.recoveryPendingAt);
   if (patch.recoveryNotifiedAt !== undefined) set('recovery_notified_at', patch.recoveryNotifiedAt);
@@ -131,10 +141,10 @@ export async function upsertSubscriptionContract(
          last_order_id, last_order_at, last_delivery_date,
          skip_count, skip_count_at_last_order, paused_at, cancelled_at,
          next_billing_estimate, estimate_source,
-         flow_estimate_anchor, skip_count_at_estimate, reminded_for_estimate,
+         flow_estimate_anchor, skip_count_at_estimate, flow_measured_at, reminded_for_estimate,
          recovery_pending_at, recovery_notified_at,
          created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(contract_id) DO UPDATE SET ${sets.join(', ')}`,
     )
     .bind(...insertBinds, ...setBinds)
@@ -172,10 +182,30 @@ export async function getSubscriptionContractsByCustomerId(
 }
 
 /**
+ * C2: 実測の鮮度上限 (日)。リマインドは「この日数以内に受信した実測」がある契約にだけ送る。
+ *
+ * 10 の根拠: トリガー1 (決済 n 日前通知メール、n=7 運用) の実測は、窓 `[3,7]` の
+ * catch-up 下限 (3日前) 時点でも受信から 7-3 = 4 日しか経っていない。その 2 倍強の余裕。
+ * 一方、**前サイクル**の実測は最短周期 (20日) でも受信から 13 日以上経っているため、
+ * 10 なら「今サイクルの実測だけ通し、前サイクルの取り残しは確実に落とす」を両立できる。
+ * ⚠️ Huckleberry の「注文前確認メール」の日数設定 (現在 7) を 13 日超に変えると、
+ * 健全な実測まで stale 扱いになり全件無送信になる — 変える時はここも見直すこと。
+ */
+export const FLOW_MEASUREMENT_FRESH_DAYS = 10;
+
+/**
  * WI-2 リマインド対象: 推定次回決済日が [fromDate, toDate] (YYYY-MM-DD, 両端含む) にあり、
  * 未解約・未一時停止・その推定日にまだ送っていない契約。
  * 範囲照会なのは catch-up のため (採点R1: 4日前の送信窓を障害等で丸ごと逃しても、
  * 締切当日 = 3日前まではまだ通知価値が残る。claim が推定日単位なので二重送信はない)。
+ *
+ * 🚨 C2: 送信対象は **Flow 実測 (estimate_source='flow') かつ実測が新しい契約に限定**する。
+ * 導出 (derived) は「直近注文 + 周期」の推定にすぎず、お届け日変更を原理的に追えない。
+ * 誤送信は回復不能・無送信は回復可能 (次の Flow 発火で復帰) という判断軸に従い、
+ * 実測が入るまでリマインドは 1 通も送らない (Katsu 合意済み 2026-08-02/08-05)。
+ * 鮮度述語 (`flow_measured_at`) が無いと、「お届け日変更 + 7日前通知」の両 Flow を
+ * 取りこぼした契約の**前サイクルの実測**がそのまま窓に入る。
+ * 開放条件の数値は docs/SUBSCRIPTION_GATE_CRITERIA.md、進捗は Admin Ops `reminder-dry-run`。
  */
 export async function listContractsDueForReminder(
   db: D1Database,
@@ -189,6 +219,9 @@ export async function listContractsDueForReminder(
        WHERE next_billing_estimate >= ? AND next_billing_estimate <= ?
          AND cancelled_at IS NULL
          AND paused_at IS NULL
+         AND estimate_source = 'flow'
+         AND flow_measured_at IS NOT NULL
+         AND flow_measured_at >= datetime('now','+9 hours','-${FLOW_MEASUREMENT_FRESH_DAYS} day')
          AND (reminded_for_estimate IS NULL OR reminded_for_estimate != next_billing_estimate)
        LIMIT ?`,
     )

@@ -9,6 +9,9 @@
  *   - 対象: 推定次回決済日 ∈ [今日+3, 今日+7] (通常 = 7日前カード。catch-up: 窓の前半を障害・
  *     gate OFF 等で逃しても締切当日 = 3日前までは通知価値が残る。claim が推定日単位なので
  *     二重送信なし = 窓を広げても通数は増えず、届くタイミングが早くなるだけ)
+ *   - 🚨 C2: 送信は **Flow 実測 (estimate_source='flow') かつ受信が新しい契約に限定**。
+ *     導出 (derived) では送らない (お届け日変更を追えない = 誤送信は回復不能)。
+ *     開放条件の数値は docs/SUBSCRIPTION_GATE_CRITERIA.md
  *   - 文言: 締切までの残り日数で切替 (7日前「あと4日以内」/ 4日前「明日まで」/ 3日前「本日中」)
  *
  * フェーズ2 — 決済失敗リカバリ:
@@ -38,17 +41,14 @@ import {
   jstNow,
   type SubscriptionContractRow,
 } from '@line-crm/db';
+import { FLOW_MEASUREMENT_FRESH_DAYS } from '@line-crm/db';
 import { dispatch } from './channel-dispatcher.js';
 import {
   buildBillingReminderMessages,
   buildPaymentRecoveryMessages,
   BILLING_DEADLINE_LEAD_DAYS,
 } from './subscription-concierge.js';
-import {
-  addDays,
-  computeNextBillingEstimate,
-  computeFlowBillingEstimate,
-} from './subscription-contracts.js';
+import { addDays, computeFlowBillingEstimate } from './subscription-contracts.js';
 
 export const BILLING_REMINDER_JOB_NAME = 'teiki-billing-reminder';
 
@@ -97,6 +97,12 @@ export interface BillingReminderResult {
    */
   staleEstimate: number;
   /**
+   * C2: 実測 (estimate_source='flow') でない・または実測が古い行が送信直前まで来た件数。
+   * list SQL が同じ述語で絞るため通常 0。>0 は「list と関門の述語がズレた」(SQL の退行 /
+   * list〜送信間の race) の警報。claim は消費しない。
+   */
+  notMeasured: number;
+  /**
    * 恒久 4xx (無効 userId 等)。outcome としては skippedRecipient / recoverySkipped に
    * 計上される (= claim 維持) が、恒久エラー起因の件数を監視で判別できるよう
    * **内数として別カウント**する。
@@ -126,6 +132,7 @@ export async function processBillingReminders(
     failed: 0,
     leakedClaims: 0,
     staleEstimate: 0,
+    notMeasured: 0,
     permanentError: 0,
     recoveryDue: 0,
     recoverySent: 0,
@@ -162,6 +169,15 @@ export async function processBillingReminders(
   }
 
   const todayJst = jst.toISOString().slice(0, 10);
+  // C2 鮮度の下限時刻 (JST 'YYYY-MM-DD HH:MM:SS')。list SQL の
+  // `flow_measured_at >= datetime('now','+9 hours','-N day')` と同じ定数・同じ形式で、
+  // 送信直前の関門 (remindOne) がもう一度評価する
+  const measuredFloor = new Date(
+    now + 9 * 3600_000 - FLOW_MEASUREMENT_FRESH_DAYS * 86_400_000,
+  )
+    .toISOString()
+    .replace('T', ' ')
+    .slice(0, 19);
 
   // ---- フェーズ1: 決済リマインド ----
   const due = await listContractsDueForReminder(
@@ -173,7 +189,7 @@ export async function processBillingReminders(
   for (const contract of due) {
     try {
       // claim の解放責任は remindOne 内に一元化 (throw 経路含む)。ここで二重解放しない
-      const outcome = await remindOne(db, lineClient, contract, todayJst, result);
+      const outcome = await remindOne(db, lineClient, contract, todayJst, measuredFloor, result);
       result[outcome] += 1;
     } catch (err) {
       // remindOne が claim を持ったまま throw することはない (claim 後の失敗は内部で解放済み)
@@ -199,12 +215,25 @@ export async function processBillingReminders(
   return result;
 }
 
-/** cron_run_logs へ記録 (subscription-reminder と同じ自前記録方式 → index.ts で二重 wrap しない) */
+/**
+ * cron_run_logs へ記録 (subscription-reminder と同じ自前記録方式 → index.ts で二重 wrap しない)
+ *
+ * `staleEstimate` / `notMeasured` も partial 扱いにする: どちらも「無送信に倒した」= 顧客への
+ * 実害はゼロだが、**送信対象の選び方 (list SQL) と送ってよい条件 (関門) がズレている**という
+ * 警報である。success に畳むと /admin の job 別失敗検知 (#233 C8) に一切出ず、
+ * 二重防壁の片翼が折れたまま運用が続く。
+ */
 async function logRun(db: D1Database, result: BillingReminderResult): Promise<void> {
+  const anomalies =
+    result.failed +
+    result.recoveryFailed +
+    result.leakedClaims +
+    result.staleEstimate +
+    result.notMeasured;
   try {
     await insertCronRunLog(db, {
       jobName: BILLING_REMINDER_JOB_NAME,
-      status: result.failed + result.recoveryFailed + result.leakedClaims > 0 ? 'partial' : 'success',
+      status: anomalies > 0 ? 'partial' : 'success',
       metrics: result,
     });
   } catch (err) {
@@ -221,30 +250,48 @@ async function remindOne(
   lineClient: LineClient,
   contract: SubscriptionContractRow,
   todayJst: string,
+  measuredFloor: string,
   result: BillingReminderResult,
-): Promise<'sent' | 'claimedLost' | 'unlinked' | 'skippedRecipient' | 'failed' | 'staleEstimate'> {
+): Promise<
+  'sent' | 'claimedLost' | 'unlinked' | 'skippedRecipient' | 'failed' | 'staleEstimate' | 'notMeasured'
+> {
+  // 🚨 C2: 実測限定の関門。list SQL が同じ述語で絞っているが、送信直前でもう一度
+  // 評価する — 述語は「送る資格」の定義そのものなので、list の実装が変わっても
+  // ここが最後の砦になる (送信直前の再導出検算と同じ「合流点に関門」の思想)。
+  // 導出 (derived) はお届け日変更を原理的に追えないため送らない。
+  // 実測でも古い受信 (前サイクルの取り残し) は信用しない。claim は消費しない。
+  if (
+    contract.estimate_source !== 'flow' ||
+    !contract.flow_measured_at ||
+    contract.flow_measured_at < measuredFloor
+  ) {
+    console.warn(
+      `[${BILLING_REMINDER_JOB_NAME}] not measured: contract=${contract.contract_id} ` +
+        `source=${contract.estimate_source} measured_at=${contract.flow_measured_at}`,
+    );
+    return 'notMeasured';
+  }
+
   // 🚨 送信直前の再導出検算 — **全誤送信経路の合流点にある唯一の関門**。
   //
   // listContractsDueForReminder は `next_billing_estimate` 列だけで対象を選び、
   // その列を最新化するのは webhook 駆動の refreshEstimate しかない。列がアンカー
-  // (flow_estimate_anchor / skip_count_at_estimate) や導出材料と食い違ったまま
+  // (flow_estimate_anchor / skip_count_at_estimate) と食い違ったまま
   // 窓に入ると、そのまま顧客へ push される。
   //
   // 既知の drift 経路 (過去注文による実測差し戻し / rebuild pass3 の基準値正規化 /
   // 収集中に溜まった状態) はいずれも発生源が別なのに、届く瞬間はここを通る。
   // よってここで「列 == 今の状態から導ける値」を検算し、食い違えば送らない。
   // **未知の drift 経路も含めて「誤送信 (回復不能) → 無送信 (次の発火で回復)」へ倒す。**
+  // (C2 で送信対象は flow 行のみになったため、検算も flow 導出だけで足りる)
   //
   // claim は消費しない (return が claim より手前) ので、列が訂正されれば次の tick で送れる。
   //
-  // 解約/一時停止中の行はここでは判定しない: どちらの導出関数も null を返すので必ず
+  // 解約/一時停止中の行はここでは判定しない: 導出関数が null を返すので必ず
   // stale 扱いになってしまうが、停止状態は **claim SQL の述語 (cancelled/paused IS NULL) が
   // 原子的に**弾く。claim 時点で読み直す分そちらの方が正確なので、判定を奪わない。
   if (!contract.cancelled_at && !contract.paused_at) {
-    const expected =
-      contract.estimate_source === 'flow'
-        ? computeFlowBillingEstimate(contract)
-        : computeNextBillingEstimate(contract);
+    const expected = computeFlowBillingEstimate(contract);
     if (expected !== contract.next_billing_estimate) {
       console.warn(
         `[${BILLING_REMINDER_JOB_NAME}] stale estimate: contract=${contract.contract_id} ` +
@@ -261,7 +308,11 @@ async function remindOne(
   const friend = await getFriendByShopifyCustomerId(db, contract.shopify_customer_id);
   if (!friend || !friend.line_user_id) return 'unlinked';
 
-  // 原子的 claim (CAS): この推定日に対する送信権を 1 プロセスだけが獲得する
+  // 原子的 claim (CAS): この推定日に対する送信権を 1 プロセスだけが獲得する。
+  // C2 述語 (実測 + 鮮度) も **原子点で**再評価する: 上の関門は list が返した
+  // スナップショットを見ているだけなので、list〜claim の間に行が flow → derived へ
+  // 遷移し、かつ推定日が同値だった場合に抜けうる (稀だが原理的に開いている)。
+  // ここに置けば「送信権の獲得」と「送ってよい状態か」が 1 つの UPDATE で決まる。
   const claim = await db
     .prepare(
       `UPDATE subscription_contracts
@@ -270,9 +321,12 @@ async function remindOne(
          AND next_billing_estimate = ?
          AND cancelled_at IS NULL
          AND paused_at IS NULL
+         AND estimate_source = 'flow'
+         AND flow_measured_at IS NOT NULL
+         AND flow_measured_at >= ?
          AND (reminded_for_estimate IS NULL OR reminded_for_estimate != next_billing_estimate)`,
     )
-    .bind(jstNow(), contract.contract_id, contract.next_billing_estimate)
+    .bind(jstNow(), contract.contract_id, contract.next_billing_estimate, measuredFloor)
     .run();
   if (!claim.meta || claim.meta.changes !== 1) return 'claimedLost';
 

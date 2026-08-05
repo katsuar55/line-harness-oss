@@ -60,6 +60,7 @@ interface ContractRow {
   estimate_source: string;
   flow_estimate_anchor: string | null;
   skip_count_at_estimate: number;
+  flow_measured_at: string | null;
   reminded_for_estimate: string | null;
   recovery_pending_at: string | null;
   recovery_notified_at: string | null;
@@ -112,11 +113,20 @@ function createFakeDb(seed?: {
               'next_billing_estimate <= ?',
               'cancelled_at IS NULL',
               'paused_at IS NULL',
+              // C2: 実測限定 + 鮮度。これが消えると導出 (derived) や前サイクルの古い実測に
+              // リマインドが飛ぶ (お届け日変更を追えない日付での誤送信 = 回復不能)
+              "estimate_source = 'flow'",
+              'flow_measured_at IS NOT NULL',
+              "flow_measured_at >= datetime('now','+9 hours','-10 day')",
               '(reminded_for_estimate IS NULL OR reminded_for_estimate != next_billing_estimate)',
             ]) {
               if (!sql.includes(p)) throw new Error(`list SQL から述語が消えている: ${p}`);
             }
             const [from, to, limit] = binds as [string, string, number];
+            const freshFloor = new Date(Date.now() + 9 * 3600_000 - 10 * 86_400_000)
+              .toISOString()
+              .replace('T', ' ')
+              .slice(0, 19);
             const rows = [...contracts.values()].filter(
               (r) =>
                 r.next_billing_estimate !== null &&
@@ -124,6 +134,9 @@ function createFakeDb(seed?: {
                 r.next_billing_estimate <= to &&
                 r.cancelled_at === null &&
                 r.paused_at === null &&
+                r.estimate_source === 'flow' &&
+                r.flow_measured_at !== null &&
+                r.flow_measured_at >= freshFloor &&
                 (r.reminded_for_estimate === null ||
                   r.reminded_for_estimate !== r.next_billing_estimate),
             );
@@ -783,6 +796,34 @@ describe('rebuildContractsFromD1', () => {
     expect(db.contracts.get('200')!.cancelled_at).toBe('2026-07-01');
   });
 
+  it('🚨これを壊すと誤送信になる: pass3 の基準値正規化は実測の受信時刻も無効化する', async () => {
+    // pass3 は skip 基準値を現累計へ揃える = flow 行の**未消化スキップの先送りを恒久的に消す**
+    // (推定日がアンカーへ巻き戻る)。鮮度だけ残すと、巻き戻った古い日付が送信資格を保ったまま
+    // 窓に入りうる。受信時刻も落として「次の Flow 発火まで無送信」に倒すのが安全側。
+    const db = createFakeDb();
+    await upsertSubscriptionContract(db, {
+      contractId: '400',
+      shopifyCustomerId: 'c4',
+      intervalDays: 30,
+      // 未消化スキップがある実測行 (= pass3 の正規化対象)
+      skipCount: 1,
+      skipCountAtLastOrder: 0,
+      estimateSource: 'flow',
+      flowEstimateAnchor: '2026-09-01',
+      skipCountAtEstimate: 0,
+      nextBillingEstimate: '2026-10-01', // 9/01 + 30×1
+      flowMeasuredAt: '2026-08-20 10:00:00',
+    });
+
+    const result = await rebuildContractsFromD1(db);
+
+    const row = db.contracts.get('400')!;
+    expect(result.baselinesNormalized).toBe(1);
+    expect(row.skip_count_at_estimate).toBe(1); // 正規化された = 先送りが消えた
+    expect(row.next_billing_estimate).toBe('2026-09-01'); // アンカーへ巻き戻っている
+    expect(row.flow_measured_at).toBeNull(); // その日付に送信資格を与えない
+  });
+
   it('🚨採点R3: rebuild 経由では recovery_pending_at が立たない (歴史的 pause への一斉通知防止)', async () => {
     // pass1 が契約行を paused_at=null で先に作る → pass2 の pause タグが「遷移」に見える
     // 迂回路。ここでマーカーが立つと gate ON 直後に stale な「一時停止しました」が一斉送信される。
@@ -827,30 +868,6 @@ describe('rebuildContractsFromD1', () => {
 });
 
 describe('listContractsDueForReminder / listContractsPendingRecovery — 実 SQL を exercise (採点R4)', () => {
-  it('リマインド対象: 日付範囲 [from, to] 両端含む + 安全述語 (cancelled/paused/reminded) を実評価', async () => {
-    const db = createFakeDb();
-    const seed = (id: string, patch: Record<string, unknown>) =>
-      upsertSubscriptionContract(db, { contractId: id, shopifyCustomerId: 'c1', ...patch });
-    await seed('in-from', { nextBillingEstimate: '2026-07-17' }); // 下限ちょうど → 対象
-    await seed('in-to', { nextBillingEstimate: '2026-07-18' }); // 上限ちょうど → 対象
-    await seed('below', { nextBillingEstimate: '2026-07-16' }); // 範囲外 (下)
-    await seed('above', { nextBillingEstimate: '2026-07-19' }); // 範囲外 (上) — 上限述語喪失なら混入
-    await seed('cancelled', { nextBillingEstimate: '2026-07-18', cancelledAt: '2026-07-01' });
-    await seed('paused', { nextBillingEstimate: '2026-07-18', pausedAt: '2026-07-01' });
-    await seed('reminded', {
-      nextBillingEstimate: '2026-07-18',
-      remindedForEstimate: '2026-07-18', // 同一推定日は送信済み
-    });
-    await seed('re-remind', {
-      nextBillingEstimate: '2026-07-18',
-      remindedForEstimate: '2026-07-10', // 推定日が変わっていれば再対象
-    });
-    await seed('no-estimate', { nextBillingEstimate: null });
-
-    const due = await listContractsDueForReminder(db, '2026-07-17', '2026-07-18');
-    expect(due.map((r) => r.contract_id).sort()).toEqual(['in-from', 'in-to', 're-remind']);
-  });
-
   // マーカー時刻は **実時計からの相対**で作る。固定日付だとその日を過ぎた瞬間に
   // TTL 述語で全件落ちて CI が確定 red になる (時限爆弾)。
   const jstAgo = (hours: number) =>
@@ -858,6 +875,66 @@ describe('listContractsDueForReminder / listContractsPendingRecovery — 実 SQL
       .toISOString()
       .replace('T', ' ')
       .slice(0, 19);
+
+  // C2: 送信資格のある行 = flow 実測 + 新しい受信時刻。テストの seed でも
+  // 「資格あり」の既定をここに集約する (アンカー = 実効値、増分ゼロの自己整合形)
+  const flowFresh = (estimate: string | null) => ({
+    estimateSource: 'flow',
+    flowEstimateAnchor: estimate,
+    flowMeasuredAt: jstAgo(24), // 1日前受信 = 鮮度内
+  });
+
+  it('リマインド対象: 日付範囲 [from, to] 両端含む + 安全述語 (cancelled/paused/reminded) を実評価', async () => {
+    const db = createFakeDb();
+    const seed = (id: string, patch: Record<string, unknown>) =>
+      upsertSubscriptionContract(db, { contractId: id, shopifyCustomerId: 'c1', ...patch });
+    const at = (estimate: string | null, patch: Record<string, unknown> = {}) => ({
+      nextBillingEstimate: estimate,
+      ...flowFresh(estimate),
+      ...patch,
+    });
+    await seed('in-from', at('2026-07-17')); // 下限ちょうど → 対象
+    await seed('in-to', at('2026-07-18')); // 上限ちょうど → 対象
+    await seed('below', at('2026-07-16')); // 範囲外 (下)
+    await seed('above', at('2026-07-19')); // 範囲外 (上) — 上限述語喪失なら混入
+    await seed('cancelled', at('2026-07-18', { cancelledAt: '2026-07-01' }));
+    await seed('paused', at('2026-07-18', { pausedAt: '2026-07-01' }));
+    await seed('reminded', at('2026-07-18', { remindedForEstimate: '2026-07-18' })); // 同一推定日は送信済み
+    await seed('re-remind', at('2026-07-18', { remindedForEstimate: '2026-07-10' })); // 推定日が変わっていれば再対象
+    await seed('no-estimate', at(null));
+
+    const due = await listContractsDueForReminder(db, '2026-07-17', '2026-07-18');
+    expect(due.map((r) => r.contract_id).sort()).toEqual(['in-from', 'in-to', 're-remind']);
+  });
+
+  it('🚨これを壊すと誤送信になる (C2): 導出 (derived) は窓内でも送信対象にしない', async () => {
+    // 導出は「直近注文 + 周期」の推定にすぎず、お届け日変更を原理的に追えない。
+    // 誤送信は回復不能・無送信は回復可能 — 実測が入るまで 1 通も送らないのが仕様。
+    const db = createFakeDb();
+    const seed = (id: string, patch: Record<string, unknown>) =>
+      upsertSubscriptionContract(db, { contractId: id, shopifyCustomerId: 'c1', ...patch });
+    await seed('derived-in-window', { nextBillingEstimate: '2026-07-18' }); // 既定 = derived
+    await seed('flow-ok', { nextBillingEstimate: '2026-07-18', ...flowFresh('2026-07-18') });
+
+    const due = await listContractsDueForReminder(db, '2026-07-17', '2026-07-18');
+    expect(due.map((r) => r.contract_id)).toEqual(['flow-ok']);
+  });
+
+  it('🚨これを壊すと誤送信になる (C2): 古い実測・受信時刻なしの実測は送信対象にしない', async () => {
+    // 「お届け日変更 + 7日前通知」の両 Flow を取りこぼした契約では、前サイクルの実測が
+    // そのまま窓に入りうる。受信から 10 日を超えた実測は今サイクルの裏付けにならない。
+    const db = createFakeDb();
+    const seed = (id: string, patch: Record<string, unknown>) =>
+      upsertSubscriptionContract(db, { contractId: id, shopifyCustomerId: 'c1', ...patch });
+    const base = { nextBillingEstimate: '2026-07-18', ...flowFresh('2026-07-18') };
+    await seed('fresh', { ...base, flowMeasuredAt: jstAgo(24) });
+    await seed('edge-inside', { ...base, flowMeasuredAt: jstAgo(24 * 10 - 2) }); // 10日の内側
+    await seed('stale', { ...base, flowMeasuredAt: jstAgo(24 * 11) }); // 11日前 = 期限切れ
+    await seed('no-measured-at', { ...base, flowMeasuredAt: null }); // 075 適用前の既存 flow 行
+
+    const due = await listContractsDueForReminder(db, '2026-07-17', '2026-07-18');
+    expect(due.map((r) => r.contract_id).sort()).toEqual(['edge-inside', 'fresh']);
+  });
 
   it('リカバリ対象: pending 有り・未送信・一時停止中・未解約のみ', async () => {
     const db = createFakeDb();
@@ -982,6 +1059,8 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
     const row = db.contracts.get('100')!;
     expect(row.next_billing_estimate).toBe('2026-08-10');
     expect(row.estimate_source).toBe('flow');
+    // C2: 実測記録は受信時刻も残す (リマインドの鮮度述語が読む。無いと永久に送信対象外)
+    expect(row.flow_measured_at).not.toBeNull();
   });
 
   // ---- migration 074: 実測をアンカーとして、実測後のスキップ増分だけ先送りする ----
@@ -1053,6 +1132,8 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
     const row = db.contracts.get('100')!;
     expect(row.next_billing_estimate).toBeNull();
     expect(row.flow_estimate_anchor).toBeNull(); // 再開時は Huckleberry が引き直す
+    // 時刻だけ新しい行を作らない (アンカー無しで鮮度だけ通る状態を構造的に排除)
+    expect(row.flow_measured_at).toBeNull();
   });
 
   it('🚨周期不明 + 未消化スキップでは日付を出さない (古い日付で送らない)', async () => {
@@ -1077,6 +1158,27 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
       `subscription-100-plan:${PLAN_30}, subscription-100-pause:2026-07-12`,
     );
     expect(db.contracts.get('100')!.next_billing_estimate).toBeNull();
+    // C2: 停止でアンカーを消費する時は受信時刻も消費する (再開後に古い鮮度が蘇らない)
+    expect(db.contracts.get('100')!.flow_measured_at).toBeNull();
+  });
+
+  it('アンカー無しの flow 行を derived へ戻すとき受信時刻も消す (鮮度だけ残る行を作らない)', async () => {
+    // 「アンカーは失ったが受信時刻は残っている」不整合行 (pause の途中失敗・手書き更新等) は
+    // 本番でも作りうる。ここで時刻を残すと、日付の裏付けが無いのに鮮度述語だけ通る行になる。
+    // fallback は日付・source・鮮度をまとめて整合させる掃除役なので、時刻も落とすのが不変条件
+    const db = createFakeDb();
+    await seedOrder(db);
+    await upsertSubscriptionContract(db, {
+      contractId: '100',
+      estimateSource: 'flow',
+      flowEstimateAnchor: null,
+      flowMeasuredAt: '2026-08-01 10:00:00',
+    });
+    // 何らかの再計算を通す (顧客タグの再受信 = 本番で最も高頻度な経路)
+    await applyCustomerTagsToContracts(db, 'cust-1', `subscription-100-plan:${PLAN_30}`);
+    const row = db.contracts.get('100')!;
+    expect(row.estimate_source).toBe('derived');
+    expect(row.flow_measured_at).toBeNull();
   });
 
   it('ルール2b: resume 後は null 固着せず derived で推定が復活する', async () => {
@@ -1111,6 +1213,8 @@ describe('estimate_source=flow の3ルール (WI-2 採点R1)', () => {
     expect(row.next_billing_estimate).toBe('2026-09-09'); // 8/10 + 30
     // 実測アンカーも役目を終える (残すと、後で再び flow になった際に古い日付が蘇りうる)
     expect(row.flow_estimate_anchor).toBeNull();
+    // 受信時刻も同時に消す (次の flow 昇格で「古い時刻 + 新アンカー」が復活しないように)
+    expect(row.flow_measured_at).toBeNull();
   });
 
   // ---- 前例なし層 (last_order_at 欠落) の非対称ルール ----

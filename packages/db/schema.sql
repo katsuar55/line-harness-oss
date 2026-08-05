@@ -1961,7 +1961,8 @@ CREATE TABLE IF NOT EXISTS subscription_contracts (
   recovery_pending_at  TEXT,
   recovery_notified_at TEXT,
   flow_estimate_anchor TEXT,
-  skip_count_at_estimate INTEGER NOT NULL DEFAULT 0);
+  skip_count_at_estimate INTEGER NOT NULL DEFAULT 0,
+  flow_measured_at     TEXT);
 
 -- from 071_own_billing_foundation.sql
 CREATE TABLE IF NOT EXISTS own_sub_contracts (
