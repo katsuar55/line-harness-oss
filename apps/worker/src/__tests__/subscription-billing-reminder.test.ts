@@ -51,6 +51,10 @@ const NOW_NOON = Date.parse('2026-07-14T12:00:00+09:00');
 const TARGET_FROM = '2026-07-17'; // today+3 (catch-up 下限 = 締切当日)
 const TARGET_TO = '2026-07-21'; // today+7 (通常送信 = 7日前リマインドカード)
 const TARGET_DEADLINE_TOMORROW = '2026-07-18'; // today+4 (締切は明日)
+// C2: 鮮度内 (10日以内) の実測受信時刻。NOW_NOON の前日 = 通常運用の形
+// (トリガー1 は決済7日前に発火するので、窓内の送信時点で受信は 0〜4 日前)
+const MEASURED_FRESH = '2026-07-13 12:00:00';
+// 鮮度の下限 (floor) = NOW_NOON - 10日 = '2026-07-04 12:00:00'
 
 interface ContractState {
   contract_id: string;
@@ -68,6 +72,8 @@ interface ContractState {
   estimate_source: string;
   flow_estimate_anchor: string | null;
   skip_count_at_estimate: number;
+  // C2 実測限定の関門 (notMeasured ガード) が読む列
+  flow_measured_at: string | null;
   [key: string]: unknown;
 }
 
@@ -177,9 +183,11 @@ function contract(overrides: Partial<ContractState> = {}): ContractState {
     paused_at: null,
     cancelled_at: null,
     next_billing_estimate: TARGET_TO,
-    estimate_source: 'derived',
+    // C2 以降の送信資格は flow 実測のみ。fixture の既定も「送れる行」= flow にする
+    estimate_source: 'flow',
     flow_estimate_anchor: null,
     skip_count_at_estimate: 0,
+    flow_measured_at: null,
     reminded_for_estimate: null,
     recovery_pending_at: null,
     recovery_notified_at: null,
@@ -201,6 +209,12 @@ function contract(overrides: Partial<ContractState> = {}): ContractState {
       const delta = Math.max(0, base.skip_count - base.skip_count_at_last_order);
       base.last_order_at = `${addDays(estimate, -base.interval_days * (1 + delta))}T10:00:00+09:00`;
     }
+  }
+  // 受信時刻も自己整合させる: アンカーを持つ flow 行だけが持つ (本番では recordFlowMeasurement
+  // が同時に書き、pause/cancel・derived 復帰で同時に消える)。明示 override は尊重する
+  if (overrides.flow_measured_at === undefined) {
+    base.flow_measured_at =
+      base.estimate_source === 'flow' && base.flow_estimate_anchor !== null ? MEASURED_FRESH : null;
   }
   return base;
 }
@@ -273,28 +287,69 @@ describe('processBillingReminders — gate / 送信窓', () => {
   });
 });
 
-// 送信直前の再導出検算 — **全誤送信経路の合流点にある関門**。
-// 既知の drift 経路 (過去注文による実測差し戻し / rebuild pass3 の基準値正規化 /
-// 送信面が閉じている間に溜まった状態) はいずれも発生源が別なのに、顧客に届く瞬間はここを通る。
-// 「誤送信 (回復不能) → 無送信 (次の Flow 発火で回復)」への一括変換弁なので、
-// ここが緩むと未知の drift 経路がそのまま顧客へ抜ける。
-describe('🚨processBillingReminders — 送信直前の再導出検算 (staleEstimate)', () => {
-  it('derived 行: 列が導出値と食い違うなら送らず claim も消費しない', async () => {
-    // last_order_at を明示 override して不整合を作る (6/18 + 30 = 7/18 ≠ 7/21)
-    const row = contract({ last_order_at: '2026-06-18T10:00:00+09:00' });
+// C2 実測限定の関門 — list SQL と同じ述語を送信直前でもう一度評価する。
+// list の実装が変わっても、導出 (derived) や古い実測がここを抜けて顧客に届くことはない。
+describe('🚨processBillingReminders — C2 実測限定の関門 (notMeasured)', () => {
+  it('導出 (derived) 行が list をすり抜けても送らない・claim も消費しない', async () => {
+    // 導出は「直近注文 + 周期」の推定にすぎず、お届け日変更を原理的に追えない。
+    // 誤送信は回復不能・無送信は回復可能 — 実測が入るまで 1 通も送らないのが仕様
+    const row = contract({ estimate_source: 'derived' });
     const db = createStatefulDb([row]);
     mockListDue.mockResolvedValue([row]);
     mockGetFriendByCustomer.mockResolvedValue(FRIEND);
 
     const r = await processBillingReminders(env(db), lineClient, NOW_NOON);
 
-    expect(r.staleEstimate).toBe(1);
+    expect(r.notMeasured).toBe(1);
     expect(r.sent).toBe(0);
     expect(mockDispatch).not.toHaveBeenCalled();
-    // claim を消費しない = 列が訂正されれば次の tick で正しい日付を送れる
+    // claim を消費しない = 実測が入れば同じ推定日でも送れる
     expect(row.reminded_for_estimate).toBeNull();
   });
 
+  it('実測が古い (受信から10日超 = 前サイクルの取り残し) なら送らない', async () => {
+    // 「お届け日変更 + 7日前通知」の両 Flow を取りこぼすと、前サイクルの実測日が
+    // そのまま窓に入りうる。floor = NOW_NOON - 10日 = 2026-07-04 12:00:00
+    const row = contract({ flow_measured_at: '2026-07-01 12:00:00' });
+    const db = createStatefulDb([row]);
+    mockListDue.mockResolvedValue([row]);
+    mockGetFriendByCustomer.mockResolvedValue(FRIEND);
+
+    const r = await processBillingReminders(env(db), lineClient, NOW_NOON);
+    expect(r.notMeasured).toBe(1);
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it('鮮度境界の内側 (floor 直後) は送る — 述語の向きの退行を検出', async () => {
+    const row = contract({ flow_measured_at: '2026-07-04 13:00:00' }); // floor + 1h
+    const db = createStatefulDb([row]);
+    mockListDue.mockResolvedValue([row]);
+    mockGetFriendByCustomer.mockResolvedValue(FRIEND);
+    mockDispatch.mockResolvedValue(SENT);
+
+    const r = await processBillingReminders(env(db), lineClient, NOW_NOON);
+    expect(r.notMeasured).toBe(0);
+    expect(r.sent).toBe(1);
+  });
+
+  it('受信時刻なし (migration 075 適用前の既存 flow 行) は送らない', async () => {
+    const row = contract({ flow_measured_at: null });
+    const db = createStatefulDb([row]);
+    mockListDue.mockResolvedValue([row]);
+    mockGetFriendByCustomer.mockResolvedValue(FRIEND);
+
+    const r = await processBillingReminders(env(db), lineClient, NOW_NOON);
+    expect(r.notMeasured).toBe(1);
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+});
+
+// 送信直前の再導出検算 — **全誤送信経路の合流点にある関門**。
+// 既知の drift 経路 (過去注文による実測差し戻し / rebuild pass3 の基準値正規化 /
+// 送信面が閉じている間に溜まった状態) はいずれも発生源が別なのに、顧客に届く瞬間はここを通る。
+// 「誤送信 (回復不能) → 無送信 (次の Flow 発火で回復)」への一括変換弁なので、
+// ここが緩むと未知の drift 経路がそのまま顧客へ抜ける。
+describe('🚨processBillingReminders — 送信直前の再導出検算 (staleEstimate)', () => {
   it('flow 行: アンカー + スキップ増分と食い違うなら送らない', async () => {
     // アンカー 7/21・skip 増分 1 なら実効値は 8/20。列が 7/21 のままなのは
     // 「スキップは記録されたが推定日が更新されていない」状態 = 送ると 1 周期古い日付になる
@@ -437,14 +492,19 @@ describe('processBillingReminders — フェーズ1 リマインド', () => {
   });
 
   it('照会後に解約された契約は claim 述語 (cancelled IS NULL) で弾かれる', async () => {
-    const row = contract({ cancelled_at: '2026-07-14' });
-    const db = createStatefulDb([row]);
-    mockListDue.mockResolvedValue([row]);
+    // list のスナップショット (active) と DB の現在値 (解約済み) を別オブジェクトにして
+    // stale-read の形を忠実に再現する (解約済み行は list SQL に載らないので、
+    // 「解約済みの行が list から返る」形の fixture は本番に存在しえない)
+    const snapshot = contract(); // list 時点: active + 実測フレッシュ
+    const dbRow = contract({ cancelled_at: '2026-07-14' }); // claim 時点: 解約済み
+    const db = createStatefulDb([dbRow]);
+    mockListDue.mockResolvedValue([snapshot]);
     mockGetFriendByCustomer.mockResolvedValue(FRIEND);
 
     const r = await processBillingReminders(env(db), lineClient, NOW_NOON);
     expect(r.claimedLost).toBe(1);
     expect(mockDispatch).not.toHaveBeenCalled();
+    expect(dbRow.reminded_for_estimate).toBeNull();
   });
 
   it('未連携 → claim を消費しない', async () => {

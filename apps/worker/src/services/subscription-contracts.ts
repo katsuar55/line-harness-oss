@@ -338,9 +338,12 @@ export async function deriveContractFromOrder(
                 skipCountAtLastOrder: existing!.skip_count,
                 estimateSource: 'derived',
                 // 実測アンカーも役目を終える (migration 074)。残すと、後で再び 'flow' になった際に
-                // 古いアンカー + 新しい基準値の組み合わせが復活しうる
+                // 古いアンカー + 新しい基準値の組み合わせが復活しうる。
+                // 受信時刻 (075) も同じ理由でクリア — 残すと次の flow 昇格時に
+                // 「古い時刻 + 新しいアンカー」の不整合が復活しうる
                 flowEstimateAnchor: null,
                 skipCountAtEstimate: existing!.skip_count,
+                flowMeasuredAt: null,
                 recoveryPendingAt: null,
                 recoveryNotifiedAt: null,
               }
@@ -447,11 +450,16 @@ async function refreshEstimate(
     // アンカーも同時に消費する (migration 074): 再開時に Huckleberry 側は決済日を
     // 引き直しているため、古いアンカーを復元すると停止前の日付が蘇る。
     if (row.cancelled_at || row.paused_at) {
-      if (row.next_billing_estimate !== null || row.flow_estimate_anchor !== null) {
+      if (
+        row.next_billing_estimate !== null ||
+        row.flow_estimate_anchor !== null ||
+        row.flow_measured_at !== null
+      ) {
         return upsertSubscriptionContract(db, {
           contractId: row.contract_id,
           nextBillingEstimate: null,
           flowEstimateAnchor: null,
+          flowMeasuredAt: null,
         });
       }
       return row;
@@ -477,6 +485,7 @@ async function refreshEstimate(
       nextBillingEstimate: estimate,
       estimateSource: 'derived',
       skipCountAtEstimate: row.skip_count,
+      flowMeasuredAt: null,
     });
   }
   if (estimate === row.next_billing_estimate) return row;
@@ -527,6 +536,9 @@ export async function recordFlowMeasurement(
     estimateSource: 'flow',
     flowEstimateAnchor: anchor,
     skipCountAtEstimate: baseline,
+    // 受信時刻 (migration 075、C2 の鮮度述語が読む)。アンカーと同じライフサイクル —
+    // 停止/解約でアンカーを持たない時は時刻も持たない (「時刻だけ新しい」行を作らない)
+    flowMeasuredAt: anchor === null ? null : jstNowLocal(),
   });
 }
 

@@ -156,6 +156,10 @@ cd apps/worker && npx wrangler d1 execute naturism-line-crm --remote --command \
 - 未知の contract_id は **200 + skipped + hint** で受ける。契約作成トリガーが注文 webhook より
   先着する race で起きうるが、Flow は 4xx を再試行しないため実行ログを green に保ち、
   次のトリガー発火で自然回復する
+- **C2 (2026-08-05)**: 決済リマインドの送信対象は **実測 (`estimate_source='flow'`) かつ
+  受信 10 日以内**の契約に限定される。受信時刻は `flow_measured_at` (migration 075) に
+  記録され、アンカーと同じライフサイクルで消える。導出 (derived) は窓に入っても送らない。
+  開放条件の数値と根拠: `docs/SUBSCRIPTION_GATE_CRITERIA.md`
 - 実測値 (`estimate_source='flow'`) は**アンカー**として保存され、タグ由来の再計算では
   上書きされない。ただし**実測を受けたあとに増えたスキップは先送りとして反映する**
   (`flow_estimate_anchor + 周期 × 増分`、migration 074)。

@@ -43,6 +43,7 @@ function contract(overrides: Partial<SubscriptionContractRow> = {}): Subscriptio
     estimate_source: 'derived',
     flow_estimate_anchor: null,
     skip_count_at_estimate: 0,
+    flow_measured_at: null,
     reminded_for_estimate: null,
     recovery_pending_at: null,
     recovery_notified_at: null,
