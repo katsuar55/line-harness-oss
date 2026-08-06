@@ -66,8 +66,11 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     // 管理ダッシュボード (公開 HTML shell のみ・GET 限定。集約 API /api/admin/dashboard は
     // API_KEY 保護のまま = 数字・未回答質問は無認証で読めない)。/admin/ は 301 → /admin。
     // /admin/staff・/admin/logs も同様に shell のみ (実データは /api/staff・/api/audit-logs)。
+    // /admin/ops (§10-3 受理台帳) も shell のみ (実データ/操作は /api/admin/sub-intents* =
+    // requireRole('owner','admin') + 変更系は個人キー必須)。
     (c.req.method === 'GET' &&
-      (path === '/admin' || path === '/admin/' || path === '/admin/staff' || path === '/admin/logs'))
+      (path === '/admin' || path === '/admin/' || path === '/admin/staff' || path === '/admin/logs' ||
+        path === '/admin/ops'))
   ) {
     return next();
   }

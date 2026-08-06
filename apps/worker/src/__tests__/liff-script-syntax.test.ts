@@ -24,6 +24,7 @@ import { liffFoodGraph } from '../routes/liff-food-graph.js';
 import { liffReorderPage } from '../routes/liff-reorder-page.js';
 import { adminDashboard } from '../routes/admin-dashboard.js';
 import { adminStaff } from '../routes/admin-staff.js';
+import { adminOps } from '../routes/admin-ops.js';
 import { faqAdmin } from '../routes/faq-admin.js';
 import { friendCoupon } from '../routes/friend-coupon.js';
 import { contactEmailPage } from '../routes/contact-email-page.js';
@@ -336,6 +337,7 @@ const OTHER_HTML_PAGES: Array<{ path: string; router: Hono }> = [
   { path: '/admin/logs', router: adminStaff as unknown as Hono },
   { path: '/admin/faq', router: faqAdmin as unknown as Hono },
   { path: '/admin/friend-coupon', router: friendCoupon as unknown as Hono },
+  { path: '/admin/ops', router: adminOps as unknown as Hono },
   { path: '/contact/email', router: contactEmailPage as unknown as Hono },
   { path: '/docs', router: openapi as unknown as Hono },
 ];

@@ -347,8 +347,9 @@ test('runLiffHealth: 全試行で不健全のままなら fail-closed を維持'
 // 台帳の整合
 // ─────────────────────────────────────
 
-test('HEALTH_PAGES: LIFF 7 + 管理 5 + contact/docs 2 の 14 件で、LIFF は全て watchdog 必須', () => {
-  assert.equal(HEALTH_PAGES.length, 14);
+test('HEALTH_PAGES: LIFF 7 + 管理 6 + contact/docs 2 の 15 件で、LIFF は全て watchdog 必須', () => {
+  // #238 で /admin/ops (§10-3 受理台帳) を追加 → 管理 5 → 6
+  assert.equal(HEALTH_PAGES.length, 15);
   const liff = HEALTH_PAGES.filter((p) => p.path.startsWith('/liff/'));
   assert.equal(liff.length, 7);
   assert.ok(liff.every((p) => p.watchdog && p.sentinel === 'liff.init'));

@@ -319,6 +319,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="links">
     <a class="link" href="/admin/faq"><div class="t">FAQ 管理</div><div class="d">AI の回答を追加・修正する (お客様への自動返信が変わります)</div></a>
     <a class="link" href="/admin/friend-coupon"><div class="t">友だち限定クーポン</div><div class="d">キャンペーンクーポンの ON/OFF・割引率の設定</div></a>
+    <a class="link" href="/admin/ops"><div class="t">定期便の受理台帳</div><div class="d">承った定期便のご依頼 (スキップ・解約など) の対応状況を管理する</div></a>
     <a class="link" href="/admin/staff"><div class="t">スタッフ管理</div><div class="d">個人ごとのログインキーを発行・停止する (オーナーのみ)</div></a>
     <a class="link" href="/admin/logs"><div class="t">操作履歴</div><div class="d">いつ・誰が・何を変更したかの記録</div></a>
     <a class="link" href="https://manager.line.biz/" target="_blank" rel="noopener"><div class="t">LINE公式アカウントマネージャー ↗</div><div class="d">1:1 チャットの手動返信・友だち数の公式統計</div></a>

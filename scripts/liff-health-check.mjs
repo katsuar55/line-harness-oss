@@ -42,6 +42,8 @@ export const HEALTH_PAGES = [
   { path: '/admin/logs', sentinel: null, watchdog: false },
   { path: '/admin/faq', sentinel: null, watchdog: false },
   { path: '/admin/friend-coupon', sentinel: null, watchdog: false },
+  // /admin/ops = §10-3 サブスク受理台帳 (公開 shell + inline script)。#238
+  { path: '/admin/ops', sentinel: null, watchdog: false },
   // /contact/email = mailto ブリッジ (#191)。公開固定パスで inline script を持つため対象 (採点 R1)。
   // /auth/line は素の GET だと script 0 本の HTML を返すため対象外 (query 依存の springboard)。
   { path: '/contact/email', sentinel: null, watchdog: false },

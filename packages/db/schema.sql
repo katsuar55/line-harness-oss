@@ -2080,6 +2080,35 @@ CREATE TABLE IF NOT EXISTS sub_link_tokens (
   created_at TEXT NOT NULL
 );
 
+-- from 076_sub_intents.sql
+CREATE TABLE IF NOT EXISTS sub_intents (
+  id TEXT PRIMARY KEY,                          -- 'si_' + 128bit crypto ランダム (service 層が採番)
+  friend_id TEXT,                               -- 受理時点の friend (未連携顧客のスタッフ代理受理は NULL)
+  contract_ns TEXT NOT NULL,                    -- 'hb' | 'own' (移行境界を跨ぐので名前空間必須 §1)
+  contract_key TEXT NOT NULL,                   -- ns='hb' → huckleberry contract_id / ns='own' → own contract gid
+  target_cycle_key TEXT NOT NULL,               -- 提示時のサイクル識別子 '{contract_key}:{YYYY-MM-DD|unknown}'
+  presented_scheduled_date TEXT,                -- 提示時に画面へ出した予定日 (受理時に現在値と突合する §1)
+  op TEXT NOT NULL,                             -- skip|date|pause|resume|cancel|undo_of
+  state TEXT NOT NULL DEFAULT 'received',       -- 上記 9 state
+  requested_by TEXT NOT NULL,                   -- customer|staff|system (種別。§1-4 で自動 pause と分離)
+  actor_staff_id TEXT,                          -- 最終遷移の個人 (受理・実行・却下で更新。全履歴は audit_logs)
+  actor_role TEXT,
+  payload_json TEXT,                            -- 依頼パラメータ (op='date' の希望日等)。PII を書かない
+  deadline_at TEXT,                             -- 変更受付期限 (= 決済日の 3 日前 EOD JST)。NULL = 締切なし
+  promised_by TEXT,                             -- §4-1 の約束期限 (§10-4 で使用。本 migration では列のみ)
+  claimed_at TEXT,                              -- executing の claim 時刻。/admin/ops が未解決時間を常時表示
+  executor TEXT NOT NULL DEFAULT 'human',       -- human|own_billing|api|blocked
+  supersedes_intent_id TEXT,                    -- undo_of が指す元 intent
+  fail_reason TEXT,                             -- failed の理由 (deadline_passed|cycle_drift|staff 入力等)
+  carryover_count INTEGER NOT NULL DEFAULT 0,   -- pause/cancel の繰越し回数 (可視化・無限ループ検知)
+  escalated_at TEXT,                            -- 締切超過エスカレーション済みマーカー (1 intent 1 回 §4-2)
+  stale_alerted_at TEXT,                        -- claim 滞留アラート済みマーカー (claim 世代ごと §1-2。
+                                                --  claim/release でクリア = escalated_at と目的を分離し、
+                                                --  片方の消費でもう片方が沈黙しないようにする)
+  created_at TEXT NOT NULL,
+  resolved_at TEXT                              -- terminal 到達時刻 (done/expired/failed/cancelled/superseded)
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -2352,3 +2381,10 @@ CREATE INDEX IF NOT EXISTS idx_sub_link_tokens_customer
   ON sub_link_tokens(shopify_customer_id);
 CREATE INDEX IF NOT EXISTS idx_sub_link_tokens_batch
   ON sub_link_tokens(batch_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_sub_intents_open
+  ON sub_intents(contract_ns, contract_key, target_cycle_key, op)
+  WHERE state IN ('received','executing','deferred');
+CREATE INDEX IF NOT EXISTS idx_sub_intents_state
+  ON sub_intents(state, deadline_at);
+CREATE INDEX IF NOT EXISTS idx_sub_intents_contract
+  ON sub_intents(contract_ns, contract_key, created_at);
