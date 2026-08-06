@@ -46,6 +46,7 @@ import {
   carryOverSubIntentCas,
   supersedeSubIntentCas,
   markEscalatedCas,
+  markStaleAlertedCas,
   listSubIntentsPastDeadline,
   listStaleClaims,
   getSubscriptionContract,
@@ -162,6 +163,8 @@ export type AcceptSubIntentResult =
   | { status: 'cycle_drift'; currentEstimate: string | null }
   | { status: 'contract_not_found' }
   | { status: 'invalid_op' }
+  /** presentedDate が YYYY-MM-DD 形式でない。受理していない */
+  | { status: 'invalid_date' }
   /** INSERT 0 行なのに open 行も引けない (= 競合の狭間)。受理を宣言しない */
   | { status: 'conflict' };
 
@@ -181,17 +184,25 @@ export async function acceptSubIntent(
   if (!contract) return { status: 'contract_not_found' };
 
   const currentEstimate = contract.next_billing_estimate?.slice(0, 10) ?? null;
-  let scheduledDate: string | null;
+  let presentedForRecord: string | null = null;
   if (input.presentedDate !== undefined && input.presentedDate !== null) {
     const presented = input.presentedDate.slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(presented)) {
+      // 形式不正はサイクル識別子に混ぜない (任意文字列が cycle key に入ると
+      // partial UNIQUE の畳み込みが崩れ、台帳が際限なく太る)
+      return { status: 'invalid_date' };
+    }
     if (currentEstimate !== null && presented !== currentEstimate) {
       // 古い吹き出し (§3-3): 提示時と今でサイクルが動いている。承ったと言わない。
       return { status: 'cycle_drift', currentEstimate };
     }
-    scheduledDate = presented;
-  } else {
-    scheduledDate = currentEstimate;
+    presentedForRecord = presented;
   }
+  // cycle key は**常に現在の read-model 推定から**構築する (推定 NULL は ':unknown' に畳む)。
+  // presentedDate から構築すると、推定 NULL の契約で異なる日付を並べるだけで §1-1 の
+  // 一意性を迂回して open intent を複数積めてしまう (監査 ops-safety MEDIUM)。
+  // presented_scheduled_date には提示された日付を記録する (推定があれば drift 検査済みなので同値)。
+  const scheduledDate = currentEstimate;
 
   const friend = contract.shopify_customer_id
     ? await getFriendByShopifyCustomerId(db, contract.shopify_customer_id)
@@ -209,7 +220,7 @@ export async function acceptSubIntent(
     contractNs: input.contractNs,
     contractKey: input.contractKey,
     targetCycleKey: cycleKey,
-    presentedScheduledDate: scheduledDate,
+    presentedScheduledDate: presentedForRecord ?? scheduledDate,
     op: input.op,
     // 移行窓 (executor='blocked') は受理だけして deferred に置く (§5-1 / §1-2)
     state: executor === 'blocked' ? 'deferred' : 'received',
@@ -241,15 +252,40 @@ export type UndoSubIntentResult =
   /** 既に terminal (expired/failed/cancelled/superseded) — 取り消すものがない */
   | { status: 'not_undoable'; state: SubIntentRow['state'] };
 
+/**
+ * undo_of の一意性キー: **元 intent ごとに 1 スロット**。
+ * サイクル単位 (元と同じ key) にすると、同一サイクルの別 intent への取り消し依頼が
+ * 既存 undo_of に UNIQUE 吸収され「承りました」と言いながら台帳に残らない
+ * (監査 state-machine/idempotency-race 両次元で CONFIRMED)。
+ */
+export function buildUndoCycleKey(originalCycleKey: string, originalId: string): string {
+  return `${originalCycleKey}#undo:${originalId}`;
+}
+
 export async function undoSubIntent(
   db: D1Database,
   id: string,
   actor: { staffId: string | null; role: string | null },
-  nowMs?: number,
+  opts: { requestedBy?: 'customer' | 'staff'; nowMs?: number } = {},
 ): Promise<UndoSubIntentResult> {
-  const now = toJstString(new Date(nowMs ?? Date.now()));
+  const requestedBy = opts.requestedBy ?? 'customer';
+  const now = toJstString(new Date(opts.nowMs ?? Date.now()));
   const row = await getSubIntent(db, id);
   if (!row) return { status: 'not_found' };
+
+  // 取り消し依頼 (undo_of) 自体への undo = 依頼の取り下げ。
+  // 元 intent を cancel_requested に立てていた場合は done へ復元する —
+  // 復元しないと元 intent が cancel_requested に永久固着する (出口が存在しない)。
+  if (row.op === 'undo_of' && row.supersedes_intent_id) {
+    const undoCancel = await undoSubIntentCas(db, id, actor.staffId, actor.role, now);
+    if (!undoCancel.cancelled) {
+      const cur = await getSubIntent(db, id);
+      return { status: 'not_undoable', state: cur?.state ?? row.state };
+    }
+    await restoreCancelRequestedCas(db, row.supersedes_intent_id);
+    const updated = await getSubIntent(db, id);
+    return { status: 'cancelled', intent: updated ?? { ...row, state: 'cancelled' } };
+  }
 
   // §1-3: received|deferred は直接 CAS。0 行なら「取り消しました」と言わない
   const { cancelled } = await undoSubIntentCas(db, id, actor.staffId, actor.role, now);
@@ -272,43 +308,67 @@ export async function undoSubIntent(
     current = (await getSubIntent(db, id)) ?? current;
   }
 
-  if (current.state === 'executing' || current.state === 'done') {
-    // §1-3: 実行に踏み込んだ意思の取り消しは「新しい intent」として受理する
-    if (current.state === 'done') {
-      // done を cancel_requested に立てる (CAS 負け = 並行遷移 → そのまま undo_of だけ受理)
-      await markCancelRequestedCas(db, id, now);
-    }
-    const { inserted } = await insertSubIntent(db, {
-      id: newIntentId(),
-      friendId: current.friend_id,
-      contractNs: current.contract_ns,
-      contractKey: current.contract_key,
-      targetCycleKey: current.target_cycle_key,
-      presentedScheduledDate: current.presented_scheduled_date,
-      op: 'undo_of',
-      state: 'received',
-      requestedBy: 'customer',
-      actorStaffId: actor.staffId,
-      actorRole: actor.role,
-      payloadJson: null,
-      deadlineAt: null,
-      executor: current.executor === 'blocked' ? 'blocked' : 'human',
-      supersedesIntentId: id,
-      createdAt: now,
-    });
-    void inserted; // ON CONFLICT = 既に undo 依頼が open (二重タップ) → 冪等に既存を返す
-    const undoRow = await getOpenSubIntent(
-      db,
-      current.contract_ns,
-      current.contract_key,
-      current.target_cycle_key,
-      'undo_of',
-    );
-    if (!undoRow) return { status: 'not_undoable', state: current.state };
-    return { status: 'undo_accepted', undoIntent: undoRow };
+  // §1-3: 実行に踏み込んだ意思の取り消しは「新しい intent」として受理する。
+  // cancel_requested を含めるのは非原子な多段遷移の残留 (mark 成功 → INSERT 失敗) からの
+  // 冪等リカバリ経路 — 既存 undo_of があればそれを返し、無ければ作り直す。
+  if (
+    current.state === 'executing' ||
+    current.state === 'done' ||
+    current.state === 'cancel_requested'
+  ) {
+    return acceptUndoOf(db, current, actor, requestedBy, now);
   }
 
   return { status: 'not_undoable', state: current.state };
+}
+
+/** undo_of intent の受理 (冪等)。INSERT 成功/衝突後に「取り消し依頼あり」を立てる。 */
+async function acceptUndoOf(
+  db: D1Database,
+  current: SubIntentRow,
+  actor: { staffId: string | null; role: string | null },
+  requestedBy: 'customer' | 'staff',
+  now: string,
+): Promise<UndoSubIntentResult> {
+  const undoKey = buildUndoCycleKey(current.target_cycle_key, current.id);
+  const { inserted } = await insertSubIntent(db, {
+    id: newIntentId(),
+    friendId: current.friend_id,
+    contractNs: current.contract_ns,
+    contractKey: current.contract_key,
+    targetCycleKey: undoKey,
+    presentedScheduledDate: current.presented_scheduled_date,
+    op: 'undo_of',
+    state: 'received',
+    requestedBy,
+    actorStaffId: actor.staffId,
+    actorRole: actor.role,
+    payloadJson: null,
+    deadlineAt: null,
+    executor: current.executor === 'blocked' ? 'blocked' : 'human',
+    supersedesIntentId: current.id,
+    createdAt: now,
+  });
+  void inserted; // 衝突 = 同じ元 intent への二重 undo → 冪等に既存を返す
+  const undoRow = await getOpenSubIntent(
+    db,
+    current.contract_ns,
+    current.contract_key,
+    undoKey,
+    'undo_of',
+  );
+  if (!undoRow || undoRow.supersedes_intent_id !== current.id) {
+    // per-original キーなら衝突相手は同一元 intent の undo_of のみのはず。
+    // 引けない/不一致は競合の狭間 — 受理を宣言しない (§1-3 の規律)
+    return { status: 'not_undoable', state: current.state };
+  }
+  // done のときだけ「取り消し依頼あり」を立てる。**INSERT の後**に行う —
+  // 先に立てると INSERT が D1 エラーで落ちた時に、undo_of 参照を持たない
+  // cancel_requested が残留する (CAS 負け = 並行遷移 → undo_of は受理済みなので問題ない)
+  if (current.state === 'done') {
+    await markCancelRequestedCas(db, current.id, now);
+  }
+  return { status: 'undo_accepted', undoIntent: undoRow };
 }
 
 // ============================================================
@@ -452,13 +512,16 @@ export interface SubIntentSweepResult {
   carriedOver: number;
   /** 繰越し先に別 open intent がいて superseded に落とした件数 */
   superseded: number;
-  /** 繰越し先サイクルを算出できず deadline=NULL で保持した件数 (エスカレーションで人間へ) */
+  /** 繰越し先サイクルを算出できない/算出した締切が既に過去 → deadline=NULL 保持の件数 */
   carryUnanchored: number;
+  /** 締切超過エスカレーション通知を出した件数 (1 intent 1 回 §4-2) */
   escalated: number;
   staleMachineClaims: number;
   releasedMachineClaims: number;
   /** human の 30 分超 claim (解放しない §1-2 — /admin/ops とアラートで人間が解決) */
   staleHumanClaims: number;
+  /** claim 滞留アラート通知を出した件数 (claim 世代ごと 1 回 §1-2。escalated とは独立) */
+  staleAlerted: number;
   errors: number;
 }
 
@@ -490,6 +553,7 @@ export async function sweepSubIntents(
     staleMachineClaims: 0,
     releasedMachineClaims: 0,
     staleHumanClaims: 0,
+    staleAlerted: 0,
     errors: 0,
   };
 
@@ -519,11 +583,12 @@ export async function sweepSubIntents(
           });
         }
       } else {
-        // human: 解放しない (§1-2)。アラートは 1 intent 1 回
+        // human: 解放しない (§1-2)。アラートは claim 世代ごと 1 回 —
+        // escalated_at (締切超過用) とは別マーカー。共有すると片方の消費でもう片方が沈黙する
         result.staleHumanClaims += 1;
-        const { marked } = await markEscalatedCas(db, intent.id, now);
+        const { marked } = await markStaleAlertedCas(db, intent.id, now);
         if (marked) {
-          result.escalated += 1;
+          result.staleAlerted += 1;
           discordLines.push(
             `⏱ ${SUB_INTENT_OP_LABELS[intent.op]} (${intent.contract_key}) の着手が ` +
               `${HUMAN_CLAIM_ALERT_MINUTES} 分を超えて未解決です (担当: ${intent.actor_staff_id ?? '不明'})。` +
@@ -567,22 +632,30 @@ export async function sweepSubIntents(
         } else {
           // pause/cancel (+防御的に resume/undo_of): expire 禁止 → 次サイクルへ繰越し (§1-2)
           const carried = await carryOverToNextCycle(db, intent, now);
-          if (carried === 'carried') result.carriedOver += 1;
-          else if (carried === 'superseded') result.superseded += 1;
-          else if (carried === 'unanchored') {
-            result.carriedOver += 1;
-            result.carryUnanchored += 1;
+          if (carried === 'lost') {
+            // 並行遷移 (claim/undo) の勝者が状態を所有 — こちらは何も宣言しない
+            // (エスカレーションも Discord も出さない。虚偽の「繰り越しました」を作らない)
+            await auditSweep(db, 'sub_intent.carry_lost', intent, {});
+            continue;
           }
+          if (carried === 'superseded') {
+            // 新しい依頼が既に open — 以後の通知はその依頼自身のライフサイクルが担う
+            result.superseded += 1;
+            await auditSweep(db, 'sub_intent.superseded', intent, {});
+            continue;
+          }
+          result.carriedOver += 1;
+          if (carried === 'unanchored') result.carryUnanchored += 1;
+          await auditSweep(db, 'sub_intent.carried_over', intent, { outcome: carried });
           const { marked } = await markEscalatedCas(db, intent.id, now);
           if (marked) {
             result.escalated += 1;
             discordLines.push(
-              `🚨 ${SUB_INTENT_OP_LABELS[intent.op]} (${intent.contract_key}) が締切内に実行されませんでした。` +
-                `意思は${carried === 'superseded' ? '新しい依頼に引き継がれました' : '次サイクルへ繰り越しています'}。` +
-                `/admin/ops で最優先で対応してください`,
+              carried === 'unanchored'
+                ? `🚨 ${SUB_INTENT_OP_LABELS[intent.op]} (${intent.contract_key}) が締切内に実行されず、次サイクルも確定できませんでした。/admin/ops で最優先で対応してください`
+                : `🚨 ${SUB_INTENT_OP_LABELS[intent.op]} (${intent.contract_key}) が締切内に実行されませんでした。意思は次サイクルへ繰り越しています。/admin/ops で最優先で対応してください`,
             );
           }
-          await auditSweep(db, 'sub_intent.carried_over', intent, { outcome: carried });
         }
       } catch (err) {
         result.errors += 1;
@@ -595,20 +668,7 @@ export async function sweepSubIntents(
   }
 
   // ---- Discord (best-effort・まとめて 1 通) ----
-  if (discordLines.length > 0 && env.DISCORD_WEBHOOK_URL) {
-    try {
-      const fetchImpl = deps.fetchImpl ?? fetch;
-      await fetchImpl(env.DISCORD_WEBHOOK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          content: `**[${env.ACCOUNT_NAME ?? 'naturism'}] サブスク受理レイヤー**\n${discordLines.join('\n')}`,
-        }),
-      });
-    } catch (err) {
-      console.error(`[${SUB_INTENT_SWEEP_JOB_NAME}] discord notify failed:`, err);
-    }
-  }
+  await sendSubIntentAlert(env, discordLines, deps.fetchImpl);
 
   // ---- cron_run_logs (可観測性 — silent-failure を作らない) ----
   try {
@@ -625,11 +685,43 @@ export async function sweepSubIntents(
 }
 
 /**
+ * Discord への best-effort 通知 (まとめて 1 通)。sweep と /admin/ops route
+ * (done CAS 敗北 = 二重対応の疑い §1-2) が共用する。失敗しても業務は止めない。
+ */
+export async function sendSubIntentAlert(
+  env: { DISCORD_WEBHOOK_URL?: string; ACCOUNT_NAME?: string },
+  lines: string[],
+  fetchImpl?: typeof fetch,
+): Promise<void> {
+  if (lines.length === 0 || !env.DISCORD_WEBHOOK_URL) return;
+  try {
+    const f = fetchImpl ?? fetch;
+    await f(env.DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: `**[${env.ACCOUNT_NAME ?? 'naturism'}] サブスク受理レイヤー**\n${lines.join('\n')}`,
+      }),
+    });
+  } catch (err) {
+    console.error(`[${SUB_INTENT_SWEEP_JOB_NAME}] discord notify failed:`, err);
+  }
+}
+
+/**
  * 繰越し先サイクルの決定:
  *   1. read-model の現在推定が「繰越し元の予定日より後ろ」ならそれを採用 (最も真実に近い)
  *   2. 出せなければ 旧予定日 + interval_days
- *   3. どちらも不能なら deadline=NULL で保持 (= sweep に再ヒットしない。エスカレーション済みなので
- *      人間が /admin/ops で解決する。締切を捏造して意思を expire させるより誠実)
+ *   3. どちらも不能、**または算出した締切が既に過去** なら deadline=NULL で保持
+ *      (= sweep に再ヒットしない。エスカレーション済みなので人間が /admin/ops で解決する。
+ *      締切を捏造して意思を expire させるより誠実)。
+ *      「算出できたが依然過去」を carried にすると、同じ計算を毎 run 繰り返して sweep に
+ *      毎 5 分再ヒットする無限ループになる (監査 CONFIRMED — sweep 長期停止後の再開等で成立)
+ *
+ * 例外規律: carryOverSubIntentCas の throw は **UNIQUE 違反と確認できた場合のみ**
+ * supersede へ落とす。それ以外 (D1 の transient エラー等) を supersede すると、
+ * 後継の存在しない解約意思が terminal 化する = §1-2 が禁じた解約妨害の迂回 (監査 CONFIRMED)。
+ * 非 UNIQUE は rethrow して sweep の per-item catch で errors に計上する。
  */
 async function carryOverToNextCycle(
   db: D1Database,
@@ -647,15 +739,38 @@ async function carryOverToNextCycle(
     nextDate = addDays(oldDate, contract.interval_days);
   }
 
+  let newDeadline = computeDeadlineAt(nextDate);
+  let anchored = nextDate !== null;
+  if (newDeadline !== null && newDeadline <= now) {
+    // 算出できたが既に過去 = このサイクルにも間に合っていない。締切なしで人間へ
+    newDeadline = null;
+    anchored = false;
+  }
   const newCycleKey = buildCycleKey(intent.contract_key, nextDate);
-  const newDeadline = computeDeadlineAt(nextDate);
   try {
-    const { carried } = await carryOverSubIntentCas(db, intent.id, newCycleKey, newDeadline, now);
+    const { carried } = await carryOverSubIntentCas(
+      db,
+      intent.id,
+      newCycleKey,
+      newDeadline,
+      nextDate,
+      now,
+    );
     if (!carried) return 'lost'; // 並行遷移 (claim/undo) が先に触った
-    return nextDate ? 'carried' : 'unanchored';
-  } catch {
-    // 繰越し先に open intent が既に存在 (UNIQUE) = 顧客/スタッフが既に次サイクルの意思を
-    // 受理済み → 古い行は superseded (新しい意思が優先 §1-2)
+    return anchored ? 'carried' : 'unanchored';
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!message.includes('UNIQUE constraint failed')) throw err;
+    // UNIQUE = 繰越し先に open intent が既に存在するはず。実在を確認してから
+    // supersede する (throw ↔ supersede 間の race・エラー誤分類の二重防御)
+    const successor = await getOpenSubIntent(
+      db,
+      intent.contract_ns,
+      intent.contract_key,
+      newCycleKey,
+      intent.op,
+    );
+    if (!successor) throw err;
     const { superseded } = await supersedeSubIntentCas(db, intent.id, now);
     return superseded ? 'superseded' : 'lost';
   }

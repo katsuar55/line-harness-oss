@@ -20,6 +20,9 @@
 --   partial UNIQUE ux_sub_intents_open が「同一契約×同一サイクル×同一 op の open intent は 1 行」を
 --   DB レベルで担保する。受理は INSERT ... ON CONFLICT DO NOTHING。0 行なら既存 intent を返す
 --   (= 二重タップは冪等に「承り済みです」)。唯一 CAS を持たない台帳を作らない。
+--   ⚠️ op='undo_of' の target_cycle_key は '{元のcycle_key}#undo:{元intent id}' 形式 —
+--   一意性の単位を「元 intent ごと」にする (サイクル単位だと同一サイクルの別 intent への
+--   取り消し依頼が既存 undo_of に吸収され、無記録で握り潰される)。
 --
 -- terminal 規則 (§1-2):
 --   skip / date    → 締切超過で expired + 正直な失敗通知 (当該サイクル限りの操作)
@@ -59,7 +62,10 @@ CREATE TABLE IF NOT EXISTS sub_intents (
   supersedes_intent_id TEXT,                    -- undo_of が指す元 intent
   fail_reason TEXT,                             -- failed の理由 (deadline_passed|cycle_drift|staff 入力等)
   carryover_count INTEGER NOT NULL DEFAULT 0,   -- pause/cancel の繰越し回数 (可視化・無限ループ検知)
-  escalated_at TEXT,                            -- エスカレーション済みマーカー (1 intent 1 回 §1-2/§4-2)
+  escalated_at TEXT,                            -- 締切超過エスカレーション済みマーカー (1 intent 1 回 §4-2)
+  stale_alerted_at TEXT,                        -- claim 滞留アラート済みマーカー (claim 世代ごと §1-2。
+                                                --  claim/release でクリア = escalated_at と目的を分離し、
+                                                --  片方の消費でもう片方が沈黙しないようにする)
   created_at TEXT NOT NULL,
   resolved_at TEXT                              -- terminal 到達時刻 (done/expired/failed/cancelled/superseded)
 );

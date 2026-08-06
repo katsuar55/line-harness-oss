@@ -2,20 +2,27 @@
  * sub_intents 受理レイヤーのテスト (§10-3、 2026-08-06)
  *
  * 検証対象 (= 顧客の意思を預かる台帳 — 誤遷移は「勝手に解約」「勝手に失効」になる):
- *   - 受理 (§1-1): partial UNIQUE の効き (二重タップ冪等) / cycle_drift 拒否 / deferred (移行窓)
+ *   - 受理 (§1-1): partial UNIQUE の効き (二重タップ冪等) / cycle_drift 拒否 / 推定 NULL 時の
+ *     一意性迂回の封鎖 / deferred (移行窓)
  *   - state 機械 (§1-2): 全 CAS の勝敗 / claim の締切述語 (expire と相互排他) /
  *     pause・cancel は expire させず同一行繰越し / human claim は自動解放しない
- *   - undo (§1-3): received|deferred は直接 CAS、executing|done は undo_of intent
- *   - sweep (§4-2): 正直な失敗通知 / エスカレーション 1 intent 1 回 / 繰越しの無限ループなし /
- *     executor='blocked' 除外 / gate OFF は DB 非アクセス
- *   - /admin/ops API: requireRole / env-owner 拒否 / gate OFF 400 / 監査記録
+ *   - undo (§1-3): received|deferred は直接 CAS、executing|done|cancel_requested は
+ *     元 intent ごとの undo_of intent / undo_of の取り下げで元を復元
+ *   - sweep (§4-2): 正直な失敗通知 / エスカレーションと claim 滞留アラートの分離 /
+ *     繰越しの無限再ヒットなし / 非 UNIQUE 例外で supersede しない / gate OFF は DB 非アクセス
+ *   - /admin/ops API: requireRole / env-owner 拒否 / gate OFF 400 / 監査記録 / 可視化 (順序・年齢)
  *
- * 実 D1 の CAS/partial UNIQUE 意味論を忠実に再現する in-memory fake を使う
- * (= sub-link.test.ts と同型。UNIQUE 違反は throw、CAS は述語評価して changes を返す)。
+ * 測定器の設計 (監査 test-integrity HIGH の反映):
+ *   fake D1 は sub_intents への SQL を **正規化した全文一致 (WHERE 込み)** で照合する。
+ *   DB 層の WHERE 述語を触る変異は「fake が知らない SQL」になり unhandled throw で必ず落ちる
+ *   (prefix 一致だと述語削除変異が fake 内の旧述語で吸収され、全テスト素通りだった)。
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 
 vi.mock('../services/channel-dispatcher.js', () => ({
   dispatch: vi.fn(async () => ({ results: [{ channel: 'line', ok: true }] })),
@@ -31,6 +38,7 @@ import {
   releaseSubIntent,
   sweepSubIntents,
   buildCycleKey,
+  buildUndoCycleKey,
   computeDeadlineAt,
   isSubIntentEnabled,
   SUB_INTENT_OP_LABELS,
@@ -38,11 +46,11 @@ import {
 } from '../services/sub-intents.js';
 import { adminOps } from '../routes/admin-ops.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { toJstString } from '@line-crm/db';
+import { toJstString, SUB_INTENT_OPEN_STATES } from '@line-crm/db';
 import type { SubIntentRow } from '@line-crm/db';
 
 // ============================================================
-// in-memory D1 fake (= CAS/partial UNIQUE を忠実に enforce)
+// in-memory D1 fake — sub_intents は SQL 全文一致 (WHERE 込み) で照合
 // ============================================================
 
 interface ContractSeed {
@@ -63,12 +71,19 @@ interface Store {
   intents: Map<string, SubIntentRow>;
   contracts: Map<string, ContractSeed>;
   friends: Map<string, FriendSeed>;
-  auditLogs: Array<{ action: string; targetId: string | null; metadata: string }>;
+  auditLogs: Array<{ action: string; targetId: string | null; metadata: string; errorMessage: string | null }>;
   cronLogs: Array<{ jobName: string; status: string; metrics: Record<string, unknown> }>;
   queryCount: number;
+  /** expire CAS 敗者の再現: listPastDeadline の直後に呼ばれる (行を並行遷移させる) */
+  hookAfterListPastDeadline?: (rows: SubIntentRow[]) => void;
+  /** carry-over の非 UNIQUE 例外注入 (D1 transient エラーの再現) */
+  throwOnCarryOver?: Error;
+  /** migration 076 未適用の再現: 一覧/stats が no such table を投げる */
+  throwNoSuchTable?: boolean;
 }
 
-const OPEN = new Set(['received', 'executing', 'deferred']);
+// open の定義は migration 076 が単一情報源 — fake は定数経由で共有 (独立コピーにしない)
+const OPEN = new Set<string>(SUB_INTENT_OPEN_STATES);
 
 function hasOpenConflict(store: Store, ns: string, key: string, cycle: string, op: string, exceptId?: string): boolean {
   for (const row of store.intents.values()) {
@@ -86,6 +101,90 @@ function hasOpenConflict(store: Store, ns: string, key: string, cycle: string, o
   return false;
 }
 
+function norm(sql: string): string {
+  return sql.replace(/\s+/g, ' ').trim();
+}
+
+// packages/db/src/sub-intents.ts の SQL の正規化全文 (transcribe 誤りは unhandled throw で発覚する)
+const SQL = {
+  insert: norm(`INSERT INTO sub_intents
+    (id, friend_id, contract_ns, contract_key, target_cycle_key, presented_scheduled_date,
+     op, state, requested_by, actor_staff_id, actor_role, payload_json,
+     deadline_at, promised_by, claimed_at, executor, supersedes_intent_id,
+     fail_reason, carryover_count, escalated_at, stale_alerted_at, created_at, resolved_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, 0, NULL, NULL, ?, NULL)
+    ON CONFLICT DO NOTHING`),
+  getById: `SELECT * FROM sub_intents WHERE id = ?`,
+  getOpen: norm(`SELECT * FROM sub_intents
+    WHERE contract_ns = ? AND contract_key = ? AND target_cycle_key = ? AND op = ?
+      AND state IN ('received','executing','deferred')`),
+  claimDeadline: norm(`UPDATE sub_intents
+    SET state = 'executing', claimed_at = ?, actor_staff_id = ?, actor_role = ?, stale_alerted_at = NULL
+    WHERE id = ? AND state = 'received' AND (deadline_at IS NULL OR deadline_at > ?)`),
+  claimPlain: norm(`UPDATE sub_intents
+    SET state = 'executing', claimed_at = ?, actor_staff_id = ?, actor_role = ?, stale_alerted_at = NULL
+    WHERE id = ? AND state = 'received'`),
+  complete: norm(`UPDATE sub_intents
+    SET state = 'done', resolved_at = ?, actor_staff_id = ?, actor_role = ?
+    WHERE id = ? AND state = 'executing'`),
+  fail: norm(`UPDATE sub_intents
+    SET state = 'failed', fail_reason = ?, resolved_at = ?, actor_staff_id = ?, actor_role = ?
+    WHERE id = ? AND state = 'executing'`),
+  release: norm(`UPDATE sub_intents
+    SET state = 'received', claimed_at = NULL, actor_staff_id = NULL, actor_role = NULL, stale_alerted_at = NULL
+    WHERE id = ? AND state = 'executing'`),
+  undo: norm(`UPDATE sub_intents
+    SET state = 'cancelled', resolved_at = ?, actor_staff_id = ?, actor_role = ?
+    WHERE id = ? AND state IN ('received','deferred')`),
+  markCancelRequested: norm(`UPDATE sub_intents SET state = 'cancel_requested' WHERE id = ? AND state = 'done'`),
+  resolveUndoneOriginal: norm(`UPDATE sub_intents SET state = 'cancelled', resolved_at = ?
+    WHERE id = ? AND state IN ('cancel_requested','done','received')`),
+  restoreCancelRequested: norm(`UPDATE sub_intents SET state = 'done' WHERE id = ? AND state = 'cancel_requested'`),
+  expire: norm(`UPDATE sub_intents
+    SET state = 'expired', resolved_at = ?
+    WHERE id = ? AND state = 'received' AND deadline_at IS NOT NULL AND deadline_at < ?`),
+  carryOver: norm(`UPDATE sub_intents
+    SET target_cycle_key = ?, deadline_at = ?, presented_scheduled_date = ?, carryover_count = carryover_count + 1
+    WHERE id = ? AND state = 'received'`),
+  supersede: norm(`UPDATE sub_intents SET state = 'superseded', resolved_at = ?
+    WHERE id = ? AND state = 'received'`),
+  markEscalated: norm(`UPDATE sub_intents SET escalated_at = ?
+    WHERE id = ? AND escalated_at IS NULL AND state IN ('received','executing')`),
+  markStaleAlerted: norm(`UPDATE sub_intents SET stale_alerted_at = ?
+    WHERE id = ? AND stale_alerted_at IS NULL AND state = 'executing'`),
+  listPastDeadline: norm(`SELECT * FROM sub_intents
+    WHERE state = 'received' AND executor <> 'blocked'
+      AND deadline_at IS NOT NULL AND deadline_at < ?
+    ORDER BY deadline_at ASC
+    LIMIT ?`),
+  listStaleClaims: norm(`SELECT * FROM sub_intents
+    WHERE state = 'executing' AND claimed_at IS NOT NULL AND claimed_at < ?
+    ORDER BY claimed_at ASC
+    LIMIT ?`),
+  listForOps: norm(`SELECT * FROM sub_intents
+    ORDER BY
+      CASE state
+        WHEN 'executing' THEN 0
+        WHEN 'received' THEN 1
+        WHEN 'cancel_requested' THEN 2
+        WHEN 'deferred' THEN 3
+        ELSE 4
+      END,
+      CASE WHEN state = 'executing' THEN claimed_at ELSE NULL END ASC,
+      CASE WHEN state = 'received' THEN COALESCE(deadline_at, '9999') ELSE NULL END ASC,
+      created_at DESC
+    LIMIT ?`),
+  stats: norm(`SELECT
+    SUM(CASE WHEN state = 'received' THEN 1 ELSE 0 END) AS received,
+    SUM(CASE WHEN state = 'executing' THEN 1 ELSE 0 END) AS executing,
+    SUM(CASE WHEN state = 'deferred' THEN 1 ELSE 0 END) AS deferred,
+    SUM(CASE WHEN state = 'cancel_requested' THEN 1 ELSE 0 END) AS cancel_requested,
+    SUM(CASE WHEN state = 'done' AND resolved_at >= ? THEN 1 ELSE 0 END) AS done_7d,
+    SUM(CASE WHEN state = 'failed' AND resolved_at >= ? THEN 1 ELSE 0 END) AS failed_7d,
+    SUM(CASE WHEN state = 'expired' AND resolved_at >= ? THEN 1 ELSE 0 END) AS expired_7d
+    FROM sub_intents`),
+};
+
 function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } = {}): {
   db: D1Database;
   store: Store;
@@ -99,18 +198,13 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
     queryCount: 0,
   };
 
-  function norm(sql: string): string {
-    return sql.replace(/\s+/g, ' ').trim();
-  }
-
   function exec(sqlRaw: string, args: unknown[], mode: 'first' | 'all' | 'run'): unknown {
     store.queryCount += 1;
     const sql = norm(sqlRaw);
     const a = args as (string | number | null)[];
 
-    // ---- sub_intents ----
-    if (sql.startsWith('INSERT INTO sub_intents')) {
-      if (!sql.includes('ON CONFLICT DO NOTHING')) throw new Error('expected ON CONFLICT DO NOTHING');
+    // ---- sub_intents (全文一致。知らない SQL = 変異/新規は throw で即発覚) ----
+    if (sql === SQL.insert) {
       const [id, friendId, ns, key, cycle, presented, op, state, requestedBy, staffId, role, payload, deadline, executor, supersedes, createdAt] = a as (string | null)[];
       if (OPEN.has(state as string) && hasOpenConflict(store, ns as string, key as string, cycle as string, op as string)) {
         return { meta: { changes: 0 } };
@@ -136,17 +230,18 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
         fail_reason: null,
         carryover_count: 0,
         escalated_at: null,
+        stale_alerted_at: null,
         created_at: createdAt as string,
         resolved_at: null,
       });
       return { meta: { changes: 1 } };
     }
 
-    if (sql.startsWith('SELECT * FROM sub_intents WHERE id = ?')) {
+    if (sql === SQL.getById) {
       return store.intents.get(a[0] as string) ?? null;
     }
 
-    if (sql.startsWith('SELECT * FROM sub_intents WHERE contract_ns = ?')) {
+    if (sql === SQL.getOpen) {
       const [ns, key, cycle, op] = a as string[];
       for (const row of store.intents.values()) {
         if (
@@ -157,8 +252,8 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       return null;
     }
 
-    if (sql.startsWith("UPDATE sub_intents SET state = 'executing'")) {
-      const withDeadline = sql.includes('deadline_at IS NULL OR deadline_at >');
+    if (sql === SQL.claimDeadline || sql === SQL.claimPlain) {
+      const withDeadline = sql === SQL.claimDeadline;
       const [now, staffId, role, id, nowCmp] = a as string[];
       const row = store.intents.get(id);
       if (!row || row.state !== 'received') return { meta: { changes: 0 } };
@@ -169,10 +264,11 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       row.claimed_at = now;
       row.actor_staff_id = staffId;
       row.actor_role = role;
+      row.stale_alerted_at = null;
       return { meta: { changes: 1 } };
     }
 
-    if (sql.startsWith("UPDATE sub_intents SET state = 'done', resolved_at = ?")) {
+    if (sql === SQL.complete) {
       const [now, staffId, role, id] = a as string[];
       const row = store.intents.get(id);
       if (!row || row.state !== 'executing') return { meta: { changes: 0 } };
@@ -183,7 +279,7 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       return { meta: { changes: 1 } };
     }
 
-    if (sql.startsWith("UPDATE sub_intents SET state = 'failed'")) {
+    if (sql === SQL.fail) {
       const [reason, now, staffId, role, id] = a as string[];
       const row = store.intents.get(id);
       if (!row || row.state !== 'executing') return { meta: { changes: 0 } };
@@ -195,7 +291,7 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       return { meta: { changes: 1 } };
     }
 
-    if (sql.startsWith("UPDATE sub_intents SET state = 'received', claimed_at = NULL")) {
+    if (sql === SQL.release) {
       const [id] = a as string[];
       const row = store.intents.get(id);
       if (!row || row.state !== 'executing') return { meta: { changes: 0 } };
@@ -203,10 +299,11 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       row.claimed_at = null;
       row.actor_staff_id = null;
       row.actor_role = null;
+      row.stale_alerted_at = null;
       return { meta: { changes: 1 } };
     }
 
-    if (sql.startsWith("UPDATE sub_intents SET state = 'cancelled', resolved_at = ?, actor_staff_id")) {
+    if (sql === SQL.undo) {
       const [now, staffId, role, id] = a as (string | null)[];
       const row = store.intents.get(id as string);
       if (!row || !(row.state === 'received' || row.state === 'deferred')) return { meta: { changes: 0 } };
@@ -217,7 +314,7 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       return { meta: { changes: 1 } };
     }
 
-    if (sql.startsWith("UPDATE sub_intents SET state = 'cancel_requested'")) {
+    if (sql === SQL.markCancelRequested) {
       const [id] = a as string[];
       const row = store.intents.get(id);
       if (!row || row.state !== 'done') return { meta: { changes: 0 } };
@@ -225,16 +322,18 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       return { meta: { changes: 1 } };
     }
 
-    if (sql.startsWith("UPDATE sub_intents SET state = 'cancelled', resolved_at = ? WHERE id = ? AND state IN ('cancel_requested','done')")) {
+    if (sql === SQL.resolveUndoneOriginal) {
       const [now, id] = a as string[];
       const row = store.intents.get(id);
-      if (!row || !(row.state === 'cancel_requested' || row.state === 'done')) return { meta: { changes: 0 } };
+      if (!row || !(row.state === 'cancel_requested' || row.state === 'done' || row.state === 'received')) {
+        return { meta: { changes: 0 } };
+      }
       row.state = 'cancelled';
       row.resolved_at = now;
       return { meta: { changes: 1 } };
     }
 
-    if (sql.startsWith("UPDATE sub_intents SET state = 'done' WHERE id = ? AND state = 'cancel_requested'")) {
+    if (sql === SQL.restoreCancelRequested) {
       const [id] = a as string[];
       const row = store.intents.get(id);
       if (!row || row.state !== 'cancel_requested') return { meta: { changes: 0 } };
@@ -242,7 +341,7 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       return { meta: { changes: 1 } };
     }
 
-    if (sql.startsWith("UPDATE sub_intents SET state = 'expired'")) {
+    if (sql === SQL.expire) {
       const [now, id, nowCmp] = a as string[];
       const row = store.intents.get(id);
       if (!row || row.state !== 'received') return { meta: { changes: 0 } };
@@ -252,8 +351,9 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       return { meta: { changes: 1 } };
     }
 
-    if (sql.startsWith('UPDATE sub_intents SET target_cycle_key = ?')) {
-      const [newCycle, newDeadline, id] = a as (string | null)[];
+    if (sql === SQL.carryOver) {
+      if (store.throwOnCarryOver) throw store.throwOnCarryOver;
+      const [newCycle, newDeadline, newScheduled, id] = a as (string | null)[];
       const row = store.intents.get(id as string);
       if (!row || row.state !== 'received') return { meta: { changes: 0 } };
       // partial UNIQUE: 繰越し先に別の open intent がいたら throw (実 D1 と同じ)
@@ -262,11 +362,12 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       }
       row.target_cycle_key = newCycle as string;
       row.deadline_at = newDeadline;
+      row.presented_scheduled_date = newScheduled;
       row.carryover_count += 1;
       return { meta: { changes: 1 } };
     }
 
-    if (sql.startsWith("UPDATE sub_intents SET state = 'superseded'")) {
+    if (sql === SQL.supersede) {
       const [now, id] = a as string[];
       const row = store.intents.get(id);
       if (!row || row.state !== 'received') return { meta: { changes: 0 } };
@@ -275,23 +376,33 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       return { meta: { changes: 1 } };
     }
 
-    if (sql.startsWith('UPDATE sub_intents SET escalated_at = ?')) {
+    if (sql === SQL.markEscalated) {
       const [now, id] = a as string[];
       const row = store.intents.get(id);
       if (!row || row.escalated_at !== null) return { meta: { changes: 0 } };
+      if (!(row.state === 'received' || row.state === 'executing')) return { meta: { changes: 0 } };
       row.escalated_at = now;
       return { meta: { changes: 1 } };
     }
 
-    if (sql.startsWith("SELECT * FROM sub_intents WHERE state = 'received' AND executor <> 'blocked'")) {
+    if (sql === SQL.markStaleAlerted) {
+      const [now, id] = a as string[];
+      const row = store.intents.get(id);
+      if (!row || row.stale_alerted_at !== null || row.state !== 'executing') return { meta: { changes: 0 } };
+      row.stale_alerted_at = now;
+      return { meta: { changes: 1 } };
+    }
+
+    if (sql === SQL.listPastDeadline) {
       const [now] = a as string[];
       const rows = [...store.intents.values()]
         .filter((r) => r.state === 'received' && r.executor !== 'blocked' && r.deadline_at !== null && r.deadline_at < now)
         .sort((x, y) => (x.deadline_at! < y.deadline_at! ? -1 : 1));
+      store.hookAfterListPastDeadline?.(rows);
       return { results: rows };
     }
 
-    if (sql.startsWith("SELECT * FROM sub_intents WHERE state = 'executing' AND claimed_at IS NOT NULL")) {
+    if (sql === SQL.listStaleClaims) {
       const [before] = a as string[];
       const rows = [...store.intents.values()]
         .filter((r) => r.state === 'executing' && r.claimed_at !== null && r.claimed_at < before)
@@ -299,18 +410,37 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       return { results: rows };
     }
 
-    if (sql.startsWith('SELECT * FROM sub_intents ORDER BY')) {
+    if (sql === SQL.listForOps) {
+      if (store.throwNoSuchTable) throw new Error('D1_ERROR: no such table: sub_intents');
+      // 実 SQL と同じ 3 キー: state 順 → executing は claimed_at 昇順 → received は締切昇順 → 新しい順
       const order: Record<string, number> = { executing: 0, received: 1, cancel_requested: 2, deferred: 3 };
+      const nullFirst = (x: string | null, y: string | null): number => {
+        if (x === y) return 0;
+        if (x === null) return -1;
+        if (y === null) return 1;
+        return x < y ? -1 : 1;
+      };
       const rows = [...store.intents.values()].sort((x, y) => {
         const ox = order[x.state] ?? 4;
         const oy = order[y.state] ?? 4;
         if (ox !== oy) return ox - oy;
+        const k2 = nullFirst(
+          x.state === 'executing' ? x.claimed_at : null,
+          y.state === 'executing' ? y.claimed_at : null,
+        );
+        if (k2 !== 0) return k2;
+        const k3 = nullFirst(
+          x.state === 'received' ? (x.deadline_at ?? '9999') : null,
+          y.state === 'received' ? (y.deadline_at ?? '9999') : null,
+        );
+        if (k3 !== 0) return k3;
         return x.created_at < y.created_at ? 1 : -1;
       });
       return { results: rows };
     }
 
-    if (sql.startsWith('SELECT SUM(CASE WHEN state =')) {
+    if (sql === SQL.stats) {
+      if (store.throwNoSuchTable) throw new Error('D1_ERROR: no such table: sub_intents');
       const [since] = a as string[];
       const all = [...store.intents.values()];
       const count = (f: (r: SubIntentRow) => boolean) => all.filter(f).length;
@@ -325,7 +455,7 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       };
     }
 
-    // ---- 参照テーブル ----
+    // ---- 参照テーブル (忠実性の対象外 — prefix 一致で十分) ----
     if (sql.startsWith('SELECT * FROM subscription_contracts WHERE contract_id = ?')) {
       return store.contracts.get(a[0] as string) ?? null;
     }
@@ -345,6 +475,7 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
         action: a[5] as string,
         targetId: (a[7] as string | null) ?? null,
         metadata: a[15] as string,
+        errorMessage: (a[14] as string | null) ?? null,
       });
       return { meta: { changes: 1 } };
     }
@@ -361,7 +492,7 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
       return { meta: { changes: 1 } };
     }
 
-    throw new Error(`fake D1: unhandled SQL (${mode}): ${sql.slice(0, 120)}`);
+    throw new Error(`fake D1: unhandled SQL (${mode}): ${sql.slice(0, 160)}`);
   }
 
   const db = {
@@ -374,7 +505,6 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[] } =
             all: async () => exec(sql, args, 'all'),
           };
         },
-        // bind なし (引数ゼロの SQL は本層に無いが、防御)
         run: async () => exec(sql, [], 'run'),
         first: async () => exec(sql, [], 'first'),
         all: async () => exec(sql, [], 'all'),
@@ -411,6 +541,25 @@ function fakeLineClient(): never {
 
 beforeEach(() => {
   vi.mocked(dispatch).mockClear();
+  vi.mocked(dispatch).mockResolvedValue({ results: [{ channel: 'line', ok: true }] } as never);
+});
+
+// ============================================================
+// open 定義の単一情報源 (migration 076 ↔ 定数 ↔ fake)
+// ============================================================
+
+describe('open 状態の定義は migration 076 が単一情報源', () => {
+  it('ux_sub_intents_open の WHERE state IN と SUB_INTENT_OPEN_STATES が一致する', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const migration = readFileSync(
+      resolve(here, '../../../../packages/db/migrations/076_sub_intents.sql'),
+      'utf8',
+    );
+    const m = migration.match(/ux_sub_intents_open[\s\S]*?WHERE state IN \(([^)]+)\)/);
+    expect(m).not.toBeNull();
+    const states = m![1].split(',').map((s) => s.trim().replace(/'/g, ''));
+    expect(states.sort()).toEqual([...SUB_INTENT_OPEN_STATES].sort());
+  });
 });
 
 // ============================================================
@@ -455,7 +604,7 @@ describe('acceptSubIntent (§1-1 受理)', () => {
     const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
     const first = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: NOW_MS });
     if (first.status !== 'accepted') throw new Error('setup');
-    const undo = await undoSubIntent(db, first.intent.id, { staffId: null, role: null }, NOW_MS);
+    const undo = await undoSubIntent(db, first.intent.id, { staffId: null, role: null }, { nowMs: NOW_MS });
     expect(undo.status).toBe('cancelled');
     const again = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: NOW_MS });
     expect(again.status).toBe('accepted');
@@ -471,6 +620,28 @@ describe('acceptSubIntent (§1-1 受理)', () => {
     if (res.status !== 'cycle_drift') return;
     expect(res.currentEstimate).toBe('2026-09-10');
     expect(store.intents.size).toBe(0);
+  });
+
+  it('presentedDate の形式不正は invalid_date で拒否 (cycle key に混ぜない)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const res = await acceptSubIntent(db, {
+      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'staff',
+      presentedDate: 'garbage!!x', nowMs: NOW_MS,
+    });
+    expect(res.status).toBe('invalid_date');
+    expect(store.intents.size).toBe(0);
+  });
+
+  it('推定 NULL の契約では presentedDate が違っても同じ unknown サイクルに畳まれる (一意性迂回の封鎖)', async () => {
+    const noEstimate: ContractSeed = { ...CONTRACT, contract_id: 'C2', next_billing_estimate: null };
+    const { db, store } = createDb({ contracts: [noEstimate], friends: [FRIEND] });
+    const a = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C2', op: 'skip', requestedBy: 'staff', presentedDate: '2026-09-10', nowMs: NOW_MS });
+    const b = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C2', op: 'skip', requestedBy: 'staff', presentedDate: '2026-09-11', nowMs: NOW_MS });
+    expect(a.status).toBe('accepted');
+    expect(b.status).toBe('duplicate');
+    expect(store.intents.size).toBe(1);
+    if (a.status !== 'accepted') return;
+    expect(a.intent.target_cycle_key).toBe('C2:unknown');
   });
 
   it('契約不在 / 不正 op は受理しない', async () => {
@@ -602,29 +773,53 @@ describe('done / fail / release (§1-2)', () => {
     const reclaim = await claimSubIntent(db, intent.id, { staffId: 'staff-2', role: 'admin' }, NOW_MS);
     expect(reclaim.status).toBe('claimed');
   });
+
+  it('release → 再 claim でも skip の締切述語は再適用される', async () => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const intent = await seedIntent(db, { op: 'skip' });
+    await claimSubIntent(db, intent.id, STAFF, NOW_MS);
+    await releaseSubIntent(db, intent.id, NOW_MS);
+    // 締切超過後の再 claim は拒否される (release が締切ガードを剥がさない)
+    const reclaim = await claimSubIntent(db, intent.id, { staffId: 'staff-2', role: 'admin' }, AFTER_DEADLINE_MS);
+    expect(reclaim.status).toBe('conflict');
+  });
 });
 
 // ============================================================
-// undo (§1-3)
+// undo (§1-3) — 元 intent ごとの undo_of + 復元
 // ============================================================
 
 describe('undoSubIntent (§1-3)', () => {
   it('received は直接 cancelled (CAS 勝者のみ)', async () => {
     const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
     const intent = await seedIntent(db);
-    const res = await undoSubIntent(db, intent.id, { staffId: null, role: null }, NOW_MS);
+    const res = await undoSubIntent(db, intent.id, { staffId: null, role: null }, { nowMs: NOW_MS });
     expect(res.status).toBe('cancelled');
+  });
+
+  it('deferred (移行窓) も直接 cancelled — 移行窓の意思を取り消せる', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const res0 = await acceptSubIntent(db, {
+      contractNs: 'hb', contractKey: 'C1', op: 'cancel', requestedBy: 'customer',
+      executor: 'blocked', nowMs: NOW_MS,
+    });
+    if (res0.status !== 'accepted') throw new Error('setup');
+    expect(res0.intent.state).toBe('deferred');
+    const res = await undoSubIntent(db, res0.intent.id, { staffId: null, role: null }, { nowMs: NOW_MS });
+    expect(res.status).toBe('cancelled');
+    expect(store.intents.get(res0.intent.id)?.state).toBe('cancelled');
   });
 
   it('executing は undo_of intent の受理に化ける (「承りました」止まり)', async () => {
     const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
     const intent = await seedIntent(db);
     await claimSubIntent(db, intent.id, STAFF, NOW_MS);
-    const res = await undoSubIntent(db, intent.id, { staffId: null, role: null }, NOW_MS);
+    const res = await undoSubIntent(db, intent.id, { staffId: null, role: null }, { nowMs: NOW_MS });
     expect(res.status).toBe('undo_accepted');
     if (res.status !== 'undo_accepted') return;
     expect(res.undoIntent.op).toBe('undo_of');
     expect(res.undoIntent.supersedes_intent_id).toBe(intent.id);
+    expect(res.undoIntent.target_cycle_key).toBe(buildUndoCycleKey(intent.target_cycle_key, intent.id));
     // 元 intent は executing のまま (claim 意味論を壊さない)
     expect(store.intents.get(intent.id)?.state).toBe('executing');
   });
@@ -633,8 +828,8 @@ describe('undoSubIntent (§1-3)', () => {
     const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
     const intent = await seedIntent(db);
     await claimSubIntent(db, intent.id, STAFF, NOW_MS);
-    const a = await undoSubIntent(db, intent.id, { staffId: null, role: null }, NOW_MS);
-    const b = await undoSubIntent(db, intent.id, { staffId: null, role: null }, NOW_MS + 1000);
+    const a = await undoSubIntent(db, intent.id, { staffId: null, role: null }, { nowMs: NOW_MS });
+    const b = await undoSubIntent(db, intent.id, { staffId: null, role: null }, { nowMs: NOW_MS + 1000 });
     expect(a.status).toBe('undo_accepted');
     expect(b.status).toBe('undo_accepted');
     if (a.status !== 'undo_accepted' || b.status !== 'undo_accepted') return;
@@ -643,16 +838,42 @@ describe('undoSubIntent (§1-3)', () => {
     expect(undoRows.length).toBe(1);
   });
 
+  it('同一サイクルの別 intent への undo は別々の undo_of になる (吸収・握り潰しの禁止)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const skip = await seedIntent(db, { op: 'skip' });
+    const date = await seedIntent(db, { op: 'date' });
+    for (const it2 of [skip, date]) {
+      await claimSubIntent(db, it2.id, STAFF, NOW_MS);
+      await completeSubIntent(db, it2.id, STAFF, NOW_MS);
+    }
+    const undoSkip = await undoSubIntent(db, skip.id, { staffId: null, role: null }, { nowMs: NOW_MS });
+    const undoDate = await undoSubIntent(db, date.id, { staffId: null, role: null }, { nowMs: NOW_MS });
+    expect(undoSkip.status).toBe('undo_accepted');
+    expect(undoDate.status).toBe('undo_accepted');
+    if (undoSkip.status !== 'undo_accepted' || undoDate.status !== 'undo_accepted') return;
+    expect(undoSkip.undoIntent.id).not.toBe(undoDate.undoIntent.id);
+    expect(undoSkip.undoIntent.supersedes_intent_id).toBe(skip.id);
+    expect(undoDate.undoIntent.supersedes_intent_id).toBe(date.id);
+    // 各 undo_of の完了は**自分の**元 intent だけを解決する
+    await claimSubIntent(db, undoSkip.undoIntent.id, STAFF, NOW_MS);
+    const doneA = await completeSubIntent(db, undoSkip.undoIntent.id, STAFF, NOW_MS);
+    expect(doneA.status).toBe('done');
+    expect(store.intents.get(skip.id)?.state).toBe('cancelled');
+    expect(store.intents.get(date.id)?.state).toBe('cancel_requested'); // date は未解決のまま
+    await claimSubIntent(db, undoDate.undoIntent.id, STAFF, NOW_MS);
+    await completeSubIntent(db, undoDate.undoIntent.id, STAFF, NOW_MS);
+    expect(store.intents.get(date.id)?.state).toBe('cancelled');
+  });
+
   it('done は cancel_requested に立ち、undo_of の完了で cancelled / 失敗で done に戻る', async () => {
     const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
     const intent = await seedIntent(db);
     await claimSubIntent(db, intent.id, STAFF, NOW_MS);
     await completeSubIntent(db, intent.id, STAFF, NOW_MS);
-    const res = await undoSubIntent(db, intent.id, { staffId: null, role: null }, NOW_MS);
+    const res = await undoSubIntent(db, intent.id, { staffId: null, role: null }, { nowMs: NOW_MS });
     expect(res.status).toBe('undo_accepted');
     if (res.status !== 'undo_accepted') return;
     expect(store.intents.get(intent.id)?.state).toBe('cancel_requested');
-    // undo_of を実行 → 完了 = 元 intent は cancelled
     await claimSubIntent(db, res.undoIntent.id, STAFF, NOW_MS);
     const done = await completeSubIntent(db, res.undoIntent.id, STAFF, NOW_MS);
     expect(done.status).toBe('done');
@@ -666,7 +887,7 @@ describe('undoSubIntent (§1-3)', () => {
     const intent = await seedIntent(db);
     await claimSubIntent(db, intent.id, STAFF, NOW_MS);
     await completeSubIntent(db, intent.id, STAFF, NOW_MS);
-    const res = await undoSubIntent(db, intent.id, { staffId: null, role: null }, NOW_MS);
+    const res = await undoSubIntent(db, intent.id, { staffId: null, role: null }, { nowMs: NOW_MS });
     if (res.status !== 'undo_accepted') throw new Error('setup');
     await claimSubIntent(db, res.undoIntent.id, STAFF, NOW_MS);
     const failed = await failSubIntent(db, res.undoIntent.id, '既に発送済み', STAFF, NOW_MS);
@@ -676,11 +897,58 @@ describe('undoSubIntent (§1-3)', () => {
     expect(store.intents.get(intent.id)?.state).toBe('done');
   });
 
+  it('undo_of 自体への undo = 依頼の取り下げ。元 intent は done に復元される (固着させない)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const intent = await seedIntent(db);
+    await claimSubIntent(db, intent.id, STAFF, NOW_MS);
+    await completeSubIntent(db, intent.id, STAFF, NOW_MS);
+    const res = await undoSubIntent(db, intent.id, { staffId: null, role: null }, { nowMs: NOW_MS });
+    if (res.status !== 'undo_accepted') throw new Error('setup');
+    expect(store.intents.get(intent.id)?.state).toBe('cancel_requested');
+    // スタッフが undo_of 行を取り消す (顧客の翻意)
+    const withdraw = await undoSubIntent(db, res.undoIntent.id, { staffId: 'staff-1', role: 'admin' }, { requestedBy: 'staff', nowMs: NOW_MS });
+    expect(withdraw.status).toBe('cancelled');
+    expect(store.intents.get(res.undoIntent.id)?.state).toBe('cancelled');
+    expect(store.intents.get(intent.id)?.state).toBe('done'); // 復元された
+  });
+
+  it('cancel_requested に取り残された元 intent への undo は undo_of を作り直す (残留からの復旧)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const intent = await seedIntent(db);
+    await claimSubIntent(db, intent.id, STAFF, NOW_MS);
+    await completeSubIntent(db, intent.id, STAFF, NOW_MS);
+    // 障害の残留を再現: cancel_requested だが対応する undo_of が存在しない
+    store.intents.get(intent.id)!.state = 'cancel_requested';
+    const res = await undoSubIntent(db, intent.id, { staffId: null, role: null }, { nowMs: NOW_MS });
+    expect(res.status).toBe('undo_accepted');
+    if (res.status !== 'undo_accepted') return;
+    expect(res.undoIntent.supersedes_intent_id).toBe(intent.id);
+    expect([...store.intents.values()].filter((r) => r.op === 'undo_of').length).toBe(1);
+  });
+
+  it('release で received に戻った元 intent も undo_of 完了で解決される (open 残留させない)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const intent = await seedIntent(db);
+    await claimSubIntent(db, intent.id, STAFF, NOW_MS);
+    const res = await undoSubIntent(db, intent.id, { staffId: null, role: null }, { nowMs: NOW_MS });
+    if (res.status !== 'undo_accepted') throw new Error('setup');
+    // スタッフ A が HB 未操作に気づき release → 元 intent は received に戻る
+    await releaseSubIntent(db, intent.id, NOW_MS);
+    expect(store.intents.get(intent.id)?.state).toBe('received');
+    // スタッフ B が undo_of を完了 → 元 intent (received) も cancelled に解決される
+    await claimSubIntent(db, res.undoIntent.id, STAFF, NOW_MS);
+    const done = await completeSubIntent(db, res.undoIntent.id, STAFF, NOW_MS);
+    expect(done.status).toBe('done');
+    if (done.status !== 'done') return;
+    expect(done.originalResolved).toBe(true);
+    expect(store.intents.get(intent.id)?.state).toBe('cancelled');
+  });
+
   it('expired からは取り消せない', async () => {
     const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
     const intent = await seedIntent(db);
     store.intents.get(intent.id)!.state = 'expired';
-    const res = await undoSubIntent(db, intent.id, { staffId: null, role: null }, NOW_MS);
+    const res = await undoSubIntent(db, intent.id, { staffId: null, role: null }, { nowMs: NOW_MS });
     expect(res.status).toBe('not_undoable');
   });
 });
@@ -697,7 +965,7 @@ describe('sweepSubIntents (§4-2 sweep)', () => {
     expect(store.queryCount).toBe(0);
   });
 
-  it('skip の締切超過 → expired + 正直な失敗通知 (連携済み) + cron log', async () => {
+  it('skip の締切超過 → expired + 正直な失敗通知 (連携済み) + cron log + 監査', async () => {
     const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
     const intent = await seedIntent(db, { op: 'skip' });
     const res = await sweepSubIntents(
@@ -712,7 +980,6 @@ describe('sweepSubIntents (§4-2 sweep)', () => {
     expect(JSON.stringify(call.linePayload?.messages)).toContain('完了できませんでした');
     expect(store.cronLogs.length).toBe(1);
     expect(store.cronLogs[0].jobName).toBe('sub-intents-sweep');
-    // 監査も残る (§4 全遷移)
     expect(store.auditLogs.some((l) => l.action === 'sub_intent.expired')).toBe(true);
   });
 
@@ -726,11 +993,31 @@ describe('sweepSubIntents (§4-2 sweep)', () => {
     expect(vi.mocked(dispatch)).not.toHaveBeenCalled();
   });
 
+  it('通知の送信失敗は expiredUnnotified に計上 (成功と言わない)', async () => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    await seedIntent(db, { op: 'skip' });
+    vi.mocked(dispatch).mockRejectedValueOnce(new Error('LINE down'));
+    const res = await sweepSubIntents({ DB: db, ...GATE_ON }, { lineClient: fakeLineClient() }, AFTER_DEADLINE_MS);
+    expect(res.expired).toBe(1);
+    expect(res.expiredNotified).toBe(0);
+    expect(res.expiredUnnotified).toBe(1);
+  });
+
+  it('expire の CAS 敗者 (list 後に並行 claim) は何も宣言しない (通知ゼロ)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    await seedIntent(db, { op: 'skip' });
+    store.hookAfterListPastDeadline = (rows) => {
+      for (const r of rows) r.state = 'executing'; // list→expire の間にスタッフが claim
+    };
+    const res = await sweepSubIntents({ DB: db, ...GATE_ON }, { lineClient: fakeLineClient() }, AFTER_DEADLINE_MS);
+    expect(res.pastDeadline).toBe(1);
+    expect(res.expired).toBe(0);
+    expect(vi.mocked(dispatch)).not.toHaveBeenCalled();
+  });
+
   it('pause の締切超過 → expire せず同一行を次サイクルへ繰越し + エスカレーション (§1-2)', async () => {
-    // 繰越し先 = read-model の現在推定 (10-10 に進んでいる想定)
     const moved: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-10-10' };
     const { db, store } = createDb({ contracts: [moved], friends: [FRIEND] });
-    // 受理は推定が 09-10 だった時点の想定 → 手で 09-10 サイクルの行を作る
     const res0 = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C1', op: 'pause', requestedBy: 'customer', presentedDate: '2026-10-10', nowMs: NOW_MS });
     if (res0.status !== 'accepted') throw new Error('setup');
     const row = store.intents.get(res0.intent.id)!;
@@ -745,6 +1032,7 @@ describe('sweepSubIntents (§4-2 sweep)', () => {
     const after = store.intents.get(res0.intent.id)!;
     expect(after.state).toBe('received'); // expire していない
     expect(after.target_cycle_key).toBe('C1:2026-10-10');
+    expect(after.presented_scheduled_date).toBe('2026-10-10'); // 繰越し計算の基準も前進
     expect(after.deadline_at).toBe('2026-10-07T23:59:59.999+09:00');
     expect(after.carryover_count).toBe(1);
 
@@ -754,44 +1042,74 @@ describe('sweepSubIntents (§4-2 sweep)', () => {
     expect(res2.escalated).toBe(0);
   });
 
-  it('繰越し先に別 open intent がいたら superseded (新しい意思が優先)', async () => {
-    const moved: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-10-10' };
-    const { db, store } = createDb({ contracts: [moved], friends: [FRIEND] });
-    // 旧サイクルの pause (締切超過)
-    const old = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C1', op: 'pause', requestedBy: 'customer', presentedDate: '2026-10-10', nowMs: NOW_MS });
-    if (old.status !== 'accepted') throw new Error('setup');
-    const oldRow = store.intents.get(old.intent.id)!;
-    oldRow.target_cycle_key = 'C1:2026-09-10';
-    oldRow.presented_scheduled_date = '2026-09-10';
-    oldRow.deadline_at = '2026-09-07T23:59:59.999+09:00';
-    // 新サイクルには既に新しい pause 意思がある
-    const fresh = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C1', op: 'pause', requestedBy: 'customer', nowMs: NOW_MS });
-    if (fresh.status !== 'accepted') throw new Error('setup2');
-
-    const res = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, AFTER_DEADLINE_MS);
-    expect(res.superseded).toBe(1);
-    expect(store.intents.get(old.intent.id)?.state).toBe('superseded');
-    expect(store.intents.get(fresh.intent.id)?.state).toBe('received');
+  it('繰越し先の締切も既に過去なら unanchored (締切なし保持) — 同一値の無限再ヒットを作らない', async () => {
+    // sweep が長期停止して再開した状況: presented 09-10 / interval 30 → 次は 10-10 だが
+    // now は 11-20 = その締切 (10-07) も過去 → carried にすると毎 run 同じ計算で再ヒットする
+    const stale: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-09-10' };
+    const { db, store } = createDb({ contracts: [stale], friends: [FRIEND] });
+    const res0 = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C1', op: 'pause', requestedBy: 'customer', nowMs: NOW_MS });
+    if (res0.status !== 'accepted') throw new Error('setup');
+    const LONG_AFTER_MS = Date.parse('2026-11-20T00:00:00Z');
+    const res = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, LONG_AFTER_MS);
+    expect(res.carriedOver).toBe(1);
+    expect(res.carryUnanchored).toBe(1);
+    const after = store.intents.get(res0.intent.id)!;
+    expect(after.state).toBe('received');
+    expect(after.deadline_at).toBeNull(); // 過去の締切を捏造しない
+    expect(after.presented_scheduled_date).toBe('2026-10-10'); // 基準は前進している
+    // 再ヒットしない
+    const res2 = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, LONG_AFTER_MS);
+    expect(res2.pastDeadline).toBe(0);
   });
 
-  it('繰越し先を算出できない場合は締切なしで保持 (意思を expire させない)', async () => {
-    const dead: ContractSeed = { ...CONTRACT, next_billing_estimate: null, interval_days: null };
-    const { db, store } = createDb({ contracts: [dead], friends: [FRIEND] });
+  it('推定が動かない場合は interval_days で次サイクルを算出する', async () => {
+    const noEstimate: ContractSeed = { ...CONTRACT, next_billing_estimate: null, interval_days: 30 };
+    const { db, store } = createDb({ contracts: [noEstimate], friends: [FRIEND] });
     const res0 = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C1', op: 'cancel', requestedBy: 'customer', nowMs: NOW_MS });
     if (res0.status !== 'accepted') throw new Error('setup');
     const row = store.intents.get(res0.intent.id)!;
     row.target_cycle_key = 'C1:2026-09-10';
     row.presented_scheduled_date = '2026-09-10';
     row.deadline_at = '2026-09-07T23:59:59.999+09:00';
+    const res = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, AFTER_DEADLINE_MS);
+    expect(res.carriedOver).toBe(1);
+    expect(res.carryUnanchored).toBe(0);
+    const after = store.intents.get(res0.intent.id)!;
+    expect(after.target_cycle_key).toBe('C1:2026-10-10'); // 09-10 + 30日
+    expect(after.deadline_at).toBe('2026-10-07T23:59:59.999+09:00');
+  });
+
+  it('繰越し先に別 open intent がいたら superseded (新しい意思が優先・エスカレーションは出さない)', async () => {
+    const moved: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-10-10' };
+    const { db, store } = createDb({ contracts: [moved], friends: [FRIEND] });
+    const old = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C1', op: 'pause', requestedBy: 'customer', presentedDate: '2026-10-10', nowMs: NOW_MS });
+    if (old.status !== 'accepted') throw new Error('setup');
+    const oldRow = store.intents.get(old.intent.id)!;
+    oldRow.target_cycle_key = 'C1:2026-09-10';
+    oldRow.presented_scheduled_date = '2026-09-10';
+    oldRow.deadline_at = '2026-09-07T23:59:59.999+09:00';
+    const fresh = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C1', op: 'pause', requestedBy: 'customer', nowMs: NOW_MS });
+    if (fresh.status !== 'accepted') throw new Error('setup2');
 
     const res = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, AFTER_DEADLINE_MS);
-    expect(res.carryUnanchored).toBe(1);
-    const after = store.intents.get(res0.intent.id)!;
-    expect(after.state).toBe('received');
-    expect(after.deadline_at).toBeNull();
-    // 再ヒットしない
-    const res2 = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, AFTER_DEADLINE_MS);
-    expect(res2.pastDeadline).toBe(0);
+    expect(res.superseded).toBe(1);
+    expect(res.escalated).toBe(0); // 後継の意思が以後の通知を担う
+    expect(store.intents.get(old.intent.id)?.state).toBe('superseded');
+    expect(store.intents.get(old.intent.id)?.escalated_at).toBeNull(); // terminal 行にマーカーを付けない
+    expect(store.intents.get(fresh.intent.id)?.state).toBe('received');
+  });
+
+  it('carry-over の非 UNIQUE 例外 (D1 transient) は supersede せず errors に計上 (解約意思を消さない)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const res0 = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C1', op: 'cancel', requestedBy: 'customer', nowMs: NOW_MS });
+    if (res0.status !== 'accepted') throw new Error('setup');
+    const row = store.intents.get(res0.intent.id)!;
+    row.deadline_at = '2026-09-07T23:59:59.999+09:00';
+    store.throwOnCarryOver = new Error('D1_ERROR: internal error');
+    const res = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, AFTER_DEADLINE_MS);
+    expect(res.superseded).toBe(0);
+    expect(res.errors).toBe(1);
+    expect(store.intents.get(res0.intent.id)?.state).toBe('received'); // 意思は消えていない
   });
 
   it('executor=blocked (移行窓) は sweep 対象外 (解約意思が消えない §4-2)', async () => {
@@ -801,7 +1119,6 @@ describe('sweepSubIntents (§4-2 sweep)', () => {
       executor: 'blocked', nowMs: NOW_MS,
     });
     if (res0.status !== 'accepted') throw new Error('setup');
-    // deferred だが防御として deadline も過去に置く
     store.intents.get(res0.intent.id)!.deadline_at = '2026-09-07T23:59:59.999+09:00';
     const res = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, AFTER_DEADLINE_MS);
     expect(res.pastDeadline).toBe(0);
@@ -809,8 +1126,6 @@ describe('sweepSubIntents (§4-2 sweep)', () => {
   });
 
   it('received でも executor=blocked は sweep 対象外 (§4-2 の述語第二項。§5-4 再アンカー期の防御)', async () => {
-    // deferred → received の再アンカー遷移 (§5-4) が入ると received × blocked が実在しうる。
-    // 述語の executor <> 'blocked' が落ちると移行窓の解約意思が expired で消える (§4-2 が明記する事故)。
     const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
     const res0 = await acceptSubIntent(db, {
       contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer',
@@ -825,13 +1140,12 @@ describe('sweepSubIntents (§4-2 sweep)', () => {
     expect(row.state).toBe('received');
   });
 
-  it('機械 executor の 30 分超 claim は自動解放 / human は解放せずアラート 1 回のみ (§1-2)', async () => {
+  it('機械 executor の 30 分超 claim は自動解放 / human は解放せずアラート (claim 世代ごと 1 回)', async () => {
     const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
     const humanIntent = await seedIntent(db, { op: 'pause' });
     await claimSubIntent(db, humanIntent.id, STAFF, NOW_MS);
     const machine = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', executor: 'own_billing', nowMs: NOW_MS });
     if (machine.status !== 'accepted') throw new Error('setup');
-    // 機械行を executing に (claim は state 機械上 human と同経路)
     const mRow = store.intents.get(machine.intent.id)!;
     mRow.state = 'executing';
     mRow.claimed_at = toJstString(new Date(NOW_MS));
@@ -840,18 +1154,58 @@ describe('sweepSubIntents (§4-2 sweep)', () => {
     const res = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, later);
     expect(res.releasedMachineClaims).toBe(1);
     expect(res.staleHumanClaims).toBe(1);
+    expect(res.staleAlerted).toBe(1);
     expect(store.intents.get(machine.intent.id)?.state).toBe('received');
     expect(store.intents.get(humanIntent.id)?.state).toBe('executing'); // 解放されない
 
-    // 2 回目はアラートを繰り返さない (1 intent 1 回)
+    // 2 回目はアラートを繰り返さない (claim 世代ごと 1 回)
     const res2 = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, later + 60_000);
     expect(res2.staleHumanClaims).toBe(1); // 件数としては見える (可視化)
-    expect(res2.escalated).toBe(0); // 通知は増えない
+    expect(res2.staleAlerted).toBe(0); // 通知は増えない
+  });
+
+  it('claim 滞留アラートと締切超過エスカレーションは独立 (片方の消費でもう片方が沈黙しない)', async () => {
+    // 順序: claim → 30分放置 (滞留アラート) → release → 締切超過 → 繰越しエスカレーション。
+    // マーカーを 1 列で共有すると 2 つ目の通知が永久に出ない (監査 state-machine HIGH の回帰テスト)
+    const moved: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-10-10' };
+    const { db, store } = createDb({ contracts: [moved], friends: [FRIEND] });
+    const res0 = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C1', op: 'cancel', requestedBy: 'customer', presentedDate: '2026-10-10', nowMs: NOW_MS });
+    if (res0.status !== 'accepted') throw new Error('setup');
+    const row = store.intents.get(res0.intent.id)!;
+    row.target_cycle_key = 'C1:2026-09-10';
+    row.presented_scheduled_date = '2026-09-10';
+    row.deadline_at = '2026-09-07T23:59:59.999+09:00';
+
+    await claimSubIntent(db, res0.intent.id, STAFF, NOW_MS);
+    const stale = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, NOW_MS + 40 * 60_000);
+    expect(stale.staleAlerted).toBe(1); // ① claim 滞留アラート
+    await releaseSubIntent(db, res0.intent.id, NOW_MS + 41 * 60_000);
+    const overdue = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, AFTER_DEADLINE_MS);
+    expect(overdue.carriedOver).toBe(1);
+    expect(overdue.escalated).toBe(1); // ② 締切超過エスカレーションも発火する
+  });
+
+  it('Discord 通知は人間に届く形で送られる (webhook 本文にアラート文と /admin/ops 誘導)', async () => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const intent = await seedIntent(db, { op: 'pause' });
+    await claimSubIntent(db, intent.id, STAFF, NOW_MS);
+    const fetchImpl = vi.fn(async () => ({}) as Response);
+    await sweepSubIntents(
+      { DB: db, ...GATE_ON, DISCORD_WEBHOOK_URL: 'https://discord.test/webhook' },
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+      NOW_MS + 40 * 60_000,
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, { body: string }];
+    expect(url).toBe('https://discord.test/webhook');
+    const body = JSON.parse(init.body) as { content: string };
+    expect(body.content).toContain('着手が 30 分を超えて未解決');
+    expect(body.content).toContain('/admin/ops');
   });
 });
 
 // ============================================================
-// /admin/ops API (認可・gate・監査)
+// /admin/ops API (認可・gate・監査・可視化)
 // ============================================================
 
 function buildApp(staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' } | null) {
@@ -901,6 +1255,75 @@ describe('/admin/ops routes', () => {
     expect(json.data.gateEnabled).toBe(false);
   });
 
+  it('migration 076 未適用 (no such table) は 500 にせず migrationMissing を返す', async () => {
+    const { db, store } = createDb();
+    store.throwNoSuchTable = true;
+    const app = buildApp(ADMIN_STAFF);
+    const res = await app.request('/api/admin/sub-intents', {}, { DB: db });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { data: { migrationMissing?: boolean; intents: unknown[] } };
+    expect(json.data.migrationMissing).toBe(true);
+    expect(json.data.intents).toEqual([]);
+  });
+
+  it('一覧の可視化: 滞留 claim が先頭・未解決時間と claimAlert・stats が正しい', async () => {
+    // claimAgeMinutes はサーバの実時計で計算されるため、このテストだけ実時計相対で seed する
+    const { db, store } = createDb();
+    const realNow = Date.now();
+    const mk = (over: Partial<SubIntentRow>): SubIntentRow => ({
+      id: `si_${Math.random().toString(16).slice(2)}`,
+      friend_id: null,
+      contract_ns: 'hb',
+      contract_key: 'C1',
+      target_cycle_key: `C1:x${Math.random().toString(16).slice(2)}`,
+      presented_scheduled_date: null,
+      op: 'skip',
+      state: 'received',
+      requested_by: 'customer',
+      actor_staff_id: null,
+      actor_role: null,
+      payload_json: null,
+      deadline_at: null,
+      promised_by: null,
+      claimed_at: null,
+      executor: 'human',
+      supersedes_intent_id: null,
+      fail_reason: null,
+      carryover_count: 0,
+      escalated_at: null,
+      stale_alerted_at: null,
+      created_at: toJstString(new Date(realNow - 3_600_000)),
+      resolved_at: null,
+      ...over,
+    });
+    const stuck = mk({ state: 'executing', claimed_at: toJstString(new Date(realNow - 40 * 60_000)), actor_staff_id: 'staff-9' });
+    const fresh = mk({ state: 'executing', claimed_at: toJstString(new Date(realNow - 5 * 60_000)) });
+    const soon = mk({ state: 'received', deadline_at: toJstString(new Date(realNow + 86_400_000)) });
+    const later = mk({ state: 'received', deadline_at: toJstString(new Date(realNow + 5 * 86_400_000)) });
+    const done = mk({ state: 'done', resolved_at: toJstString(new Date(realNow - 60_000)) });
+    for (const r of [done, later, soon, fresh, stuck]) store.intents.set(r.id, r);
+
+    const app = buildApp(ADMIN_STAFF);
+    const res = await app.request('/api/admin/sub-intents', {}, { DB: db });
+    const json = (await res.json()) as {
+      data: {
+        intents: Array<{ id: string; claimAgeMinutes: number | null; claimAlert: boolean }>;
+        stats: { received: number; executing: number; doneLast7d: number };
+      };
+    };
+    const ids = json.data.intents.map((i) => i.id);
+    // executing (滞留が先) → received (締切近い順) → terminal
+    expect(ids).toEqual([stuck.id, fresh.id, soon.id, later.id, done.id]);
+    const stuckRow = json.data.intents[0];
+    expect(stuckRow.claimAgeMinutes).toBeGreaterThanOrEqual(39);
+    expect(stuckRow.claimAgeMinutes).toBeLessThanOrEqual(41);
+    expect(stuckRow.claimAlert).toBe(true);
+    expect(json.data.intents[1].claimAlert).toBe(false);
+    expect(json.data.stats.received).toBe(2);
+    expect(json.data.stats.executing).toBe(2);
+    expect(json.data.stats.doneLast7d).toBe(1);
+  });
+
   it('変更系は gate OFF なら 400 (死んだ台帳を育てない)', async () => {
     const { db } = createDb({ contracts: [CONTRACT] });
     const app = buildApp(ADMIN_STAFF);
@@ -926,7 +1349,7 @@ describe('/admin/ops routes', () => {
     expect(store.auditLogs.some((l) => l.action === 'admin.sub_intent.denied_env_owner')).toBe(true);
   });
 
-  it('受理 → 着手 → 完了のフルフロー (HTTP 経由) + 監査記録', async () => {
+  it('受理 → 着手 → 完了のフルフロー (HTTP 経由) + 監査記録 (PII なし)', async () => {
     const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
     const app = buildApp(ADMIN_STAFF);
     const env = { DB: db, ...GATE_ON };
@@ -951,46 +1374,104 @@ describe('/admin/ops routes', () => {
     for (const action of ['admin.sub_intent.accept', 'admin.sub_intent.claim', 'admin.sub_intent.done']) {
       expect(store.auditLogs.some((l) => l.action === action)).toBe(true);
     }
-    // 監査 metadata に PII を入れない (contractKey と op のみ)
     const acceptLog = store.auditLogs.find((l) => l.action === 'admin.sub_intent.accept');
     expect(acceptLog?.metadata).not.toContain('9月分から');
   });
 
-  it('done の CAS 敗者は 409 + suspectDoubleExecution (完了と言わない §1-2)', async () => {
-    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+  it('undo の監査にも contractKey/op が残る (§4 受入条件: 契約単位の追跡)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
     const app = buildApp(ADMIN_STAFF);
     const env = { DB: db, ...GATE_ON };
-    const intent = await seedIntent(db);
-    // claim せず直接 done → CAS 0
-    const res = await app.request(`/api/admin/sub-intents/${intent.id}/done`, { method: 'POST' }, env);
-    expect(res.status).toBe(409);
-    const json = (await res.json()) as { suspectDoubleExecution?: boolean };
-    expect(json.suspectDoubleExecution).toBe(true);
+    const intent = await seedIntent(db, { op: 'pause' });
+    const res = await app.request(`/api/admin/sub-intents/${intent.id}/undo`, { method: 'POST' }, env);
+    expect(res.status).toBe(200);
+    const undoLog = store.auditLogs.find((l) => l.action === 'admin.sub_intent.undo');
+    expect(undoLog?.metadata).toContain('C1');
+    expect(undoLog?.metadata).toContain('pause');
+    // /admin/ops 経由の undo は requested_by='staff' — ただし直接 CAS 取り消しでは行が terminal。
+    // undo_of が生成されるケースで種別を確認する
+    const intent2 = await seedIntent(db, { op: 'skip' });
+    await claimSubIntent(db, intent2.id, STAFF, NOW_MS);
+    await app.request(`/api/admin/sub-intents/${intent2.id}/undo`, { method: 'POST' }, env);
+    const undoOf = [...store.intents.values()].find((r) => r.op === 'undo_of');
+    expect(undoOf?.requested_by).toBe('staff');
   });
 
-  it('fail は理由必須 (400)', async () => {
+  it('done の CAS 敗者は 409 + suspectDoubleExecution + Discord alert (完了と言わない §1-2)', async () => {
     const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const app = buildApp(ADMIN_STAFF);
+    const fetchCalls: string[] = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: unknown, init?: { body?: string }) => {
+      fetchCalls.push(String(init?.body ?? ''));
+      return {} as Response;
+    }) as typeof fetch;
+    try {
+      const env = { DB: db, ...GATE_ON, DISCORD_WEBHOOK_URL: 'https://discord.test/webhook' };
+      const intent = await seedIntent(db);
+      const res = await app.request(`/api/admin/sub-intents/${intent.id}/done`, { method: 'POST' }, env);
+      expect(res.status).toBe(409);
+      const json = (await res.json()) as { suspectDoubleExecution?: boolean };
+      expect(json.suspectDoubleExecution).toBe(true);
+      expect(fetchCalls.some((b) => b.includes('二重対応の疑い'))).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('fail は理由必須 (400)。audit には理由本文でなく定数が残る (PII 最小化)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
     const app = buildApp(ADMIN_STAFF);
     const env = { DB: db, ...GATE_ON };
     const intent = await seedIntent(db);
     await claimSubIntent(db, intent.id, STAFF, NOW_MS);
-    const res = await app.request(
+    const empty = await app.request(
       `/api/admin/sub-intents/${intent.id}/fail`,
       { method: 'POST', body: JSON.stringify({}), headers: { 'Content-Type': 'application/json' } },
       env,
     );
-    expect(res.status).toBe(400);
+    expect(empty.status).toBe(400);
+    const res = await app.request(
+      `/api/admin/sub-intents/${intent.id}/fail`,
+      { method: 'POST', body: JSON.stringify({ reason: '山田様の電話番号 090-xxxx' }), headers: { 'Content-Type': 'application/json' } },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const failLog = store.auditLogs.find((l) => l.action === 'admin.sub_intent.fail');
+    expect(failLog?.errorMessage).toBe('staff_reason_recorded');
+    expect(failLog?.errorMessage).not.toContain('山田');
   });
 
-  it('存在しない契約の受理は 404', async () => {
-    const { db } = createDb();
+  it('存在しない契約の受理は 404 / 予定日の形式不正は 400', async () => {
+    const { db } = createDb({ contracts: [CONTRACT] });
     const app = buildApp(ADMIN_STAFF);
-    const res = await app.request(
+    const env = { DB: db, ...GATE_ON };
+    const notFound = await app.request(
       '/api/admin/sub-intents',
       { method: 'POST', body: JSON.stringify({ contractKey: 'NOPE', op: 'skip' }), headers: { 'Content-Type': 'application/json' } },
-      { DB: db, ...GATE_ON },
+      env,
     );
-    expect(res.status).toBe(404);
+    expect(notFound.status).toBe(404);
+    const badDate = await app.request(
+      '/api/admin/sub-intents',
+      { method: 'POST', body: JSON.stringify({ contractKey: 'C1', op: 'skip', presentedDate: 'garbage' }), headers: { 'Content-Type': 'application/json' } },
+      env,
+    );
+    expect(badDate.status).toBe(400);
+  });
+
+  it('deferred の undo は HTTP 経由でも cancelled になる (移行窓の意思の取り下げ)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const app = buildApp(ADMIN_STAFF);
+    const env = { DB: db, ...GATE_ON };
+    const res0 = await acceptSubIntent(db, {
+      contractNs: 'hb', contractKey: 'C1', op: 'cancel', requestedBy: 'customer',
+      executor: 'blocked', nowMs: NOW_MS,
+    });
+    if (res0.status !== 'accepted') throw new Error('setup');
+    const res = await app.request(`/api/admin/sub-intents/${res0.intent.id}/undo`, { method: 'POST' }, env);
+    expect(res.status).toBe(200);
+    expect(store.intents.get(res0.intent.id)?.state).toBe('cancelled');
   });
 });
 
@@ -1033,9 +1514,10 @@ describe('authMiddleware skip-list (/admin/ops)', () => {
 // ============================================================
 
 describe('cycle key / deadline ヘルパー', () => {
-  it('buildCycleKey は日付なしを unknown に畳む', () => {
+  it('buildCycleKey は日付なしを unknown に畳む / undo キーは元 intent を含む', () => {
     expect(buildCycleKey('C1', '2026-09-10')).toBe('C1:2026-09-10');
     expect(buildCycleKey('C1', null)).toBe('C1:unknown');
+    expect(buildUndoCycleKey('C1:2026-09-10', 'si_abc')).toBe('C1:2026-09-10#undo:si_abc');
   });
 
   it('computeDeadlineAt = 決済3日前の EOD JST (不正入力は null)', () => {

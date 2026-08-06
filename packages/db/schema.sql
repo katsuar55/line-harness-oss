@@ -2101,7 +2101,10 @@ CREATE TABLE IF NOT EXISTS sub_intents (
   supersedes_intent_id TEXT,                    -- undo_of が指す元 intent
   fail_reason TEXT,                             -- failed の理由 (deadline_passed|cycle_drift|staff 入力等)
   carryover_count INTEGER NOT NULL DEFAULT 0,   -- pause/cancel の繰越し回数 (可視化・無限ループ検知)
-  escalated_at TEXT,                            -- エスカレーション済みマーカー (1 intent 1 回 §1-2/§4-2)
+  escalated_at TEXT,                            -- 締切超過エスカレーション済みマーカー (1 intent 1 回 §4-2)
+  stale_alerted_at TEXT,                        -- claim 滞留アラート済みマーカー (claim 世代ごと §1-2。
+                                                --  claim/release でクリア = escalated_at と目的を分離し、
+                                                --  片方の消費でもう片方が沈黙しないようにする)
   created_at TEXT NOT NULL,
   resolved_at TEXT                              -- terminal 到達時刻 (done/expired/failed/cancelled/superseded)
 );

@@ -63,6 +63,8 @@ export interface SubIntentRow {
   fail_reason: string | null;
   carryover_count: number;
   escalated_at: string | null;
+  /** claim 滞留アラート済み (claim 世代ごと。claim/release でクリア = escalated_at と独立 §1-2) */
+  stale_alerted_at: string | null;
   created_at: string;
   resolved_at: string | null;
 }
@@ -102,8 +104,8 @@ export async function insertSubIntent(
          (id, friend_id, contract_ns, contract_key, target_cycle_key, presented_scheduled_date,
           op, state, requested_by, actor_staff_id, actor_role, payload_json,
           deadline_at, promised_by, claimed_at, executor, supersedes_intent_id,
-          fail_reason, carryover_count, escalated_at, created_at, resolved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, 0, NULL, ?, NULL)
+          fail_reason, carryover_count, escalated_at, stale_alerted_at, created_at, resolved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, 0, NULL, NULL, ?, NULL)
        ON CONFLICT DO NOTHING`,
     )
     .bind(
@@ -167,12 +169,13 @@ export async function claimSubIntentCas(
   now: string,
   requireDeadline: boolean,
 ): Promise<{ claimed: boolean }> {
+  // stale_alerted_at は claim 世代ごとにリセット (新しい claim には新しい滞留アラート枠 §1-2)
   const sql = requireDeadline
     ? `UPDATE sub_intents
-          SET state = 'executing', claimed_at = ?, actor_staff_id = ?, actor_role = ?
+          SET state = 'executing', claimed_at = ?, actor_staff_id = ?, actor_role = ?, stale_alerted_at = NULL
         WHERE id = ? AND state = 'received' AND (deadline_at IS NULL OR deadline_at > ?)`
     : `UPDATE sub_intents
-          SET state = 'executing', claimed_at = ?, actor_staff_id = ?, actor_role = ?
+          SET state = 'executing', claimed_at = ?, actor_staff_id = ?, actor_role = ?, stale_alerted_at = NULL
         WHERE id = ? AND state = 'received'`;
   const stmt = requireDeadline
     ? db.prepare(sql).bind(now, staffId, staffRole, id, now)
@@ -239,7 +242,7 @@ export async function releaseSubIntentClaimCas(
   const res = await db
     .prepare(
       `UPDATE sub_intents
-          SET state = 'received', claimed_at = NULL, actor_staff_id = NULL, actor_role = NULL
+          SET state = 'received', claimed_at = NULL, actor_staff_id = NULL, actor_role = NULL, stale_alerted_at = NULL
         WHERE id = ? AND state = 'executing'`,
     )
     .bind(id)
@@ -287,8 +290,11 @@ export async function markCancelRequestedCas(
 }
 
 /**
- * undo_of の完了に伴う元 intent の解決: cancel_requested|done → cancelled。
- * (元が executing のままの場合は触らない — /admin/ops で人間が元 claim を解決する)
+ * undo_of の完了に伴う元 intent の解決: cancel_requested|done|received → cancelled。
+ * 'received' を含めるのは release 経路 (claim → undo_of 受理 → release → undo_of 完了) で
+ * 元 intent が received に戻っているケース — ここで解決しないと「取り消し完了」を伝えた意思が
+ * open のまま残り、後日実行/expire される (§1-3 の undo CAS と同型なので received→cancelled は安全)。
+ * (元が executing のままの場合のみ触らない — 人間が元 claim を解決する)
  */
 export async function resolveUndoneOriginalCas(
   db: D1Database,
@@ -298,7 +304,7 @@ export async function resolveUndoneOriginalCas(
   const res = await db
     .prepare(
       `UPDATE sub_intents SET state = 'cancelled', resolved_at = ?
-        WHERE id = ? AND state IN ('cancel_requested','done')`,
+        WHERE id = ? AND state IN ('cancel_requested','done','received')`,
     )
     .bind(now, id)
     .run();
@@ -337,10 +343,13 @@ export async function expireSubIntentCas(
 }
 
 /**
- * 繰越し (§1-2): pause/cancel の締切超過は同一行の target_cycle_key / deadline_at を
- * 次サイクルへ UPDATE する (新規 INSERT しない)。
+ * 繰越し (§1-2): pause/cancel の締切超過は同一行の target_cycle_key / deadline_at /
+ * presented_scheduled_date を次サイクルへ UPDATE する (新規 INSERT しない)。
+ * presented_scheduled_date も前進させるのは、次回の繰越し計算の基準を進めるため —
+ * これを据え置くと繰越し計算が毎回同じ値を再算出する固定点になり、算出結果の締切が
+ * 依然過去の場合に sweep へ毎 run 再ヒットする (監査 CONFIRMED の無限ループ)。
  * ⚠️ 繰越し先に別の open intent が既に存在すると partial UNIQUE で **throw** する —
- *    呼び出し側 (service) が捕捉して supersedeSubIntentCas へ落とすこと。
+ *    呼び出し側 (service) が UNIQUE 違反であることを確認したうえで supersede へ落とす。
  * state='received' の CAS 付き (executing へ進んだ行を巻き戻さない)。
  */
 export async function carryOverSubIntentCas(
@@ -348,16 +357,17 @@ export async function carryOverSubIntentCas(
   id: string,
   newCycleKey: string,
   newDeadlineAt: string | null,
+  newScheduledDate: string | null,
   now: string,
 ): Promise<{ carried: boolean }> {
   void now;
   const res = await db
     .prepare(
       `UPDATE sub_intents
-          SET target_cycle_key = ?, deadline_at = ?, carryover_count = carryover_count + 1
+          SET target_cycle_key = ?, deadline_at = ?, presented_scheduled_date = ?, carryover_count = carryover_count + 1
         WHERE id = ? AND state = 'received'`,
     )
-    .bind(newCycleKey, newDeadlineAt, id)
+    .bind(newCycleKey, newDeadlineAt, newScheduledDate, id)
     .run();
   return { carried: (res.meta?.changes ?? 0) > 0 };
 }
@@ -378,7 +388,11 @@ export async function supersedeSubIntentCas(
   return { superseded: (res.meta?.changes ?? 0) > 0 };
 }
 
-/** エスカレーション済みマーカー (1 intent 1 回 §1-2/§4-2)。CAS (escalated_at IS NULL)。 */
+/**
+ * 締切超過エスカレーション済みマーカー (1 intent 1 回 §4-2)。CAS (escalated_at IS NULL)。
+ * state 述語つき — terminal 行 (並行 undo で cancelled 等) にマーカーを付けて
+ * 偽アラートを出さない。
+ */
 export async function markEscalatedCas(
   db: D1Database,
   id: string,
@@ -386,7 +400,29 @@ export async function markEscalatedCas(
 ): Promise<{ marked: boolean }> {
   const res = await db
     .prepare(
-      `UPDATE sub_intents SET escalated_at = ? WHERE id = ? AND escalated_at IS NULL`,
+      `UPDATE sub_intents SET escalated_at = ?
+        WHERE id = ? AND escalated_at IS NULL AND state IN ('received','executing')`,
+    )
+    .bind(now, id)
+    .run();
+  return { marked: (res.meta?.changes ?? 0) > 0 };
+}
+
+/**
+ * claim 滞留アラート済みマーカー (§1-2 — claim 世代ごと 1 回)。CAS (stale_alerted_at IS NULL)。
+ * escalated_at (締切超過用) と分離する — 1 列共有だと片方の消費でもう片方が永久沈黙する
+ * (例: claim 滞留アラート → release → 締切超過、の順で 2 つ目の通知が消える)。
+ * claim/release が stale_alerted_at を NULL に戻すので、新しい claim には新しいアラート枠が立つ。
+ */
+export async function markStaleAlertedCas(
+  db: D1Database,
+  id: string,
+  now: string,
+): Promise<{ marked: boolean }> {
+  const res = await db
+    .prepare(
+      `UPDATE sub_intents SET stale_alerted_at = ?
+        WHERE id = ? AND stale_alerted_at IS NULL AND state = 'executing'`,
     )
     .bind(now, id)
     .run();

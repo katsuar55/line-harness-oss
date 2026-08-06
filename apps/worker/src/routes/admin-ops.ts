@@ -38,6 +38,7 @@ import {
   releaseSubIntent,
   undoSubIntent,
   isSubIntentEnabled,
+  sendSubIntentAlert,
   SUB_INTENT_OP_LABELS,
   HUMAN_CLAIM_ALERT_MINUTES,
   ACCEPTABLE_OPS,
@@ -131,20 +132,41 @@ function toApiRow(row: SubIntentRow, nowMs: number) {
 adminOps.get('/api/admin/sub-intents', async (c) => {
   const nowMs = Date.now();
   const sevenDaysAgo = toJstString(new Date(nowMs - 7 * 86_400_000));
-  const [rows, stats] = await Promise.all([
-    listSubIntentsForOps(c.env.DB),
-    getSubIntentStats(c.env.DB, sevenDaysAgo),
-  ]);
-  return c.json({
-    success: true,
-    data: {
-      gateEnabled: isSubIntentEnabled(c.env),
-      alertThresholdMinutes: HUMAN_CLAIM_ALERT_MINUTES,
-      stats,
-      intents: rows.map((r) => toApiRow(r, nowMs)),
-      serverTime: jstNow(),
-    },
-  });
+  try {
+    const [rows, stats] = await Promise.all([
+      listSubIntentsForOps(c.env.DB),
+      getSubIntentStats(c.env.DB, sevenDaysAgo),
+    ]);
+    return c.json({
+      success: true,
+      data: {
+        gateEnabled: isSubIntentEnabled(c.env),
+        alertThresholdMinutes: HUMAN_CLAIM_ALERT_MINUTES,
+        stats,
+        intents: rows.map((r) => toApiRow(r, nowMs)),
+        serverTime: jstNow(),
+      },
+    });
+  } catch (err) {
+    // migration 076 未適用 (コード先行デプロイ) でも 500 にせず状態を正直に返す —
+    // gate OFF の dormancy を「閲覧が壊れる」で破らない。それ以外の D1 例外は再 throw
+    const message = err instanceof Error ? err.message : String(err);
+    if (!message.includes('no such table')) throw err;
+    return c.json({
+      success: true,
+      data: {
+        gateEnabled: isSubIntentEnabled(c.env),
+        alertThresholdMinutes: HUMAN_CLAIM_ALERT_MINUTES,
+        migrationMissing: true,
+        stats: {
+          received: 0, executing: 0, deferred: 0, cancelRequested: 0,
+          doneLast7d: 0, failedLast7d: 0, expiredLast7d: 0,
+        },
+        intents: [],
+        serverTime: jstNow(),
+      },
+    });
+  }
 });
 
 // ─── スタッフ受理 (電話/メール依頼の台帳化) ───
@@ -195,6 +217,9 @@ adminOps.post('/api/admin/sub-intents', async (c) => {
       409,
     );
   }
+  if (result.status === 'invalid_date') {
+    return c.json({ success: false, error: '予定日は YYYY-MM-DD 形式で入力してください' }, 400);
+  }
   return c.json({ success: false, error: '受理できませんでした (' + result.status + ')' }, 400);
 });
 
@@ -239,10 +264,22 @@ adminOps.post('/api/admin/sub-intents/:id/done', async (c) => {
     metadata: result.status !== 'not_found' && result.intent ? { contractKey: result.intent.contract_key, op: result.intent.op } : {},
   });
   if (result.status === 'done') {
+    // undo_of 完了なのに元 intent を解決できなかった場合は握り潰さない
+    // (元が executing のまま = 人間が元 claim を解決する必要がある)
+    if (result.intent.op === 'undo_of' && !result.originalResolved) {
+      await sendSubIntentAlert(c.env, [
+        `⚠️ 取り消し (${result.intent.contract_key}) は完了しましたが、元の依頼を自動で解決できませんでした (対応中のまま)。/admin/ops で元の依頼を確認してください`,
+      ]);
+    }
     return c.json({ success: true, data: { intent: toApiRow(result.intent, Date.now()), originalResolved: result.originalResolved } });
   }
   if (result.status === 'not_found') return c.json({ success: false, error: '対象が見つかりません' }, 404);
-  // §1-2: CAS 0 行 = 「完了」と宣言しない。二重実行の疑いを握り潰さない
+  // §1-2: CAS 0 行 = 「完了」と宣言しない。二重実行の疑いを握り潰さず Discord にも上げる
+  // (409 を受けた操作者が画面を更新して流しても、管理者に届く経路を残す)
+  const staffForAlert = c.get('staff') as { id: string } | undefined;
+  await sendSubIntentAlert(c.env, [
+    `🚨 二重対応の疑い: 完了記録が競合しました (intent ${id})。操作者 ${staffForAlert?.id ?? '不明'}。Huckleberry 管理画面の実際の状態を確認してください`,
+  ]);
   return c.json(
     { success: false, error: '完了を記録できませんでした (状態が変わっています = 二重対応の疑い)。一覧を更新し、Huckleberry 管理画面の実際の状態を確認してください', suspectDoubleExecution: true },
     409,
@@ -264,7 +301,9 @@ adminOps.post('/api/admin/sub-intents/:id/fail', async (c) => {
     targetType: 'sub_intent',
     targetId: id,
     result: result.status === 'failed' ? 'success' : 'failure',
-    errorMessage: result.status === 'failed' ? reason : result.status,
+    // 理由本文は append-only の audit_logs に入れない (自由記述 = PII 混入リスク。
+    // 本文は sub_intents.fail_reason にのみ保持し、訂正の余地を残す)
+    errorMessage: result.status === 'failed' ? 'staff_reason_recorded' : result.status,
     metadata: result.status !== 'not_found' && result.intent ? { contractKey: result.intent.contract_key, op: result.intent.op } : {},
   });
   if (result.status === 'failed') {
@@ -301,13 +340,18 @@ adminOps.post('/api/admin/sub-intents/:id/undo', async (c) => {
   if (denied) return denied;
   const staff = c.get('staff') as { id: string; role: string };
   const id = c.req.param('id');
-  const result = await undoSubIntent(c.env.DB, id, { staffId: staff.id, role: staff.role });
+  // /admin/ops 経由の undo はスタッフ発 (§1-4: requested_by は種別。顧客発は §10-5 で 'customer')
+  const result = await undoSubIntent(c.env.DB, id, { staffId: staff.id, role: staff.role }, { requestedBy: 'staff' });
+  const undone =
+    result.status === 'cancelled' ? result.intent : result.status === 'undo_accepted' ? result.undoIntent : null;
   await auditAdminAction(c, {
     action: 'admin.sub_intent.undo',
     targetType: 'sub_intent',
     targetId: id,
     result: result.status === 'cancelled' || result.status === 'undo_accepted' ? 'success' : 'failure',
     errorMessage: result.status === 'cancelled' || result.status === 'undo_accepted' ? undefined : result.status,
+    // §4 受入条件「/admin/logs から契約単位で追跡できる」— undo だけ metadata を欠かさない
+    metadata: undone ? { contractKey: undone.contract_key, op: undone.op } : {},
   });
   if (result.status === 'cancelled') {
     return c.json({ success: true, data: { status: 'cancelled', intent: toApiRow(result.intent, Date.now()) } });
@@ -503,7 +547,7 @@ const OPS_PAGE_HTML = `<!DOCTYPE html>
           post('/api/admin/sub-intents/' + it.id + '/done', {}, '完了を記録しました');
         });
         addBtn(btns, 'b-fail', '失敗を記録', function(){
-          var reason = window.prompt('失敗の理由を入力してください (お客様への説明の土台になります)。\\n例: 受付期限を過ぎていた / Huckleberry 側でエラー');
+          var reason = window.prompt('失敗の理由を入力してください (お客様への説明の土台になります)。\\n⚠️ お客様の氏名・連絡先は書かないでください (記録は削除できません)。\\n例: 受付期限を過ぎていた / Huckleberry 側でエラー');
           if(!reason) return;
           post('/api/admin/sub-intents/' + it.id + '/fail', { reason: reason }, '失敗を記録しました。お客様へのフォローをお願いします');
         });
@@ -516,6 +560,11 @@ const OPS_PAGE_HTML = `<!DOCTYPE html>
           if(!window.confirm('移行窓で保留中の依頼を取り消します。よろしいですか？')) return;
           post('/api/admin/sub-intents/' + it.id + '/undo', {}, '取り消しました');
         });
+      } else if(it.state === 'cancel_requested'){
+        // 取り消し依頼の行 (undo_of) が別途一覧にあるのが正常。無い場合 (障害の残留) の復旧口
+        addBtn(btns, 'b-claim', '取り消し依頼を確認/再作成', function(){
+          post('/api/admin/sub-intents/' + it.id + '/undo', {}, '取り消し依頼を確認しました (一覧の「取り消し」行から対応してください)');
+        });
       }
       div.appendChild(btns);
       return div;
@@ -523,7 +572,8 @@ const OPS_PAGE_HTML = `<!DOCTYPE html>
 
     function render(data){
       var g = $('gate');
-      if(data.gateEnabled){ g.className = 'gate gate-on'; g.textContent = '受理レイヤー: 稼働中'; }
+      if(data.migrationMissing){ g.className = 'gate gate-off'; g.textContent = 'データベース未準備 (migration 076 未適用)。適用後にご利用ください'; }
+      else if(data.gateEnabled){ g.className = 'gate gate-on'; g.textContent = '受理レイヤー: 稼働中'; }
       else { g.className = 'gate gate-off'; g.textContent = '受理レイヤー: 停止中 (SUB_INTENT_ENABLED 未投入)。閲覧はできますが、受理や状態の変更はできません'; }
 
       var st = $('stats'); st.textContent = '';

@@ -240,9 +240,10 @@ export type Env = {
     // サブスク受理レイヤー gate (§10-3, docs/SUBSCRIPTION_UX_TAP_MINIMAL_2026-07-25.md §1):
     //   'true' で sub_intents の受理/遷移 (POST /api/admin/sub-intents*) と sweep cron が有効。
     //   §10-5 (リマインドカードへの受理ボタン内包) も本 gate 配下で描画する設計。
-    //   既定 (未設定) = 完全 dormant — /admin/ops は閲覧のみ・sweep は skippedGating で
-    //   migration 076 のテーブルに一切アクセスしない (= 未適用でも安全)。
-    //   有効化は migration 076 適用後・Katsu 承認のうえで行う。
+    //   既定 (未設定) = dormant — 変更系 API は 400・sweep は skippedGating で
+    //   migration 076 のテーブルに一切アクセスしない。閲覧 API (GET /api/admin/sub-intents) は
+    //   076 未適用時に no-such-table を捕捉して migrationMissing 付き空一覧を返す (500 にしない)。
+    //   有効化手順: ①migration 076 適用 → ②本 gate 投入 (Katsu 承認) → ③/admin/ops で一巡確認。
     SUB_INTENT_ENABLED?: string;
     // Phase 3 自社課金基盤 gate 群 (WI-4, docs/PHASE3_BILLING_DESIGN_2026-07-19.md §8):
     //   canIssueAttempt() = ENABLED='true' ∧ ARMED_AT 設定済 ∧ ¬breaker(D1) ∧ allowlist match
