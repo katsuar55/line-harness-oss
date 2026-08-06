@@ -57,6 +57,7 @@ import { shopifyProducts } from './routes/shopify-products.js';
 import { analyticsRoutes } from './routes/analytics.js';
 import { liffPortal } from './routes/liff-portal.js';
 import { friendCoupon } from './routes/friend-coupon.js';
+import { adminOps } from './routes/admin-ops.js';
 import { faqAdmin } from './routes/faq-admin.js';
 import { adminStaff } from './routes/admin-staff.js';
 import { adminDashboard } from './routes/admin-dashboard.js';
@@ -102,6 +103,7 @@ import { processScheduledAbTests } from './services/ab-test.js';
 import { processWeeklyReports } from './services/weekly-report.js';
 import { processSubscriptionReminders } from './services/subscription-reminder.js';
 import { processBillingReminders } from './services/subscription-billing-reminder.js';
+import { sweepSubIntents } from './services/sub-intents.js';
 import { processOwnBilling } from './services/own-billing.js';
 import { canIssueAttempt, readStaticGates, readD1Gates } from './services/own-billing.js';
 import { applyPromotedSuccess } from './services/own-billing-webhooks.js';
@@ -235,6 +237,13 @@ export type Env = {
     //   未設定なら受信口は 401 (実質無効。503 にしない — 設定状態を外部に開示しないため、
     //   区別はサーバログのみ)。設定手順: docs/TEIKI_FLOW_SETUP.md
     TEIKI_FLOW_SECRET?: string;
+    // サブスク受理レイヤー gate (§10-3, docs/SUBSCRIPTION_UX_TAP_MINIMAL_2026-07-25.md §1):
+    //   'true' で sub_intents の受理/遷移 (POST /api/admin/sub-intents*) と sweep cron が有効。
+    //   §10-5 (リマインドカードへの受理ボタン内包) も本 gate 配下で描画する設計。
+    //   既定 (未設定) = 完全 dormant — /admin/ops は閲覧のみ・sweep は skippedGating で
+    //   migration 076 のテーブルに一切アクセスしない (= 未適用でも安全)。
+    //   有効化は migration 076 適用後・Katsu 承認のうえで行う。
+    SUB_INTENT_ENABLED?: string;
     // Phase 3 自社課金基盤 gate 群 (WI-4, docs/PHASE3_BILLING_DESIGN_2026-07-19.md §8):
     //   canIssueAttempt() = ENABLED='true' ∧ ARMED_AT 設定済 ∧ ¬breaker(D1) ∧ allowlist match
     //   ∧ ¬excludelist match。全て未設定 (既定) = own-billing は heartbeat のみの dormant。
@@ -336,6 +345,7 @@ app.route('/', banRecovery);
 app.route('/', automations);
 app.route('/', richMenus);
 app.route('/', friendCoupon);
+app.route('/', adminOps);
 app.route('/', faqAdmin);
 app.route('/', adminDashboard);
 app.route('/', adminStaff);
@@ -544,6 +554,14 @@ async function scheduled(
   }
   jobs.push(withHeartbeat(env.DB, 'ban-monitor', () => checkAccountHealth(env.DB)));
   jobs.push(withHeartbeat(env.DB, 'token-refresh', () => refreshLineAccessTokens(env.DB)));
+  // §10-3 受理レイヤー sweep (締切超過の expire/繰越し + claim timeout)。account 非依存のため
+  // token loop の外で 1 回。gate OFF (既定) = skippedGating のみ・migration 076 のテーブルに
+  // 非アクセス (= 未適用でも安全)。内部で insertCronRunLog を呼ぶため wrap しない。
+  jobs.push(
+    sweepSubIntents(env, {
+      lineClient: new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN),
+    }),
+  );
   // WI-4 (Phase 3 自社課金基盤) own-billing 5分 tick。account 非依存のため token loop の外で 1 回。
   // gate OFF (既定) = skippedGating heartbeat のみ・071/072 新テーブル非アクセス
   // (migration 未適用でも安全)。内部で insertCronRunLog を呼ぶため wrap しない。
