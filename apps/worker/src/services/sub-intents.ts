@@ -258,8 +258,19 @@ export async function undoSubIntent(
     return { status: 'cancelled', intent: updated ?? { ...row, state: 'cancelled' } };
   }
 
-  const current = await getSubIntent(db, id);
+  let current = await getSubIntent(db, id);
   if (!current) return { status: 'not_found' };
+
+  // CAS 敗北 → 再読みの間に release で received へ戻っている race: もう一度だけ CAS を試す
+  // (ここで not_undoable を返すと「received なのに取り消せません」という嘘になる)
+  if (current.state === 'received' || current.state === 'deferred') {
+    const retry = await undoSubIntentCas(db, id, actor.staffId, actor.role, now);
+    if (retry.cancelled) {
+      const updated = await getSubIntent(db, id);
+      return { status: 'cancelled', intent: updated ?? { ...current, state: 'cancelled' } };
+    }
+    current = (await getSubIntent(db, id)) ?? current;
+  }
 
   if (current.state === 'executing' || current.state === 'done') {
     // §1-3: 実行に踏み込んだ意思の取り消しは「新しい intent」として受理する
@@ -540,12 +551,18 @@ export async function sweepSubIntents(
           if (!expired) continue; // 並行 claim/undo が先に触った — こちらは何も宣言しない
           result.expired += 1;
           await auditSweep(db, 'sub_intent.expired', intent, { deadlineAt: intent.deadline_at });
-          const notified = await notifyExpiredHonestly(db, deps.lineClient, intent);
-          if (notified) result.expiredNotified += 1;
+          const notifyOutcome = await notifyExpiredHonestly(db, deps.lineClient, intent);
+          if (notifyOutcome === 'notified') result.expiredNotified += 1;
           else result.expiredUnnotified += 1;
+          // 未連携と送信失敗を混同しない (どちらも要フォローだが対応が違う)
+          const followUp =
+            notifyOutcome === 'notified'
+              ? ' (顧客へ通知済み)'
+              : notifyOutcome === 'unlinked'
+                ? ' (LINE 未連携のため通知不可 — 電話/メールでフォローしてください)'
+                : ' (LINE 通知の送信に失敗 — 手動で顧客へ連絡してください)';
           discordLines.push(
-            `⚠️ ${SUB_INTENT_OP_LABELS[intent.op]} (${intent.contract_key}) が締切超過で失効しました` +
-              (notified ? ' (顧客へ通知済み)' : ' (未連携のため LINE 通知不可 — 要フォロー)'),
+            `⚠️ ${SUB_INTENT_OP_LABELS[intent.op]} (${intent.contract_key}) が締切超過で失効しました${followUp}`,
           );
         } else {
           // pause/cancel (+防御的に resume/undo_of): expire 禁止 → 次サイクルへ繰越し (§1-2)
@@ -644,15 +661,15 @@ async function carryOverToNextCycle(
   }
 }
 
-/** expire の正直な失敗通知 (§4-2)。未連携は送れない (false を返し可視化)。 */
+/** expire の正直な失敗通知 (§4-2)。未連携 (届けようがない) と送信失敗 (届くはずが失敗) を区別する。 */
 async function notifyExpiredHonestly(
   db: D1Database,
   lineClient: LineClient | undefined,
   intent: SubIntentRow,
-): Promise<boolean> {
-  if (!lineClient || !intent.friend_id) return false;
+): Promise<'notified' | 'unlinked' | 'failed'> {
+  if (!lineClient || !intent.friend_id) return 'unlinked';
   const friend = await getFriendRowById(db, intent.friend_id);
-  if (!friend || !friend.line_user_id) return false;
+  if (!friend || !friend.line_user_id) return 'unlinked';
   try {
     const label = SUB_INTENT_OP_LABELS[intent.op];
     await dispatch(
@@ -676,10 +693,10 @@ async function notifyExpiredHonestly(
         },
       },
     );
-    return true;
+    return 'notified';
   } catch (err) {
     console.error(`[${SUB_INTENT_SWEEP_JOB_NAME}] expire notify failed for ${intent.id}:`, err);
-    return false;
+    return 'failed';
   }
 }
 
