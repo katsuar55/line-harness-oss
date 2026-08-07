@@ -99,6 +99,34 @@ async function denyMutation(c: Context<Env>): Promise<Response | null> {
   return null;
 }
 
+/**
+ * done/fail push の結果を揮発的な画面表示以外にも残す (監査 MEDIUM)。
+ * done CAS は勝者 1 回限りで push の再送機会が構造的に無いため、届かなかった事実は
+ * Discord (行動を促す) と audit_logs (事後検証) の両方に落とす。sweep 側の通知と同じ規律。
+ */
+async function recordNotifyOutcome(
+  c: Context<Env>,
+  intent: SubIntentRow,
+  stage: 'done' | 'fail',
+  outcome: 'notified' | 'unlinked' | 'failed',
+): Promise<void> {
+  await auditAdminAction(c, {
+    action: `admin.sub_intent.${stage}_notify`,
+    targetType: 'sub_intent',
+    targetId: intent.id,
+    result: outcome === 'notified' ? 'success' : 'failure',
+    errorMessage: outcome === 'notified' ? undefined : outcome,
+    metadata: { contractKey: intent.contract_key, op: intent.op, notifyOutcome: outcome },
+  });
+  if (outcome !== 'notified') {
+    const stageLabel = stage === 'done' ? '完了' : '失敗';
+    const reason = outcome === 'unlinked' ? 'LINE 未連携' : 'LINE 送信失敗';
+    await sendSubIntentAlert(c.env, [
+      `⚠️ ${stageLabel}のお知らせをお客様に届けられませんでした (${SUB_INTENT_OP_LABELS[intent.op] ?? intent.op} / ${intent.contract_key} / ${reason})。電話またはメールで結果を必ずお伝えください`,
+    ]);
+  }
+}
+
 function claimAgeMinutes(row: SubIntentRow, nowMs: number): number | null {
   if (row.state !== 'executing' || !row.claimed_at) return null;
   const claimed = Date.parse(row.claimed_at);
@@ -211,6 +239,10 @@ adminOps.post('/api/admin/sub-intents', async (c) => {
   const payload: Record<string, unknown> = {};
   if (note) payload.note = note;
   if (op === 'date' && requestedDate) payload.requestedDate = requestedDate;
+  const acknowledged = body.acknowledgeLatePromise === true;
+  // §4-1: 「間に合わない見込みを開示し顧客が了承した」事実を台帳に残す (監査 MEDIUM —
+  // 記録しないと開示が行われたか事後検証できず、API 直叩きの無痕跡迂回も見えない)
+  if (acknowledged) payload.latePromiseAcknowledged = true;
   const result = await acceptSubIntent(c.env.DB, {
     contractNs: 'hb',
     contractKey,
@@ -220,7 +252,7 @@ adminOps.post('/api/admin/sub-intents', async (c) => {
     payload: Object.keys(payload).length > 0 ? payload : null,
     actorStaffId: staff.id,
     actorRole: staff.role,
-    acknowledgeLatePromise: body.acknowledgeLatePromise === true,
+    acknowledgeLatePromise: acknowledged,
   });
   await auditAdminAction(c, {
     action: 'admin.sub_intent.accept',
@@ -228,16 +260,16 @@ adminOps.post('/api/admin/sub-intents', async (c) => {
     targetId: result.status === 'accepted' || result.status === 'duplicate' ? result.intent.id : null,
     result: result.status === 'accepted' || result.status === 'duplicate' ? 'success' : 'failure',
     errorMessage: result.status === 'accepted' || result.status === 'duplicate' ? undefined : result.status,
-    metadata: { contractKey, op },
+    metadata: acknowledged ? { contractKey, op, acknowledgedLatePromise: true } : { contractKey, op },
   });
   if (result.status === 'accepted' || result.status === 'duplicate') {
     // §8-2: 受理はここ (reply/画面内表示) — スタッフが電話/メールでこの文言を伝える。
-    // §4-1 の約束と §4-4 の救済手順 (cancel) を含む
-    const customerMessage = buildAcceptanceMessage(
-      result.intent.op,
-      result.intent.promised_by,
-      result.intent.executor,
-    );
+    // §4-1 の約束と §4-4 の救済手順 (cancel) を含む。
+    // duplicate は約束を言い直さない (既存の promised_by が過去だと過ぎた時刻を約束し直す嘘になる)
+    const customerMessage =
+      result.status === 'duplicate'
+        ? `「${SUB_INTENT_OP_LABELS[result.intent.op] ?? result.intent.op}」のご依頼は既に承っております。スタッフが順に対応しており、完了しましたら必ずご連絡いたします。`
+        : buildAcceptanceMessage(result.intent.op, result.intent.promised_by, result.intent.executor);
     return c.json({
       success: true,
       data: { status: result.status, intent: toApiRow(result.intent, Date.now()), customerMessage },
@@ -325,6 +357,7 @@ adminOps.post('/api/admin/sub-intents/:id/done', async (c) => {
       new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN),
       result.intent,
     );
+    await recordNotifyOutcome(c, result.intent, 'done', notified);
     return c.json({
       success: true,
       data: { intent: toApiRow(result.intent, Date.now()), originalResolved: result.originalResolved, customerNotified: notified },
@@ -370,6 +403,7 @@ adminOps.post('/api/admin/sub-intents/:id/fail', async (c) => {
       new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN),
       result.intent,
     );
+    await recordNotifyOutcome(c, result.intent, 'fail', notified);
     return c.json({
       success: true,
       data: { intent: toApiRow(result.intent, Date.now()), originalRestored: result.originalRestored, customerNotified: notified },

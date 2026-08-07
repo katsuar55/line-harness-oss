@@ -45,6 +45,7 @@ import {
   requestedDateFromPayload,
   buildAcceptanceMessage,
   buildLatePromiseDisclosure,
+  buildPromiseBrokenMessage,
   formatPromisedBy,
   SUB_INTENT_OP_LABELS,
   MACHINE_CLAIM_RELEASE_MINUTES,
@@ -103,6 +104,8 @@ interface Store {
   throwOnCarryOver?: Error;
   /** migration 076 未適用の再現: 一覧/stats が no such table を投げる */
   throwNoSuchTable?: boolean;
+  /** 通知経路の friend 引きで D1 transient を注入 (マーカー消費後の throw 経路の検証) */
+  throwOnFriendLookup?: Error;
 }
 
 // open の定義は migration 076 が単一情報源 — fake は定数経由で共有 (独立コピーにしない)
@@ -189,9 +192,10 @@ const SQL = {
     WHERE id = ? AND predeadline_escalated_at IS NULL AND state IN ('received','executing')`),
   listCancelNearDeadline: norm(`SELECT * FROM sub_intents
     WHERE op = 'cancel' AND state IN ('received','executing') AND executor <> 'blocked'
-      AND deadline_at IS NOT NULL AND deadline_at <= ?
+      AND ((deadline_at IS NOT NULL AND deadline_at <= ?)
+        OR (deadline_at IS NULL AND created_at <= ?))
       AND predeadline_escalated_at IS NULL
-    ORDER BY deadline_at ASC
+    ORDER BY COALESCE(deadline_at, created_at) ASC
     LIMIT ?`),
   setVerifyPending: norm(`UPDATE sub_intents SET verify_state = 'pending'
     WHERE id = ? AND state = 'done' AND verify_state IS NULL`),
@@ -468,14 +472,15 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[]; or
     }
 
     if (sql === SQL.listPastPromise) {
-      const [now] = a as string[];
+      const [now, limit] = a as [string, number];
       const rows = [...store.intents.values()]
         .filter(
           (r) =>
             r.state === 'received' && r.executor !== 'blocked' &&
             r.promised_by !== null && r.promised_by < now && r.promise_alerted_at === null,
         )
-        .sort((x, y) => (x.promised_by! < y.promised_by! ? -1 : 1));
+        .sort((x, y) => (x.promised_by! < y.promised_by! ? -1 : 1))
+        .slice(0, limit);
       return { results: rows };
     }
 
@@ -489,15 +494,19 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[]; or
     }
 
     if (sql === SQL.listCancelNearDeadline) {
-      const [before] = a as string[];
+      const [before, createdBefore, limit] = a as [string, string, number];
+      const anchor = (r: SubIntentRow) => r.deadline_at ?? r.created_at;
       const rows = [...store.intents.values()]
         .filter(
           (r) =>
             r.op === 'cancel' && (r.state === 'received' || r.state === 'executing') &&
-            r.executor !== 'blocked' && r.deadline_at !== null && r.deadline_at <= before &&
+            r.executor !== 'blocked' &&
+            ((r.deadline_at !== null && r.deadline_at <= before) ||
+              (r.deadline_at === null && r.created_at <= createdBefore)) &&
             r.predeadline_escalated_at === null,
         )
-        .sort((x, y) => (x.deadline_at! < y.deadline_at! ? -1 : 1));
+        .sort((x, y) => (anchor(x) < anchor(y) ? -1 : 1))
+        .slice(0, limit);
       return { results: rows };
     }
 
@@ -510,9 +519,11 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[]; or
     }
 
     if (sql === SQL.listVerifyPending) {
+      const [limit] = a as [number];
       const rows = [...store.intents.values()]
         .filter((r) => r.verify_state === 'pending' && r.state === 'done')
-        .sort((x, y) => ((x.resolved_at ?? '') < (y.resolved_at ?? '') ? -1 : 1));
+        .sort((x, y) => ((x.resolved_at ?? '') < (y.resolved_at ?? '') ? -1 : 1))
+        .slice(0, limit);
       return { results: rows };
     }
 
@@ -526,10 +537,12 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[]; or
     }
 
     if (sql === SQL.listSubscriptionOrders) {
-      const [since] = a as string[];
+      const [since, limit] = a as [string, number];
+      // LIMIT を実装する (無視すると打ち切り時の挙動 = ok 抑止ガードが観測不能になる)
       const rows = store.orders
         .filter((o) => (o.tags ?? '').includes('subscription-id:') && o.created_at >= since)
-        .sort((x, y) => (x.created_at < y.created_at ? -1 : 1));
+        .sort((x, y) => (x.created_at < y.created_at ? -1 : 1))
+        .slice(0, limit);
       return { results: rows };
     }
 
@@ -544,19 +557,21 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[]; or
     }
 
     if (sql === SQL.listPastDeadline) {
-      const [now] = a as string[];
+      const [now, limit] = a as [string, number];
       const rows = [...store.intents.values()]
         .filter((r) => r.state === 'received' && r.executor !== 'blocked' && r.deadline_at !== null && r.deadline_at < now)
-        .sort((x, y) => (x.deadline_at! < y.deadline_at! ? -1 : 1));
+        .sort((x, y) => (x.deadline_at! < y.deadline_at! ? -1 : 1))
+        .slice(0, limit);
       store.hookAfterListPastDeadline?.(rows);
       return { results: rows };
     }
 
     if (sql === SQL.listStaleClaims) {
-      const [before] = a as string[];
+      const [before, limit] = a as [string, number];
       const rows = [...store.intents.values()]
         .filter((r) => r.state === 'executing' && r.claimed_at !== null && r.claimed_at < before)
-        .sort((x, y) => (x.claimed_at! < y.claimed_at! ? -1 : 1));
+        .sort((x, y) => (x.claimed_at! < y.claimed_at! ? -1 : 1))
+        .slice(0, limit);
       return { results: rows };
     }
 
@@ -616,6 +631,7 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[]; or
       return null;
     }
     if (sql.startsWith('SELECT id, line_user_id FROM friends WHERE id = ?')) {
+      if (store.throwOnFriendLookup) throw store.throwOnFriendLookup;
       return store.friends.get(a[0] as string) ?? null;
     }
 
@@ -2063,6 +2079,7 @@ const EVAL_CONTRACT = {
   next_billing_estimate: '2026-10-10',
   estimate_source: 'flow',
   interval_days: 30,
+  skip_count: 1, // 受理時 0 → 1 回スキップ実行済み (正常な前進)
   cancelled_at: null as string | null,
   paused_at: null as string | null,
 };
@@ -2496,6 +2513,10 @@ describe('/admin/ops §10-4 (開示・伝達文・完了/失敗 push)', () => {
     const call = vi.mocked(dispatch).mock.calls[0][1];
     expect(call.category).toBe('transactional');
     expect(JSON.stringify(call.linePayload?.messages)).toContain('完了');
+    // 宛先と冪等キーも固定する (呼ばれたことだけの assert は宛先取り違え変異を素通しする — 監査 MEDIUM)
+    expect((call.recipient as { friend: { id: string; lineUserId: string } }).friend.id).toBe('F1');
+    expect((call.recipient as { friend: { id: string; lineUserId: string } }).friend.lineUserId).toBe('U1');
+    expect(call.linePayload?.retryKey).toBeTruthy();
   });
 
   it('§8-2: fail で失敗 push が送られる (理由本文は顧客文言に埋めない = PII 遮断)', async () => {
@@ -2559,5 +2580,283 @@ describe('/admin/ops §10-4 (開示・伝達文・完了/失敗 push)', () => {
     };
     expect(json.data.intents[0].promisedBy).toBe('2026-09-02T18:00:00.000+09:00');
     expect(json.data.intents[0].verifyState).toBe('pending');
+  });
+});
+
+// ============================================================
+// 採点ループ反映 (2026-08-07 監査 — CONFIRMED 5 件 + MEDIUM/LOW 群の回帰テスト)
+// ============================================================
+
+describe('監査反映: 約束の誠実性', () => {
+  it('約束破り文言は op の terminal 規則と一致する (skip/date に「必ず完了」と言わない)', () => {
+    expect(buildPromiseBrokenMessage('cancel')).toContain('お手続きは必ず完了し');
+    expect(buildPromiseBrokenMessage('pause')).toContain('お手続きは必ず完了し');
+    for (const op of ['skip', 'date', 'undo_of'] as const) {
+      expect(buildPromiseBrokenMessage(op)).not.toContain('お手続きは必ず完了し');
+      expect(buildPromiseBrokenMessage(op)).toContain('間に合わなかった場合も、必ずご連絡');
+    }
+  });
+
+  it('祝日は営業日でない: 金曜 9/18 受理 → 敬老の日・国民の休日・秋分を跨ぎ 9/24 18:00 を約束', () => {
+    expect(computePromisedBy(Date.parse('2026-09-18T00:00:00Z'))).toBe('2026-09-24T18:00:00.000+09:00');
+    expect(isBusinessDayJst('2026-09-21')).toBe(false);
+    expect(isBusinessDayJst('2026-09-24')).toBe(true);
+  });
+
+  it('既存 open intent は §4-1 の開示より先に duplicate (了承→duplicate の矛盾フローを作らない)', async () => {
+    const tight: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-09-08' };
+    const { db } = createDb({ contracts: [tight], friends: [FRIEND] });
+    const friday = Date.parse('2026-09-04T00:00:00Z');
+    const first = await acceptSubIntent(db, {
+      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: friday,
+      acknowledgeLatePromise: true,
+    });
+    expect(first.status).toBe('accepted');
+    const second = await acceptSubIntent(db, {
+      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: friday,
+    });
+    expect(second.status).toBe('duplicate'); // promise_after_deadline ではない
+  });
+
+  it('繰越しは promise_alerted_at を維持する (約束破り通知は 1 intent 1 回のまま)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const intent = await seedIntent(db, { op: 'cancel' });
+    const r1 = await sweepSubIntents({ DB: db, ...GATE_ON }, { lineClient: fakeLineClient() }, PROMISE_BROKEN_MS);
+    expect(r1.promiseAlerted).toBe(1);
+    const r2 = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, AFTER_DEADLINE_MS);
+    expect(r2.carriedOver).toBe(1);
+    expect(store.intents.get(intent.id)?.promise_alerted_at).not.toBeNull();
+    expect(r2.promiseAlerted).toBe(0);
+  });
+
+  it('blocked は約束破り sweep の対象外 (防御的に promised_by を注入しても)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const res0 = await acceptSubIntent(db, {
+      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer',
+      executor: 'blocked', nowMs: NOW_MS,
+    });
+    if (res0.status !== 'accepted') throw new Error('setup');
+    const row = store.intents.get(res0.intent.id)!;
+    row.state = 'received';
+    row.promised_by = '2026-09-02T18:00:00.000+09:00';
+    const res = await sweepSubIntents({ DB: db, ...GATE_ON }, { lineClient: fakeLineClient() }, PROMISE_BROKEN_MS);
+    expect(res.pastPromise).toBe(0);
+    expect(vi.mocked(dispatch)).not.toHaveBeenCalled();
+  });
+
+  it('通知経路の friend 引きの D1 例外は failed に畳む (マーカー消費後の throw で無記録喪失しない)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    await seedIntent(db, { op: 'skip' });
+    store.throwOnFriendLookup = new Error('D1_ERROR: transient');
+    const fetchCalls: string[] = [];
+    const fetchImpl = (async (_url: unknown, init?: { body?: string }) => {
+      fetchCalls.push(String(init?.body ?? ''));
+      return {} as Response;
+    }) as typeof fetch;
+    const res = await sweepSubIntents(
+      { DB: db, ...GATE_ON, DISCORD_WEBHOOK_URL: 'https://discord.test/wh' },
+      { lineClient: fakeLineClient(), fetchImpl },
+      PROMISE_BROKEN_MS,
+    );
+    expect(res.promiseAlerted).toBe(1);
+    expect(res.promiseUnnotified).toBe(1); // throw が sweep を壊さず「未通知」として可視化される
+    expect(fetchCalls.join('')).toContain('送信に失敗');
+  });
+});
+
+describe('監査反映: 検出健全性', () => {
+  it('§4-3 skip 窓の境界を固定: flow は −2 から / derived は −3 から / +7 まで', () => {
+    const order = (d: string) => [{ orderCount: 4, createdAt: `${d}T09:00:00.000+09:00` }];
+    // flow: presented−2 (09-08) は窓内 = miss、−3 (09-07) は窓外
+    expect(evaluateExecution(evalInput({ orders: order('2026-09-08') })).verdict).toBe('miss');
+    expect(evaluateExecution(evalInput({ orders: order('2026-09-07') })).verdict).toBe('pending');
+    // derived: −3 (09-07) まで窓内、−4 (09-06) は窓外
+    const derived = {
+      baseline: { ...EVAL_BASELINE, source: 'derived' },
+      contract: { ...EVAL_CONTRACT, estimate_source: 'derived' },
+    };
+    expect(evaluateExecution(evalInput({ ...derived, orders: order('2026-09-07') })).verdict).toBe('miss');
+    expect(evaluateExecution(evalInput({ ...derived, orders: order('2026-09-06') })).verdict).toBe('pending');
+    // 上限: +7 (09-17) は窓内、+8 (09-18) は窓外
+    expect(evaluateExecution(evalInput({ orders: order('2026-09-17') })).verdict).toBe('miss');
+    expect(evaluateExecution(evalInput({ orders: order('2026-09-18') })).verdict).toBe('pending');
+  });
+
+  it('skip 累計が 2 以上進んでいる二重前進は判定保留 (HB 直接スキップに濡れ衣を着せない)', () => {
+    const r = evaluateExecution(evalInput({
+      contract: { ...EVAL_CONTRACT, next_billing_estimate: '2026-11-09', skip_count: 2 },
+    }));
+    expect(r).toEqual({ verdict: 'inconclusive', reason: 'multiple_skips_observed' });
+  });
+
+  it('注文走査が LIMIT で打ち切られた run は ok を宣言しない (嘘の ok 防止)', async () => {
+    // 他契約のタグ付き注文 200 件で走査枠を使い切る (ASC = 最新の自契約分が切り捨てられる状況)
+    const filler = Array.from({ length: 200 }, (_, i) => ({
+      shopify_order_id: `F${i}`,
+      tags: 'subscription-id:C9, subscription-count:1',
+      created_at: `2026-09-02T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.000+09:00`,
+    }));
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND], orders: filler });
+    const intent = await seedIntent(db, { op: 'skip' });
+    await claimSubIntent(db, intent.id, STAFF, NOW_MS);
+    await completeSubIntent(db, intent.id, STAFF, NOW_MS);
+    silencePromise(store);
+    store.contracts.get('C1')!.next_billing_estimate = '2026-10-10'; // 本来なら ok になる状況
+    const res = await sweepSubIntents({ DB: db, ...GATE_ON }, { lineClient: fakeLineClient() }, Date.parse('2026-09-26T00:00:00Z'));
+    expect(res.verifyOk).toBe(0);
+    expect(res.verifyInconclusive).toBe(1);
+    expect(store.intents.get(intent.id)?.verify_state).toBe('inconclusive');
+    expect(vi.mocked(dispatch)).not.toHaveBeenCalled(); // 保留は顧客に何も送らない
+  });
+
+  it('date: 希望日つき受理 → 旧予定日側の課金を sweep 統合で miss 検出', async () => {
+    const { db, store } = createDb({
+      contracts: [CONTRACT],
+      friends: [FRIEND],
+      orders: [{ shopify_order_id: 'OD', tags: 'subscription-id:C1, subscription-count:4', created_at: '2026-09-10T09:00:00.000+09:00' }],
+    });
+    const res0 = await acceptSubIntent(db, {
+      contractNs: 'hb', contractKey: 'C1', op: 'date', requestedBy: 'staff',
+      payload: { requestedDate: '2026-09-20' }, nowMs: NOW_MS,
+    });
+    if (res0.status !== 'accepted') throw new Error('setup');
+    await claimSubIntent(db, res0.intent.id, STAFF, NOW_MS);
+    await completeSubIntent(db, res0.intent.id, STAFF, NOW_MS);
+    silencePromise(store);
+    const res = await sweepSubIntents({ DB: db, ...GATE_ON }, { lineClient: fakeLineClient() }, Date.parse('2026-09-12T00:00:00Z'));
+    expect(res.verifyMiss).toBe(1);
+    expect(store.intents.get(res0.intent.id)?.verify_state).toBe('miss');
+    expect(vi.mocked(dispatch)).toHaveBeenCalledTimes(1);
+  });
+
+  it('二重 skip (前進量 2 周期) は sweep 統合でも即 miss + 謝罪', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const intent = await seedIntent(db, { op: 'skip' });
+    await claimSubIntent(db, intent.id, STAFF, NOW_MS);
+    await completeSubIntent(db, intent.id, STAFF, NOW_MS);
+    silencePromise(store);
+    store.contracts.get('C1')!.next_billing_estimate = '2026-11-09'; // 30日周期で 60 日前進
+    const res = await sweepSubIntents({ DB: db, ...GATE_ON }, { lineClient: fakeLineClient() }, Date.parse('2026-09-12T00:00:00Z'));
+    expect(res.verifyMiss).toBe(1);
+    expect(vi.mocked(dispatch)).toHaveBeenCalledTimes(1);
+  });
+
+  it('done 直後の undo と pending 登録の競合は undo_of 失敗の復元で救済される', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const intent = await seedIntent(db, { op: 'skip' });
+    await claimSubIntent(db, intent.id, STAFF, NOW_MS);
+    await completeSubIntent(db, intent.id, STAFF, NOW_MS);
+    // 競合の再現: done → (undo が先に cancel_requested を立てた) → setVerifyPendingCas 0 行
+    store.intents.get(intent.id)!.verify_state = null;
+    const undo = await undoSubIntent(db, intent.id, { staffId: 'staff-1', role: 'admin' }, { requestedBy: 'staff', nowMs: NOW_MS });
+    if (undo.status !== 'undo_accepted') throw new Error('setup');
+    await claimSubIntent(db, undo.undoIntent.id, STAFF, NOW_MS);
+    const fail = await failSubIntent(db, undo.undoIntent.id, '取り消せず (HB 側で実行済み)', STAFF, NOW_MS);
+    expect(fail.status).toBe('failed');
+    if (fail.status !== 'failed') return;
+    expect(fail.originalRestored).toBe(true);
+    expect(store.intents.get(intent.id)?.state).toBe('done');
+    expect(store.intents.get(intent.id)?.verify_state).toBe('pending'); // 検証対象に復帰
+  });
+});
+
+describe('監査反映: §4-4 締切不明の cancel / done・fail の痕跡', () => {
+  it('締切不明の cancel も受理から 24h でエスカレーション (漂流させない)', async () => {
+    const noEstimate: ContractSeed = { ...CONTRACT, next_billing_estimate: null };
+    const { db, store } = createDb({ contracts: [noEstimate], friends: [FRIEND] });
+    const res0 = await acceptSubIntent(db, { contractNs: 'hb', contractKey: 'C1', op: 'cancel', requestedBy: 'customer', nowMs: NOW_MS });
+    if (res0.status !== 'accepted') throw new Error('setup');
+    expect(res0.intent.deadline_at).toBeNull();
+
+    // 受理から 1h: まだ対象外
+    const early = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, NOW_MS + 3600_000);
+    expect(early.cancelNearDeadline).toBe(0);
+
+    // 受理から 25h: エスカレーション (1 回)
+    const fetchCalls: string[] = [];
+    const fetchImpl = (async (_url: unknown, init?: { body?: string }) => {
+      fetchCalls.push(String(init?.body ?? ''));
+      return {} as Response;
+    }) as typeof fetch;
+    const res = await sweepSubIntents(
+      { DB: db, ...GATE_ON, DISCORD_WEBHOOK_URL: 'https://discord.test/wh' },
+      { fetchImpl },
+      NOW_MS + 25 * 3600_000,
+    );
+    expect(res.predeadlineEscalated).toBe(1);
+    expect(fetchCalls.join('')).toContain('受付期限を確定できない');
+    expect(store.intents.get(res0.intent.id)?.predeadline_escalated_at).not.toBeNull();
+    const again = await sweepSubIntents({ DB: db, ...GATE_ON }, {}, NOW_MS + 26 * 3600_000);
+    expect(again.predeadlineEscalated).toBe(0);
+  });
+
+  it('done/fail の CAS 敗者は顧客に push しない (完了と言っていないものを知らせない)', async () => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const app = buildApp(ADMIN_STAFF);
+    const env = { DB: db, ...GATE_ON, LINE_CHANNEL_ACCESS_TOKEN: 'token' };
+    const intent = await seedIntent(db); // received のまま (claim していない = CAS 敗者になる)
+    vi.mocked(dispatch).mockClear();
+    const done = await app.request(`/api/admin/sub-intents/${intent.id}/done`, { method: 'POST' }, env);
+    expect(done.status).toBe(409);
+    const fail = await app.request(
+      `/api/admin/sub-intents/${intent.id}/fail`,
+      { method: 'POST', body: JSON.stringify({ reason: 'x' }), headers: { 'Content-Type': 'application/json' } },
+      env,
+    );
+    expect(fail.status).toBe(409);
+    expect(vi.mocked(dispatch)).not.toHaveBeenCalled();
+  });
+
+  it('done push が届かない場合は Discord と audit に残る (揮発表示だけにしない)', async () => {
+    const relContract: ContractSeed = {
+      ...CONTRACT,
+      shopify_customer_id: null, // 未連携 → push 不能
+      next_billing_estimate: toJstString(new Date(Date.now() + 30 * 86_400_000)).slice(0, 10),
+    };
+    const { db, store } = createDb({ contracts: [relContract] });
+    const app = buildApp(ADMIN_STAFF);
+    const fetchCalls: string[] = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      fetchCalls.push(String(init?.body ?? ''));
+      return {} as Response;
+    }) as typeof fetch;
+    try {
+      const env = { DB: db, ...GATE_ON, LINE_CHANNEL_ACCESS_TOKEN: 'token', DISCORD_WEBHOOK_URL: 'https://discord.test/wh' };
+      const accept = await app.request(
+        '/api/admin/sub-intents',
+        { method: 'POST', body: JSON.stringify({ contractKey: 'C1', op: 'pause' }), headers: { 'Content-Type': 'application/json' } },
+        env,
+      );
+      const id = ((await accept.json()) as { data: { intent: { id: string } } }).data.intent.id;
+      await app.request(`/api/admin/sub-intents/${id}/claim`, { method: 'POST' }, env);
+      const done = await app.request(`/api/admin/sub-intents/${id}/done`, { method: 'POST' }, env);
+      expect(done.status).toBe(200);
+      expect(fetchCalls.join('')).toContain('届けられませんでした');
+      const notifyLog = store.auditLogs.find((l) => l.action === 'admin.sub_intent.done_notify');
+      expect(notifyLog?.errorMessage).toBe('unlinked');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('§4-1 了承つき受理は audit と台帳 (payload) に痕跡が残る', async () => {
+    const tight: ContractSeed = {
+      ...CONTRACT,
+      next_billing_estimate: toJstString(new Date(Date.now() + 2 * 86_400_000)).slice(0, 10),
+    };
+    const { db, store } = createDb({ contracts: [tight], friends: [FRIEND] });
+    const app = buildApp(ADMIN_STAFF);
+    const env = { DB: db, ...GATE_ON };
+    const res = await app.request(
+      '/api/admin/sub-intents',
+      { method: 'POST', body: JSON.stringify({ contractKey: 'C1', op: 'skip', acknowledgeLatePromise: true }), headers: { 'Content-Type': 'application/json' } },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const acceptLog = store.auditLogs.find((l) => l.action === 'admin.sub_intent.accept');
+    expect(acceptLog?.metadata).toContain('acknowledgedLatePromise');
+    const row = [...store.intents.values()][0];
+    expect(String(row.payload_json)).toContain('latePromiseAcknowledged');
   });
 });

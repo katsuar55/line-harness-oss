@@ -2106,7 +2106,7 @@ CREATE TABLE IF NOT EXISTS sub_intents (
                                                 --  claim/release でクリア = escalated_at と目的を分離し、
                                                 --  片方の消費でもう片方が沈黙しないようにする)
   created_at TEXT NOT NULL,
-  resolved_at TEXT                              -- terminal 到達時刻 (done/expired/failed/cancelled/superseded),
+  resolved_at TEXT,                             -- terminal 到達時刻 (done/expired/failed/cancelled/superseded)
 
   promise_alerted_at   TEXT,
   predeadline_escalated_at TEXT,

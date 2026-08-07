@@ -99,12 +99,29 @@ function injectColumn(createTableSql, column, def) {
     }
   }
 
-  // 直前の行にカンマが無ければ付ける
+  // 直前の行にカンマが無ければ付ける。
+  // ⚠️ カンマは必ず「-- コメントの前」の SQL 部分に置く (2026-08-07 監査 CONFIRMED):
+  //   行末コメント付きの最終列 (例: `resolved_at TEXT -- terminal 到達時刻`) の後ろに
+  //   素朴に付けるとカンマがコメントに飲まれ、以降の列がフレッシュ DB で丸ごと消える
+  //   (migration 077 マージで実発生 — schema.sql は valid に見えるが列が存在しない)。
+  const codePart = (line) => {
+    const ci = line.indexOf('--');
+    return ci === -1 ? line : line.slice(0, ci);
+  };
   if (insertAt > 0) {
     let prev = insertAt - 1;
-    while (prev > 0 && lines[prev].trim() === '') prev--;
-    if (lines[prev] && !lines[prev].trim().endsWith(',')) {
-      lines[prev] = lines[prev].replace(/\s*$/, ',');
+    // 空行と「コメントだけの行」(複数行コメントの続き) を遡って実コード行を探す
+    while (prev > 0 && (lines[prev].trim() === '' || lines[prev].trim().startsWith('--'))) prev--;
+    const prevLine = lines[prev];
+    if (prevLine && !codePart(prevLine).trimEnd().endsWith(',')) {
+      const ci = prevLine.indexOf('--');
+      if (ci === -1) {
+        lines[prev] = prevLine.replace(/\s*$/, ',');
+      } else {
+        const code = prevLine.slice(0, ci).trimEnd() + ',';
+        const pad = Math.max(1, ci - code.length);
+        lines[prev] = code + ' '.repeat(pad) + prevLine.slice(ci);
+      }
     }
   }
 

@@ -84,6 +84,11 @@ export const HUMAN_CLAIM_ALERT_MINUTES = 30;
 export const CANCEL_PREDEADLINE_ESCALATION_HOURS = 24;
 /** §4-3 の検証対象 op。resume は照合表に定義がなく、undo_of は元 intent に従属するため対象外。 */
 export const VERIFIABLE_OPS: readonly SubIntentOp[] = ['skip', 'date', 'pause', 'cancel'] as const;
+/**
+ * §4-3 の注文走査上限。走査が打ち切られた run では ok を宣言しない
+ * (ASC + LIMIT は最新の注文 = miss 証拠側を落とすため。監査 CONFIRMED)。
+ */
+export const ORDER_SCAN_LIMIT = 200;
 
 /** 顧客が受理カードから依頼できる op (undo_of は undoSubIntent 経由でのみ生成)。 */
 export const ACCEPTABLE_OPS: readonly SubIntentOp[] = [
@@ -266,6 +271,13 @@ export async function acceptSubIntent(
   const cycleKey = buildCycleKey(input.contractKey, scheduledDate);
   // resume は締切に縛られない (再開意思を期限で失効させる理由がない)
   const deadlineAt = input.op === 'resume' ? null : computeDeadlineAt(scheduledDate);
+
+  // 既存 open intent は §4-1 の開示より**先に** duplicate で返す (監査 LOW):
+  // 有効な約束が既に台帳にあるのに「今回は間に合いません」を新規に開示すると、
+  // 了承を取った末に duplicate が返る矛盾したフローになる (INSERT 側の ON CONFLICT は
+  // 並行受理の最終防衛として残る)
+  const existing = await getOpenSubIntent(db, input.contractNs, input.contractKey, cycleKey, input.op);
+  if (existing) return { status: 'duplicate', intent: existing };
 
   // §4-1: 受理した瞬間に所要時間を約束する。モードB (executor='blocked') は営業時間で
   // 約束しない (実行時期は移行機械が決める) — promised_by は NULL。
@@ -518,6 +530,18 @@ export async function completeSubIntent(
   return { status: 'done', intent: updated ?? row, originalResolved };
 }
 
+/**
+ * done 直後の undo 受理と setVerifyPendingCas の競合で pending 登録が漏れた元 intent を、
+ * undo_of 失敗による done 復元時に救済する (監査 LOW — 漏れると永久に検証対象外)。
+ * setVerifyPendingCas は verify_state IS NULL の CAS なので冪等。
+ */
+async function reviveVerifyPendingAfterRestore(db: D1Database, originalId: string): Promise<void> {
+  const original = await getSubIntent(db, originalId);
+  if (original && VERIFIABLE_OPS.includes(original.op)) {
+    await setVerifyPendingCas(db, originalId);
+  }
+}
+
 export type FailResult =
   | { status: 'failed'; intent: SubIntentRow; originalRestored: boolean }
   | { status: 'conflict'; intent: SubIntentRow | null }
@@ -542,6 +566,7 @@ export async function failSubIntent(
   if (row.op === 'undo_of' && row.supersedes_intent_id) {
     const { restored } = await restoreCancelRequestedCas(db, row.supersedes_intent_id);
     originalRestored = restored;
+    if (restored) await reviveVerifyPendingAfterRestore(db, row.supersedes_intent_id);
   }
   return { status: 'failed', intent: updated ?? row, originalRestored };
 }
@@ -789,16 +814,23 @@ export async function sweepSubIntents(
     const threshold = toJstString(
       new Date(nowDate.getTime() + CANCEL_PREDEADLINE_ESCALATION_HOURS * 3600_000),
     );
-    const nearDeadline = await listCancelIntentsNearDeadline(db, threshold);
+    const createdBefore = toJstString(
+      new Date(nowDate.getTime() - CANCEL_PREDEADLINE_ESCALATION_HOURS * 3600_000),
+    );
+    const nearDeadline = await listCancelIntentsNearDeadline(db, threshold, createdBefore);
     result.cancelNearDeadline = nearDeadline.length;
     for (const intent of nearDeadline) {
       const { marked } = await markPredeadlineEscalatedCas(db, intent.id, now);
       if (!marked) continue; // 並行遷移 (done/undo) の勝者が状態を所有
       result.predeadlineEscalated += 1;
+      const situation =
+        intent.deadline_at === null
+          ? `の受付期限を確定できないまま受理から ${CANCEL_PREDEADLINE_ESCALATION_HOURS} 時間が経過しました (締切系の自動監視が効かない対象です)`
+          : `が受付期限の ${CANCEL_PREDEADLINE_ESCALATION_HOURS} 時間前になっても未完了です`;
       discordLines.push(
-        `🚨【最優先】解約 (${intent.contract_key}) が受付期限の ${CANCEL_PREDEADLINE_ESCALATION_HOURS} 時間前になっても未完了です` +
+        `🚨【最優先】解約 (${intent.contract_key}) ${situation}` +
           `${intent.state === 'executing' ? ` (担当: ${intent.actor_staff_id ?? '不明'} が対応中のまま)` : ''}。` +
-          `期限内に Huckleberry 管理画面で実行してください。間に合わなかった場合は当該サイクルの注文をキャンセルまたは返金で救済します (§4-4)`,
+          `Huckleberry 管理画面で実行してください。間に合わなかった場合は当該サイクルの注文をキャンセルまたは返金で救済します (§4-4)`,
       );
       await auditSweep(db, 'sub_intent.predeadline_escalated', intent, {
         deadlineAt: intent.deadline_at,
@@ -994,7 +1026,16 @@ export async function notifySubIntentCustomer(
   retrySeed: string,
 ): Promise<SubIntentNotifyOutcome> {
   if (!lineClient || !intent.friend_id) return 'unlinked';
-  const friend = await getFriendRowById(db, intent.friend_id);
+  // friend 引きも try 内に置く — マーカー/verdict CAS 消費後にここで throw すると
+  // 「通知したことになっているのに届いていない」が無記録で確定する (監査 MEDIUM)。
+  // 失敗は 'failed' で返し、呼び出し側の Discord フォロー行に載せる
+  let friend: { id: string; line_user_id: string | null } | null;
+  try {
+    friend = await getFriendRowById(db, intent.friend_id);
+  } catch (err) {
+    console.error(`[${SUB_INTENT_SWEEP_JOB_NAME}] friend lookup failed for ${intent.id}:`, err);
+    return 'failed';
+  }
   if (!friend || !friend.line_user_id) return 'unlinked';
   try {
     await dispatch(
@@ -1035,13 +1076,27 @@ async function notifyExpiredHonestly(
   );
 }
 
-/** §4-2 約束破り (1 intent 1 回)。「黙って遅れる」を構造的に不可能にする。 */
+/**
+ * §4-2 約束破り (1 intent 1 回)。「黙って遅れる」を構造的に不可能にする。
+ * ⚠️ 文言は op の terminal 規則と一致させる (監査 CONFIRMED):
+ *   - pause/cancel は expire しない (繰越し §1-2) → 「必ず完了」と言ってよい
+ *   - skip/date は締切超過で expired になりうる → 「必ず完了」は嘘になる
+ *     (この通知の直後に expire の「完了できませんでした」が届く経路が同居している)
+ */
 export function buildPromiseBrokenMessage(op: SubIntentOp): string {
   const label = SUB_INTENT_OP_LABELS[op];
-  return (
+  const head =
     `【お手続きの進捗のご連絡】\n` +
-    `承っております「${label}」のお手続きに、お約束したお時間よりお時間をいただいています。誠に申し訳ございません。\n\n` +
-    `お手続きは必ず完了し、完了しましたらあらためてご連絡いたします。お急ぎの場合は、このトークルームでご連絡ください。`
+    `承っております「${label}」のお手続きに、お約束したお時間よりお時間をいただいています。誠に申し訳ございません。\n\n`;
+  if (op === 'pause' || op === 'cancel') {
+    return (
+      head +
+      `お手続きは必ず完了し、完了しましたらあらためてご連絡いたします。お急ぎの場合は、このトークルームでご連絡ください。`
+    );
+  }
+  return (
+    head +
+    `受付期限までに完了できるよう対応を進めています。万一間に合わなかった場合も、必ずご連絡いたします。お急ぎの場合は、このトークルームでご連絡ください。`
   );
 }
 
@@ -1194,7 +1249,7 @@ export interface EvaluateExecutionInput {
   baseline: VerifyBaseline;
   contract: Pick<
     SubscriptionContractRow,
-    'next_billing_estimate' | 'estimate_source' | 'interval_days' | 'cancelled_at' | 'paused_at'
+    'next_billing_estimate' | 'estimate_source' | 'interval_days' | 'skip_count' | 'cancelled_at' | 'paused_at'
   > | null;
   /** 契約一致済みの注文 (baseline.acceptedAt 以降) */
   orders: OrderEvidence[];
@@ -1272,6 +1327,15 @@ export function evaluateExecution(input: EvaluateExecutionInput): VerifyOutcome 
       // 二重 skip の疑い — ただし他の done skip があるなら正当な 2 回 (保留)
       if (input.otherDoneSameOp > 0) {
         return { verdict: 'inconclusive', reason: 'multiple_skips_executed' };
+      }
+      // 顧客が HB マイページ等で直接スキップした分 (intent を経ない) も二重 skip ではない —
+      // read-model の skip 累計が 2 以上進んでいるなら「2 回スキップされた事実」があるだけ (監査 MEDIUM)
+      const skipAdvance =
+        contract && typeof baseline.skipCount === 'number'
+          ? (contract.skip_count ?? 0) - baseline.skipCount
+          : null;
+      if (skipAdvance !== null && skipAdvance >= 2) {
+        return { verdict: 'inconclusive', reason: 'multiple_skips_observed' };
       }
       return { verdict: 'miss', reason: 'double_skip' };
     }
@@ -1392,11 +1456,15 @@ async function verifyOneIntent(
   }
 
   let outcome: VerifyOutcome;
+  let ordersTruncated = false;
   if (!baseline || typeof baseline.acceptedAt !== 'string') {
     outcome = { verdict: 'inconclusive', reason: 'baseline_unreadable' };
   } else {
     const contract = await getSubscriptionContract(db, intent.contract_key);
-    const rawOrders = await listSubscriptionOrdersSince(db, baseline.acceptedAt);
+    const rawOrders = await listSubscriptionOrdersSince(db, baseline.acceptedAt, ORDER_SCAN_LIMIT);
+    // LIMIT (ASC) は**最新側**を切り捨てる = pause/cancel の miss 証拠がまさに落ちる側 (監査 CONFIRMED)。
+    // 打ち切りが起きた走査で「注文なし」を根拠に ok を宣言してはいけない (miss は実在証拠なので有効)
+    ordersTruncated = rawOrders.length >= ORDER_SCAN_LIMIT;
     const orders: OrderEvidence[] = [];
     for (const o of rawOrders) {
       const parsed = parseOrderSubscriptionTags(o.tags);
@@ -1429,6 +1497,10 @@ async function verifyOneIntent(
       resumedAfterDone,
       nowJst: now,
     });
+  }
+
+  if (outcome.verdict === 'ok' && ordersTruncated) {
+    outcome = { verdict: 'inconclusive', reason: 'order_scan_truncated' };
   }
 
   if (outcome.verdict === 'pending') return;
@@ -1464,14 +1536,30 @@ async function verifyOneIntent(
       `🚨 実行漏れの疑い: ${SUB_INTENT_OP_LABELS[intent.op]} (${intent.contract_key}) — ` +
         `${outcome.reason}${followUp}。返金/是正の判断をお願いします (§4-3)`,
     );
-  } else if (outcome.reason.startsWith('untagged_order')) {
-    // count タグの無い注文が窓に出た — 濡れ衣を避けて保留にしたが人間の目は必要
+  } else if (outcome.verdict === 'inconclusive' && INCONCLUSIVE_NEEDS_HUMAN.has(outcome.reason)) {
+    // 濡れ衣を避けて保留にしたが、顧客影響がありうる保留は人間の目に必ず載せる —
+    // 特に multiple_skips_* (二重 skip の疑い。直接スキップと区別できないため謝罪は
+    // 送らないが、§4-3 の「前倒し是正の判断は人間」はここから始まる)
     discordLines.push(
-      `⚠️ 判定保留: ${SUB_INTENT_OP_LABELS[intent.op]} (${intent.contract_key}) の照合窓に ` +
-        `サブスク回数タグの無い注文があります。Huckleberry 管理画面で実状を確認してください`,
+      `⚠️ 判定保留: ${SUB_INTENT_OP_LABELS[intent.op]} (${intent.contract_key}) — ${outcome.reason}。` +
+        `Huckleberry 管理画面で実状を確認してください (§4-3)`,
     );
   }
 }
+
+/**
+ * 判定保留のうち「顧客影響がありうる = 人間の確認が必要」な理由 (Discord に載せる)。
+ * データ不足系 (no_requested_date / no_flow_measurement / interval_unknown 等) は
+ * 構造的にどうにもならないためノイズにしない。
+ */
+const INCONCLUSIVE_NEEDS_HUMAN: ReadonlySet<string> = new Set([
+  'untagged_order_in_window',
+  'untagged_order_observed',
+  'multiple_skips_observed',
+  'multiple_skips_executed',
+  'estimate_not_advanced',
+  'order_scan_truncated',
+]);
 
 /** sweep 遷移の監査 (§4 — 全遷移を audit_logs に残す)。best-effort。 */
 async function auditSweep(

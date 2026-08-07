@@ -526,22 +526,27 @@ export async function markPredeadlineEscalatedCas(
  * 下限を置かない (締切超過後も選ぶ) — 超過分は §4-2 の繰越しが deadline を前進させるまで
  * 最優先で人間に見せ続けるべき対象。escalated_at (超過通知) とは別マーカーなので重複しない。
  * executor='blocked' 除外 (§4-2 と同じ理由 — 移行窓の意思は PHASE3 側が実行する)。
+ * **締切不明 (deadline NULL) の cancel も受理から 24h で対象に含める** (監査 LOW) —
+ * 締切系 sweep が一切効かない層なので、ここから漏れると「無効にはならないが
+ * 誰にも急かされない」まま解約意思が漂流する。
  */
 export async function listCancelIntentsNearDeadline(
   db: D1Database,
   deadlineBefore: string,
+  createdBefore: string,
   limit = 50,
 ): Promise<SubIntentRow[]> {
   const res = await db
     .prepare(
       `SELECT * FROM sub_intents
         WHERE op = 'cancel' AND state IN ('received','executing') AND executor <> 'blocked'
-          AND deadline_at IS NOT NULL AND deadline_at <= ?
+          AND ((deadline_at IS NOT NULL AND deadline_at <= ?)
+            OR (deadline_at IS NULL AND created_at <= ?))
           AND predeadline_escalated_at IS NULL
-        ORDER BY deadline_at ASC
+        ORDER BY COALESCE(deadline_at, created_at) ASC
         LIMIT ?`,
     )
-    .bind(deadlineBefore, limit)
+    .bind(deadlineBefore, createdBefore, limit)
     .all<SubIntentRow>();
   return res.results ?? [];
 }
@@ -570,7 +575,9 @@ export async function setVerifyPendingCas(
  */
 export async function listSubIntentsVerifyPending(
   db: D1Database,
-  limit = 25,
+  // 100: pending は窓が閉じるまで残る設計のため、少なすぎると長期 pending が枠を
+  // 独占して後続 intent の即時 miss 検出が飢餓する (監査 MEDIUM)
+  limit = 100,
 ): Promise<SubIntentRow[]> {
   const res = await db
     .prepare(
