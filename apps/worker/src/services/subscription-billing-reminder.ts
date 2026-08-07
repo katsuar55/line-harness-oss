@@ -78,6 +78,12 @@ export interface BillingReminderEnv {
   DB: D1Database;
   SUBSCRIPTION_REMINDER_ENABLED?: string;
   SUBSCRIPTION_MENU_ENABLED?: string;
+  /**
+   * §10-5: 'true' でリマインドカードに受理ボタン ([今回はお休み] 等) を内包する。
+   * 判定は services/sub-intents.ts の isSubIntentEnabled と同じ厳密一致
+   * (直接 import しないのは循環回避 — sub-intents が本ファイルの deterministicRetryKey に依存)。
+   */
+  SUB_INTENT_ENABLED?: string;
 }
 
 export interface BillingReminderResult {
@@ -189,7 +195,10 @@ export async function processBillingReminders(
   for (const contract of due) {
     try {
       // claim の解放責任は remindOne 内に一元化 (throw 経路含む)。ここで二重解放しない
-      const outcome = await remindOne(db, lineClient, contract, todayJst, measuredFloor, result);
+      const outcome = await remindOne(db, lineClient, contract, todayJst, measuredFloor, result, {
+        // §10-5: 受理レイヤーが有効な間だけカードに受理ボタンを内包 (OFF = 相談導線のみ)
+        subIntent: env.SUB_INTENT_ENABLED === 'true',
+      });
       result[outcome] += 1;
     } catch (err) {
       // remindOne が claim を持ったまま throw することはない (claim 後の失敗は内部で解放済み)
@@ -252,6 +261,7 @@ async function remindOne(
   todayJst: string,
   measuredFloor: string,
   result: BillingReminderResult,
+  cardMode: { subIntent?: boolean } = {},
 ): Promise<
   'sent' | 'claimedLost' | 'unlinked' | 'skippedRecipient' | 'failed' | 'staleEstimate' | 'notMeasured'
 > {
@@ -342,7 +352,7 @@ async function remindOne(
         category: 'transactional',
         sourceKind: 'transactional',
         linePayload: {
-          messages: [...buildBillingReminderMessages(contract, daysUntilBilling)],
+          messages: [...buildBillingReminderMessages(contract, daysUntilBilling, cardMode)],
           retryKey: await deterministicRetryKey(
             `reminder:${contract.contract_id}:${contract.next_billing_estimate}`,
           ),

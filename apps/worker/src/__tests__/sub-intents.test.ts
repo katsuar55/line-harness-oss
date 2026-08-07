@@ -55,6 +55,12 @@ import {
   type EvaluateExecutionInput,
 } from '../services/sub-intents.js';
 import { computePromisedBy, isBusinessDayJst } from '../services/business-calendar.js';
+import { handleSubIntentPostback } from '../services/sub-intent-postback.js';
+import {
+  subIntentPostbackData,
+  buildBillingReminderMessages,
+  SUB_INTENT_POSTBACK_VERSION,
+} from '../services/subscription-concierge.js';
 import { adminOps } from '../routes/admin-ops.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { toJstString, SUB_INTENT_OPEN_STATES } from '@line-crm/db';
@@ -634,9 +640,19 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[]; or
     if (sql.startsWith('SELECT * FROM subscription_contracts WHERE contract_id = ?')) {
       return store.contracts.get(a[0] as string) ?? null;
     }
+    if (sql.startsWith('SELECT * FROM subscription_contracts WHERE shopify_customer_id = ?')) {
+      const rows = [...store.contracts.values()].filter((c) => c.shopify_customer_id === a[0]);
+      return { results: rows };
+    }
     if (sql.startsWith('SELECT * FROM friends WHERE shopify_customer_id = ?')) {
       for (const f of store.friends.values()) {
         if (f.shopify_customer_id === a[0]) return f;
+      }
+      return null;
+    }
+    if (sql.startsWith('SELECT * FROM friends WHERE line_user_id = ?')) {
+      for (const f of store.friends.values()) {
+        if (f.line_user_id === a[0]) return f;
       }
       return null;
     }
@@ -2912,5 +2928,280 @@ describe('監査反映: §4-4 締切不明の cancel / done・fail の痕跡', (
     expect(acceptLog?.metadata).toContain('acknowledgedLatePromise');
     const row = [...store.intents.values()][0];
     expect(String(row.payload_json)).toContain('latePromiseAcknowledged');
+  });
+});
+
+// ============================================================
+// §10-5: 受理ボタン (カード描画 + sub_intent postback ハンドラ)
+// ============================================================
+
+function makeLineClient() {
+  return {
+    replyMessage: vi.fn(async () => ({})),
+    pushMessage: vi.fn(async () => ({})),
+  };
+}
+
+function subPostbackParams(op: string, over: Record<string, string> = {}): URLSearchParams {
+  const p = new URLSearchParams();
+  p.set('action', 'sub_intent');
+  p.set('op', op);
+  p.set('cid', 'C1');
+  p.set('y', 'C1:2026-09-10');
+  p.set('d0', '2026-09-10');
+  p.set('v', SUB_INTENT_POSTBACK_VERSION);
+  for (const [k, v] of Object.entries(over)) p.set(k, v);
+  return p;
+}
+
+async function firePostback(
+  db: D1Database,
+  lineClient: ReturnType<typeof makeLineClient>,
+  op: string,
+  opts: {
+    over?: Record<string, string>;
+    pickedDate?: string;
+    gateOn?: boolean;
+    nowMs?: number;
+    lineUserId?: string;
+  } = {},
+): Promise<string> {
+  await handleSubIntentPostback({
+    env: { DB: db, ...(opts.gateOn === false ? {} : GATE_ON) } as never,
+    lineClient: lineClient as never,
+    replyToken: 'rt',
+    lineUserId: opts.lineUserId ?? 'U1',
+    lineAccountId: null,
+    params: subPostbackParams(op, opts.over ?? {}),
+    postbackParams: opts.pickedDate ? { date: opts.pickedDate } : null,
+    nowMs: opts.nowMs ?? NOW_MS,
+  });
+  return JSON.stringify(lineClient.replyMessage.mock.calls.at(-1)?.[1] ?? []);
+}
+
+describe('§10-5 カード描画 (subIntent モード)', () => {
+  const asContract = CONTRACT as unknown as Parameters<typeof buildBillingReminderMessages>[0];
+
+  it('gate OFF (既定) は従来どおり相談導線のみ — sub_intent postback を描画しない', () => {
+    const s = JSON.stringify(buildBillingReminderMessages(asContract, 7));
+    expect(s).toContain('teiki_guide');
+    expect(s).not.toContain('sub_intent');
+  });
+
+  it('subIntent モードで受理ボタン 3 種 + §3 の結果行を描画する', () => {
+    const s = JSON.stringify(buildBillingReminderMessages(asContract, 7, { subIntent: true }));
+    expect(s).toContain('action=sub_intent&op=skip');
+    expect(s).toContain('action=sub_intent&op=date');
+    expect(s).toContain('action=sub_intent&op=cancel_pause');
+    expect(s).not.toContain('teiki_guide');
+    // §3: 結果はボタンラベルでなく本文行。CONTRACT は flow なので断定 (ごろ なし)
+    expect(s).toContain('押すと 次回は 10月10日 に変わるお申し込みになります');
+    // §2: 日付変更は datetimepicker で選択とタップを畳む
+    expect(s).toContain('datetimepicker');
+  });
+
+  it('§3-3: postback は y/d0/v を運び、y は buildCycleKey と同形式 (循環回避の複製の同一性を固定)', () => {
+    const data = subIntentPostbackData('skip', asContract);
+    const p = new URLSearchParams(data);
+    expect(p.get('y')).toBe(buildCycleKey('C1', '2026-09-10'));
+    expect(p.get('d0')).toBe('2026-09-10');
+    expect(p.get('v')).toBe(SUB_INTENT_POSTBACK_VERSION);
+  });
+
+  it('§3-1: 受理ボタンのラベルは全角 8 字以内 / §7: 実行ボタンは #0f766e・height md', () => {
+    const msgs = buildBillingReminderMessages(asContract, 7, { subIntent: true }) as Array<{
+      contents?: { body?: { contents?: Array<Record<string, unknown>> } };
+    }>;
+    const body = msgs[1]?.contents?.body?.contents ?? [];
+    const buttons = body.filter((c) => c.type === 'button') as Array<{
+      style: string;
+      color?: string;
+      height?: string;
+      action: { type: string; label: string; data?: string };
+    }>;
+    const acceptButtons = buttons.filter((b) => String(b.action.data ?? '').includes('sub_intent'));
+    expect(acceptButtons.length).toBe(3);
+    for (const b of acceptButtons) {
+      expect(b.action.label.length).toBeLessThanOrEqual(8);
+      expect(b.height).toBe('md');
+    }
+    const primary = acceptButtons.filter((b) => b.style === 'primary');
+    for (const b of primary) expect(b.color).toBe('#0f766e'); // §7-1: 白文字 4.5:1 以上
+  });
+
+  it('derived 契約の結果行は「ごろ」を付ける (§3-2 断定禁止)', () => {
+    const derived = { ...CONTRACT, estimate_source: 'derived' } as unknown as Parameters<
+      typeof buildBillingReminderMessages
+    >[0];
+    const s = JSON.stringify(buildBillingReminderMessages(derived, 7, { subIntent: true }));
+    expect(s).toContain('10月10日ごろ に変わるお申し込み');
+  });
+});
+
+describe('§10-5 sub_intent postback ハンドラ', () => {
+  it('gate OFF は DB 非接触で準備中を返す (ロールバック時の履歴ボタンを死なせない)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const reply = await firePostback(db, lc, 'skip', { gateOn: false });
+    expect(reply).toContain('準備中');
+    expect(store.queryCount).toBe(0);
+  });
+
+  it('skip 受理: reply で「承りました」+ 反映予定 + [取り消す] (§8-2 push しない・§1 完了と言わない)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const reply = await firePostback(db, lc, 'skip');
+    expect(reply).toContain('承りました');
+    expect(reply).toContain('9月2日 18:00 までに反映予定');
+    expect(reply).toContain('取り消す');
+    expect(reply).toContain('スタッフの着手前まで');
+    expect(reply).not.toContain('完了しました。'); // 受理を完了と言わない
+    expect(lc.pushMessage).not.toHaveBeenCalled(); // §8-2: 受理は reply
+    expect(vi.mocked(dispatch)).not.toHaveBeenCalled();
+    const row = [...store.intents.values()][0];
+    expect(row.op).toBe('skip');
+    expect(row.requested_by).toBe('customer');
+    expect(row.state).toBe('received');
+    expect(store.auditLogs.some((l) => l.action === 'sub_intent.postback')).toBe(true);
+  });
+
+  it('二重タップは duplicate: 台帳 1 行のまま「既に承っております」', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    await firePostback(db, lc, 'skip');
+    const reply = await firePostback(db, lc, 'skip');
+    expect(reply).toContain('既に承っております');
+    expect(store.intents.size).toBe(1);
+  });
+
+  it('§3-3 cycle_drift: 古い d0 は受理せず最新カードへフォールバック', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const reply = await firePostback(db, lc, 'skip', { over: { d0: '2026-09-03', y: 'C1:2026-09-03' } });
+    expect(reply).toContain('ご予定が更新されています');
+    expect(reply).toContain('9月10日'); // 最新の予定日を提示
+    expect(store.intents.size).toBe(0); // INSERT していない
+  });
+
+  it('§3-3 スキーマ版違い (v) は受理せず期限切れ + 最新カード', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const reply = await firePostback(db, lc, 'skip', { over: { v: '0' } });
+    expect(reply).toContain('期限切れ');
+    expect(store.intents.size).toBe(0);
+  });
+
+  it('IDOR: 他人の契約 cid は存在を漏らさずメニューへフォールバック', async () => {
+    const other: ContractSeed = { ...CONTRACT, contract_id: 'C2', shopify_customer_id: 'OTHER' };
+    const { db, store } = createDb({ contracts: [CONTRACT, other], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const reply = await firePostback(db, lc, 'skip', { over: { cid: 'C2' } });
+    expect(store.intents.size).toBe(0);
+    expect(reply).not.toContain('C2'); // 契約の存在を漏らさない
+  });
+
+  it('解約済み契約への古いボタンは受理せず最新状態を見せる', async () => {
+    const inactive: ContractSeed = { ...CONTRACT, cancelled_at: '2026-08-31' };
+    const { db, store } = createDb({ contracts: [inactive], friends: [FRIEND] });
+    const lc = makeLineClient();
+    await firePostback(db, lc, 'skip');
+    expect(store.intents.size).toBe(0);
+  });
+
+  it('date: datetimepicker の希望日を構造化して受理 (§4-3 の照合入力)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const reply = await firePostback(db, lc, 'date', { pickedDate: '2026-09-20' });
+    expect(reply).toContain('9月20日');
+    expect(reply).toContain('承りました');
+    const row = [...store.intents.values()][0];
+    expect(requestedDateFromPayload(row.payload_json)).toBe('2026-09-20');
+  });
+
+  it('date: 希望日が届かなければ受理しない (形式不正も含む)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const reply = await firePostback(db, lc, 'date');
+    expect(reply).toContain('もう一度');
+    expect(store.intents.size).toBe(0);
+  });
+
+  it('cancel_pause は確認カード (2 タップ目で受理・解約導線は隠さない §7-3)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const reply = await firePostback(db, lc, 'cancel_pause');
+    expect(reply).toContain('一時停止する');
+    expect(reply).toContain('解約を申し込む');
+    expect(reply).toContain('今はやめておく');
+    expect(store.intents.size).toBe(0); // 1 タップ目では受理しない
+
+    const cancelReply = await firePostback(db, lc, 'cancel');
+    expect(cancelReply).toContain('承りました');
+    expect(cancelReply).toContain('返金'); // §4-4 救済手順が受理文言に入る
+    expect([...store.intents.values()][0].op).toBe('cancel');
+  });
+
+  it('§4-1 開示: 間に合わない見込みは受理せず 2 タップ化。ack=1 で受理される', async () => {
+    const tight: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-09-08' };
+    const { db, store } = createDb({ contracts: [tight], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const friday = Date.parse('2026-09-04T00:00:00Z');
+    const reply = await firePostback(db, lc, 'skip', {
+      over: { d0: '2026-09-08', y: 'C1:2026-09-08' },
+      nowMs: friday,
+    });
+    expect(reply).toContain('間に合わない見込み');
+    expect(reply).toContain('お願いする');
+    expect(store.intents.size).toBe(0);
+
+    const ackReply = await firePostback(db, lc, 'skip', {
+      over: { d0: '2026-09-08', y: 'C1:2026-09-08', ack: '1' },
+      nowMs: friday,
+    });
+    expect(ackReply).toContain('承りました');
+    expect(store.intents.size).toBe(1);
+  });
+
+  it('undo: 受理直後の取り消しは 1 タップで cancelled (§3-4)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    await firePostback(db, lc, 'skip');
+    const id = [...store.intents.values()][0].id;
+    const reply = await firePostback(db, lc, 'undo', { over: { id } });
+    expect(reply).toContain('取り消しました');
+    expect(store.intents.get(id)?.state).toBe('cancelled');
+  });
+
+  it('undo IDOR: 他人の intent id は存在を漏らさず・状態を変えない', async () => {
+    const { db, store } = createDb({
+      contracts: [CONTRACT],
+      friends: [FRIEND, { id: 'F2', line_user_id: 'U2', shopify_customer_id: null }],
+    });
+    const lc = makeLineClient();
+    await firePostback(db, lc, 'skip');
+    const id = [...store.intents.values()][0].id;
+    const reply = await firePostback(db, lc, 'undo', { over: { id }, lineUserId: 'U2' });
+    expect(reply).toContain('見つかりませんでした');
+    expect(store.intents.get(id)?.state).toBe('received');
+  });
+
+  it('undo: スタッフ着手後は「承りました」止まり (取り消せたと言わない §1-3)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    await firePostback(db, lc, 'skip');
+    const id = [...store.intents.values()][0].id;
+    await claimSubIntent(db, id, STAFF, NOW_MS);
+    const reply = await firePostback(db, lc, 'undo', { over: { id } });
+    expect(reply).toContain('取り消しのご依頼を承りました');
+    expect(reply).not.toContain('取り消しました。');
+    expect(store.intents.get(id)?.state).toBe('executing'); // 元 intent は動かさない
+  });
+
+  it('dismiss は受理せず穏当に閉じる', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const reply = await firePostback(db, lc, 'dismiss');
+    expect(reply).toContain('承知しました');
+    expect(store.intents.size).toBe(0);
   });
 });

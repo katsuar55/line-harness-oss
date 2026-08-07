@@ -55,6 +55,7 @@ import {
   MYPAGE_URL,
   type GuideOp,
 } from '../services/subscription-concierge.js';
+import { handleSubIntentPostback } from '../services/sub-intent-postback.js';
 import {
   isQuickQuizPostback,
   isQuickQuizStartPostback,
@@ -541,6 +542,22 @@ async function handleEvent(
           metadata: { postbackData: data.slice(0, 200) },
         });
       }
+      return;
+    }
+
+    // §10-5: 受理ボタン (sub_intent) — リマインドカード/契約カードのタップを意思の受理へ配線。
+    // gate 判定・IDOR・§3-3 サイクル突合・reply までハンドラ内で完結する
+    if (action === 'sub_intent') {
+      await handleSubIntentPostback({
+        env: env as unknown as { DB: D1Database; SUB_INTENT_ENABLED?: string; LIFF_URL?: string },
+        lineClient,
+        replyToken: event.replyToken,
+        lineUserId: userId,
+        lineAccountId,
+        params,
+        postbackParams:
+          (event as { postback?: { params?: { date?: string } } }).postback?.params ?? null,
+      });
       return;
     }
 
