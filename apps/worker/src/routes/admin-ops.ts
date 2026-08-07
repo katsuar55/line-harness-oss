@@ -265,15 +265,37 @@ adminOps.post('/api/admin/sub-intents', async (c) => {
   if (result.status === 'accepted' || result.status === 'duplicate') {
     // §8-2: 受理はここ (reply/画面内表示) — スタッフが電話/メールでこの文言を伝える。
     // §4-1 の約束と §4-4 の救済手順 (cancel) を含む。
-    // duplicate は約束を言い直さない (既存の promised_by が過去だと過ぎた時刻を約束し直す嘘になる)
-    const customerMessage =
-      result.status === 'duplicate'
-        ? `「${SUB_INTENT_OP_LABELS[result.intent.op] ?? result.intent.op}」のご依頼は既に承っております。スタッフが順に対応しており、完了しましたら必ずご連絡いたします。`
-        : buildAcceptanceMessage(result.intent.op, result.intent.promised_by, result.intent.executor);
+    // duplicate は約束を言い直さない (既存の promised_by が過去だと過ぎた時刻を約束し直す嘘になる)。
+    // date の duplicate は既存の希望日を必ず開示する (新しい希望日が登録されたと誤認させない)
+    let customerMessage: string;
+    if (result.status === 'duplicate') {
+      const label = SUB_INTENT_OP_LABELS[result.intent.op] ?? result.intent.op;
+      const existingDate =
+        result.intent.op === 'date' ? requestedDateFromPayload(result.intent.payload_json) : null;
+      customerMessage = existingDate
+        ? `「${label}」は ${existingDate} への変更で既に承っております。スタッフが順に対応しており、完了しましたら必ずご連絡いたします。`
+        : `「${label}」のご依頼は既に承っております。スタッフが順に対応しており、完了しましたら必ずご連絡いたします。`;
+    } else {
+      customerMessage = buildAcceptanceMessage(
+        result.intent.op,
+        result.intent.promised_by,
+        result.intent.executor,
+      );
+    }
     return c.json({
       success: true,
       data: { status: result.status, intent: toApiRow(result.intent, Date.now()), customerMessage },
     });
+  }
+  if (result.status === 'deadline_passed') {
+    // skip/date の締切超過は受理しない (受理すると sweep が数分後に expire = 約束の即時破棄)
+    return c.json(
+      {
+        success: false,
+        error: `受付期限 (${result.deadlineAt.slice(0, 10)}) を過ぎているため受理できません。今回の定期便は通常どおりのお手続きになる旨をお客様にお伝えください。ご要望はメモに残し、必要なら pause/cancel (期限なし) で承ってください`,
+      },
+      400,
+    );
   }
   if (result.status === 'promise_after_deadline') {
     // §4-1: 受理していない。開示文言を提示して顧客に選ばせる (了承なら acknowledgeLatePromise で再送)

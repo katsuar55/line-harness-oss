@@ -55,6 +55,7 @@ import {
   MYPAGE_URL,
   type GuideOp,
 } from '../services/subscription-concierge.js';
+import { handleSubIntentPostback } from '../services/sub-intent-postback.js';
 import {
   isQuickQuizPostback,
   isQuickQuizStartPostback,
@@ -544,6 +545,22 @@ async function handleEvent(
       return;
     }
 
+    // §10-5: 受理ボタン (sub_intent) — リマインドカード/契約カードのタップを意思の受理へ配線。
+    // gate 判定・IDOR・§3-3 サイクル突合・reply までハンドラ内で完結する
+    if (action === 'sub_intent') {
+      await handleSubIntentPostback({
+        env: env as unknown as { DB: D1Database; SUB_INTENT_ENABLED?: string; LIFF_URL?: string },
+        lineClient,
+        replyToken: event.replyToken,
+        lineUserId: userId,
+        lineAccountId,
+        params,
+        postbackParams:
+          (event as { postback?: { params?: { date?: string } } }).postback?.params ?? null,
+      });
+      return;
+    }
+
     // サブスク・コンシェルジュ (WI-1, docs/SUBSCRIPTION_ULTRAPLAN_2026-07-14.md):
     // リッチメニュー「サブスク」(subscription_menu) と契約カードの操作ボタン (teiki_guide)。
     if (action === 'subscription_menu' || action === 'teiki_guide') {
@@ -574,8 +591,11 @@ async function handleEvent(
       try {
         let messages;
         let outcome = 'menu';
+        // §10-5: 受理レイヤー有効時は入口を問わず受理ボタン付きカードに揃える
+        // (リマインド経由と見た目・機能が割れると 60代の学習が毎回リセットされる — 監査 MEDIUM)
+        const cardMode = { subIntent: env?.SUB_INTENT_ENABLED === 'true' };
         if (action === 'subscription_menu') {
-          messages = await buildSubscriptionMenuMessages(db, conciergeFriend, env?.LIFF_URL);
+          messages = await buildSubscriptionMenuMessages(db, conciergeFriend, env?.LIFF_URL, cardMode);
         } else {
           const op = params.get('op');
           const cid = params.get('cid') ?? '';
@@ -587,7 +607,7 @@ async function handleEvent(
           const contract = validOp ? await getContractForFriend(db, conciergeFriend, cid) : null;
           const isStale = contract !== null && (contract.cancelled_at !== null || contract.paused_at !== null);
           if (!validOp || !contract || isStale) {
-            messages = await buildSubscriptionMenuMessages(db, conciergeFriend, env?.LIFF_URL);
+            messages = await buildSubscriptionMenuMessages(db, conciergeFriend, env?.LIFF_URL, cardMode);
             outcome = isStale ? 'guide_stale' : 'guide_denied';
           } else {
             messages = buildGuideMessages(op as GuideOp, contract);
@@ -999,6 +1019,7 @@ async function handleEvent(
             db,
             friendId: friend.id,
             liffUrl: env?.LIFF_URL,
+            subIntentEnabled: env?.SUB_INTENT_ENABLED === 'true',
           });
           await lineClient.replyMessage(event.replyToken, [...messages]);
           replyTokenConsumed = true;
