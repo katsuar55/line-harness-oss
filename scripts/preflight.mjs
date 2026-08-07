@@ -19,7 +19,7 @@
  * テスト容易性のため pure function を export し、CLI は main() に閉じ込める。
  */
 
-import { readdirSync, existsSync, readFileSync } from 'node:fs';
+import { readdirSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
@@ -223,6 +223,62 @@ export function runWebTypecheck({ execImpl = execSync, cwd = REPO_ROOT } = {}) {
   }
 }
 
+/**
+ * apps/worker の typecheck を **CI と同条件** (incremental cache なし) で実行。
+ *
+ * なぜ cache を消すか (2026-08-07 #240 で実害):
+ *   `tsc --noEmit` は tsconfig.tsbuildinfo があると差分だけを再チェックする。ローカルは
+ *   その cache が残るため、テストファイルを大量に増補した回に型エラーを見落とす。
+ *   CI は毎回まっさらな checkout なので**そこで初めて落ちる** (#240 は TS2493/TS2352 が 3 件)。
+ *   preflight は「deploy して安全か」を答える道具なので、CI と同じ条件で判定する。
+ *
+ * ⚠️ preflight は worker typecheck を**そもそも実行していなかった** — web typecheck だけで
+ * 「All green」と表示していたため、worker の型エラーは PR を出すまで見えなかった。
+ *
+ * skip: `--no-worker-typecheck` / PREFLIGHT_SKIP_WORKER_TYPECHECK=1
+ *
+ * @returns { ok: boolean, errors?: string[] }
+ */
+export function runWorkerTypecheck({
+  execImpl = execSync,
+  cwd = REPO_ROOT,
+  rmImpl = rmSync,
+} = {}) {
+  // incremental cache を落としてから走らせる (残っていると差分チェックになり CI と乖離する)
+  for (const rel of [
+    'apps/worker/tsconfig.tsbuildinfo',
+    'packages/db/tsconfig.tsbuildinfo',
+    'packages/shared/tsconfig.tsbuildinfo',
+    'packages/line-sdk/tsconfig.tsbuildinfo',
+  ]) {
+    try {
+      rmImpl(join(cwd, rel), { force: true });
+    } catch {
+      // 無ければ無視 (best-effort)
+    }
+  }
+  try {
+    execImpl('pnpm --filter worker typecheck', {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { ok: true };
+  } catch (err) {
+    const stdout = err && err.stdout ? String(err.stdout) : '';
+    const stderr = err && err.stderr ? String(err.stderr) : '';
+    const output = `${stdout}${stderr}`;
+    const errorLines = output
+      .split(/\r?\n/)
+      .filter((ln) => /\berror TS\d+:/i.test(ln))
+      .slice(0, 5);
+    return {
+      ok: false,
+      errors: errorLines.length > 0 ? errorLines : [output.slice(0, 500)],
+    };
+  }
+}
+
 /** wrangler secret list --json をパースして {name} の配列を返す */
 export function fetchRemoteSecrets({ exec = execSync, cwd = REPO_ROOT } = {}) {
   try {
@@ -289,6 +345,8 @@ export async function runChecks({
   // 未設定なら ON (= 私の手元 preflight で web 型 error を catch する design)。
   skipWebTypecheck = process.env.PREFLIGHT_SKIP_WEB_TYPECHECK === '1',
   webTypecheckFn = runWebTypecheck,
+  skipWorkerTypecheck = process.env.PREFLIGHT_SKIP_WORKER_TYPECHECK === '1',
+  workerTypecheckFn = runWorkerTypecheck,
 } = {}) {
   const issues = [];
 
@@ -510,6 +568,34 @@ export async function runChecks({
     });
   }
 
+  // 5-b. apps/worker typecheck (CI と同条件 = incremental cache を消してから)
+  //      これが無いと「preflight All green」が worker の型を一切保証しない (2026-08-07 #240)
+  if (!skipWorkerTypecheck) {
+    const workerRes = workerTypecheckFn();
+    if (workerRes.ok) {
+      issues.push({
+        severity: 'INFO',
+        check: 'worker-typecheck',
+        message: 'apps/worker typecheck passed (incremental cache なし = CI と同条件)',
+      });
+    } else {
+      issues.push({
+        severity: 'CRITICAL',
+        check: 'worker-typecheck',
+        message: 'apps/worker typecheck failed — CI が同じ error で落ちます',
+        detail:
+          (workerRes.errors ?? []).join(' / ').slice(0, 500) ||
+          'tsc --noEmit が exit code 1 を返した',
+      });
+    }
+  } else {
+    issues.push({
+      severity: 'INFO',
+      check: 'worker-typecheck',
+      message: 'apps/worker typecheck skipped (--no-worker-typecheck)',
+    });
+  }
+
   // 6. wrangler.toml が naturism account を指しているか軽くチェック
   try {
     const tomlPath = join(REPO_ROOT, 'apps/worker/wrangler.toml');
@@ -567,9 +653,10 @@ async function main(argv) {
   const mode = args.has('--full') ? 'full' : 'offline';
   const useColor = !args.has('--no-color');
   const skipWebTypecheck = args.has('--no-web-typecheck');
+  const skipWorkerTypecheck = args.has('--no-worker-typecheck');
 
   try {
-    const issues = await runChecks({ mode, skipWebTypecheck });
+    const issues = await runChecks({ mode, skipWebTypecheck, skipWorkerTypecheck });
     const exitCode = printReport(issues, useColor);
     return exitCode;
   } catch (err) {
