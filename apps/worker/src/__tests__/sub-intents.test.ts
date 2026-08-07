@@ -106,6 +106,11 @@ interface Store {
   throwNoSuchTable?: boolean;
   /** 通知経路の friend 引きで D1 transient を注入 (マーカー消費後の throw 経路の検証) */
   throwOnFriendLookup?: Error;
+  /**
+   * 受理 race の再現: open 検査後・INSERT 直前に 1 回だけ呼ばれる (並行受理の勝者を差し込む)。
+   * duplicate 先行返し導入後、INSERT 衝突フォールバックはこの race でしか到達しない
+   */
+  hookBeforeInsert?: () => void;
 }
 
 // open の定義は migration 076 が単一情報源 — fake は定数経由で共有 (独立コピーにしない)
@@ -268,6 +273,11 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[]; or
 
     // ---- sub_intents (全文一致。知らない SQL = 変異/新規は throw で即発覚) ----
     if (sql === SQL.insert) {
+      if (store.hookBeforeInsert) {
+        const hook = store.hookBeforeInsert;
+        store.hookBeforeInsert = undefined;
+        hook();
+      }
       const [id, friendId, ns, key, cycle, presented, op, state, requestedBy, staffId, role, payload, deadline, promisedBy, executor, supersedes, verifyBaseline, createdAt] = a as (string | null)[];
       if (OPEN.has(state as string) && hasOpenConflict(store, ns as string, key as string, cycle as string, op as string)) {
         return { meta: { changes: 0 } };
@@ -2601,6 +2611,50 @@ describe('監査反映: 約束の誠実性', () => {
     expect(computePromisedBy(Date.parse('2026-09-18T00:00:00Z'))).toBe('2026-09-24T18:00:00.000+09:00');
     expect(isBusinessDayJst('2026-09-21')).toBe(false);
     expect(isBusinessDayJst('2026-09-24')).toBe(true);
+  });
+
+  it('受理 race: open 検査と INSERT の間に並行受理が勝っても accepted と嘘をつかない', async () => {
+    // duplicate 先行返し導入で INSERT 衝突フォールバックは真の並行 race でしか通らなくなった —
+    // その経路が「受理しました」(accepted) と偽らないことを race 注入で固定する (mutation M7)
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    store.hookBeforeInsert = () => {
+      store.intents.set('si_race', {
+        id: 'si_race',
+        friend_id: 'F1',
+        contract_ns: 'hb',
+        contract_key: 'C1',
+        target_cycle_key: 'C1:2026-09-10',
+        presented_scheduled_date: '2026-09-10',
+        op: 'skip',
+        state: 'received',
+        requested_by: 'customer',
+        actor_staff_id: null,
+        actor_role: null,
+        payload_json: null,
+        deadline_at: '2026-09-07T23:59:59.999+09:00',
+        promised_by: '2026-09-02T18:00:00.000+09:00',
+        claimed_at: null,
+        executor: 'human',
+        supersedes_intent_id: null,
+        fail_reason: null,
+        carryover_count: 0,
+        escalated_at: null,
+        stale_alerted_at: null,
+        promise_alerted_at: null,
+        predeadline_escalated_at: null,
+        verify_state: null,
+        verify_baseline_json: null,
+        verified_at: null,
+        created_at: toJstString(new Date(NOW_MS)),
+        resolved_at: null,
+      });
+    };
+    const res = await acceptSubIntent(db, {
+      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: NOW_MS,
+    });
+    expect(res.status).toBe('duplicate');
+    if (res.status !== 'duplicate') return;
+    expect(res.intent.id).toBe('si_race'); // 勝者の行を返す
   });
 
   it('既存 open intent は §4-1 の開示より先に duplicate (了承→duplicate の矛盾フローを作らない)', async () => {
