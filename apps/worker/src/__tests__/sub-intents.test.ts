@@ -247,9 +247,11 @@ function createDb(seed: { contracts?: ContractSeed[]; friends?: FriendSeed[]; or
 } {
   const store: Store = {
     intents: new Map(),
-    contracts: new Map((seed.contracts ?? []).map((c) => [c.contract_id, c])),
-    friends: new Map((seed.friends ?? []).map((f) => [f.id, f])),
-    orders: [...(seed.orders ?? [])],
+    // seed はコピーして持つ — 参照共有だとテスト内の契約 mutate が module 共有の
+    // フィクスチャ (CONTRACT) を汚染し、後続テストへ漏れる (実 D1 の行は独立)
+    contracts: new Map((seed.contracts ?? []).map((c) => [c.contract_id, { ...c }])),
+    friends: new Map((seed.friends ?? []).map((f) => [f.id, { ...f }])),
+    orders: (seed.orders ?? []).map((o) => ({ ...o })),
     auditLogs: [],
     cronLogs: [],
     queryCount: 0,
