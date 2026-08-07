@@ -3207,7 +3207,11 @@ describe('§10-5 sub_intent postback ハンドラ', () => {
     const other: ContractSeed = { ...CONTRACT, contract_id: 'C2', shopify_customer_id: 'OTHER' };
     const { db, store } = createDb({ contracts: [CONTRACT, other], friends: [FRIEND] });
     const lc = makeLineClient();
-    const reply = await firePostback(db, lc, 'skip', { over: { cid: 'C2' } });
+    // 攻撃者視点: y/d0 は改ざん可能なので**他人の契約に一致する値**を細工できる。
+    // 所有者検証が唯一の壁 (y 突合は偽装可能 = IDOR の代替にならない — mutation Q5 の教訓)
+    const reply = await firePostback(db, lc, 'skip', {
+      over: { cid: 'C2', y: 'C2:2026-09-10', d0: '2026-09-10' },
+    });
     expect(store.intents.size).toBe(0);
     expect(reply).not.toContain('C2'); // 契約の存在を漏らさない
   });
