@@ -2106,8 +2106,13 @@ CREATE TABLE IF NOT EXISTS sub_intents (
                                                 --  claim/release でクリア = escalated_at と目的を分離し、
                                                 --  片方の消費でもう片方が沈黙しないようにする)
   created_at TEXT NOT NULL,
-  resolved_at TEXT                              -- terminal 到達時刻 (done/expired/failed/cancelled/superseded)
-);
+  resolved_at TEXT                              -- terminal 到達時刻 (done/expired/failed/cancelled/superseded),
+
+  promise_alerted_at   TEXT,
+  predeadline_escalated_at TEXT,
+  verify_state         TEXT,
+  verify_baseline_json TEXT,
+  verified_at          TEXT);
 
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
@@ -2388,3 +2393,6 @@ CREATE INDEX IF NOT EXISTS idx_sub_intents_state
   ON sub_intents(state, deadline_at);
 CREATE INDEX IF NOT EXISTS idx_sub_intents_contract
   ON sub_intents(contract_ns, contract_key, created_at);
+CREATE INDEX IF NOT EXISTS idx_sub_intents_verify_pending
+  ON sub_intents(verify_state)
+  WHERE verify_state = 'pending';
