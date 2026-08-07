@@ -14,6 +14,8 @@ import { tmpdir } from 'node:os';
 // 5β-5a-improvement: 既存 14 test は web typecheck check を skip する (= test 高速化 + 環境依存排除)。
 // web typecheck 専用 test は明示的に skipWebTypecheck: false + mock webTypecheckFn を指定する。
 process.env.PREFLIGHT_SKIP_WEB_TYPECHECK = '1';
+// worker typecheck も同様 (実 tsc は数十秒 + cache 削除の副作用があるため、専用 test でのみ mock 注入)
+process.env.PREFLIGHT_SKIP_WORKER_TYPECHECK = '1';
 
 import {
   listMigrationFiles,
@@ -24,6 +26,7 @@ import {
   summarizeReport,
   runChecks,
   runWebTypecheck,
+  runWorkerTypecheck,
   REQUIRED_SECRETS,
   OPTIONAL_SECRETS,
   KNOWN_DUPLICATE_EXCEPTIONS,
@@ -586,6 +589,134 @@ test('runChecks web-typecheck: skipWebTypecheck=true → INFO skipped (does not 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ─────────────────────────────────────
+// runChecks — worker typecheck (2026-08-07 #240: preflight が worker の型を一切見ていなかった)
+// ─────────────────────────────────────
+
+test('runChecks worker-typecheck: success → INFO passed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-wk-ok-'));
+  try {
+    writeFileSync(join(dir, '001_a.sql'), '');
+    const issues = await runChecks({
+      mode: 'offline',
+      migrationsDir: dir,
+      skipWorkerTypecheck: false,
+      workerTypecheckFn: () => ({ ok: true }),
+    });
+    const rows = issues.filter((i) => i.check === 'worker-typecheck');
+    assert.equal(rows.filter((i) => i.severity === 'CRITICAL').length, 0);
+    const info = rows.filter((i) => i.severity === 'INFO');
+    assert.equal(info.length, 1);
+    assert.match(info[0].message, /passed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runChecks worker-typecheck: failure → CRITICAL (= deploy をブロックする)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-wk-fail-'));
+  try {
+    writeFileSync(join(dir, '001_a.sql'), '');
+    const issues = await runChecks({
+      mode: 'offline',
+      migrationsDir: dir,
+      skipWorkerTypecheck: false,
+      workerTypecheckFn: () => ({
+        ok: false,
+        errors: [
+          "src/__tests__/sub-intents.test.ts(3019,69): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.",
+        ],
+      }),
+    });
+    const critical = issues.filter(
+      (i) => i.check === 'worker-typecheck' && i.severity === 'CRITICAL',
+    );
+    assert.equal(critical.length, 1);
+    assert.match(critical[0].detail, /TS2493/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runChecks worker-typecheck: skip=true → INFO skipped (fn を呼ばない)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pf-wk-skip-'));
+  try {
+    writeFileSync(join(dir, '001_a.sql'), '');
+    let called = false;
+    const issues = await runChecks({
+      mode: 'offline',
+      migrationsDir: dir,
+      skipWorkerTypecheck: true,
+      workerTypecheckFn: () => {
+        called = true;
+        return { ok: false };
+      },
+    });
+    assert.equal(called, false);
+    assert.equal(
+      issues.filter((i) => i.check === 'worker-typecheck' && i.severity === 'CRITICAL').length,
+      0,
+    );
+    assert.equal(
+      issues.filter(
+        (i) => i.check === 'worker-typecheck' && i.severity === 'INFO' && /skipped/.test(i.message),
+      ).length,
+      1,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runWorkerTypecheck は tsbuildinfo を消してから tsc を回す (CI と同条件にする本体)', () => {
+  const removed = [];
+  const res = runWorkerTypecheck({
+    execImpl: () => '',
+    rmImpl: (p) => removed.push(String(p)),
+    cwd: '/repo',
+  });
+  assert.equal(res.ok, true);
+  // worker 本体と、worker が参照する workspace パッケージの cache を落とす
+  assert.ok(
+    removed.some((p) => p.includes('apps') && p.includes('worker') && p.includes('tsbuildinfo')),
+    'worker の tsbuildinfo を削除すること',
+  );
+  assert.ok(
+    removed.some((p) => p.includes('db') && p.includes('tsbuildinfo')),
+    'packages/db の tsbuildinfo も削除すること (公開型の変更が隠れる)',
+  );
+});
+
+test('runWorkerTypecheck: tsbuildinfo が無くても (rm が throw しても) tsc は走る', () => {
+  let execCalled = false;
+  const res = runWorkerTypecheck({
+    execImpl: () => {
+      execCalled = true;
+      return '';
+    },
+    rmImpl: () => {
+      throw new Error('ENOENT');
+    },
+    cwd: '/repo',
+  });
+  assert.equal(execCalled, true, 'rm の失敗で typecheck を諦めない');
+  assert.equal(res.ok, true);
+});
+
+test('runWorkerTypecheck returns { ok: false } with TS error excerpt on failure', () => {
+  const fakeExec = () => {
+    const err = new Error('exit 2');
+    err.stdout =
+      "src/services/x.ts(10,5): error TS2352: Conversion of type 'readonly Message[]' may be a mistake.\nnoise line\n";
+    err.stderr = '';
+    throw err;
+  };
+  const res = runWorkerTypecheck({ execImpl: fakeExec, rmImpl: () => {}, cwd: '/repo' });
+  assert.equal(res.ok, false);
+  assert.equal(res.errors.length, 1, 'tsc の error 行だけを抽出する (noise 排除)');
+  assert.match(res.errors[0], /TS2352/);
 });
 
 test('runWebTypecheck returns { ok: false } on child_process failure with tsc TS-code excerpt', () => {
