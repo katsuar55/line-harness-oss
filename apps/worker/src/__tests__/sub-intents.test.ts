@@ -2976,9 +2976,11 @@ describe('監査反映: §4-4 締切不明の cancel / done・fail の痕跡', (
 // ============================================================
 
 function makeLineClient() {
+  // 引数の型を明示する — 省略すると mock.calls が長さ 0 のタプル型に推論され、
+  // calls.at(-1)?.[1] (送信メッセージの取り出し) が CI の tsc で TS2493 になる
   return {
-    replyMessage: vi.fn(async () => ({})),
-    pushMessage: vi.fn(async () => ({})),
+    replyMessage: vi.fn(async (_replyToken: string, _messages: unknown[]) => ({})),
+    pushMessage: vi.fn(async (_to: string, _messages: unknown[]) => ({})),
   };
 }
 
@@ -3061,7 +3063,10 @@ describe('§10-5 カード描画 (subIntent モード)', () => {
   });
 
   it('§3-1: 受理ボタンのラベルは全角 8 字以内 / §7: 実行ボタンは #0f766e・height md', () => {
-    const msgs = buildBillingReminderMessages(asContract, 7, { subIntent: true, nowMs: NOW_MS }) as Array<{
+    const msgs = buildBillingReminderMessages(asContract, 7, {
+      subIntent: true,
+      nowMs: NOW_MS,
+    }) as unknown as Array<{
       contents?: { body?: { contents?: Array<Record<string, unknown>> } };
     }>;
     const body = msgs[1]?.contents?.body?.contents ?? [];
