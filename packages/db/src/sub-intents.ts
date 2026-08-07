@@ -35,6 +35,13 @@ export type SubIntentState =
 
 export type SubIntentExecutor = 'human' | 'own_billing' | 'api' | 'blocked';
 
+/**
+ * §4-3 実行漏れ検証の 3 値 + pending (判定中)。
+ * NULL = 検証対象外 (未完了 / resume / undo_of)。
+ * 'inconclusive' = 判定保留 — 窓内不定を miss に倒さない (濡れ衣の謝罪を送らない §4-3)。
+ */
+export type SubIntentVerifyState = 'pending' | 'ok' | 'miss' | 'inconclusive';
+
 /** partial UNIQUE `ux_sub_intents_open` の対象 (= 「open」の定義。migration 076 と一致させること) */
 export const SUB_INTENT_OPEN_STATES: readonly SubIntentState[] = [
   'received',
@@ -65,6 +72,15 @@ export interface SubIntentRow {
   escalated_at: string | null;
   /** claim 滞留アラート済み (claim 世代ごと。claim/release でクリア = escalated_at と独立 §1-2) */
   stale_alerted_at: string | null;
+  /** §4-2 約束破り通知済みマーカー (1 intent 1 回。他マーカーと別列 = 相互抑止させない) */
+  promise_alerted_at: string | null;
+  /** §4-4 締切24h前エスカレーション済みマーカー (繰越しでリセット = 次サイクルにも枠を与える) */
+  predeadline_escalated_at: string | null;
+  /** §4-3 実行漏れ検証の状態 (NULL = 対象外) */
+  verify_state: SubIntentVerifyState | null;
+  /** §4-3 受理時点の契約スナップショット (done 時でなく受理時 — 実行と webhook の race を避ける) */
+  verify_baseline_json: string | null;
+  verified_at: string | null;
   created_at: string;
   resolved_at: string | null;
 }
@@ -84,8 +100,12 @@ export interface InsertSubIntentInput {
   actorRole: string | null;
   payloadJson: string | null;
   deadlineAt: string | null;
+  /** §4-1 営業カレンダー由来の約束期限。executor='blocked' は NULL (モードB は営業時間で約束しない) */
+  promisedBy: string | null;
   executor: SubIntentExecutor;
   supersedesIntentId: string | null;
+  /** §4-3 受理時点の契約スナップショット JSON (検証の基準値。受理時に採取) */
+  verifyBaselineJson: string | null;
   createdAt: string;
 }
 
@@ -104,8 +124,10 @@ export async function insertSubIntent(
          (id, friend_id, contract_ns, contract_key, target_cycle_key, presented_scheduled_date,
           op, state, requested_by, actor_staff_id, actor_role, payload_json,
           deadline_at, promised_by, claimed_at, executor, supersedes_intent_id,
-          fail_reason, carryover_count, escalated_at, stale_alerted_at, created_at, resolved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, 0, NULL, NULL, ?, NULL)
+          fail_reason, carryover_count, escalated_at, stale_alerted_at,
+          promise_alerted_at, predeadline_escalated_at, verify_state, verify_baseline_json, verified_at,
+          created_at, resolved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, 0, NULL, NULL, NULL, NULL, NULL, ?, NULL, ?, NULL)
        ON CONFLICT DO NOTHING`,
     )
     .bind(
@@ -122,8 +144,10 @@ export async function insertSubIntent(
       input.actorRole,
       input.payloadJson,
       input.deadlineAt,
+      input.promisedBy,
       input.executor,
       input.supersedesIntentId,
+      input.verifyBaselineJson,
       input.createdAt,
     )
     .run();
@@ -348,6 +372,9 @@ export async function expireSubIntentCas(
  * presented_scheduled_date も前進させるのは、次回の繰越し計算の基準を進めるため —
  * これを据え置くと繰越し計算が毎回同じ値を再算出する固定点になり、算出結果の締切が
  * 依然過去の場合に sweep へ毎 run 再ヒットする (監査 CONFIRMED の無限ループ)。
+ * predeadline_escalated_at をリセットする (§4-4) — 繰越し先の新しい締切にも
+ * 「24h 前エスカレーション」の枠を与える (据え置くと 2 サイクル目以降の cancel が
+ * 締切直前でも無警告になる)。escalated_at (締切超過) はリセットしない (1 intent 1 回 §4-2)。
  * ⚠️ 繰越し先に別の open intent が既に存在すると partial UNIQUE で **throw** する —
  *    呼び出し側 (service) が UNIQUE 違反であることを確認したうえで supersede へ落とす。
  * state='received' の CAS 付き (executing へ進んだ行を巻き戻さない)。
@@ -364,7 +391,7 @@ export async function carryOverSubIntentCas(
   const res = await db
     .prepare(
       `UPDATE sub_intents
-          SET target_cycle_key = ?, deadline_at = ?, presented_scheduled_date = ?, carryover_count = carryover_count + 1
+          SET target_cycle_key = ?, deadline_at = ?, presented_scheduled_date = ?, carryover_count = carryover_count + 1, predeadline_escalated_at = NULL
         WHERE id = ? AND state = 'received'`,
     )
     .bind(newCycleKey, newDeadlineAt, newScheduledDate, id)
@@ -427,6 +454,207 @@ export async function markStaleAlertedCas(
     .bind(now, id)
     .run();
   return { marked: (res.meta?.changes ?? 0) > 0 };
+}
+
+/**
+ * 約束破り通知済みマーカー (§4-2 — 1 intent 1 回)。CAS (promise_alerted_at IS NULL)。
+ * state='received' 限定 — terminal/executing へ進んだ行に遅延通知を出さない
+ * (executing = 着手済み = 進んでいるので「お時間をいただいています」は claim 滞留アラート側の管轄)。
+ * リセットしない (繰越しでも維持) — 約束は受理時の 1 つだけで、破りの通知も 1 回だけ。
+ */
+export async function markPromiseAlertedCas(
+  db: D1Database,
+  id: string,
+  now: string,
+): Promise<{ marked: boolean }> {
+  const res = await db
+    .prepare(
+      `UPDATE sub_intents SET promise_alerted_at = ?
+        WHERE id = ? AND promise_alerted_at IS NULL AND state = 'received'`,
+    )
+    .bind(now, id)
+    .run();
+  return { marked: (res.meta?.changes ?? 0) > 0 };
+}
+
+/**
+ * 約束破り sweep の対象 (§4-2): received かつ promised_by < now かつ未通知。
+ * executor='blocked' 除外 (移行窓は営業時間で約束していない = promised_by は NULL のはずだが防御)。
+ * promise_alerted_at IS NULL を SQL 側に置く — 通知済み行を毎 run 走査しない。
+ */
+export async function listSubIntentsPastPromise(
+  db: D1Database,
+  now: string,
+  limit = 50,
+): Promise<SubIntentRow[]> {
+  const res = await db
+    .prepare(
+      `SELECT * FROM sub_intents
+        WHERE state = 'received' AND executor <> 'blocked'
+          AND promised_by IS NOT NULL AND promised_by < ?
+          AND promise_alerted_at IS NULL
+        ORDER BY promised_by ASC
+        LIMIT ?`,
+    )
+    .bind(now, limit)
+    .all<SubIntentRow>();
+  return res.results ?? [];
+}
+
+/**
+ * §4-4 締切24h前エスカレーション済みマーカー。CAS (predeadline_escalated_at IS NULL)。
+ * received と executing の両方に付く (claim 済みでも未完了の cancel は締切リスクが同じ)。
+ * 繰越し (carryOverSubIntentCas) がリセットする = 次サイクルの締切にも新しい枠。
+ */
+export async function markPredeadlineEscalatedCas(
+  db: D1Database,
+  id: string,
+  now: string,
+): Promise<{ marked: boolean }> {
+  const res = await db
+    .prepare(
+      `UPDATE sub_intents SET predeadline_escalated_at = ?
+        WHERE id = ? AND predeadline_escalated_at IS NULL AND state IN ('received','executing')`,
+    )
+    .bind(now, id)
+    .run();
+  return { marked: (res.meta?.changes ?? 0) > 0 };
+}
+
+/**
+ * §4-4 の対象: 未実行 (received|executing) の cancel で締切まで 24h を切ったもの。
+ * 下限を置かない (締切超過後も選ぶ) — 超過分は §4-2 の繰越しが deadline を前進させるまで
+ * 最優先で人間に見せ続けるべき対象。escalated_at (超過通知) とは別マーカーなので重複しない。
+ * executor='blocked' 除外 (§4-2 と同じ理由 — 移行窓の意思は PHASE3 側が実行する)。
+ * **締切不明 (deadline NULL) の cancel も受理から 24h で対象に含める** (監査 LOW) —
+ * 締切系 sweep が一切効かない層なので、ここから漏れると「無効にはならないが
+ * 誰にも急かされない」まま解約意思が漂流する。
+ */
+export async function listCancelIntentsNearDeadline(
+  db: D1Database,
+  deadlineBefore: string,
+  createdBefore: string,
+  limit = 50,
+): Promise<SubIntentRow[]> {
+  const res = await db
+    .prepare(
+      `SELECT * FROM sub_intents
+        WHERE op = 'cancel' AND state IN ('received','executing') AND executor <> 'blocked'
+          AND ((deadline_at IS NOT NULL AND deadline_at <= ?)
+            OR (deadline_at IS NULL AND created_at <= ?))
+          AND predeadline_escalated_at IS NULL
+        ORDER BY COALESCE(deadline_at, created_at) ASC
+        LIMIT ?`,
+    )
+    .bind(deadlineBefore, createdBefore, limit)
+    .all<SubIntentRow>();
+  return res.results ?? [];
+}
+
+/**
+ * §4-3: done 到達時に検証待ちへ入れる。CAS (state='done' AND verify_state IS NULL) —
+ * 二重 done 記録 (ありえないが CAS で防御) や再入で pending を上書きしない。
+ */
+export async function setVerifyPendingCas(
+  db: D1Database,
+  id: string,
+): Promise<{ marked: boolean }> {
+  const res = await db
+    .prepare(
+      `UPDATE sub_intents SET verify_state = 'pending'
+        WHERE id = ? AND state = 'done' AND verify_state IS NULL`,
+    )
+    .bind(id)
+    .run();
+  return { marked: (res.meta?.changes ?? 0) > 0 };
+}
+
+/**
+ * §4-3 検証待ち一覧。state='done' 限定 — undo で cancel_requested へ動いた行は
+ * 検証を一時停止し (取り消し中の実行を検証しない)、done へ復元されたら再開する。
+ */
+export async function listSubIntentsVerifyPending(
+  db: D1Database,
+  // 100: pending は窓が閉じるまで残る設計のため、少なすぎると長期 pending が枠を
+  // 独占して後続 intent の即時 miss 検出が飢餓する (監査 MEDIUM)
+  limit = 100,
+): Promise<SubIntentRow[]> {
+  const res = await db
+    .prepare(
+      `SELECT * FROM sub_intents
+        WHERE verify_state = 'pending' AND state = 'done'
+        ORDER BY resolved_at ASC
+        LIMIT ?`,
+    )
+    .bind(limit)
+    .all<SubIntentRow>();
+  return res.results ?? [];
+}
+
+/**
+ * §4-3 verdict 確定。CAS (verify_state='pending') — 勝者だけが通知してよい
+ * (miss の謝罪 push はこの CAS の勝ちに 1:1 で紐づく = 別マーカー不要)。
+ */
+export async function setVerifyVerdictCas(
+  db: D1Database,
+  id: string,
+  verdict: 'ok' | 'miss' | 'inconclusive',
+  now: string,
+): Promise<{ set: boolean }> {
+  const res = await db
+    .prepare(
+      `UPDATE sub_intents SET verify_state = ?, verified_at = ?
+        WHERE id = ? AND verify_state = 'pending'`,
+    )
+    .bind(verdict, now, id)
+    .run();
+  return { set: (res.meta?.changes ?? 0) > 0 };
+}
+
+/**
+ * §4-3 照合用: サブスクタグ付き注文を since 以降で引く (import 時刻基準)。
+ * LIKE は部分一致 (id:100 が id:1001 に当たる) なので**契約の絞り込みはしない** —
+ * 呼び出し側が parseOrderSubscriptionTags で厳密に突合する。
+ */
+export async function listSubscriptionOrdersSince(
+  db: D1Database,
+  sinceIso: string,
+  limit = 200,
+): Promise<Array<{ shopify_order_id: string; tags: string | null; created_at: string }>> {
+  const res = await db
+    .prepare(
+      `SELECT shopify_order_id, tags, created_at FROM shopify_orders
+        WHERE tags LIKE '%subscription-id:%' AND created_at >= ?
+        ORDER BY created_at ASC
+        LIMIT ?`,
+    )
+    .bind(sinceIso, limit)
+    .all<{ shopify_order_id: string; tags: string | null; created_at: string }>();
+  return res.results ?? [];
+}
+
+/**
+ * §4-3 誤検知ガード: 同一契約の「他の done intent」数 (since 以降)。
+ * 例: 検証中の skip と別サイクルの skip が両方実行されていると前進量が 2 周期になるが、
+ * それは二重 skip ではない — この件数 > 0 なら判定保留に倒す。
+ */
+export async function countOtherDoneSubIntents(
+  db: D1Database,
+  contractNs: string,
+  contractKey: string,
+  op: SubIntentOp,
+  excludeId: string,
+  sinceIso: string,
+): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM sub_intents
+        WHERE contract_ns = ? AND contract_key = ? AND op = ? AND id <> ?
+          AND state = 'done' AND resolved_at >= ?`,
+    )
+    .bind(contractNs, contractKey, op, excludeId, sinceIso)
+    .first<{ n: number | null }>();
+  return row?.n ?? 0;
 }
 
 /**

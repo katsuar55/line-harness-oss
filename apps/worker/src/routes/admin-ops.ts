@@ -27,6 +27,7 @@
  */
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { LineClient } from '@line-crm/line-sdk';
 import type { Env } from '../index.js';
 import { requireRole } from '../middleware/role-guard.js';
 import { auditAdminAction } from '../services/admin-audit.js';
@@ -39,6 +40,11 @@ import {
   undoSubIntent,
   isSubIntentEnabled,
   sendSubIntentAlert,
+  buildAcceptanceMessage,
+  buildLatePromiseDisclosure,
+  notifySubIntentDone,
+  notifySubIntentFailed,
+  requestedDateFromPayload,
   SUB_INTENT_OP_LABELS,
   HUMAN_CLAIM_ALERT_MINUTES,
   ACCEPTABLE_OPS,
@@ -93,6 +99,34 @@ async function denyMutation(c: Context<Env>): Promise<Response | null> {
   return null;
 }
 
+/**
+ * done/fail push の結果を揮発的な画面表示以外にも残す (監査 MEDIUM)。
+ * done CAS は勝者 1 回限りで push の再送機会が構造的に無いため、届かなかった事実は
+ * Discord (行動を促す) と audit_logs (事後検証) の両方に落とす。sweep 側の通知と同じ規律。
+ */
+async function recordNotifyOutcome(
+  c: Context<Env>,
+  intent: SubIntentRow,
+  stage: 'done' | 'fail',
+  outcome: 'notified' | 'unlinked' | 'failed',
+): Promise<void> {
+  await auditAdminAction(c, {
+    action: `admin.sub_intent.${stage}_notify`,
+    targetType: 'sub_intent',
+    targetId: intent.id,
+    result: outcome === 'notified' ? 'success' : 'failure',
+    errorMessage: outcome === 'notified' ? undefined : outcome,
+    metadata: { contractKey: intent.contract_key, op: intent.op, notifyOutcome: outcome },
+  });
+  if (outcome !== 'notified') {
+    const stageLabel = stage === 'done' ? '完了' : '失敗';
+    const reason = outcome === 'unlinked' ? 'LINE 未連携' : 'LINE 送信失敗';
+    await sendSubIntentAlert(c.env, [
+      `⚠️ ${stageLabel}のお知らせをお客様に届けられませんでした (${SUB_INTENT_OP_LABELS[intent.op] ?? intent.op} / ${intent.contract_key} / ${reason})。電話またはメールで結果を必ずお伝えください`,
+    ]);
+  }
+}
+
 function claimAgeMinutes(row: SubIntentRow, nowMs: number): number | null {
   if (row.state !== 'executing' || !row.claimed_at) return null;
   const claimed = Date.parse(row.claimed_at);
@@ -123,6 +157,14 @@ function toApiRow(row: SubIntentRow, nowMs: number) {
     escalated: row.escalated_at !== null,
     linked: row.friend_id !== null,
     supersedesIntentId: row.supersedes_intent_id,
+    /** §4-1: 約束期限 (反映予定)。NULL = 約束なし (モードB/undo 以前の行) */
+    promisedBy: row.promised_by,
+    /** §4-2: 約束破り通知済み */
+    promiseAlerted: row.promise_alerted_at !== null,
+    /** §4-3: 実行照合の状態 (null = 対象外/未完了) */
+    verifyState: row.verify_state,
+    /** op='date' の希望日 (照合と表示に使う) */
+    requestedDate: requestedDateFromPayload(row.payload_json),
     createdAt: row.created_at,
     resolvedAt: row.resolved_at,
   };
@@ -178,7 +220,9 @@ adminOps.post('/api/admin/sub-intents', async (c) => {
     contractKey?: string;
     op?: string;
     presentedDate?: string;
+    requestedDate?: string;
     note?: string;
+    acknowledgeLatePromise?: boolean;
   };
   const contractKey = (body.contractKey ?? '').trim();
   const op = (body.op ?? '') as SubIntentOp;
@@ -187,15 +231,28 @@ adminOps.post('/api/admin/sub-intents', async (c) => {
   }
   // note は台帳に残る。PII を書かない運用はページ側の注意書き + ここでの長さ制限で支える
   const note = (body.note ?? '').trim().slice(0, 200);
+  // op='date' の希望日 (§4-3 の照合対象)。構造化して payload に残す — メモの自由記述では機械照合できない
+  const requestedDate = (body.requestedDate ?? '').trim();
+  if (op === 'date' && requestedDate && !/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+    return c.json({ success: false, error: '希望日は YYYY-MM-DD 形式で入力してください' }, 400);
+  }
+  const payload: Record<string, unknown> = {};
+  if (note) payload.note = note;
+  if (op === 'date' && requestedDate) payload.requestedDate = requestedDate;
+  const acknowledged = body.acknowledgeLatePromise === true;
+  // §4-1: 「間に合わない見込みを開示し顧客が了承した」事実を台帳に残す (監査 MEDIUM —
+  // 記録しないと開示が行われたか事後検証できず、API 直叩きの無痕跡迂回も見えない)
+  if (acknowledged) payload.latePromiseAcknowledged = true;
   const result = await acceptSubIntent(c.env.DB, {
     contractNs: 'hb',
     contractKey,
     op,
     requestedBy: 'staff',
     presentedDate: body.presentedDate?.trim() || undefined,
-    payload: note ? { note } : null,
+    payload: Object.keys(payload).length > 0 ? payload : null,
     actorStaffId: staff.id,
     actorRole: staff.role,
+    acknowledgeLatePromise: acknowledged,
   });
   await auditAdminAction(c, {
     action: 'admin.sub_intent.accept',
@@ -203,10 +260,32 @@ adminOps.post('/api/admin/sub-intents', async (c) => {
     targetId: result.status === 'accepted' || result.status === 'duplicate' ? result.intent.id : null,
     result: result.status === 'accepted' || result.status === 'duplicate' ? 'success' : 'failure',
     errorMessage: result.status === 'accepted' || result.status === 'duplicate' ? undefined : result.status,
-    metadata: { contractKey, op },
+    metadata: acknowledged ? { contractKey, op, acknowledgedLatePromise: true } : { contractKey, op },
   });
   if (result.status === 'accepted' || result.status === 'duplicate') {
-    return c.json({ success: true, data: { status: result.status, intent: toApiRow(result.intent, Date.now()) } });
+    // §8-2: 受理はここ (reply/画面内表示) — スタッフが電話/メールでこの文言を伝える。
+    // §4-1 の約束と §4-4 の救済手順 (cancel) を含む。
+    // duplicate は約束を言い直さない (既存の promised_by が過去だと過ぎた時刻を約束し直す嘘になる)
+    const customerMessage =
+      result.status === 'duplicate'
+        ? `「${SUB_INTENT_OP_LABELS[result.intent.op] ?? result.intent.op}」のご依頼は既に承っております。スタッフが順に対応しており、完了しましたら必ずご連絡いたします。`
+        : buildAcceptanceMessage(result.intent.op, result.intent.promised_by, result.intent.executor);
+    return c.json({
+      success: true,
+      data: { status: result.status, intent: toApiRow(result.intent, Date.now()), customerMessage },
+    });
+  }
+  if (result.status === 'promise_after_deadline') {
+    // §4-1: 受理していない。開示文言を提示して顧客に選ばせる (了承なら acknowledgeLatePromise で再送)
+    return c.json(
+      {
+        success: false,
+        requiresAcknowledgement: true,
+        disclosure: buildLatePromiseDisclosure(op, result.promisedBy, result.deadlineAt),
+        error: '約束できる反映予定が変更受付期限に間に合いません。お客様に開示のうえ、それでも受理するか確認してください',
+      },
+      409,
+    );
   }
   if (result.status === 'contract_not_found') {
     return c.json({ success: false, error: '契約が見つかりません。契約ID (Huckleberry の定期購買ID) を確認してください' }, 404);
@@ -271,7 +350,18 @@ adminOps.post('/api/admin/sub-intents/:id/done', async (c) => {
         `⚠️ 取り消し (${result.intent.contract_key}) は完了しましたが、元の依頼を自動で解決できませんでした (対応中のまま)。/admin/ops で元の依頼を確認してください`,
       ]);
     }
-    return c.json({ success: true, data: { intent: toApiRow(result.intent, Date.now()), originalResolved: result.originalResolved } });
+    // §8-2: 完了は push (1 通・transactional)。CAS の勝者 (= この記録) だけが送る。
+    // 送れたかを画面に返す — 未連携なら電話/メールでのフォローをスタッフに促す
+    const notified = await notifySubIntentDone(
+      c.env.DB,
+      new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN),
+      result.intent,
+    );
+    await recordNotifyOutcome(c, result.intent, 'done', notified);
+    return c.json({
+      success: true,
+      data: { intent: toApiRow(result.intent, Date.now()), originalResolved: result.originalResolved, customerNotified: notified },
+    });
   }
   if (result.status === 'not_found') return c.json({ success: false, error: '対象が見つかりません' }, 404);
   // §1-2: CAS 0 行 = 「完了」と宣言しない。二重実行の疑いを握り潰さず Discord にも上げる
@@ -307,7 +397,17 @@ adminOps.post('/api/admin/sub-intents/:id/fail', async (c) => {
     metadata: result.status !== 'not_found' && result.intent ? { contractKey: result.intent.contract_key, op: result.intent.op } : {},
   });
   if (result.status === 'failed') {
-    return c.json({ success: true, data: { intent: toApiRow(result.intent, Date.now()), originalRestored: result.originalRestored } });
+    // §8-2: 失敗も push (正直な失敗 §4)。完了 push とは state 機械で排他
+    const notified = await notifySubIntentFailed(
+      c.env.DB,
+      new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN),
+      result.intent,
+    );
+    await recordNotifyOutcome(c, result.intent, 'fail', notified);
+    return c.json({
+      success: true,
+      data: { intent: toApiRow(result.intent, Date.now()), originalRestored: result.originalRestored, customerNotified: notified },
+    });
   }
   if (result.status === 'not_found') return c.json({ success: false, error: '対象が見つかりません' }, 404);
   return c.json({ success: false, error: '失敗を記録できませんでした (状態が変わっています)。一覧を更新してください' }, 409);
@@ -460,6 +560,9 @@ const OPS_PAGE_HTML = `<!DOCTYPE html>
         <option value="resume">再開</option>
         <option value="cancel">解約</option>
       </select>
+      <label>お届け希望日 (「お届け日の変更」のとき)</label>
+      <input type="date" id="cdate">
+      <p class="hint">実行漏れの機械照合に使います。「お届け日の変更」では必ず入力してください (未入力だと照合できず判定保留になります)。</p>
       <label>メモ (任意・お客様の氏名や連絡先は書かないでください)</label>
       <input type="text" id="cnote" placeholder="例: 9月分から。希望日は 9/10" autocomplete="off">
       <button class="btn-main" id="accept">受理する</button>
@@ -494,7 +597,14 @@ const OPS_PAGE_HTML = `<!DOCTYPE html>
       fetch(path, { method:'POST', headers: headers(), body: JSON.stringify(body || {}) })
         .then(function(r){ return r.json().then(function(j){ return { ok: r.ok, j: j }; }); })
         .then(function(res){
-          if(res.ok && res.j.success){ setStatus(doneMsg, true); load(); }
+          if(res.ok && res.j.success){
+            var msg = doneMsg;
+            var cn = res.j.data && res.j.data.customerNotified;
+            if(cn === 'notified'){ msg += '。お客様へ LINE で結果をお知らせしました'; }
+            else if(cn === 'unlinked'){ msg += '。お客様は LINE 未連携です — お電話またはメールで結果を必ずお伝えください'; }
+            else if(cn === 'failed'){ msg += '。LINE 通知の送信に失敗しました — お電話またはメールで結果を必ずお伝えください'; }
+            setStatus(msg, true); load();
+          }
           else { setStatus(res.j.error || '操作できませんでした', false); load(); }
         })
         .catch(function(e){ setStatus('通信エラー: '+e.message, false); });
@@ -502,7 +612,7 @@ const OPS_PAGE_HTML = `<!DOCTYPE html>
 
     function renderIntent(it){
       var div = document.createElement('div');
-      div.className = 'intent' + ((it.claimAlert || it.escalated) ? ' alert' : '');
+      div.className = 'intent' + ((it.claimAlert || it.escalated || it.verifyState === 'miss') ? ' alert' : '');
       var r1 = document.createElement('div'); r1.className = 'row1';
       var left = document.createElement('div');
       var op = document.createElement('span'); op.className = 'oplabel'; op.textContent = it.opLabel; left.appendChild(op);
@@ -522,7 +632,13 @@ const OPS_PAGE_HTML = `<!DOCTYPE html>
       var lines = [];
       lines.push('契約: ' + it.contractKey + (it.linked ? ' (LINE連携済み)' : ' (LINE未連携)'));
       if(it.presentedDate) lines.push('対象サイクル: ' + it.presentedDate);
+      if(it.requestedDate) lines.push('希望日: ' + it.requestedDate);
       if(it.deadlineAt) lines.push('受付期限: ' + String(it.deadlineAt).slice(0,10));
+      if(it.promisedBy) lines.push('反映予定: ' + String(it.promisedBy).slice(0,16).replace('T',' ') + (it.promiseAlerted ? ' (超過をお客様へ連絡済み)' : ''));
+      if(it.verifyState){
+        var vnames = { pending:'反映を確認中', ok:'反映を確認済み', miss:'要確認 (実行漏れの疑い)', inconclusive:'判定保留 (機械では確認できず)' };
+        lines.push('照合: ' + (vnames[it.verifyState] || it.verifyState));
+      }
       lines.push('受理: ' + String(it.createdAt).slice(0,16).replace('T',' ') + ' (' + (it.requestedBy === 'staff' ? 'スタッフ' : 'お客様') + ')');
       if(it.actorStaffId && it.state === 'executing') lines.push('担当: ' + it.actorStaffId);
       if(it.carryoverCount > 0) lines.push('繰越し ' + it.carryoverCount + ' 回');
@@ -613,24 +729,45 @@ const OPS_PAGE_HTML = `<!DOCTYPE html>
     // §1-2: 未解決時間の常時可視化 — 60 秒ごとに再取得して age を進める
     setInterval(function(){ if($('apikey').value.trim()) load(); }, 60000);
 
+    function acceptBody(ack){
+      var b = { contractKey: $('ckey').value.trim(), op: $('cop').value, note: $('cnote').value };
+      if($('cop').value === 'date' && $('cdate').value) b.requestedDate = $('cdate').value;
+      if(ack) b.acknowledgeLatePromise = true;
+      return b;
+    }
+
+    function sendAccept(ack){
+      var resending = false;
+      $('accept').disabled = true; setStatus('受理しています…', true);
+      fetch('/api/admin/sub-intents', { method:'POST', headers: headers(), body: JSON.stringify(acceptBody(ack)) })
+        .then(function(r){ return r.json().then(function(j){ return { ok: r.ok, j: j }; }); })
+        .then(function(res){
+          if(res.ok && res.j.success){
+            var msg = (res.j.data.status === 'duplicate') ? 'この内容は既に受理済みです (二重登録は作られません)' : '受理しました';
+            if(res.j.data.customerMessage){ msg += '。お客様への伝達文: ' + res.j.data.customerMessage; }
+            setStatus(msg, true);
+            $('ckey').value=''; $('cnote').value=''; $('cdate').value=''; load();
+          } else if(res.j.requiresAcknowledgement && !ack){
+            // §4-1: 受理前開示 — 「今回は間に合いません」をお客様に伝え、選んでいただいてから受理する
+            if(window.confirm((res.j.disclosure || res.j.error) + '\\n\\n上記をお客様にお伝えし、「それでもお願いしたい」との了承をいただきましたか？\\n「OK」を押すと受理します。')){
+              resending = true;
+              sendAccept(true);
+            } else {
+              setStatus('受理を見送りました (お客様の了承が必要です)', false);
+            }
+          } else { setStatus(res.j.error || '受理できませんでした', false); }
+        })
+        .catch(function(e){ setStatus('通信エラー: '+e.message, false); })
+        .finally(function(){ if(!resending) $('accept').disabled = false; });
+    }
+
     $('accept').addEventListener('click', function(){
       var ckey = $('ckey').value.trim();
       var op = $('cop').value;
       if(!ckey){ setStatus('契約IDを入力してください', false); return; }
       var opNames = { skip:'次回スキップ', date:'お届け日の変更', pause:'一時停止', resume:'再開', cancel:'解約' };
       if(!window.confirm('契約 ' + ckey + ' の「' + (opNames[op]||op) + '」を受理します。\\n\\n受理すると台帳に記録され、担当スタッフが Huckleberry 管理画面で代行します。よろしいですか？')) return;
-      $('accept').disabled = true; setStatus('受理しています…', true);
-      fetch('/api/admin/sub-intents', { method:'POST', headers: headers(), body: JSON.stringify({ contractKey: ckey, op: op, note: $('cnote').value }) })
-        .then(function(r){ return r.json().then(function(j){ return { ok: r.ok, j: j }; }); })
-        .then(function(res){
-          if(res.ok && res.j.success){
-            if(res.j.data.status === 'duplicate'){ setStatus('この内容は既に受理済みです (二重登録は作られません)', true); }
-            else { setStatus('受理しました', true); }
-            $('ckey').value=''; $('cnote').value=''; load();
-          } else { setStatus(res.j.error || '受理できませんでした', false); }
-        })
-        .catch(function(e){ setStatus('通信エラー: '+e.message, false); })
-        .finally(function(){ $('accept').disabled = false; });
+      sendAccept(false);
     });
   </script>
 </body>
