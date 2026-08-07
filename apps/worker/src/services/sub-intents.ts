@@ -196,6 +196,14 @@ export type AcceptSubIntentResult =
    * 「今回は間に合いません」を開示して顧客に選ばせ、了承なら acknowledgeLatePromise で再受理する。
    */
   | { status: 'promise_after_deadline'; promisedBy: string; deadlineAt: string }
+  /**
+   * skip/date の締切が**既に過ぎている**。受理しない (§10-5 監査 CONFIRMED —
+   * 受理すると「承りました+反映予定」の数分後に sweep が expire し、直前の約束を機械が
+   * 即時破棄する。了承 (ack) でも受理してはいけない — 開示は「間に合わない見込み」への
+   * 同意であって「確実に失効する依頼を台帳に積む」ことへの同意ではない)。
+   * pause/cancel は対象外 (§1-2: expire 禁止・繰越しで救済されるため締切後も受理してよい)。
+   */
+  | { status: 'deadline_passed'; deadlineAt: string }
   /** INSERT 0 行なのに open 行も引けない (= 競合の狭間)。受理を宣言しない */
   | { status: 'conflict' };
 
@@ -279,14 +287,30 @@ export async function acceptSubIntent(
   const existing = await getOpenSubIntent(db, input.contractNs, input.contractKey, cycleKey, input.op);
   if (existing) return { status: 'duplicate', intent: existing };
 
+  // skip/date は締切超過後の受理を拒む (即時 expire される依頼を「承りました」と言わない)。
+  // blocked (移行窓) は §5-1 の「必ず受理する」が優先 (実行時期は再アンカリングが決める)
+  if (
+    (input.op === 'skip' || input.op === 'date') &&
+    executor !== 'blocked' &&
+    deadlineAt !== null &&
+    deadlineAt <= now
+  ) {
+    return { status: 'deadline_passed', deadlineAt };
+  }
+
   // §4-1: 受理した瞬間に所要時間を約束する。モードB (executor='blocked') は営業時間で
   // 約束しない (実行時期は移行機械が決める) — promised_by は NULL。
   const promisedBy = executor === 'blocked' ? null : computePromisedBy(nowMs);
   // §4-1 の順序: ①算出 → ②比較 → ③超過なら受理前に開示して顧客に選ばせる。
   // 判定式は promised_by > deadline_at の 1 つだけ (24h 固定閾値は使わない — 週末跨ぎで嘘になる)。
+  // deadlineAt > now の条件: 開示は「まだ来ていない締切に間に合わない見込み」の話。
+  // 既に過ぎた締切に対して開示すると、ここに到達しうる pause/cancel (skip/date は上で
+  // deadline_passed 済み) が自明な「間に合いません」開示で 1 タップ増える — pause/cancel の
+  // 救済 (繰越し・§4-4) は受理文言と sweep が担うので、そのまま受理するのが正
   if (
     promisedBy !== null &&
     deadlineAt !== null &&
+    deadlineAt > now &&
     promisedBy > deadlineAt &&
     input.acknowledgeLatePromise !== true
   ) {

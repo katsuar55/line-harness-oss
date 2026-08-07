@@ -55,6 +55,8 @@ export interface IntentBuildContext {
   readonly friendId: string;
   /** マイランク LIFF への誘導 URL base (= webhook caller が env.LIFF_URL を渡す。 未設定なら rich menu 誘導に fallback) */
   readonly liffUrl?: string;
+  /** §10-5: 受理レイヤー有効時、契約カードを受理ボタン付きで返す (入口による見た目の分裂を作らない) */
+  readonly subIntentEnabled?: boolean;
 }
 
 interface PatternRule {
@@ -308,7 +310,7 @@ export async function buildMessagesForIntentAsync(
       .bind(ctx.friendId)
       .first<{ id: string; display_name: string | null; shopify_customer_id: string | null }>();
     if (friend) {
-      return buildSubscriptionMenuMessages(ctx.db, friend, ctx.liffUrl);
+      return buildSubscriptionMenuMessages(ctx.db, friend, ctx.liffUrl, { subIntent: ctx.subIntentEnabled === true });
     }
     return buildMessagesForIntent(intent);
   }

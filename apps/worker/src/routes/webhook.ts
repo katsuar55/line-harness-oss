@@ -591,8 +591,11 @@ async function handleEvent(
       try {
         let messages;
         let outcome = 'menu';
+        // §10-5: 受理レイヤー有効時は入口を問わず受理ボタン付きカードに揃える
+        // (リマインド経由と見た目・機能が割れると 60代の学習が毎回リセットされる — 監査 MEDIUM)
+        const cardMode = { subIntent: env?.SUB_INTENT_ENABLED === 'true' };
         if (action === 'subscription_menu') {
-          messages = await buildSubscriptionMenuMessages(db, conciergeFriend, env?.LIFF_URL);
+          messages = await buildSubscriptionMenuMessages(db, conciergeFriend, env?.LIFF_URL, cardMode);
         } else {
           const op = params.get('op');
           const cid = params.get('cid') ?? '';
@@ -604,7 +607,7 @@ async function handleEvent(
           const contract = validOp ? await getContractForFriend(db, conciergeFriend, cid) : null;
           const isStale = contract !== null && (contract.cancelled_at !== null || contract.paused_at !== null);
           if (!validOp || !contract || isStale) {
-            messages = await buildSubscriptionMenuMessages(db, conciergeFriend, env?.LIFF_URL);
+            messages = await buildSubscriptionMenuMessages(db, conciergeFriend, env?.LIFF_URL, cardMode);
             outcome = isStale ? 'guide_stale' : 'guide_denied';
           } else {
             messages = buildGuideMessages(op as GuideOp, contract);
@@ -1016,6 +1019,7 @@ async function handleEvent(
             db,
             friendId: friend.id,
             liffUrl: env?.LIFF_URL,
+            subIntentEnabled: env?.SUB_INTENT_ENABLED === 'true',
           });
           await lineClient.replyMessage(event.replyToken, [...messages]);
           replyTokenConsumed = true;

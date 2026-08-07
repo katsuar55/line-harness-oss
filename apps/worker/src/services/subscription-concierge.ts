@@ -58,6 +58,12 @@ export type GuideOp = 'skip' | 'date' | 'cancel_pause';
  */
 export interface CardMode {
   readonly subIntent?: boolean;
+  /**
+   * テスト注入用の現在時刻。§10-5 面 (受理 postback の y/d0・picker 可動域・結果行) は
+   * stale 判定が現在日に依存するため、注入経路が無いと固定日付フィクスチャが実時計で
+   * 時限爆弾化する (§10-5 監査 MEDIUM)。省略時は実時計。
+   */
+  readonly nowMs?: number;
 }
 
 /** §3-3: sub_intent postback のスキーマ版。互換を壊す変更で上げる (旧版は受理せず期限切れ扱い)。 */
@@ -73,17 +79,39 @@ export function subIntentPostbackData(
   op: 'skip' | 'date' | 'pause' | 'cancel' | 'cancel_pause' | 'dismiss',
   contract: SubscriptionContractRow,
   extra?: Record<string, string>,
+  nowMs?: number,
 ): string {
-  const d0 = contract.next_billing_estimate?.slice(0, 10) ?? null;
+  const d0 = subIntentPresentableDate(contract, nowMs);
   const params = new URLSearchParams();
   params.set('action', 'sub_intent');
   params.set('op', op);
   params.set('cid', contract.contract_id);
-  params.set('y', `${contract.contract_id}:${d0 ?? 'unknown'}`);
+  params.set('y', subIntentCycleKey(contract, nowMs));
   if (d0) params.set('d0', d0);
   params.set('v', SUB_INTENT_POSTBACK_VERSION);
   for (const [k, val] of Object.entries(extra ?? {})) params.set(k, val);
   return params.toString();
+}
+
+/**
+ * 受理系が「提示してよい」予定日。stale (過去日) は null に畳む (§10-5 監査 MEDIUM) —
+ * カードの表示側は isStaleEstimate で日付を隠すのに、受理系だけ過去サイクルを運ぶと
+ * 「画面に無い日付」を根拠にした期限切れ開示や即失効 intent が生まれる。
+ */
+export function subIntentPresentableDate(
+  contract: SubscriptionContractRow,
+  nowMs?: number,
+): string | null {
+  const raw = contract.next_billing_estimate?.slice(0, 10) ?? null;
+  return raw && !isStaleEstimate(raw, nowMs) ? raw : null;
+}
+
+/**
+ * 現在の契約が持つサイクル識別子 (§3-3 の y)。postback の y はハンドラ側でこれと突合し、
+ * 不一致 (unknown ↔ 実日付を含む) は受理せず期限切れ扱いにする。
+ */
+export function subIntentCycleKey(contract: SubscriptionContractRow, nowMs?: number): string {
+  return `${contract.contract_id}:${subIntentPresentableDate(contract, nowMs) ?? 'unknown'}`;
 }
 
 // ===== エントリポイント =====
@@ -335,7 +363,7 @@ function buildContractBubble(contract: SubscriptionContractRow, mode: CardMode =
       // §10-5: 意思の受理ボタン (SUB_INTENT_ENABLED 配下でのみ描画)。
       // §3: 結果はラベルでなく「ボタン直上の本文行」へ (ラベルは単一行・切詰めで日付から消える)。
       // §3-2: 移行前 (executor=human) は結果を断定せず「お申し込み」が読める語にする。
-      bodyContents.push(...buildSkipResultLine(contract));
+      bodyContents.push(...buildSkipResultLine(contract, mode.nowMs));
       buttons.push(
         // §3-1: ラベルは全角 8 字以内の動詞句。§7: 実行ボタンは solid #0f766e (白文字 4.5:1 以上)・height md
         {
@@ -347,7 +375,7 @@ function buildContractBubble(contract: SubscriptionContractRow, mode: CardMode =
           action: {
             type: 'postback',
             label: '今回はお休み',
-            data: subIntentPostbackData('skip', contract),
+            data: subIntentPostbackData('skip', contract, undefined, mode.nowMs),
             displayText: '今回の定期便をお休みしたいです',
           },
         },
@@ -361,9 +389,9 @@ function buildContractBubble(contract: SubscriptionContractRow, mode: CardMode =
           action: {
             type: 'datetimepicker',
             label: '日付を変える',
-            data: subIntentPostbackData('date', contract),
+            data: subIntentPostbackData('date', contract, undefined, mode.nowMs),
             mode: 'date',
-            ...datePickerBounds(contract),
+            ...datePickerBounds(contract, mode.nowMs),
           },
         },
         // §7-3 例外: 解約・お休みの導線は常設 (特商法)。2 タップ目の確認カードで受理する
@@ -375,7 +403,7 @@ function buildContractBubble(contract: SubscriptionContractRow, mode: CardMode =
           action: {
             type: 'postback',
             label: 'お休み・解約',
-            data: subIntentPostbackData('cancel_pause', contract),
+            data: subIntentPostbackData('cancel_pause', contract, undefined, mode.nowMs),
             displayText: '一時停止・解約について',
           },
         },
@@ -652,11 +680,8 @@ function kvPush(arr: object[], key: string, value: string): void {
  * 結果日付を出せない (推定/周期不明) 場合は操作の意味だけを書く (日付を捏造しない)。
  * §7-2: 日付行は size xl / bold / #0f766e。
  */
-function buildSkipResultLine(contract: SubscriptionContractRow): object[] {
-  const estimate =
-    contract.next_billing_estimate && !isStaleEstimate(contract.next_billing_estimate)
-      ? contract.next_billing_estimate.slice(0, 10)
-      : null;
+function buildSkipResultLine(contract: SubscriptionContractRow, nowMs?: number): object[] {
+  const estimate = subIntentPresentableDate(contract, nowMs);
   const next =
     estimate && contract.interval_days && contract.interval_days > 0
       ? formatJpDate(addDays(estimate, contract.interval_days))
@@ -666,14 +691,18 @@ function buildSkipResultLine(contract: SubscriptionContractRow): object[] {
       {
         type: 'text',
         text: '「今回はお休み」を押すと、次回分をお休みするお申し込みになります (次のお届け予定はマイページでご確認ください)',
-        size: 'sm',
+        size: 'md', // §7-2: 本文は md 以上
         color: TEXT_MAIN,
         wrap: true,
         margin: 'md',
       },
     ];
   }
-  const goro = contract.estimate_source === 'flow' ? '' : 'ごろ';
+  // §3-2: 断定してよいのは「flow 実測の実日付」だけ。ここの日付は estimate + interval の
+  // **計算値** (skip 後の実スケジュールは HB が決める) なので、flow でも断定しない —
+  // 「ごろ」の除去は executor='own_billing' (Phase 3 = 自分がスケジュールの正になる) まで保留
+  // (§10-5 監査 CONFIRMED 系列の反映)
+  const goro = 'ごろ';
   return [
     {
       type: 'text',
@@ -691,18 +720,20 @@ function buildSkipResultLine(contract: SubscriptionContractRow): object[] {
  * 日付変更 datetimepicker の可動域。min = 明日 (過去日を選ばせない) /
  * max = 推定日 + 30 日 (マイページの「最長30日先まで」に合わせる。推定不明は今日 + 60 日)。
  * initial は推定日 (可動域内にクランプ)。
+ * ⚠️ picker 属性は**描画時**の防壁でしかない (古い吹き出しでは min が過去化する) —
+ * サーバ側の過去日検証 (sub-intent-postback.ts) と必ず二重にする。
  */
-function datePickerBounds(contract: SubscriptionContractRow): {
+export function datePickerBounds(
+  contract: SubscriptionContractRow,
+  nowMs?: number,
+): {
   initial: string;
   min: string;
   max: string;
 } {
-  const today = todayJst();
+  const today = todayJst(nowMs);
   const min = addDays(today, 1);
-  const estimate =
-    contract.next_billing_estimate && !isStaleEstimate(contract.next_billing_estimate)
-      ? contract.next_billing_estimate.slice(0, 10)
-      : null;
+  const estimate = subIntentPresentableDate(contract, nowMs);
   const max = estimate ? addDays(estimate, 30) : addDays(today, 60);
   let initial = estimate ?? addDays(today, 7);
   if (initial < min) initial = min;
@@ -711,13 +742,77 @@ function datePickerBounds(contract: SubscriptionContractRow): {
 }
 
 /**
+ * §7-1: 白文字を載せる破壊的操作ボタンの背景。CORAL (#d9573d) は白と 3.90:1 で不合格のため、
+ * header() の badge 代替と同じ濃色 #9a3412 (7.31:1) を使う (§10-5 監査 CONFIRMED)。
+ */
+const CORAL_BUTTON = '#9a3412';
+
+/**
  * §10-5: [お休み・解約] の確認カード (2 タップ目で受理)。
  * 引き止めは 1 画面のみ・解約導線は隠さない (§1-4 / §7-3)。
  * 破壊的操作 (解約) は色を変え、1 タップ実行ボタンとは別ボタンにする (§7-3)。
+ * 一時停止中の契約では [一時停止する] を出さない (意味のない受理を作らない —
+ * 解約導線は §7-3 例外どおり常設)。
  */
 export function buildCancelPauseChoiceMessages(
   contract: SubscriptionContractRow,
+  nowMs?: number,
 ): ReadonlyArray<Message> {
+  const paused = contract.paused_at !== null;
+  const lead = paused
+    ? '現在、お届けは一時停止中です。解約のお申し込みは、このままお手続きいただけます (再開をご希望の場合もこのトークルームでどうぞ)。'
+    : '商品が余りがちな場合は、一時停止でお届けをいったん止めることもできます (再開はいつでも可能です)。\nもちろん解約のお申し込みも、このままお手続きいただけます。';
+  const contents: object[] = [
+    {
+      type: 'text',
+      text: lead,
+      size: 'md', // §7-2: 本文は md 以上
+      color: TEXT_MAIN,
+      wrap: true,
+    },
+  ];
+  if (!paused) {
+    contents.push({
+      type: 'button',
+      style: 'primary',
+      color: TEAL_DARK,
+      height: 'md',
+      margin: 'md',
+      action: {
+        type: 'postback',
+        label: '一時停止する',
+        data: subIntentPostbackData('pause', contract, undefined, nowMs),
+        displayText: '定期便を一時停止したいです',
+      },
+    });
+  }
+  contents.push(
+    {
+      type: 'button',
+      style: 'primary',
+      color: CORAL_BUTTON,
+      height: 'md',
+      margin: 'sm',
+      action: {
+        type: 'postback',
+        label: '解約を申し込む',
+        data: subIntentPostbackData('cancel', contract, undefined, nowMs),
+        displayText: '定期便の解約を申し込みます',
+      },
+    },
+    {
+      type: 'button',
+      style: 'secondary',
+      height: 'md',
+      margin: 'sm',
+      action: {
+        type: 'postback',
+        label: '今はやめておく',
+        data: subIntentPostbackData('dismiss', contract, undefined, nowMs),
+        displayText: '今はやめておきます',
+      },
+    },
+  );
   const bubble = {
     type: 'bubble',
     size: 'kilo',
@@ -727,54 +822,7 @@ export function buildCancelPauseChoiceMessages(
       layout: 'vertical',
       paddingAll: '16px',
       spacing: 'sm',
-      contents: [
-        {
-          type: 'text',
-          text:
-            '商品が余りがちな場合は、一時停止でお届けをいったん止めることもできます (再開はいつでも可能です)。\nもちろん解約のお申し込みも、このままお手続きいただけます。',
-          size: 'sm',
-          color: TEXT_MAIN,
-          wrap: true,
-        },
-        {
-          type: 'button',
-          style: 'primary',
-          color: TEAL_DARK,
-          height: 'md',
-          margin: 'md',
-          action: {
-            type: 'postback',
-            label: '一時停止する',
-            data: subIntentPostbackData('pause', contract),
-            displayText: '定期便を一時停止したいです',
-          },
-        },
-        {
-          type: 'button',
-          style: 'primary',
-          color: CORAL,
-          height: 'md',
-          margin: 'sm',
-          action: {
-            type: 'postback',
-            label: '解約を申し込む',
-            data: subIntentPostbackData('cancel', contract),
-            displayText: '定期便の解約を申し込みます',
-          },
-        },
-        {
-          type: 'button',
-          style: 'secondary',
-          height: 'md',
-          margin: 'sm',
-          action: {
-            type: 'postback',
-            label: '今はやめておく',
-            data: subIntentPostbackData('dismiss', contract),
-            displayText: '今はやめておきます',
-          },
-        },
-      ],
+      contents,
     },
   };
   return [
@@ -824,15 +872,15 @@ function deadlineText(contract: SubscriptionContractRow): string | null {
   return '⏰ 変更・スキップ・解約は次回決済日の3日前まで受付です';
 }
 
-/** 今日 (JST) の YYYY-MM-DD。 */
-function todayJst(): string {
-  return new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
+/** 今日 (JST) の YYYY-MM-DD。nowMs はテスト注入用 (省略時は実時計)。 */
+function todayJst(nowMs?: number): string {
+  return new Date((nowMs ?? Date.now()) + 9 * 3600_000).toISOString().slice(0, 10);
 }
 
 /** 推定日が今日 (JST) より過去 = stale。過去の日付・締切をユーザーに見せない。 */
-function isStaleEstimate(estimate: string | null): boolean {
+function isStaleEstimate(estimate: string | null, nowMs?: number): boolean {
   if (!estimate) return false;
-  return estimate < todayJst();
+  return estimate < todayJst(nowMs);
 }
 
 /** YYYY-MM-DD → 「M月D日」。 */

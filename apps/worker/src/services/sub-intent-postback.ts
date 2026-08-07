@@ -22,6 +22,7 @@ import {
   buildAcceptanceMessage,
   buildLatePromiseDisclosure,
   formatPromisedBy,
+  requestedDateFromPayload,
   SUB_INTENT_OP_LABELS,
   type SubIntentGateEnv,
 } from './sub-intents.js';
@@ -31,13 +32,21 @@ import {
   buildConciergeErrorMessages,
   getContractForFriend,
   subIntentPostbackData,
+  subIntentCycleKey,
+  datePickerBounds,
   formatJpDate,
   MYPAGE_URL,
   SUB_INTENT_POSTBACK_VERSION,
 } from './subscription-concierge.js';
+import type { SubscriptionContractRow } from '@line-crm/db';
 import { auditSystem } from './audit-logger.js';
 
 const TEAL_DARK = '#0f766e';
+
+/** 今日 (JST)。nowMs はテスト注入用。 */
+function todayJst(nowMs?: number): string {
+  return new Date((nowMs ?? Date.now()) + 9 * 3600_000).toISOString().slice(0, 10);
+}
 
 export interface SubIntentPostbackEnv extends SubIntentGateEnv {
   DB: D1Database;
@@ -83,7 +92,19 @@ export async function handleSubIntentPostback(input: SubIntentPostbackInput): Pr
     return;
   }
 
-  const friend = await getFriendByLineUserId(db, lineUserId);
+  // friend 引きも失敗しうる (D1 一過性障害)。「例外は投げない」の約束をここでも守る
+  let friend;
+  try {
+    friend = await getFriendByLineUserId(db, lineUserId);
+  } catch (err) {
+    console.error('[sub-intent-postback] friend lookup failed:', err);
+    try {
+      await lineClient.replyMessage(replyToken, [...buildConciergeErrorMessages()]);
+    } catch {
+      // token 期限切れは諦める
+    }
+    return;
+  }
   if (!friend) return;
   const conciergeFriend = {
     id: friend.id,
@@ -94,9 +115,8 @@ export async function handleSubIntentPostback(input: SubIntentPostbackInput): Pr
 
   const op = params.get('op') ?? '';
   let outcome = 'unknown';
+  let messages: ReadonlyArray<Message>;
   try {
-    let messages: ReadonlyArray<Message>;
-
     if (op === 'dismiss') {
       messages = [
         { type: 'text', text: '承知しました。引き続きよろしくお願いいたします🌿\nお手続きが必要になったら、いつでもこのトークルームからどうぞ。' },
@@ -112,18 +132,6 @@ export async function handleSubIntentPostback(input: SubIntentPostbackInput): Pr
       });
       outcome = 'invalid_op';
     }
-
-    await lineClient.replyMessage(replyToken, [...messages]);
-    await auditSystem(db, {
-      action: 'sub_intent.postback',
-      actorType: 'webhook',
-      targetType: 'friend',
-      targetId: friend.id,
-      lineAccountId,
-      result: 'success',
-      // PII なし: op と結果のみ (§1-4)
-      metadata: { op, outcome },
-    });
   } catch (err) {
     console.error('[sub-intent-postback] failed:', err);
     try {
@@ -141,7 +149,38 @@ export async function handleSubIntentPostback(input: SubIntentPostbackInput): Pr
       errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown',
       metadata: { op },
     });
+    return;
   }
+
+  // reply の失敗は台帳を巻き戻せない (受理 INSERT は成立済みでありうる)。
+  // ここで「確認できませんでした」の謝罪カードを送ると**受理の成立を否定する嘘**になる
+  // (§10-5 監査 MEDIUM) — 送らずに audit へ残す。顧客の再タップは duplicate 文言が受け止める
+  try {
+    await lineClient.replyMessage(replyToken, [...messages]);
+  } catch (err) {
+    console.error('[sub-intent-postback] reply failed:', err);
+    await auditSystem(db, {
+      action: 'sub_intent.reply_failed',
+      actorType: 'webhook',
+      targetType: 'friend',
+      targetId: friend.id,
+      lineAccountId,
+      result: 'failure',
+      errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown',
+      metadata: { op, outcome },
+    });
+    return;
+  }
+  await auditSystem(db, {
+    action: 'sub_intent.postback',
+    actorType: 'webhook',
+    targetType: 'friend',
+    targetId: friend.id,
+    lineAccountId,
+    result: 'success',
+    // PII なし: op と結果のみ (§1-4)
+    metadata: { op, outcome },
+  });
 }
 
 // ============================================================
@@ -187,12 +226,22 @@ async function handleUndo(
       outcome: 'undo_accepted',
     };
   }
-  // not_undoable / not_found: state を正直に伝える (嘘の「取り消しました」を言わない)
+  // not_undoable / not_found: **実際の state** を正直に伝える (推測の羅列で濁さない §10-5 監査 LOW)
+  const stateText =
+    result.status === 'not_undoable'
+      ? ({
+          expired: '受付期限を過ぎて失効しているため、取り消しの対象がありません',
+          cancelled: '既に取り消し済みです',
+          superseded: '新しいご依頼に引き継がれています',
+          failed: 'お手続きができなかったため、取り消しの対象がありません',
+          done: '対応が完了しています',
+        } as Record<string, string>)[result.state] ?? '現在の状態からは取り消せませんでした'
+      : '見つかりませんでした';
   return {
     messages: [
       {
         type: 'text',
-        text: `「${label}」のご依頼は現在の状態からは取り消せませんでした (対応が完了しているか、既に取り消し済みの可能性があります)。\nご希望があれば、このトークルームでお知らせください。スタッフが対応いたします。`,
+        text: `「${label}」のご依頼は${stateText}。\nご希望があれば、このトークルームでお知らせください。スタッフが対応いたします。`,
       },
     ],
     outcome: `undo_${result.status}`,
@@ -233,18 +282,45 @@ async function handleContractOp(
     };
   }
 
-  // 解約済み/一時停止済み契約への古いボタン: 実行不能な受理をしない (最新状態を見せる)
-  if (contract.cancelled_at !== null || contract.paused_at !== null) {
+  // §3-3: y (サイクル識別子) を現在の契約と突合する — d0 の drift 検査 (acceptSubIntent) だけだと
+  // 「d0 の無いカード (推定不明時に配られた)」と「推定が null 化した後の旧カード」の両向きが
+  // 素通りする (§10-5 監査 CONFIRMED)。unknown ↔ 実日付の食い違いもここで止まる
+  if ((params.get('y') ?? '') !== subIntentCycleKey(contract, input.nowMs)) {
+    return {
+      messages: [
+        { type: 'text', text: 'このご案内の後にご契約の状況が変わっています。お手数ですが、最新のカードからあらためてお手続きください🙇' },
+        ...(await buildSubscriptionMenuMessages(db, conciergeFriend, env.LIFF_URL, { subIntent: true })),
+      ],
+      outcome: 'cycle_key_mismatch',
+    };
+  }
+
+  // 解約済み契約への古いボタン: 実行不能な受理をしない (最新状態を見せる)
+  if (contract.cancelled_at !== null) {
     return {
       messages: await buildSubscriptionMenuMessages(db, conciergeFriend, env.LIFF_URL, { subIntent: true }),
       outcome: 'contract_inactive',
+    };
+  }
+  // 一時停止中: 解約意思は正当に受理する (§1-2 — 停止中の解約を doorway で捨てるのは解約妨害)。
+  // skip/date/pause は停止中に意味を成さないので、理由を言って受理しない (§10-5 監査 MEDIUM)
+  if (contract.paused_at !== null && op !== 'cancel' && op !== 'cancel_pause') {
+    return {
+      messages: [
+        {
+          type: 'text',
+          text: '現在お届けは一時停止中のため、スキップ・お届け日変更のお手続きはありません🌿\n再開のご希望や解約のご相談は、このトークルームでいつでもどうぞ。',
+        },
+        ...(await buildSubscriptionMenuMessages(db, conciergeFriend, env.LIFF_URL, { subIntent: true })),
+      ],
+      outcome: 'paused_op_unavailable',
     };
   }
 
   if (op === 'cancel_pause') {
     // 2 タップ目の確認カード (§2: 解約は 2 タップ・一時停止は次のタップで受理)。
     // y/d0 は postback の値でなく**現在の契約から**再構成する (古い値を次のタップへ運ばない)
-    return { messages: buildCancelPauseChoiceMessages(contract), outcome: 'choice_shown' };
+    return { messages: buildCancelPauseChoiceMessages(contract, input.nowMs), outcome: 'choice_shown' };
   }
 
   // ---- 受理 (§1-1) ----
@@ -260,7 +336,20 @@ async function handleContractOp(
       outcome: 'date_missing',
     };
   }
-  const payload = op === 'date' ? { requestedDate: pickedDate } : null;
+  // picker の min は描画時の防壁でしかない (古い吹き出しでは過去化する) — サーバ側でも過去日を弾く
+  if (op === 'date' && pickedDate && pickedDate <= todayJst(input.nowMs)) {
+    return {
+      messages: [
+        { type: 'text', text: '過去のお日にちは選択できません🙇 お手数ですが、カードの「日付を変える」から明日以降のお日にちをお選びください。' },
+      ],
+      outcome: 'date_in_past',
+    };
+  }
+  const payloadObj: Record<string, unknown> = {};
+  if (op === 'date' && pickedDate) payloadObj.requestedDate = pickedDate;
+  // §4-1 の開示を経た受理は台帳に痕跡を残す (admin 経路の latePromiseAcknowledged と同じ規律)
+  const acknowledged = params.get('ack') === '1';
+  if (acknowledged) payloadObj.latePromiseAcknowledged = true;
 
   const result = await acceptSubIntent(db, {
     contractNs: 'hb',
@@ -268,23 +357,48 @@ async function handleContractOp(
     op: op as 'skip' | 'date' | 'pause' | 'cancel',
     requestedBy: 'customer',
     presentedDate,
-    payload,
-    acknowledgeLatePromise: params.get('ack') === '1',
+    payload: Object.keys(payloadObj).length > 0 ? payloadObj : null,
+    acknowledgeLatePromise: acknowledged,
     nowMs: input.nowMs,
   });
 
   if (result.status === 'accepted' || result.status === 'duplicate') {
     const intent = result.intent;
     const label = SUB_INTENT_OP_LABELS[intent.op] ?? intent.op;
-    const head =
-      result.status === 'duplicate'
-        ? `「${label}」のご依頼は既に承っております。スタッフが順に対応しており、完了しましたら必ずご連絡いたします。`
-        : (op === 'date' && pickedDate
-            ? `${formatJpDate(pickedDate) ?? pickedDate} への変更で、`
-            : '') + buildAcceptanceMessage(intent.op, intent.promised_by, intent.executor);
+    let head: string;
+    if (result.status === 'duplicate') {
+      // date の重複は「既存の希望日」を必ず開示する — 新しく選んだ日付が登録されたと
+      // 誤認させない (§10-5 監査 CONFIRMED: false-success)
+      const existingDate = intent.op === 'date' ? requestedDateFromPayload(intent.payload_json) : null;
+      head = existingDate
+        ? `「${label}」は ${formatJpDate(existingDate) ?? existingDate} への変更で既に承っております。スタッフが順に対応しており、完了しましたら必ずご連絡いたします。`
+        : `「${label}」のご依頼は既に承っております。スタッフが順に対応しており、完了しましたら必ずご連絡いたします。`;
+      if (intent.op === 'date' && pickedDate && pickedDate !== existingDate) {
+        head += `\n※ 今回お選びの ${formatJpDate(pickedDate) ?? pickedDate} はまだ登録されていません。日付を変えたい場合は、下の [取り消す] のあと、もう一度カードからお選びください。`;
+      }
+    } else {
+      head =
+        (op === 'date' && pickedDate ? `${formatJpDate(pickedDate) ?? pickedDate} への変更で、` : '') +
+        buildAcceptanceMessage(intent.op, intent.promised_by, intent.executor);
+    }
     return {
       messages: [{ type: 'text', text: head }, buildUndoBubble(intent)],
       outcome: result.status,
+    };
+  }
+
+  if (result.status === 'deadline_passed') {
+    // 締切超過の skip/date は受理しない (§10-5 監査 CONFIRMED — 受理すると数分後の sweep が
+    // expire し「承りました」を機械が即時破棄する)。§3-3 の期限切れ結末に合流する
+    return {
+      messages: [
+        {
+          type: 'text',
+          text: `申し訳ございません。今回の変更受付期限 (${formatJpDate(result.deadlineAt.slice(0, 10)) ?? '次回決済日の3日前'}) を過ぎているため、承ることができませんでした。今回の定期便は通常どおりのお手続きとなります🙇\nご要望がございましたら、このトークルームでご連絡ください。スタッフが必ず対応いたします。`,
+        },
+        ...(await buildSubscriptionMenuMessages(db, conciergeFriend, env.LIFF_URL, { subIntent: true })),
+      ],
+      outcome: 'deadline_passed',
     };
   }
 
@@ -307,7 +421,7 @@ async function handleContractOp(
     return {
       messages: [
         { type: 'text', text: buildLatePromiseDisclosure(op as 'skip' | 'date' | 'pause' | 'cancel', result.promisedBy, result.deadlineAt) },
-        buildLatePromiseChoiceBubble(op, contract.contract_id, params, input.postbackParams?.date, result.promisedBy),
+        buildLatePromiseChoiceBubble(op, contract, params, input.postbackParams?.date, result.promisedBy, input.nowMs),
       ],
       outcome: 'late_promise_disclosed',
     };
@@ -334,7 +448,7 @@ function buildUndoBubble(intent: SubIntentRow): Message {
         {
           type: 'text',
           text: 'このご依頼は、スタッフの着手前までいつでも取り消せます。',
-          size: 'sm',
+          size: 'md', // §7-2: 本文は md 以上
           color: '#334155',
           wrap: true,
         },
@@ -363,21 +477,27 @@ function buildUndoBubble(intent: SubIntentRow): Message {
 /** §4-1 開示後の選択肢 (2 タップ目)。ack=1 を付けて同じ受理経路を再走行する。 */
 function buildLatePromiseChoiceBubble(
   op: string,
-  contractId: string,
+  contract: SubscriptionContractRow,
   original: URLSearchParams,
   pickedDate: string | undefined,
   promisedBy: string,
+  nowMs?: number,
 ): Message {
   const params = new URLSearchParams();
   params.set('action', 'sub_intent');
   params.set('op', op);
-  params.set('cid', contractId);
+  params.set('cid', contract.contract_id);
   const d0 = original.get('d0');
   if (d0) params.set('d0', d0);
   const y = original.get('y');
   if (y) params.set('y', y);
   params.set('v', SUB_INTENT_POSTBACK_VERSION);
   params.set('ack', '1');
+  // picker の可動域を必ず付ける (§10-5 監査 MEDIUM — 無いと過去日が選べてしまう。
+  // サーバ側の過去日検証と二重防壁)。initial は前回選択を可動域内にクランプ
+  const bounds = datePickerBounds(contract, nowMs);
+  const initial =
+    pickedDate && pickedDate >= bounds.min && pickedDate <= bounds.max ? pickedDate : bounds.initial;
   const acceptAction =
     op === 'date'
       ? {
@@ -386,7 +506,9 @@ function buildLatePromiseChoiceBubble(
           label: 'お願いする',
           data: params.toString(),
           mode: 'date' as const,
-          ...(pickedDate ? { initial: pickedDate } : {}),
+          initial,
+          min: bounds.min,
+          max: bounds.max,
         }
       : {
           type: 'postback' as const,
@@ -427,7 +549,7 @@ function buildLatePromiseChoiceBubble(
           action: {
             type: 'postback',
             label: '今回はやめておく',
-            data: `action=sub_intent&op=dismiss&cid=${encodeURIComponent(contractId)}&v=${SUB_INTENT_POSTBACK_VERSION}`,
+            data: `action=sub_intent&op=dismiss&cid=${encodeURIComponent(contract.contract_id)}&v=${SUB_INTENT_POSTBACK_VERSION}`,
             displayText: '今回はやめておきます',
           },
         },
