@@ -1784,9 +1784,24 @@ describe('§4-1 営業カレンダー (computePromisedBy)', () => {
     expect(isBusinessDayJst('garbage')).toBe(false);
   });
 
+  it('🔔 祝日テーブルの被覆期限が十分先にある (期限が近づいたら CI を赤くして更新を強制する)', () => {
+    // **意図的な時限テスト**: 実時計に依存させて「更新漏れ」を検知する唯一の仕組み。
+    // 落ちたら business-calendar.ts の JP_HOLIDAYS_JST に翌年分を追記し
+    // HOLIDAY_TABLE_VALID_THROUGH を伸ばすこと (内閣府の祝日 CSV が一次情報源)。
+    // ⚠️ 期限切れを放置しても顧客に嘘はつかない (約束を出さなくなるだけ) が、
+    //    「反映予定」が出せない期間が続くので体験は劣化する。
+    const halfYearAhead = new Date(Date.now() + 183 * 86_400_000).toISOString().slice(0, 10);
+    expect(HOLIDAY_TABLE_VALID_THROUGH >= halfYearAhead).toBe(true);
+  });
+
   it('祝日テーブル満了後は営業日と断定せず、約束を出さない (元日を約束する事故の封鎖)', () => {
     // 2028-01-01 は元日かつ土曜。テーブルは 2027-12-31 までしか知らない
     expect(isBusinessDayJst('2028-01-01')).toBe(false);
+    // ⚠️ 上の 1 行だけでは**満了ガードを検証できない** — 土曜ルールでも false になるため
+    //    (mutation C4 が SURVIVED した実測)。土曜営業に切り替えた瞬間に穴が開く。
+    //    満了後の**平日**で「営業日と断定しない」ことを固定する
+    expect(isBusinessDayJst('2028-01-03')).toBe(false); // 月曜だが満了後
+    expect(isBusinessDayJst('2028-06-14')).toBe(false); // 水曜・祝日でもない満了後の平日
     expect(isBusinessDayJst(HOLIDAY_TABLE_VALID_THROUGH)).toBe(false); // 2027-12-31 は年末休業
     // 満了直前の受理は約束を出さない (誤った日を約束するより「約束しない」)
     expect(computePromisedBy(Date.parse('2027-12-30T00:00:00Z'))).toBeNull();
