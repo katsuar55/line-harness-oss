@@ -54,7 +54,12 @@ import {
   type VerifyBaseline,
   type EvaluateExecutionInput,
 } from '../services/sub-intents.js';
-import { computePromisedBy, isBusinessDayJst } from '../services/business-calendar.js';
+import {
+  computePromisedBy,
+  isBusinessDayJst,
+  SATURDAY_IS_BUSINESS_DAY,
+  HOLIDAY_TABLE_VALID_THROUGH,
+} from '../services/business-calendar.js';
 import { handleSubIntentPostback } from '../services/sub-intent-postback.js';
 import {
   subIntentPostbackData,
@@ -1751,17 +1756,20 @@ describe('cycle key / deadline ヘルパー', () => {
 // ============================================================
 
 describe('§4-1 営業カレンダー (computePromisedBy)', () => {
-  it('平日受理 → 翌営業日 18:00 JST (火曜 09:00 受理 → 水曜 18:00)', () => {
+  it('平日受理 → 翌営業日 17:00 JST (火曜 09:00 受理 → 水曜 17:00)', () => {
     expect(computePromisedBy(Date.parse('2026-09-01T00:00:00Z'))).toBe('2026-09-02T17:00:00.000+09:00');
   });
 
-  it('土曜は営業日: 金曜受理 → 土曜 17:00 / 土曜・日曜の受理は日曜定休を跨いで月曜 17:00', () => {
-    // 09-04 金 → 翌 09-05 土 は営業日 (定休は日曜のみ)
-    expect(computePromisedBy(Date.parse('2026-09-04T00:00:00Z'))).toBe('2026-09-05T17:00:00.000+09:00');
-    // 09-05 土 → 翌 09-06 日は定休 → 09-07 月
+  it('金曜・土曜・日曜の受理はいずれも月曜 17:00 (土曜は当面 休み扱い = 顧客向け案内と一致)', () => {
+    expect(computePromisedBy(Date.parse('2026-09-04T00:00:00Z'))).toBe('2026-09-07T17:00:00.000+09:00');
     expect(computePromisedBy(Date.parse('2026-09-05T00:00:00Z'))).toBe('2026-09-07T17:00:00.000+09:00');
-    // 09-06 日 → 翌 09-07 月
     expect(computePromisedBy(Date.parse('2026-09-06T00:00:00Z'))).toBe('2026-09-07T17:00:00.000+09:00');
+  });
+
+  it('土曜の扱いは SATURDAY_IS_BUSINESS_DAY 1 つで決まる (顧客向け案内と同時に切り替える前提)', () => {
+    // 現在は false = 土曜休み。true にしたとき「金曜 → 土曜」になることを定数から導出して固定する
+    expect(SATURDAY_IS_BUSINESS_DAY).toBe(false);
+    expect(isBusinessDayJst('2026-09-05')).toBe(SATURDAY_IS_BUSINESS_DAY); // 土
   });
 
   it('JST の日付境界で判定する (火曜 23:30 JST → 水曜 / 水曜 00:30 JST → 木曜)', () => {
@@ -1769,25 +1777,34 @@ describe('§4-1 営業カレンダー (computePromisedBy)', () => {
     expect(computePromisedBy(Date.parse('2026-09-01T15:30:00Z'))).toBe('2026-09-03T17:00:00.000+09:00');
   });
 
-  it('isBusinessDayJst: 平日/土曜 true・日曜 false・不正入力 false (定休は日曜のみ)', () => {
+  it('isBusinessDayJst: 平日 true / 土日 false / 不正入力 false', () => {
     expect(isBusinessDayJst('2026-09-01')).toBe(true); // 火
-    expect(isBusinessDayJst('2026-09-05')).toBe(true); // 土 = 営業
+    expect(isBusinessDayJst('2026-09-05')).toBe(false); // 土 (当面 休み扱い)
     expect(isBusinessDayJst('2026-09-06')).toBe(false); // 日 = 定休
     expect(isBusinessDayJst('garbage')).toBe(false);
   });
 
+  it('祝日テーブル満了後は営業日と断定せず、約束を出さない (元日を約束する事故の封鎖)', () => {
+    // 2028-01-01 は元日かつ土曜。テーブルは 2027-12-31 までしか知らない
+    expect(isBusinessDayJst('2028-01-01')).toBe(false);
+    expect(isBusinessDayJst(HOLIDAY_TABLE_VALID_THROUGH)).toBe(false); // 2027-12-31 は年末休業
+    // 満了直前の受理は約束を出さない (誤った日を約束するより「約束しない」)
+    expect(computePromisedBy(Date.parse('2027-12-30T00:00:00Z'))).toBeNull();
+    // 受理自体は成立し、文言は約束なしの分岐に落ちる
+    expect(buildAcceptanceMessage('skip', null, 'human')).toContain('スタッフが順に対応');
+  });
+
   it('出力は deadline_at と同形式 (文字列比較で promised_by > deadline_at が成立する)', () => {
-    // 09-19 土 受理 → 日曜定休 + 敬老/国民/秋分の 3 連休を跨ぎ 09-24 木 17:00
-    const promise = computePromisedBy(Date.parse('2026-09-19T00:00:00Z'));
-    expect(promise).toBe('2026-09-24T17:00:00.000+09:00');
-    const deadline = computeDeadlineAt('2026-09-25'); // 09-22 EOD
+    const promise = computePromisedBy(Date.parse('2026-09-04T00:00:00Z')); // 金曜 → 月曜 17:00
+    expect(promise).toBe('2026-09-07T17:00:00.000+09:00');
+    const deadline = computeDeadlineAt('2026-09-08'); // 09-05 EOD
     expect(deadline).not.toBeNull();
-    expect(promise > deadline!).toBe(true); // 連休跨ぎで約束が締切を超える実例
+    expect(promise! > deadline!).toBe(true); // 週末跨ぎで約束が締切を超える実例 (毎週起こる)
   });
 });
 
 describe('§4-1 受理時の約束と開示', () => {
-  it('受理で promised_by が記録される (火曜受理 → 水曜 18:00)', async () => {
+  it('受理で promised_by が記録される (火曜受理 → 水曜 17:00)', async () => {
     const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
     const res = await acceptSubIntent(db, {
       contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: NOW_MS,
@@ -1843,26 +1860,26 @@ describe('§4-1 受理時の約束と開示', () => {
   });
 
   it('金曜受理 + 土曜締切 → promise_after_deadline (受理していない)。了承すれば受理される', async () => {
-    // 推定 09-25 → 締切 09-22 EOD。土曜 09-19 受理の約束は連休明け 09-24 17:00 = 締切超過
-    const tight: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-09-25' };
+    // 推定 09-08 → 締切 09-05 (土) EOD。金曜受理の約束は月曜 17:00 = 締切超過 (週末跨ぎ)
+    const tight: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-09-08' };
     const { db, store } = createDb({ contracts: [tight], friends: [FRIEND] });
-    const saturday = Date.parse('2026-09-19T00:00:00Z');
+    const friday = Date.parse('2026-09-04T00:00:00Z');
     const res = await acceptSubIntent(db, {
-      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: saturday,
+      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: friday,
     });
     expect(res.status).toBe('promise_after_deadline');
     if (res.status !== 'promise_after_deadline') return;
-    expect(res.promisedBy).toBe('2026-09-24T17:00:00.000+09:00');
-    expect(res.deadlineAt).toBe('2026-09-22T23:59:59.999+09:00');
+    expect(res.promisedBy).toBe('2026-09-07T17:00:00.000+09:00');
+    expect(res.deadlineAt).toBe('2026-09-05T23:59:59.999+09:00');
     expect(store.intents.size).toBe(0); // 開示前に台帳へ入れない
 
     const ack = await acceptSubIntent(db, {
-      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: saturday,
+      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: friday,
       acknowledgeLatePromise: true,
     });
     expect(ack.status).toBe('accepted');
     if (ack.status !== 'accepted') return;
-    expect(ack.intent.promised_by).toBe('2026-09-24T17:00:00.000+09:00');
+    expect(ack.intent.promised_by).toBe('2026-09-07T17:00:00.000+09:00');
   });
 
   it('executor=blocked (モードB) は営業時間で約束しない (promised_by NULL・開示もしない)', async () => {
@@ -1883,11 +1900,11 @@ describe('§4-1 受理時の約束と開示', () => {
     const { db } = createDb({ contracts: [tight], friends: [FRIEND] });
     const res = await acceptSubIntent(db, {
       contractNs: 'hb', contractKey: 'C1', op: 'resume', requestedBy: 'customer',
-      nowMs: Date.parse('2026-09-04T00:00:00Z'), // 金曜 → 土曜 (営業日) 17:00
+      nowMs: Date.parse('2026-09-04T00:00:00Z'), // 金曜 → 月曜 17:00
     });
     expect(res.status).toBe('accepted');
     if (res.status !== 'accepted') return;
-    expect(res.intent.promised_by).toBe('2026-09-05T17:00:00.000+09:00');
+    expect(res.intent.promised_by).toBe('2026-09-07T17:00:00.000+09:00');
     expect(res.intent.deadline_at).toBeNull();
   });
 
@@ -1930,7 +1947,7 @@ describe('§4-1 受理時の約束と開示', () => {
 // §4-2 一段目: 約束破り sweep
 // ============================================================
 
-/** 木曜 09:00 JST — 約束 (水曜 18:00) は超過・締切 (09-07 EOD) は未来 */
+/** 木曜 09:00 JST — 約束 (水曜 17:00) は超過・締切 (09-07 EOD) は未来 */
 const PROMISE_BROKEN_MS = Date.parse('2026-09-03T00:00:00Z');
 
 describe('§4-2 約束破り sweep', () => {
@@ -2489,7 +2506,7 @@ describe('/admin/ops §10-4 (開示・伝達文・完了/失敗 push)', () => {
   });
 
   it('§4-1: 約束が期限に間に合わない受理は 409 + 開示文言。acknowledge で受理される', async () => {
-    // 締切 = 本日 EOD (推定 = 実時計 + 3 日) — 約束 (翌営業日 18:00) は必ず締切超過になる。
+    // 締切 = 本日 EOD (推定 = 実時計 + 3 日) — 約束 (翌営業日 17:00) は必ず締切超過になる。
     // +2 日にすると締切が過去になり deadline_passed (400) 側へ倒れる — 別テストで固定
     const tight: ContractSeed = {
       ...CONTRACT,
@@ -2650,14 +2667,16 @@ describe('監査反映: 約束の誠実性', () => {
     }
   });
 
-  it('祝日は営業日でない: 土曜 9/19 受理 → 日曜定休 + 敬老/国民/秋分を跨ぎ 9/24 17:00 を約束', () => {
-    expect(computePromisedBy(Date.parse('2026-09-19T00:00:00Z'))).toBe('2026-09-24T17:00:00.000+09:00');
-    expect(isBusinessDayJst('2026-09-19')).toBe(true); // 土曜は営業
-    expect(isBusinessDayJst('2026-09-20')).toBe(false); // 日曜定休
+  it('祝日は営業日でない: 金曜 9/18 受理 → 土日 + 敬老/国民/秋分を跨ぎ 9/24 17:00 を約束', () => {
+    expect(computePromisedBy(Date.parse('2026-09-18T00:00:00Z'))).toBe('2026-09-24T17:00:00.000+09:00');
     expect(isBusinessDayJst('2026-09-21')).toBe(false); // 敬老の日
     expect(isBusinessDayJst('2026-09-22')).toBe(false); // 国民の休日
     expect(isBusinessDayJst('2026-09-23')).toBe(false); // 秋分の日
     expect(isBusinessDayJst('2026-09-24')).toBe(true);
+    // 祝日テーブルの各エントリが実際に効くことを 1 件ずつ固定 (テーブルは手管理 = 無検証だと腐る)
+    for (const holiday of ['2026-11-03', '2026-11-23', '2026-12-29', '2027-01-01', '2027-05-05']) {
+      expect(isBusinessDayJst(holiday)).toBe(false);
+    }
   });
 
   it('受理 race: open 検査と INSERT の間に並行受理が勝っても accepted と嘘をつかない', async () => {
@@ -2705,17 +2724,17 @@ describe('監査反映: 約束の誠実性', () => {
   });
 
   it('既存 open intent は §4-1 の開示より先に duplicate (了承→duplicate の矛盾フローを作らない)', async () => {
-    // 連休跨ぎ = 開示条件が成立する状況で、2 回目が開示でなく duplicate になることを固定する
-    const tight: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-09-25' };
+    // 週末跨ぎ = 開示条件が成立する状況で、2 回目が開示でなく duplicate になることを固定する
+    const tight: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-09-08' };
     const { db } = createDb({ contracts: [tight], friends: [FRIEND] });
-    const saturday = Date.parse('2026-09-19T00:00:00Z');
+    const friday = Date.parse('2026-09-04T00:00:00Z');
     const first = await acceptSubIntent(db, {
-      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: saturday,
+      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: friday,
       acknowledgeLatePromise: true,
     });
     expect(first.status).toBe('accepted');
     const second = await acceptSubIntent(db, {
-      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: saturday,
+      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: friday,
     });
     expect(second.status).toBe('duplicate'); // promise_after_deadline ではない
   });
@@ -3292,13 +3311,13 @@ describe('§10-5 sub_intent postback ハンドラ', () => {
   });
 
   it('§4-1 開示を経た顧客受理は payload に latePromiseAcknowledged が残る (admin 経路と同じ規律)', async () => {
-    const tight: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-09-25' };
+    const tight: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-09-08' };
     const { db, store } = createDb({ contracts: [tight], friends: [FRIEND] });
     const lc = makeLineClient();
-    const saturday = Date.parse('2026-09-19T00:00:00Z');
+    const friday = Date.parse('2026-09-04T00:00:00Z');
     await firePostback(db, lc, 'skip', {
-      over: { d0: '2026-09-25', y: 'C1:2026-09-25', ack: '1' },
-      nowMs: saturday,
+      over: { d0: '2026-09-08', y: 'C1:2026-09-08', ack: '1' },
+      nowMs: friday,
     });
     const row = [...store.intents.values()][0];
     expect(String(row.payload_json)).toContain('latePromiseAcknowledged');
@@ -3320,22 +3339,22 @@ describe('§10-5 sub_intent postback ハンドラ', () => {
   });
 
   it('§4-1 開示: 間に合わない見込みは受理せず 2 タップ化。ack=1 で受理される', async () => {
-    // 推定 09-25 → 締切 09-22 EOD。土曜 09-19 受理の約束は連休明け 09-24 17:00 = 締切超過
-    const tight: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-09-25' };
+    // 推定 09-08 → 締切 09-05 EOD。金曜受理の約束は月曜 17:00 = 締切超過
+    const tight: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-09-08' };
     const { db, store } = createDb({ contracts: [tight], friends: [FRIEND] });
     const lc = makeLineClient();
-    const saturday = Date.parse('2026-09-19T00:00:00Z');
+    const friday = Date.parse('2026-09-04T00:00:00Z');
     const reply = await firePostback(db, lc, 'skip', {
-      over: { d0: '2026-09-25', y: 'C1:2026-09-25' },
-      nowMs: saturday,
+      over: { d0: '2026-09-08', y: 'C1:2026-09-08' },
+      nowMs: friday,
     });
     expect(reply).toContain('間に合わない見込み');
     expect(reply).toContain('お願いする');
     expect(store.intents.size).toBe(0);
 
     const ackReply = await firePostback(db, lc, 'skip', {
-      over: { d0: '2026-09-25', y: 'C1:2026-09-25', ack: '1' },
-      nowMs: saturday,
+      over: { d0: '2026-09-08', y: 'C1:2026-09-08', ack: '1' },
+      nowMs: friday,
     });
     expect(ackReply).toContain('承りました');
     expect(store.intents.size).toBe(1);
