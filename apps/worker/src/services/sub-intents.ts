@@ -1174,7 +1174,7 @@ export function buildVerifyMissMessage(op: SubIntentOp): string {
 // 受理時の顧客向け文言 (§4-1 の約束 + §4-4 の救済手順。§10-5 のカード返信も共用する)
 // ============================================================
 
-/** promised_by (`YYYY-MM-DDT18:00:00.000+09:00`) → 「M月D日 18:00」 */
+/** promised_by (`YYYY-MM-DDT17:00:00.000+09:00`) → 「M月D日 17:00」 */
 export function formatPromisedBy(promisedBy: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(promisedBy);
   if (!m) return promisedBy;

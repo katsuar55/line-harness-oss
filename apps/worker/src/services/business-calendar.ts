@@ -1,14 +1,19 @@
 /**
- * 営業カレンダー (§4-1 promised_by の算出、 §10-4、 2026-08-07)
+ * 営業カレンダー (§4-1 promised_by の算出、 §10-4、 2026-08-07 / **2026-08-08 Katsu 確定**)
  *
- * ⚠️ 営業カレンダーの実仕様は未定義 (設計書 §11 の未解決事項)。本ファイルは
- * **Katsu 確認までの仮置きデフォルト**で、差し替えはこのファイルの中だけで完結する:
- *   - 営業日 = 平日 (月〜金) かつ祝日テーブルに無い日
- *   - 営業時間 = 10:00-18:00 JST (現状 promised_by の算出には未使用 — 約束は常に
- *     「翌営業日の 18:00」なので受理時刻の営業時間内外で結果が変わらない。
- *     将来「営業時間内の受理は当日 18:00」等に変える場合はここを書き換える)
- *   - 約束 = **翌営業日 18:00 JST** (受理当日を含めない保守的 under-promise。
- *     金曜/土曜/日曜の受理はいずれも月曜 18:00)
+ * 確定仕様 (2026-08-08 Katsu):
+ *   - **定休は日曜と祝日**。月〜土は営業日 (土曜も営業する)
+ *   - **サポート時間は 10:00-17:00 JST**
+ *   - 約束 (promised_by) = **翌営業日 17:00 JST**
+ *
+ * 「翌営業日」= 受理当日を含めない保守的な under-promise。受理時刻が営業時間内か外かで
+ * 結果を変えていない (= 10:00 受理も 16:59 受理も同じ約束) — 実行はスタッフの手作業で、
+ * 当日中の完了を約束できる保証がないため。実測が貯まって当日完了が常態化したら
+ * 「営業時間内の受理は当日 17:00」へ短縮できる (変更はこのファイルの中だけで完結する)。
+ *
+ * 誤りの非対称性: 余分に休みにする誤り → 約束が 1 日遅くなるだけ (安全側)。
+ * 祝日の登録漏れ → 誰も出社しない日を約束して §4-2 の謝罪 push が飛ぶ (危険側)。
+ * よって**疑わしきは休み側に倒す**。
  *
  * 出力形式は deadline_at (`YYYY-MM-DDTHH:mm:ss.sss+09:00`) と同じ固定幅 —
  * `promised_by > deadline_at` (§4-1 の開示判定) と sweep の `promised_by < now`
@@ -18,16 +23,16 @@
 const JST_OFFSET_MS = 9 * 3600_000;
 const DAY_MS = 86_400_000;
 
-/** 約束時刻 (JST の時)。「翌営業日 18:00」の 18。 */
-export const BUSINESS_PROMISE_HOUR_JST = 18;
+/** サポート開始時刻 (JST の時)。現状 promised_by の算出には使わない (将来の当日約束用)。 */
+export const BUSINESS_OPEN_HOUR_JST = 10;
+/** サポート終了時刻 (JST の時) = 約束する時刻。「翌営業日 17:00」の 17。 */
+export const BUSINESS_PROMISE_HOUR_JST = 17;
 
 /**
- * 日本の祝日 + 年末年始休業 (仮置き・固定リスト・**年 1 回の手更新が必要**)。
- * 2026 後半〜2027 分。監査 CONFIRMED の反映: 祝日を無視すると祝日 18:00 を約束し、
- * 連休のたびに §4-2 の約束破り謝罪 push が構造的に量産される。
- * 誤登録の非対称性: 余分に休みにする誤り → 約束が 1 日遅くなるだけ (under-promise = 安全)。
- * 祝日の登録漏れ → 現状維持 (約束破り)。よって疑わしきは休み側に倒してよい。
- * リスト末尾 (2027-12) を過ぎて未更新のまま運用しても平日ベースに劣化するだけで壊れない。
+ * 日本の祝日 + 年末年始休業 (固定リスト・**年 1 回の手更新が必要**)。2026 後半〜2027 分。
+ * 祝日を無視すると誰も出社しない日を約束し、連休のたびに §4-2 の謝罪 push が量産される
+ * (§10-4 監査 CONFIRMED)。リスト末尾 (2027-12) を過ぎて未更新でも「日曜のみ定休」に
+ * 劣化するだけで壊れない (= 約束が早まる側 = 危険側なので、年 1 回の更新を怠らないこと)。
  */
 export const JP_HOLIDAYS_JST: ReadonlySet<string> = new Set([
   // 2026
@@ -42,18 +47,18 @@ export const JP_HOLIDAYS_JST: ReadonlySet<string> = new Set([
   '2027-12-29', '2027-12-30', '2027-12-31',
 ]);
 
-/** 営業日判定 (JST の日付)。仮置き = 平日かつ祝日テーブル外。 */
+/** 営業日判定 (JST の日付)。定休 = 日曜のみ + 祝日テーブル。土曜は営業日。 */
 export function isBusinessDayJst(dateJst: string): boolean {
   const t = Date.parse(`${dateJst}T00:00:00Z`);
   if (!Number.isFinite(t)) return false;
   const dow = new Date(t).getUTCDay();
-  if (dow === 0 || dow === 6) return false;
+  if (dow === 0) return false; // 日曜が定休
   return !JP_HOLIDAYS_JST.has(dateJst);
 }
 
 /**
  * 受理時刻から promised_by を算出する (§4-1)。
- * = 受理日 (JST) の翌日以降で最初の営業日の 18:00 JST。
+ * = 受理日 (JST) の翌日以降で最初の営業日の 17:00 JST。
  */
 export function computePromisedBy(acceptedAtMs: number): string {
   const jst = new Date(acceptedAtMs + JST_OFFSET_MS);
