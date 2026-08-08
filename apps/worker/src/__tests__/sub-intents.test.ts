@@ -1760,14 +1760,15 @@ describe('§4-1 営業カレンダー (computePromisedBy)', () => {
     expect(computePromisedBy(Date.parse('2026-09-01T00:00:00Z'))).toBe('2026-09-02T17:00:00.000+09:00');
   });
 
-  it('金曜・土曜・日曜の受理はいずれも月曜 17:00 (土曜は当面 休み扱い = 顧客向け案内と一致)', () => {
+  it('金曜・土曜・日曜の受理はいずれも月曜 17:00 (土曜は定休 — 2026-08-08 確定)', () => {
     expect(computePromisedBy(Date.parse('2026-09-04T00:00:00Z'))).toBe('2026-09-07T17:00:00.000+09:00');
     expect(computePromisedBy(Date.parse('2026-09-05T00:00:00Z'))).toBe('2026-09-07T17:00:00.000+09:00');
     expect(computePromisedBy(Date.parse('2026-09-06T00:00:00Z'))).toBe('2026-09-07T17:00:00.000+09:00');
   });
 
-  it('土曜の扱いは SATURDAY_IS_BUSINESS_DAY 1 つで決まる (顧客向け案内と同時に切り替える前提)', () => {
-    // 現在は false = 土曜休み。true にしたとき「金曜 → 土曜」になることを定数から導出して固定する
+  it('土曜は定休で確定 (覆すときは顧客向け文言 5 箇所と同時に変える契約)', () => {
+    // この定数が true に変わったら、顧客向け案内 (ai-message-builder / ai-response /
+    // faq-context / contact-email-page / seed-naturism-faq-v3.sql) の更新漏れを疑うこと
     expect(SATURDAY_IS_BUSINESS_DAY).toBe(false);
     expect(isBusinessDayJst('2026-09-05')).toBe(SATURDAY_IS_BUSINESS_DAY); // 土
   });
@@ -1779,7 +1780,7 @@ describe('§4-1 営業カレンダー (computePromisedBy)', () => {
 
   it('isBusinessDayJst: 平日 true / 土日 false / 不正入力 false', () => {
     expect(isBusinessDayJst('2026-09-01')).toBe(true); // 火
-    expect(isBusinessDayJst('2026-09-05')).toBe(false); // 土 (当面 休み扱い)
+    expect(isBusinessDayJst('2026-09-05')).toBe(false); // 土 = 定休 (確定)
     expect(isBusinessDayJst('2026-09-06')).toBe(false); // 日 = 定休
     expect(isBusinessDayJst('garbage')).toBe(false);
   });
