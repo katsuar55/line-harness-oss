@@ -72,6 +72,64 @@ describe('conditionalRules — teiki-flow ingest 監視', () => {
   });
 });
 
+describe('conditionalRules — ai-models-catalog-sync 監視 (2026-08-11)', () => {
+  const load = async () => (await import('../services/cron-monitor.js')).conditionalRules;
+
+  it('secret 未設定 (= 意図的 dormant) では登録しない — 毎朝の silence ノイズ防止', async () => {
+    const conditionalRules = await load();
+    // 両方なし
+    expect(
+      conditionalRules({ DB: {} as D1Database }).some(
+        (r) => r.jobName === 'ai-models-catalog-sync',
+      ),
+    ).toBe(false);
+    // ACCOUNT_ID のみ (2026-08-09〜 の本番実状態: TOKEN 待ち)
+    expect(
+      conditionalRules({ DB: {} as D1Database, CLOUDFLARE_ACCOUNT_ID: 'acc' }).some(
+        (r) => r.jobName === 'ai-models-catalog-sync',
+      ),
+    ).toBe(false);
+    // TOKEN のみ
+    expect(
+      conditionalRules({ DB: {} as D1Database, CLOUDFLARE_API_TOKEN: 'tok' }).some(
+        (r) => r.jobName === 'ai-models-catalog-sync',
+      ),
+    ).toBe(false);
+  });
+
+  it('secret 両方あり = sync 実走環境では 30h 沈黙で検知する (監視は自動復帰)', async () => {
+    const conditionalRules = await load();
+    const rules = conditionalRules({
+      DB: {} as D1Database,
+      CLOUDFLARE_ACCOUNT_ID: 'acc',
+      CLOUDFLARE_API_TOKEN: 'tok',
+    });
+    expect(rules).toContainEqual({ jobName: 'ai-models-catalog-sync', maxSilentHours: 30 });
+  });
+
+  it('teiki-flow 配線済み + CF secret あり → 両方のルールが同時に立つ', async () => {
+    const conditionalRules = await load();
+    const rules = conditionalRules({
+      DB: {} as D1Database,
+      SUBSCRIPTION_INGEST_ENABLED: 'true',
+      TEIKI_FLOW_SECRET: 's',
+      CLOUDFLARE_ACCOUNT_ID: 'acc',
+      CLOUDFLARE_API_TOKEN: 'tok',
+    });
+    expect(rules.map((r) => r.jobName).sort()).toEqual([
+      'ai-models-catalog-sync',
+      'teiki-flow-ingest',
+    ]);
+  });
+});
+
+describe('DEFAULT_RULES — ai-models-catalog-sync の静的登録禁止 (回帰ガード)', () => {
+  it('🚨DEFAULT_RULES に ai-models-catalog-sync を再追加しない (conditionalRules 専属)', async () => {
+    const { DEFAULT_RULES } = await import('../services/cron-monitor.js');
+    expect(DEFAULT_RULES.some((r) => r.jobName === 'ai-models-catalog-sync')).toBe(false);
+  });
+});
+
 describe('DEFAULT_RULES registration', () => {
   it('webhook-delivery-cleanup が登録済 (= 1 日 1 回 cron、 maxSilentHours=30)', async () => {
     const { DEFAULT_RULES } = await import('../services/cron-monitor.js');
