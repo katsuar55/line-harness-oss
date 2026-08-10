@@ -23,10 +23,16 @@
  *   - 採用 feed はこのスタックの構成要素のみ: workers / workers-ai / d1 / r2。
  *   - feed 一覧: https://developers.cloudflare.com/fundamentals/new-features/available-rss-feeds/
  *
- * 取込境界 (= 初回 backfill と D1 subrequest 数の暴走防止):
- *   - feed は新しい順なので先頭 `maxItemsPerFeed` (default 20) 件のみ処理。
- *   - `pubDate` が `maxEntryAgeDays` (default 30) より古い item は upsert しない
- *     (pubDate 欠落 / 解析不能は安全側 = 取り込む。件数 cap が上限を保証する)。
+ * 取込境界 (= 初回 backfill と CPU / D1 subrequest 数の暴走防止):
+ *   - item ブロックは generator で遅延抽出し、`pubDate` が `maxEntryAgeDays`
+ *     (default 30) より古い item に達したら打ち切り (feed は新しい順)。
+ *     pubDate 欠落 / 解析不能は安全側 = 打ち切らず取り込む。
+ *   - `maxItemsPerFeed` (default 20) は「1 run あたりの新規 insert 数」の cap。
+ *     feed 先頭位置に効かせると cap からこぼれた item が永久欠落するため
+ *     (isNew 判定は D1 の seen チェック)。cap 到達は metrics の `cappedFeeds` で
+ *     可視化し、残りは翌日以降の run が拾う。
+ *   - `FEED_SCAN_CAP` (100) = 走査ブロック数の絶対上限 (順序崩れ・pubDate 無し
+ *     feed でも有界)。
  *   - 発行から `NOTIFY_MAX_AGE_DAYS` (14 日) を超えた未通知 entry は Discord に
  *     流さず notified mark のみ (= 旧 URL 期間に溜まった過去 entry を連日 10 件ずつ
  *     ドリップ通知しない)。
@@ -78,6 +84,8 @@ export interface ChangelogSyncResult {
   notified: number;
   /** 発行が古すぎるため Discord に流さず notified mark だけした entry 数 */
   suppressedStale: number;
+  /** cap (maxItemsPerFeed / FEED_SCAN_CAP) で走査を打ち切った feed 数 (= backlog の可視化) */
+  cappedFeeds: number;
   errors: number;
 }
 
@@ -101,6 +109,13 @@ const DEFAULT_MAX_ITEMS_PER_FEED = 20;
 const DEFAULT_MAX_ENTRY_AGE_DAYS = 30;
 /** 発行からこれを超えた未通知 entry は Discord に流さず notified mark のみ */
 const NOTIFY_MAX_AGE_DAYS = 14;
+/**
+ * 1 feed で走査する item ブロックの絶対上限。feed の新しい順が崩れた場合や
+ * pubDate の無い feed でも、CPU と D1 subrequest を有界に保つ backstop。
+ */
+const FEED_SCAN_CAP = 100;
+/** description の strip チェーンに掛ける生入力の上限 (出力は 500 字) */
+const RAW_DESCRIPTION_MAX = 2000;
 
 export const DEFAULT_FEEDS: ChangelogFeed[] = [
   {
@@ -140,32 +155,40 @@ export function isSyncWindow(now: Date): boolean {
 
 /**
  * RSS 2.0 / Atom 混在を想定。
- * Cloudflare の Hugo-generated feed は RSS 2.0 (= <item>...</item>) なので
- * それを優先。 Atom (= <entry>...</entry>) も fallback で抽出。
+ * Cloudflare の feed は RSS 2.0 (= <item>...</item>) なのでそれを優先。
+ * Atom (= <entry>...</entry>) も fallback で抽出。
+ *
+ * generator なのは CPU を有界にするため (2026-08-11 監査): workers.xml は
+ * 2.3MB / 219 items あり、全 item の field 抽出は実測 ~100ms。item 境界の
+ * 走査自体は ~4ms と安いので、呼び出し側が必要な件数で打ち切れば
+ * 抽出コストは処理件数に比例する。
  */
-export function parseRss(xml: string): ParsedRssItem[] {
-  const items: ParsedRssItem[] = [];
+export function* iterateRssItems(xml: string): Generator<ParsedRssItem> {
+  let yielded = 0;
 
   // RSS 2.0 items
   const rssItemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
   let match: RegExpExecArray | null;
   while ((match = rssItemRe.exec(xml)) !== null) {
-    const block = match[1] ?? '';
-    const item = extractRssItem(block);
-    if (item) items.push(item);
-  }
-
-  // Atom entries (= fallback)
-  if (items.length === 0) {
-    const atomRe = /<entry\b[^>]*>([\s\S]*?)<\/entry>/gi;
-    while ((match = atomRe.exec(xml)) !== null) {
-      const block = match[1] ?? '';
-      const item = extractAtomEntry(block);
-      if (item) items.push(item);
+    const item = extractRssItem(match[1] ?? '');
+    if (item) {
+      yielded += 1;
+      yield item;
     }
   }
 
-  return items;
+  // Atom entries (= fallback、 RSS item が 1 件も取れなかったときのみ)
+  if (yielded === 0) {
+    const atomRe = /<entry\b[^>]*>([\s\S]*?)<\/entry>/gi;
+    while ((match = atomRe.exec(xml)) !== null) {
+      const item = extractAtomEntry(match[1] ?? '');
+      if (item) yield item;
+    }
+  }
+}
+
+export function parseRss(xml: string): ParsedRssItem[] {
+  return [...iterateRssItems(xml)];
 }
 
 function extractRssItem(block: string): ParsedRssItem | null {
@@ -178,7 +201,7 @@ function extractRssItem(block: string): ParsedRssItem | null {
     title: stripCdata(title).trim(),
     link: link.trim(),
     pubDate: pubDate ? normalizeDate(pubDate.trim()) : null,
-    description: description ? stripCdata(description).trim().slice(0, 500) : null,
+    description: description ? sanitizeDescription(description) : null,
   };
 }
 
@@ -194,7 +217,7 @@ function extractAtomEntry(block: string): ParsedRssItem | null {
     title: stripCdata(title).trim(),
     link: link.trim(),
     pubDate: updated ? normalizeDate(updated.trim()) : null,
-    description: summary ? stripCdata(summary).trim().slice(0, 500) : null,
+    description: summary ? sanitizeDescription(summary) : null,
   };
 }
 
@@ -211,16 +234,36 @@ function extractAttr(block: string, tagName: string): string | null {
   return m?.[1] ? stripCdata(m[1]).trim() : null;
 }
 
+/**
+ * CDATA unwrap → 実体参照 decode → HTML タグ strip。
+ *
+ * この順序が本質 (2026-08-11 監査): 実 feed の description は HTML エスケープ済み
+ * (`&lt;p&gt;&lt;a href=&quot;...&quot;&gt;`) なので、decode より先に strip すると
+ * raw の `<` が存在せず strip が no-op になり、decode で復元されたタグがそのまま
+ * D1 に保存される (実測で全 item 該当)。decode は `&amp;` を最後に置く
+ * (先に戻すと `&amp;lt;` が二重 decode されて意図しないタグ化が起きる)。
+ * タグ strip はタグ名先頭 (英字) に限定し、本文中の不等号 `a < b` を守る。
+ * 二重エスケープ (`&amp;lt;`) は仕様として 1 段だけ decode する。
+ */
 function stripCdata(s: string): string {
   return s
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-    .replace(/<[^>]+>/g, '') // strip inner HTML tags
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ');
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/<\/?[a-zA-Z][^>]*>/g, ''); // strip HTML tags (decode 後)
+}
+
+/**
+ * description 用: strip チェーンに掛ける生入力を制限してから 500 字に切る。
+ * 出力は 500 字なので、2.3MB feed の長大な HTML description を全量 replace
+ * するのは捨て CPU (エスケープ済み HTML を途中で切っても要約用途では無害)。
+ */
+function sanitizeDescription(raw: string): string {
+  return stripCdata(raw.slice(0, RAW_DESCRIPTION_MAX)).trim().slice(0, 500);
 }
 
 function normalizeDate(raw: string): string {
@@ -252,6 +295,7 @@ export async function syncCloudflareChangelog(
     newEntries: 0,
     notified: 0,
     suppressedStale: 0,
+    cappedFeeds: 0,
     errors: 0,
   };
 
@@ -264,18 +308,31 @@ export async function syncCloudflareChangelog(
   let feedsProcessed = 0;
   let feedsFailed = 0;
   let newEntries = 0;
+  let cappedFeeds = 0;
   let errors = 0;
   const feedErrors: string[] = [];
 
-  // 1. 各 feed を fetch + parse + upsert (= 新しい順に先頭 N 件・古すぎる item は除外)
+  // 1. 各 feed を fetch + iterate + upsert。
+  //    cap (maxItemsPerFeed) は「新規 insert 数」に効かせる — feed 先頭位置に
+  //    効かせると、backfill が cap を超えた回で窓からこぼれた item が
+  //    以後の run でも先頭に戻れず永久欠落する (2026-08-11 監査で確定)。
+  //    走査は「cutoff より古い item に達したら打ち切り」(feed は新しい順) +
+  //    FEED_SCAN_CAP の絶対上限で有界。
   for (const feed of feeds) {
     try {
       const xml = await fetchFeed(feed.url, fetchImpl);
-      const items = parseRss(xml)
-        .filter((item) => !isOlderThan(item.pubDate, ingestCutoffMs))
-        .slice(0, maxItemsPerFeed);
       feedsProcessed += 1;
-      for (const item of items) {
+      let scanned = 0;
+      let newInFeed = 0;
+      for (const item of iterateRssItems(xml)) {
+        scanned += 1;
+        if (scanned > FEED_SCAN_CAP) {
+          cappedFeeds += 1;
+          break;
+        }
+        // 新しい順の feed で cutoff より古い item に達した = 以降も古い
+        // (pubDate 欠落は「新しい」扱いなので打ち切らない)
+        if (isOlderThan(item.pubDate, ingestCutoffMs)) break;
         try {
           const r = await upsertChangelogEntry(env.DB, {
             entryUrl: item.link,
@@ -284,7 +341,16 @@ export async function syncCloudflareChangelog(
             publishedAt: item.pubDate ?? null,
             description: item.description ?? null,
           });
-          if (r.isNew) newEntries += 1;
+          if (r.isNew) {
+            newEntries += 1;
+            newInFeed += 1;
+            if (newInFeed >= maxItemsPerFeed) {
+              // 未消化の新着が残っている可能性 → metric で可視化し、
+              // 残りは翌日以降の run が isNew 判定で拾う
+              cappedFeeds += 1;
+              break;
+            }
+          }
         } catch (err) {
           errors += 1;
           console.error(
@@ -374,6 +440,7 @@ export async function syncCloudflareChangelog(
       newEntries,
       notified,
       suppressedStale,
+      cappedFeeds,
       errors,
     },
     feedErrors.length > 0 ? feedErrors.join('; ').slice(0, 500) : undefined,
@@ -386,6 +453,7 @@ export async function syncCloudflareChangelog(
     newEntries,
     notified,
     suppressedStale,
+    cappedFeeds,
     errors,
   };
 }
@@ -490,10 +558,13 @@ function truncate(s: string, max: number): string {
 export const __test__ = {
   isSyncWindow,
   parseRss,
+  iterateRssItems,
   isOlderThan,
   TRIGGER_HOUR,
   TRIGGER_MINUTE_FROM,
   DEFAULT_MAX_ITEMS_PER_FEED,
   DEFAULT_MAX_ENTRY_AGE_DAYS,
   NOTIFY_MAX_AGE_DAYS,
+  FEED_SCAN_CAP,
+  RAW_DESCRIPTION_MAX,
 };

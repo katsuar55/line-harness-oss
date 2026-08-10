@@ -19,6 +19,7 @@
 
 import {
   getLastSuccessfulRun,
+  getLastLiveRun,
   insertCronRunLog,
   type CronRunLog,
 } from '@line-crm/db';
@@ -48,6 +49,12 @@ export interface CronMonitorRule {
   maxSilentHours: number;
   /** 監視を起動する曜日 (JST 0=Sun..6=Sat)。指定しなければ毎日チェック */
   runOnDays?: number[];
+  /**
+   * partial も「生存」とみなす (2026-08-11)。複数 feed の job は 1 feed だけの
+   * 恒久失敗で partial が定常になり得る — それは劣化であって沈黙ではない。
+   * 劣化自体は cron_run_logs の errorSummary / metrics で追う。
+   */
+  treatPartialAsAlive?: boolean;
 }
 
 export interface CronMonitorAlert {
@@ -124,7 +131,10 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
   // 自動 update 戦略 #2 (2026-05-26): Cloudflare developer changelog sync
   // 1 日 1 回 04:30 JST。 認証不要なので production で sync 失敗が継続的に発生したら
   // RSS feed の URL 変更 or 大規模障害の signal。
-  { jobName: 'cloudflare-changelog-sync', maxSilentHours: 30 },
+  // 2026-08-11: 4 feed 購読化に伴い partial を生存扱いに。1 feed だけの恒久 404
+  // (今回の URL 再編と同種のイベント) で毎朝の silence 誤警報が再発するのを防ぐ。
+  // 全 feed 失敗 (= error) は引き続き沈黙として検知される。
+  { jobName: 'cloudflare-changelog-sync', maxSilentHours: 30, treatPartialAsAlive: true },
   // 採点ループ Round 1 (2026-06-28, D10): withHeartbeat 済だが DEFAULT_RULES 未登録だった 7 本を追加。
   // いずれも index.ts scheduled() で毎 tick (5分毎) jobs.push される (gating は service 内部の
   // no-op success のため heartbeat は毎 tick 記録) → 2h silent で異常。
@@ -206,11 +216,13 @@ export async function processCronMonitor(
 
     let lastRun: CronRunLog | null = null;
     try {
-      lastRun = await getLastSuccessfulRun(env.DB, rule.jobName);
+      lastRun = rule.treatPartialAsAlive
+        ? await getLastLiveRun(env.DB, rule.jobName)
+        : await getLastSuccessfulRun(env.DB, rule.jobName);
     } catch (err) {
       // DB 失敗は監視自体を止めない。alert 判定はスキップ。
       console.error(
-        '[cron-monitor] getLastSuccessfulRun failed for',
+        '[cron-monitor] last-run lookup failed for',
         rule.jobName,
         err instanceof Error ? err.name : 'unknown',
       );

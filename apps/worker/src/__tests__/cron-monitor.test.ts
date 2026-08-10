@@ -215,15 +215,22 @@ function makeDb(): D1Database {
 
 function mockDbModule(opts: {
   getLastSuccessfulRun?: (db: D1Database, jobName: string) => Promise<unknown>;
+  getLastLiveRun?: (db: D1Database, jobName: string) => Promise<unknown>;
   insertCronRunLog?: (db: D1Database, input: unknown) => Promise<void>;
-}): { getSpy: ReturnType<typeof vi.fn>; insertSpy: ReturnType<typeof vi.fn> } {
+}): {
+  getSpy: ReturnType<typeof vi.fn>;
+  liveSpy: ReturnType<typeof vi.fn>;
+  insertSpy: ReturnType<typeof vi.fn>;
+} {
   const getSpy = vi.fn(opts.getLastSuccessfulRun ?? (async () => null));
+  const liveSpy = vi.fn(opts.getLastLiveRun ?? (async () => null));
   const insertSpy = vi.fn(opts.insertCronRunLog ?? (async () => undefined));
   vi.doMock('@line-crm/db', () => ({
     getLastSuccessfulRun: getSpy,
+    getLastLiveRun: liveSpy,
     insertCronRunLog: insertSpy,
   }));
-  return { getSpy, insertSpy };
+  return { getSpy, liveSpy, insertSpy };
 }
 
 // JST 09:00 のテスト基準時刻
@@ -464,5 +471,120 @@ describe('processCronMonitor — self-record', () => {
     );
     expect(r.triggered).toBe(true);
     expect(r.alerts).toEqual([]);
+  });
+});
+
+// ============================================================
+// treatPartialAsAlive (2026-08-11) — partial 定常の job に silence 誤警報を出さない
+// ============================================================
+
+describe('treatPartialAsAlive', () => {
+  it('flag あり → getLastLiveRun (success|partial) で生存判定・partial があれば alert なし', async () => {
+    const sixHoursAgo = new Date(JST_0900().getTime() - 6 * 3600 * 1000).toISOString();
+    const { getSpy, liveSpy } = mockDbModule({
+      // success だけを見る旧経路は「該当なし」を返す状況
+      getLastSuccessfulRun: async () => null,
+      getLastLiveRun: async () => ({
+        id: 'x',
+        job_name: 'cloudflare-changelog-sync',
+        ran_at: sixHoursAgo,
+        status: 'partial',
+        metrics_json: null,
+        error_summary: null,
+      }),
+    });
+    const { processCronMonitor } = await import('../services/cron-monitor.js');
+    const r = await processCronMonitor(
+      { ...ENV_BASE, DB: makeDb() },
+      {
+        now: JST_0900(),
+        rules: [
+          { jobName: 'cloudflare-changelog-sync', maxSilentHours: 30, treatPartialAsAlive: true },
+        ],
+      },
+    );
+    expect(r.alerts).toHaveLength(0);
+    expect(liveSpy).toHaveBeenCalledWith(expect.anything(), 'cloudflare-changelog-sync');
+    expect(getSpy).not.toHaveBeenCalled();
+  });
+
+  it('flag なし → 従来どおり getLastSuccessfulRun (partial は沈黙扱いのまま)', async () => {
+    const { getSpy, liveSpy } = mockDbModule({});
+    const { processCronMonitor } = await import('../services/cron-monitor.js');
+    const r = await processCronMonitor(
+      { ...ENV_BASE, DB: makeDb() },
+      {
+        now: JST_0900(),
+        rules: [{ jobName: 'step-delivery', maxSilentHours: 2 }],
+      },
+    );
+    expect(r.alerts).toHaveLength(1);
+    expect(getSpy).toHaveBeenCalledWith(expect.anything(), 'step-delivery');
+    expect(liveSpy).not.toHaveBeenCalled();
+  });
+
+  it('🚨DEFAULT_RULES の cloudflare-changelog-sync に flag が付いている (4 feed 化で partial が定常になり得るため)', async () => {
+    const { DEFAULT_RULES } = await import('../services/cron-monitor.js');
+    const rule = DEFAULT_RULES.find((r) => r.jobName === 'cloudflare-changelog-sync');
+    expect(rule?.treatPartialAsAlive).toBe(true);
+    expect(rule?.maxSilentHours).toBe(30);
+  });
+});
+
+// ============================================================
+// デフォルト rule 合成 (2026-08-11) — options.rules を渡さない本番経路の検証
+// ============================================================
+
+describe('processCronMonitor — DEFAULT_RULES + conditionalRules の合成 (本番経路)', () => {
+  // 2026-08-11 監査: 全 triggering テストが options.rules を明示 override していたため、
+  // `options.rules ?? [...DEFAULT_RULES, ...conditionalRules(env)]` の合成が壊れても
+  // (例: conditionalRules の削除) 全 green のままだった (mutation で実証)。
+  // 以下は rules を渡さず本番と同じ合成経路を実走させる。
+
+  it('🚨CF secret 両方あり → ai-models-catalog-sync の監視が合成に入る (自動復帰の保証)', async () => {
+    // 全 job が「成功記録なし」 → 監視対象の rule は全て alert になる
+    const { insertSpy } = mockDbModule({});
+    const { processCronMonitor, DEFAULT_RULES } = await import('../services/cron-monitor.js');
+    const r = await processCronMonitor(
+      {
+        ...ENV_BASE,
+        DB: makeDb(),
+        CLOUDFLARE_ACCOUNT_ID: 'acc',
+        CLOUDFLARE_API_TOKEN: 'tok',
+      },
+      { now: JST_0900() },
+    );
+    expect(r.alerts.map((a) => a.jobName)).toContain('ai-models-catalog-sync');
+    expect(insertSpy.mock.calls[0][1].metrics).toMatchObject({
+      rulesChecked: DEFAULT_RULES.length + 1,
+    });
+  });
+
+  it('CF secret なし (意図的 dormant) → ai-models-catalog-sync は合成に入らない', async () => {
+    const { insertSpy } = mockDbModule({});
+    const { processCronMonitor, DEFAULT_RULES } = await import('../services/cron-monitor.js');
+    const r = await processCronMonitor(
+      { ...ENV_BASE, DB: makeDb() },
+      { now: JST_0900() },
+    );
+    expect(r.alerts.map((a) => a.jobName)).not.toContain('ai-models-catalog-sync');
+    expect(insertSpy.mock.calls[0][1].metrics).toMatchObject({
+      rulesChecked: DEFAULT_RULES.length,
+    });
+  });
+
+  it('teiki-flow 配線済み env → teiki-flow-ingest の監視が合成に入る', async () => {
+    mockDbModule({});
+    const { processCronMonitor } = await import('../services/cron-monitor.js');
+    const r = await processCronMonitor(
+      {
+        ...ENV_BASE,
+        DB: makeDb(),
+        SUBSCRIPTION_INGEST_ENABLED: 'true',
+        TEIKI_FLOW_SECRET: 's',
+      },
+      { now: JST_0900() },
+    );
+    expect(r.alerts.map((a) => a.jobName)).toContain('teiki-flow-ingest');
   });
 });
