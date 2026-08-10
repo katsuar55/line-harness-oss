@@ -19,6 +19,7 @@
 
 import {
   getLastSuccessfulRun,
+  getLastLiveRun,
   insertCronRunLog,
   type CronRunLog,
 } from '@line-crm/db';
@@ -37,6 +38,9 @@ export interface CronMonitorEnv {
   SUBSCRIPTION_INGEST_ENABLED?: string;
   SUBSCRIPTION_MENU_ENABLED?: string;
   TEIKI_FLOW_SECRET?: string;
+  /** ai-models-catalog-sync 監視の起動条件 (下記 conditionalRules を参照) */
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_API_TOKEN?: string;
 }
 
 export interface CronMonitorRule {
@@ -45,6 +49,12 @@ export interface CronMonitorRule {
   maxSilentHours: number;
   /** 監視を起動する曜日 (JST 0=Sun..6=Sat)。指定しなければ毎日チェック */
   runOnDays?: number[];
+  /**
+   * partial も「生存」とみなす (2026-08-11)。複数 feed の job は 1 feed だけの
+   * 恒久失敗で partial が定常になり得る — それは劣化であって沈黙ではない。
+   * 劣化自体は cron_run_logs の errorSummary / metrics で追う。
+   */
+  treatPartialAsAlive?: boolean;
 }
 
 export interface CronMonitorAlert {
@@ -115,15 +125,16 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
   // 会話ログ retention prune (2026-06-28, D6): messages_log/conversation_logs の 24ヶ月超を削除
   // (1 日 1 回 03:30 JST)。 毎日 heartbeat を記録するため、 停止すれば 30h で検知。
   { jobName: 'conversation-log-cleanup', maxSilentHours: 30 },
-  // 自動 update 戦略 #1 (2026-05-26): Cloudflare AI models catalog sync
-  // 1 日 1 回 04:00 JST。 secret 未設定なら skipped status で記録される (= status='skipped'
-  // は getLastSuccessfulRun の対象外なので、 silent と判定される。 ただしそれは「設計と
-  // 異なる運用 = sync 機能 dormant」 を可視化するため意図通り)。
-  { jobName: 'ai-models-catalog-sync', maxSilentHours: 30 },
+  // ai-models-catalog-sync は conditionalRules へ移動 (2026-08-11):
+  // secret 未設定 = 意図的 dormant の環境で毎朝アラートが鳴り続けるのは
+  // 可視化でなくノイズだった (2026-08-09〜 実発生)。secret が揃うと自動で監視復帰。
   // 自動 update 戦略 #2 (2026-05-26): Cloudflare developer changelog sync
   // 1 日 1 回 04:30 JST。 認証不要なので production で sync 失敗が継続的に発生したら
   // RSS feed の URL 変更 or 大規模障害の signal。
-  { jobName: 'cloudflare-changelog-sync', maxSilentHours: 30 },
+  // 2026-08-11: 4 feed 購読化に伴い partial を生存扱いに。1 feed だけの恒久 404
+  // (今回の URL 再編と同種のイベント) で毎朝の silence 誤警報が再発するのを防ぐ。
+  // 全 feed 失敗 (= error) は引き続き沈黙として検知される。
+  { jobName: 'cloudflare-changelog-sync', maxSilentHours: 30, treatPartialAsAlive: true },
   // 採点ループ Round 1 (2026-06-28, D10): withHeartbeat 済だが DEFAULT_RULES 未登録だった 7 本を追加。
   // いずれも index.ts scheduled() で毎 tick (5分毎) jobs.push される (gating は service 内部の
   // no-op success のため heartbeat は毎 tick 記録) → 2h silent で異常。
@@ -155,11 +166,25 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
  * 稼働契約数 × 周期からは日に数件の受信が期待できるので、72h の沈黙は異常と断定してよい。
  */
 export function conditionalRules(env: CronMonitorEnv): CronMonitorRule[] {
+  const rules: CronMonitorRule[] = [];
+
   const ingestOn =
     env.SUBSCRIPTION_INGEST_ENABLED === 'true' || env.SUBSCRIPTION_MENU_ENABLED === 'true';
   // secret 未設定 = 受信口が全て 401 を返す = そもそも配線されていない
-  if (!ingestOn || !env.TEIKI_FLOW_SECRET) return [];
-  return [{ jobName: 'teiki-flow-ingest', maxSilentHours: 72 }];
+  if (ingestOn && env.TEIKI_FLOW_SECRET) {
+    rules.push({ jobName: 'teiki-flow-ingest', maxSilentHours: 72 });
+  }
+
+  // 自動 update 戦略 #1 (2026-05-26): Cloudflare AI models catalog sync (1 日 1 回 04:00 JST)。
+  // secret 未設定の環境では sync が skipped heartbeat のみで success が永久に出ないため、
+  // 静的ルールだと「意図的に dormant」な環境で毎朝アラートが鳴り続ける
+  // (2026-08-09〜 CLOUDFLARE_API_TOKEN 待ちの期間に実発生)。
+  // secret が両方揃った環境 = sync が実走する設計の環境でのみ監視する。
+  if (env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN) {
+    rules.push({ jobName: 'ai-models-catalog-sync', maxSilentHours: 30 });
+  }
+
+  return rules;
 }
 
 // ============================================================
@@ -191,11 +216,13 @@ export async function processCronMonitor(
 
     let lastRun: CronRunLog | null = null;
     try {
-      lastRun = await getLastSuccessfulRun(env.DB, rule.jobName);
+      lastRun = rule.treatPartialAsAlive
+        ? await getLastLiveRun(env.DB, rule.jobName)
+        : await getLastSuccessfulRun(env.DB, rule.jobName);
     } catch (err) {
       // DB 失敗は監視自体を止めない。alert 判定はスキップ。
       console.error(
-        '[cron-monitor] getLastSuccessfulRun failed for',
+        '[cron-monitor] last-run lookup failed for',
         rule.jobName,
         err instanceof Error ? err.name : 'unknown',
       );

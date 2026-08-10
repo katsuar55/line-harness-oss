@@ -39,7 +39,12 @@ const state = {
     description: string | null;
   }>,
   markedNotifiedIds: [] as string[],
-  cronRunCalls: [] as Array<{ jobName: string; status: string; metrics?: unknown }>,
+  cronRunCalls: [] as Array<{
+    jobName: string;
+    status: string;
+    metrics?: unknown;
+    errorSummary?: string;
+  }>,
   upsertShouldThrowFor: new Set<string>(),
   listUnnotifiedShouldThrow: false,
   markShouldThrow: false,
@@ -76,7 +81,10 @@ vi.mock('@line-crm/db', () => ({
     state.markedNotifiedIds.push(...ids);
   }),
   insertCronRunLog: vi.fn(
-    async (_db: unknown, input: { jobName: string; status: string; metrics?: unknown }) => {
+    async (
+      _db: unknown,
+      input: { jobName: string; status: string; metrics?: unknown; errorSummary?: string },
+    ) => {
       state.cronRunCalls.push(input);
     },
   ),
@@ -242,17 +250,36 @@ describe('parseRss — RSS 2.0', () => {
     expect(items[0]?.description).toBe('Description with HTML');
   });
 
-  it('description の HTML タグは strip + entity decode', async () => {
+  it('🚨実 feed 形式 (エスケープ済み HTML) の description からタグが除去される', async () => {
+    // 2026-08-11 監査: 旧実装は「タグ strip → entity decode」の順だったため、
+    // エスケープ済み HTML (実 feed の 100%) では strip が no-op になり
+    // タグがそのまま D1 に保存されていた。decode → strip の順が正しい。
     const { __test__ } = await import('../services/cloudflare-changelog-sync.js');
     const xml = `<rss><channel>
       <item>
         <title>T</title>
         <link>https://x/y</link>
-        <description>Hello &amp; goodbye &lt;world&gt;</description>
+        <description>&lt;p&gt;Billing is now enabled for &lt;a href=&quot;https://developers.cloudflare.com/r2/&quot;&gt;R2 Data Catalog&lt;/a&gt;.&lt;/p&gt;</description>
       </item>
     </channel></rss>`;
     const items = __test__.parseRss(xml);
-    expect(items[0]?.description).toBe('Hello & goodbye <world>');
+    expect(items[0]?.description).toBe('Billing is now enabled for R2 Data Catalog.');
+    expect(items[0]?.description).not.toContain('<');
+  });
+
+  it('entity decode: &amp; は最後に decode (二重エスケープは 1 段のみ) + 本文中の不等号は残る', async () => {
+    const { __test__ } = await import('../services/cloudflare-changelog-sync.js');
+    const xml = `<rss><channel>
+      <item>
+        <title>T</title>
+        <link>https://x/y</link>
+        <description>value &lt; 10 and &gt; 5, Tom &amp; Jerry, literal &amp;lt;tag&amp;gt;</description>
+      </item>
+    </channel></rss>`;
+    const items = __test__.parseRss(xml);
+    // "< 10" は英字が続かないのでタグとして strip されない。
+    // "&amp;lt;" は 1 段だけ decode され "&lt;" の literal として残る (タグ化しない)。
+    expect(items[0]?.description).toBe('value < 10 and > 5, Tom & Jerry, literal &lt;tag&gt;');
   });
 
   it('link なし → skip (= 不正 item)', async () => {
@@ -324,16 +351,15 @@ describe('syncCloudflareChangelog — gating', () => {
       '../services/cloudflare-changelog-sync.js'
     );
     const fi = makeFetchImpl({
-      feeds: [
-        {
-          url: 'https://developers.cloudflare.com/changelog/index.xml',
-          xml: '<rss><channel></channel></rss>',
-        },
-      ],
+      feeds: [{ url: 'https://x/feed', xml: '<rss><channel></channel></rss>' }],
     });
     const result = await syncCloudflareChangelog(
       { DB: makeFakeDb(), CHANGELOG_SYNC_FORCE: 'true' },
-      { now: new Date('2026-05-26T15:00:00+09:00'), fetchImpl: fi.fetch },
+      {
+        now: new Date('2026-05-26T15:00:00+09:00'),
+        fetchImpl: fi.fetch,
+        feeds: [{ url: 'https://x/feed', category: 'general' }],
+      },
     );
     expect(result.triggered).toBe(true);
   });
@@ -346,6 +372,9 @@ describe('syncCloudflareChangelog — gating', () => {
 describe('syncCloudflareChangelog — full flow', () => {
   const FORCE = { CHANGELOG_SYNC_FORCE: 'true' as const };
   const DISCORD = 'https://discord.com/api/webhooks/xxx/yyy';
+  /** fixture の pubDate (2026-05) が取込 cutoff (30 日) に入る基準時刻 */
+  const NOW_MAY = new Date('2026-05-26T04:31:00+09:00');
+  const ONE_FEED = [{ url: 'https://x/feed', category: 'general' }];
 
   it('新着 2 件 → upsert + Discord 通知 + mark notified', async () => {
     const { syncCloudflareChangelog } = await import(
@@ -356,12 +385,12 @@ describe('syncCloudflareChangelog — full flow', () => {
       <item><title>D1 read replicas GA</title><link>https://x/d1ga</link><pubDate>Mon, 19 May 2026 12:00:00 +0000</pubDate></item>
     </channel></rss>`;
     const fi = makeFetchImpl({
-      feeds: [{ url: 'https://developers.cloudflare.com/changelog/index.xml', xml }],
+      feeds: [{ url: 'https://x/feed', xml }],
     });
 
     const result = await syncCloudflareChangelog(
       { DB: makeFakeDb(), DISCORD_WEBHOOK_URL: DISCORD, ACCOUNT_NAME: 'naturism', ...FORCE },
-      { fetchImpl: fi.fetch },
+      { fetchImpl: fi.fetch, feeds: ONE_FEED, now: NOW_MAY },
     );
 
     expect(result.triggered).toBe(true);
@@ -391,12 +420,12 @@ describe('syncCloudflareChangelog — full flow', () => {
       <item><title>Old</title><link>https://x/old</link></item>
     </channel></rss>`;
     const fi = makeFetchImpl({
-      feeds: [{ url: 'https://developers.cloudflare.com/changelog/index.xml', xml }],
+      feeds: [{ url: 'https://x/feed', xml }],
     });
 
     const result = await syncCloudflareChangelog(
       { DB: makeFakeDb(), DISCORD_WEBHOOK_URL: DISCORD, ...FORCE },
-      { fetchImpl: fi.fetch },
+      { fetchImpl: fi.fetch, feeds: ONE_FEED },
     );
 
     expect(result.newEntries).toBe(0);
@@ -483,11 +512,11 @@ describe('syncCloudflareChangelog — full flow', () => {
       <item><title>X</title><link>https://x/y</link></item>
     </channel></rss>`;
     const fi = makeFetchImpl({
-      feeds: [{ url: 'https://developers.cloudflare.com/changelog/index.xml', xml }],
+      feeds: [{ url: 'https://x/feed', xml }],
     });
     const result = await syncCloudflareChangelog(
       { DB: makeFakeDb(), ...FORCE }, // DISCORD_WEBHOOK_URL 未設定
-      { fetchImpl: fi.fetch },
+      { fetchImpl: fi.fetch, feeds: ONE_FEED },
     );
     expect(result.newEntries).toBe(1);
     expect(result.notified).toBe(0);
@@ -507,12 +536,12 @@ describe('syncCloudflareChangelog — full flow', () => {
       <item><title>E</title><link>https://x/e</link></item>
     </channel></rss>`;
     const fi = makeFetchImpl({
-      feeds: [{ url: 'https://developers.cloudflare.com/changelog/index.xml', xml }],
+      feeds: [{ url: 'https://x/feed', xml }],
     });
 
     const result = await syncCloudflareChangelog(
       { DB: makeFakeDb(), DISCORD_WEBHOOK_URL: DISCORD, ...FORCE },
-      { fetchImpl: fi.fetch, maxNotifyPerRun: 2 },
+      { fetchImpl: fi.fetch, maxNotifyPerRun: 2, feeds: ONE_FEED },
     );
 
     expect(result.newEntries).toBe(5);
@@ -531,12 +560,12 @@ describe('syncCloudflareChangelog — full flow', () => {
       <item><title>OK2</title><link>https://x/ok2</link></item>
     </channel></rss>`;
     const fi = makeFetchImpl({
-      feeds: [{ url: 'https://developers.cloudflare.com/changelog/index.xml', xml }],
+      feeds: [{ url: 'https://x/feed', xml }],
     });
 
     const result = await syncCloudflareChangelog(
       { DB: makeFakeDb(), ...FORCE },
-      { fetchImpl: fi.fetch },
+      { fetchImpl: fi.fetch, feeds: ONE_FEED },
     );
 
     expect(result.newEntries).toBe(2);
@@ -557,7 +586,7 @@ describe('syncCloudflareChangelog — full flow', () => {
       if (url.includes('discord.com')) {
         throw new Error('discord down');
       }
-      if (url.includes('cloudflare.com')) {
+      if (url === 'https://x/feed') {
         return new Response(xml, { status: 200 });
       }
       return new Response('', { status: 404 });
@@ -565,7 +594,7 @@ describe('syncCloudflareChangelog — full flow', () => {
 
     const result = await syncCloudflareChangelog(
       { DB: makeFakeDb(), DISCORD_WEBHOOK_URL: DISCORD, ...FORCE },
-      { fetchImpl },
+      { fetchImpl, feeds: ONE_FEED },
     );
 
     expect(result.newEntries).toBe(1);
@@ -588,5 +617,343 @@ describe('syncCloudflareChangelog — full flow', () => {
     );
     expect(state.cronRunCalls).toHaveLength(1);
     expect(state.cronRunCalls[0]?.jobName).toBe('cloudflare-changelog-sync');
+  });
+
+  it('feed 失敗理由が errorSummary に残る (= 2026-08 の「原因未調査」再発防止)', async () => {
+    const { syncCloudflareChangelog } = await import(
+      '../services/cloudflare-changelog-sync.js'
+    );
+    const fi = makeFetchImpl({
+      feeds: [{ url: 'https://x/404', status: 404, xml: '' }],
+    });
+    await syncCloudflareChangelog(
+      { DB: makeFakeDb(), ...FORCE },
+      { fetchImpl: fi.fetch, feeds: [{ url: 'https://x/404', category: 'workers' }] },
+    );
+    expect(state.cronRunCalls[0]?.status).toBe('error');
+    expect(state.cronRunCalls[0]?.errorSummary).toContain('workers: feed returned 404');
+  });
+});
+
+// ============================================================
+// DEFAULT_FEEDS — 2026-08 の URL 再編への追随 (回帰ガード)
+// ============================================================
+
+describe('DEFAULT_FEEDS', () => {
+  it('🚨旧 /changelog/index.xml (404) を含まない', async () => {
+    const { DEFAULT_FEEDS } = await import('../services/cloudflare-changelog-sync.js');
+    expect(
+      DEFAULT_FEEDS.some((f) => f.url === 'https://developers.cloudflare.com/changelog/index.xml'),
+    ).toBe(false);
+  });
+
+  it('スタック構成要素 4 本 (workers / workers-ai / d1 / r2) を製品別 URL で購読', async () => {
+    const { DEFAULT_FEEDS } = await import('../services/cloudflare-changelog-sync.js');
+    expect(DEFAULT_FEEDS.map((f) => f.url)).toEqual([
+      'https://developers.cloudflare.com/changelog/rss/workers.xml',
+      'https://developers.cloudflare.com/changelog/rss/workers-ai.xml',
+      'https://developers.cloudflare.com/changelog/rss/d1.xml',
+      'https://developers.cloudflare.com/changelog/rss/r2.xml',
+    ]);
+    expect(DEFAULT_FEEDS.map((f) => f.category)).toEqual([
+      'workers',
+      'workers-ai',
+      'd1',
+      'r2',
+    ]);
+  });
+
+  it('🚨feeds option 未指定の本番経路で DEFAULT_FEEDS 4 本が実際に fetch される', async () => {
+    // 2026-08-11 監査: 全 flow テストが feeds を明示 override していたため、
+    // `options.feeds ?? DEFAULT_FEEDS` の配線が壊れても (例: `?? []`) 全 green の
+    // まま本番だけ「毎日 success で 0 feed 処理」の無音死になることを mutation で実証。
+    // このテストが本番経路 (feeds 未指定) を実走させる。
+    const { syncCloudflareChangelog, DEFAULT_FEEDS } = await import(
+      '../services/cloudflare-changelog-sync.js'
+    );
+    const xmlFor = (title: string) =>
+      `<rss><channel><item><title>${title}</title><link>https://x/${title}</link></item></channel></rss>`;
+    const fi = makeFetchImpl({
+      feeds: DEFAULT_FEEDS.map((f) => ({ url: f.url, xml: xmlFor(f.category) })),
+    });
+
+    const result = await syncCloudflareChangelog(
+      { DB: makeFakeDb(), CHANGELOG_SYNC_FORCE: 'true' },
+      { fetchImpl: fi.fetch }, // feeds 未指定 = 本番と同じ
+    );
+
+    expect(result.feedsProcessed).toBe(4);
+    expect(result.feedsFailed).toBe(0);
+    expect(state.upsertCalls.map((c) => c.category).sort()).toEqual([
+      'd1',
+      'r2',
+      'workers',
+      'workers-ai',
+    ]);
+  });
+});
+
+// ============================================================
+// 取込境界 (= backfill 暴走防止)
+// ============================================================
+
+describe('取込境界 — maxItemsPerFeed / maxEntryAgeDays', () => {
+  const FORCE = { CHANGELOG_SYNC_FORCE: 'true' as const };
+  const NOW = new Date('2026-08-11T04:31:00+09:00');
+
+  it('isOlderThan: 欠落 / 解析不能は false (= 安全側で新しい扱い)', async () => {
+    const { __test__ } = await import('../services/cloudflare-changelog-sync.js');
+    const cutoff = NOW.getTime() - 30 * 86_400_000;
+    expect(__test__.isOlderThan(null, cutoff)).toBe(false);
+    expect(__test__.isOlderThan(undefined, cutoff)).toBe(false);
+    expect(__test__.isOlderThan('not-a-date', cutoff)).toBe(false);
+    expect(__test__.isOlderThan('2026-08-10T00:00:00Z', cutoff)).toBe(false);
+    expect(__test__.isOlderThan('2026-01-01T00:00:00Z', cutoff)).toBe(true);
+  });
+
+  it('maxEntryAgeDays より古い item に達したら走査を打ち切る (pubDate なしは取り込む)', async () => {
+    const { syncCloudflareChangelog } = await import(
+      '../services/cloudflare-changelog-sync.js'
+    );
+    // feed は新しい順: Fresh → NoDate (欠落 = 新しい扱い) → Ancient (打ち切り) → After
+    const xml = `<rss><channel>
+      <item><title>Fresh</title><link>https://x/fresh</link><pubDate>Mon, 10 Aug 2026 00:00:00 +0000</pubDate></item>
+      <item><title>NoDate</title><link>https://x/nodate</link></item>
+      <item><title>Ancient</title><link>https://x/ancient</link><pubDate>Mon, 26 May 2026 00:00:00 +0000</pubDate></item>
+      <item><title>After</title><link>https://x/after</link></item>
+    </channel></rss>`;
+    const fi = makeFetchImpl({ feeds: [{ url: 'https://x/feed', xml }] });
+
+    const result = await syncCloudflareChangelog(
+      { DB: makeFakeDb(), ...FORCE },
+      { fetchImpl: fi.fetch, feeds: [{ url: 'https://x/feed', category: 'g' }], now: NOW },
+    );
+
+    expect(state.upsertCalls.map((c) => c.title)).toEqual(['Fresh', 'NoDate']);
+    expect(result.newEntries).toBe(2);
+  });
+
+  it('maxItemsPerFeed は新規 insert 数の cap → 到達で打ち切り + cappedFeeds で可視化', async () => {
+    const { syncCloudflareChangelog } = await import(
+      '../services/cloudflare-changelog-sync.js'
+    );
+    const items = Array.from(
+      { length: 5 },
+      (_, i) => `<item><title>T${i}</title><link>https://x/${i}</link></item>`,
+    ).join('');
+    const fi = makeFetchImpl({
+      feeds: [{ url: 'https://x/feed', xml: `<rss><channel>${items}</channel></rss>` }],
+    });
+
+    const result = await syncCloudflareChangelog(
+      { DB: makeFakeDb(), ...FORCE },
+      {
+        fetchImpl: fi.fetch,
+        feeds: [{ url: 'https://x/feed', category: 'g' }],
+        now: NOW,
+        maxItemsPerFeed: 2,
+      },
+    );
+
+    expect(state.upsertCalls.map((c) => c.title)).toEqual(['T0', 'T1']);
+    expect(result.newEntries).toBe(2);
+    expect(result.cappedFeeds).toBe(1);
+  });
+
+  it('🚨既取込 (seen) の item は cap を消費しない — backfill 途中でこぼれた item が翌 run で拾われる', async () => {
+    // 2026-08-11 監査: cap を feed 先頭位置に効かせると (slice 方式)、
+    // cap からこぼれた item は翌日以降も先頭に戻れず永久欠落する。
+    // cap は「新規 insert 数」に効かせ、seen をスキップして深い位置の未取込を拾う。
+    const { syncCloudflareChangelog } = await import(
+      '../services/cloudflare-changelog-sync.js'
+    );
+    state.existingUrls.add('https://x/0');
+    state.existingUrls.add('https://x/1');
+    const items = Array.from(
+      { length: 3 },
+      (_, i) => `<item><title>T${i}</title><link>https://x/${i}</link></item>`,
+    ).join('');
+    const fi = makeFetchImpl({
+      feeds: [{ url: 'https://x/feed', xml: `<rss><channel>${items}</channel></rss>` }],
+    });
+
+    const result = await syncCloudflareChangelog(
+      { DB: makeFakeDb(), ...FORCE },
+      {
+        fetchImpl: fi.fetch,
+        feeds: [{ url: 'https://x/feed', category: 'g' }],
+        now: NOW,
+        maxItemsPerFeed: 1,
+      },
+    );
+
+    // slice 方式なら T0 (seen) だけ見て終わり newEntries=0。
+    // isNew-cap 方式は T0/T1 (seen) を素通りして T2 を拾う。
+    expect(state.upsertCalls.map((c) => c.title)).toEqual(['T0', 'T1', 'T2']);
+    expect(result.newEntries).toBe(1);
+  });
+
+  it('cap を消費するのは新規 insert のみ — seen が先行しても新規 N 件フルに取り込む', async () => {
+    // mutation M8 の回帰ガード: cap 判定を「走査位置 (scanned)」に変えると、
+    // seen が先行した時点で走査位置が cap を先食いし、新規が N 件未満で打ち切られる。
+    const { syncCloudflareChangelog } = await import(
+      '../services/cloudflare-changelog-sync.js'
+    );
+    state.existingUrls.add('https://x/0'); // 先頭だけ seen
+    const items = Array.from(
+      { length: 4 },
+      (_, i) => `<item><title>T${i}</title><link>https://x/${i}</link></item>`,
+    ).join('');
+    const fi = makeFetchImpl({
+      feeds: [{ url: 'https://x/feed', xml: `<rss><channel>${items}</channel></rss>` }],
+    });
+
+    const result = await syncCloudflareChangelog(
+      { DB: makeFakeDb(), ...FORCE },
+      {
+        fetchImpl: fi.fetch,
+        feeds: [{ url: 'https://x/feed', category: 'g' }],
+        now: NOW,
+        maxItemsPerFeed: 2,
+      },
+    );
+
+    // T0=seen (cap 消費なし) → T1/T2 が新規 2 件で cap 到達 → T3 は翌 run へ
+    expect(state.upsertCalls.map((c) => c.title)).toEqual(['T0', 'T1', 'T2']);
+    expect(result.newEntries).toBe(2);
+    expect(result.cappedFeeds).toBe(1);
+  });
+
+  it('FEED_SCAN_CAP で走査ブロック数が絶対有界 (pubDate 無し + 全 seen でも)', async () => {
+    const { syncCloudflareChangelog } = await import(
+      '../services/cloudflare-changelog-sync.js'
+    );
+    const { __test__ } = await import('../services/cloudflare-changelog-sync.js');
+    const count = __test__.FEED_SCAN_CAP + 20;
+    const items = Array.from({ length: count }, (_, i) => {
+      state.existingUrls.add(`https://x/${i}`);
+      return `<item><title>T${i}</title><link>https://x/${i}</link></item>`;
+    }).join('');
+    const fi = makeFetchImpl({
+      feeds: [{ url: 'https://x/feed', xml: `<rss><channel>${items}</channel></rss>` }],
+    });
+
+    const result = await syncCloudflareChangelog(
+      { DB: makeFakeDb(), ...FORCE },
+      { fetchImpl: fi.fetch, feeds: [{ url: 'https://x/feed', category: 'g' }], now: NOW },
+    );
+
+    expect(state.upsertCalls.length).toBe(__test__.FEED_SCAN_CAP);
+    expect(result.cappedFeeds).toBe(1);
+  });
+});
+
+// ============================================================
+// 通知境界 (= 滞留 entry のドリップ通知防止)
+// ============================================================
+
+describe('通知境界 — NOTIFY_MAX_AGE_DAYS', () => {
+  const FORCE = { CHANGELOG_SYNC_FORCE: 'true' as const };
+  const DISCORD = 'https://discord.com/api/webhooks/xxx/yyy';
+  const NOW = new Date('2026-08-11T04:31:00+09:00');
+  const EMPTY_FEED = {
+    feeds: [{ url: 'https://x/feed', xml: '<rss><channel></channel></rss>' }],
+  };
+
+  it('発行 14 日超の未通知 entry は Discord に流さず notified mark のみ', async () => {
+    const { syncCloudflareChangelog } = await import(
+      '../services/cloudflare-changelog-sync.js'
+    );
+    state.unnotifiedEntries.push(
+      {
+        id: 'stale-1',
+        title: 'Stale entry',
+        entryUrl: 'https://x/stale',
+        category: 'g',
+        publishedAt: '2026-06-01T00:00:00Z',
+        description: null,
+      },
+      {
+        id: 'fresh-1',
+        title: 'Fresh entry',
+        entryUrl: 'https://x/freshentry',
+        category: 'g',
+        publishedAt: '2026-08-10T00:00:00Z',
+        description: null,
+      },
+    );
+    const fi = makeFetchImpl(EMPTY_FEED);
+
+    const result = await syncCloudflareChangelog(
+      { DB: makeFakeDb(), DISCORD_WEBHOOK_URL: DISCORD, ...FORCE },
+      { fetchImpl: fi.fetch, feeds: [{ url: 'https://x/feed', category: 'g' }], now: NOW },
+    );
+
+    expect(result.suppressedStale).toBe(1);
+    expect(result.notified).toBe(1);
+    expect(state.markedNotifiedIds).toEqual(['stale-1', 'fresh-1']);
+    expect(fi.discordCalls).toHaveLength(1);
+    const body = fi.discordCalls[0]?.body as { content: string };
+    expect(body.content).toContain('Fresh entry');
+    expect(body.content).not.toContain('Stale entry');
+  });
+
+  it('webhook 未設定でも stale は mark される (= 後から webhook を設定しても flood しない)', async () => {
+    const { syncCloudflareChangelog } = await import(
+      '../services/cloudflare-changelog-sync.js'
+    );
+    state.unnotifiedEntries.push(
+      {
+        id: 'stale-2',
+        title: 'Stale',
+        entryUrl: 'https://x/stale2',
+        category: 'g',
+        publishedAt: '2026-06-01T00:00:00Z',
+        description: null,
+      },
+      {
+        id: 'fresh-2',
+        title: 'Fresh',
+        entryUrl: 'https://x/fresh2',
+        category: 'g',
+        publishedAt: '2026-08-10T00:00:00Z',
+        description: null,
+      },
+    );
+    const fi = makeFetchImpl(EMPTY_FEED);
+
+    const result = await syncCloudflareChangelog(
+      { DB: makeFakeDb(), ...FORCE }, // webhook 未設定
+      { fetchImpl: fi.fetch, feeds: [{ url: 'https://x/feed', category: 'g' }], now: NOW },
+    );
+
+    expect(result.suppressedStale).toBe(1);
+    expect(result.notified).toBe(0);
+    // fresh は catchup のため未通知のまま残る
+    expect(state.markedNotifiedIds).toEqual(['stale-2']);
+    expect(fi.discordCalls).toHaveLength(0);
+  });
+
+  it('publishedAt が null の未通知 entry は fresh 扱いで通知される', async () => {
+    const { syncCloudflareChangelog } = await import(
+      '../services/cloudflare-changelog-sync.js'
+    );
+    state.unnotifiedEntries.push({
+      id: 'nodate-1',
+      title: 'No date entry',
+      entryUrl: 'https://x/nodate1',
+      category: 'g',
+      publishedAt: null,
+      description: null,
+    });
+    const fi = makeFetchImpl(EMPTY_FEED);
+
+    const result = await syncCloudflareChangelog(
+      { DB: makeFakeDb(), DISCORD_WEBHOOK_URL: DISCORD, ...FORCE },
+      { fetchImpl: fi.fetch, feeds: [{ url: 'https://x/feed', category: 'g' }], now: NOW },
+    );
+
+    expect(result.notified).toBe(1);
+    expect(result.suppressedStale).toBe(0);
   });
 });

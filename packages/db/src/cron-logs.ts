@@ -86,6 +86,31 @@ export async function getLastSuccessfulRun(
 }
 
 /**
+ * 指定 job の最後に「生存」していた実行ログを返す (= success または partial)。
+ *
+ * cron-monitor の silence 監視用 (2026-08-11)。複数 feed を持つ job は
+ * 1 feed だけの恒久失敗で partial が定常状態になり得るが、それは
+ * 「job は生きているが劣化」であって「沈黙」ではない。success のみを
+ * 生存とみなすと partial 定常の job に毎朝 silence 誤警報が出る。
+ * skipped / error は引き続き生存とみなさない。
+ */
+export async function getLastLiveRun(
+  db: D1Database,
+  jobName: string,
+): Promise<CronRunLog | null> {
+  return await db
+    .prepare(
+      `SELECT id, job_name, ran_at, status, metrics_json, error_summary
+         FROM cron_run_logs
+        WHERE job_name = ? AND status IN ('success', 'partial')
+        ORDER BY ran_at DESC
+        LIMIT 1`,
+    )
+    .bind(jobName)
+    .first<CronRunLog>();
+}
+
+/**
  * 指定 job について sinceIso 以降に走った件数を返す。
  * status='any' なら全 status、それ以外なら status 一致のみ。
  */
