@@ -29,7 +29,7 @@ describe('コーラル トークンとクラス (再バランス: 薄く明る�
   it('.btn-coral は淡ピーチ chip (白文字塗り廃止 → 薄地 #fff3ec + コーラル文字 #b84a2e + コーラル枠)', () => {
     expect(pages).toMatch(/\.btn-coral\{background:#fff3ec;color:#b84a2e;border:1\.5px solid #eaa588/);
     expect(pages).toMatch(/\.btn-coral\{[^}]*border-radius:999px !important/);
-    expect(pages).toMatch(/\.btn-coral:active\{transform:scale\(0\.95\) translateY\(1\.5px\);background:#ffe6db/);
+    expect(pages).toMatch(/\.btn-coral:active\{transform:scale\(\.96\) translateY\(1\.5px\);background:#ffe6db/);
     // 旧・重い白文字塗りが残っていない
     expect(pages).not.toMatch(/\.btn-coral\{[^}]*color:#fff/);
     expect(pages).not.toMatch(/\.btn-coral\{[^}]*#b85c41/);
