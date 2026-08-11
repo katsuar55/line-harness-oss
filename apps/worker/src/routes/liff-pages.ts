@@ -2001,14 +2001,14 @@ async function loadLinkCoupon() {
     var val = Number(cp.discountValue) || 500;
     el.innerHTML =
       '<div class="flex items-center gap-2 mb-1">' +
-      '<span class="px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700;background:#0ABAB5;color:#fff">🔗 連携特典</span>' +
+      '<span class="px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700;background:#0f766e;color:#fff">🔗 連携特典</span>' +
       '<span class="text-xs font-bold" style="color:#089591">連携ありがとうございます</span></div>' +
       '<p class="text-2xl font-extrabold mb-1" style="color:#078783">¥' + val + ' OFF クーポン</p>' +
       '<p class="text-xs text-gray-500 mb-2">アカウント連携の特典です。公式ストアの全商品でお使いいただけます。</p>' +
       '<div class="flex items-center gap-2 mb-2">' +
       '<code class="flex-1 text-center text-sm font-bold tracking-widest bg-white rounded-lg py-2" style="border:1px solid #9adedb">' + esc(cp.code) + '</code>' +
       '<button onclick="copyLinkCouponCode(this)" data-code="' + esc(cp.code) + '" class="text-xs font-bold rounded-lg px-3 py-2 whitespace-nowrap" style="border:1px solid #9adedb;background:#e6faf9;color:#078783">コピー</button>' +
-      (cp.applyUrl ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" class="text-xs font-bold rounded-lg px-3 py-2 whitespace-nowrap" style="background:#0ABAB5;color:#fff">使う</a>' : '') +
+      (cp.applyUrl ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" class="text-xs font-bold rounded-lg px-3 py-2 whitespace-nowrap" style="background:#0f766e;color:#fff">使う</a>' : '') +
       '</div>' +
       (cp.remainingText ? '<p class="text-xs mb-1" style="color:#089591;margin-top:-4px">⏳ ' + esc(cp.remainingText) + 'で終了</p>' : '');
   } catch {
