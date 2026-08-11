@@ -41,6 +41,8 @@ export interface CronMonitorEnv {
   /** ai-models-catalog-sync 監視の起動条件 (下記 conditionalRules を参照) */
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_API_TOKEN?: string;
+  /** shopify-customer-sync 監視の起動条件 (下記 conditionalRules を参照) */
+  SHOPIFY_STORE_DOMAIN?: string;
 }
 
 export interface CronMonitorRule {
@@ -107,7 +109,9 @@ export const DEFAULT_RULES: CronMonitorRule[] = [
   { jobName: 'abandoned-cart-notify', maxSilentHours: 2 },
   { jobName: 'tag-elapsed-deliveries', maxSilentHours: 2 },
   { jobName: 'ban-monitor', maxSilentHours: 2 },
-  { jobName: 'shopify-customer-sync', maxSilentHours: 2 },
+  // shopify-customer-sync は conditionalRules へ移動 (2026-08-11):
+  // SHOPIFY_STORE_DOMAIN 未設定の環境 (OSS 既定) では毎 tick skipped になるため、
+  // 静的ルールだと dormant 環境で永久にアラートが鳴り続ける。
   // 週次レポート: 内部 gating があるため 7 日 + 12 時間
   { jobName: 'weekly-reports', maxSilentHours: 7 * 24 + 12 },
   // token-refresh: LINE access token は 30 日有効、1 日 1 回更新で十分。
@@ -182,6 +186,15 @@ export function conditionalRules(env: CronMonitorEnv): CronMonitorRule[] {
   // secret が両方揃った環境 = sync が実走する設計の環境でのみ監視する。
   if (env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN) {
     rules.push({ jobName: 'ai-models-catalog-sync', maxSilentHours: 30 });
+  }
+
+  // shopify-customer-sync (2026-08-11 cron silence 調査): per-tick 差分同期。
+  // SHOPIFY_STORE_DOMAIN 未設定の環境では毎 tick skipped が記録されるだけなので監視しない。
+  // 設定済み環境で 2h クリーン成功が無い = 差分同期が 24 tick 連続で完走していない = 異常。
+  // treatPartialAsAlive は付けない: この job の partial 定常は「同期が完了しない」そのもの
+  // なので、沈黙として検知されるべき (changelog-sync の 1-feed 恒久 404 とは性質が異なる)。
+  if (env.SHOPIFY_STORE_DOMAIN) {
+    rules.push({ jobName: 'shopify-customer-sync', maxSilentHours: 2 });
   }
 
   return rules;

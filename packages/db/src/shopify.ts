@@ -219,6 +219,76 @@ export async function upsertShopifyCustomer(
     .first<{ id: string; shopify_customer_id: string; [key: string]: unknown }>())!;
 }
 
+export interface BatchUpsertShopifyCustomerInput {
+  shopifyCustomerId: string;
+  friendId?: string;
+  email?: string;
+  phone?: string;
+  firstName?: string;
+  lastName?: string;
+  ordersCount?: number;
+  totalSpent?: number;
+  tags?: string;
+  metadata?: string;
+}
+
+/**
+ * shopify_customers を 1 回の db.batch() でまとめて upsert する (cron 一括同期用)。
+ *
+ * upsertShopifyCustomer は 1 顧客あたり D1 round-trip が 3 回 (SELECT→UPDATE/INSERT→SELECT)
+ * 走るため、数千件のフル同期では 1 invocation の途中で D1 接続断が起きて完走できなかった
+ * (2026-08-11 調査: shopify-customer-sync の cron_run_logs 全行に D1_ERROR が残る状態)。
+ * ON CONFLICT 1 文に畳むことでページ (250 件) あたり 1 round-trip にする。
+ *
+ * COALESCE の update 挙動 (指定があれば上書き・無ければ既存維持) は upsertShopifyCustomer と
+ * 同一。既存行の id / created_at は保持される。
+ *
+ * 注意: 未指定 field は新規行で NULL になる (単発 upsert の 0 / '{}' とは異なる)。
+ * excluded.* に 0 / '{}' を入れると conflict 側の COALESCE が既存値を潰すため両立できない。
+ * cron 同期は orders_count / total_spent / metadata を常に渡すので実運用では差が出ない。
+ */
+export async function batchUpsertShopifyCustomers(
+  db: D1Database,
+  customers: BatchUpsertShopifyCustomerInput[],
+): Promise<void> {
+  if (customers.length === 0) return;
+  const now = jstNow();
+  const stmt = db.prepare(
+    `INSERT INTO shopify_customers (id, shopify_customer_id, friend_id, email, phone, first_name, last_name, orders_count, total_spent, tags, metadata, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(shopify_customer_id) DO UPDATE SET
+         friend_id = COALESCE(excluded.friend_id, friend_id),
+         email = COALESCE(excluded.email, email),
+         phone = COALESCE(excluded.phone, phone),
+         first_name = COALESCE(excluded.first_name, first_name),
+         last_name = COALESCE(excluded.last_name, last_name),
+         orders_count = COALESCE(excluded.orders_count, orders_count),
+         total_spent = COALESCE(excluded.total_spent, total_spent),
+         tags = COALESCE(excluded.tags, tags),
+         metadata = COALESCE(excluded.metadata, metadata),
+         updated_at = excluded.updated_at`,
+  );
+  await db.batch(
+    customers.map((c) =>
+      stmt.bind(
+        crypto.randomUUID(),
+        c.shopifyCustomerId,
+        c.friendId ?? null,
+        c.email ?? null,
+        c.phone ?? null,
+        c.firstName ?? null,
+        c.lastName ?? null,
+        c.ordersCount ?? null,
+        c.totalSpent ?? null,
+        c.tags ?? null,
+        c.metadata ?? null,
+        now,
+        now,
+      ),
+    ),
+  );
+}
+
 export async function getShopifyCustomers(
   db: D1Database,
   filters?: {

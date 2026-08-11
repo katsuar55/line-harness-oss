@@ -130,6 +130,44 @@ describe('DEFAULT_RULES — ai-models-catalog-sync の静的登録禁止 (回帰
   });
 });
 
+describe('conditionalRules — shopify-customer-sync 監視 (2026-08-11)', () => {
+  const load = async () => (await import('../services/cron-monitor.js')).conditionalRules;
+
+  it('SHOPIFY_STORE_DOMAIN 未設定 (OSS 既定 = 毎 tick skipped) では登録しない', async () => {
+    const conditionalRules = await load();
+    expect(
+      conditionalRules({ DB: {} as D1Database }).some(
+        (r) => r.jobName === 'shopify-customer-sync',
+      ),
+    ).toBe(false);
+  });
+
+  it('🚨SHOPIFY_STORE_DOMAIN 設定済み環境では 2h 沈黙で検知する', async () => {
+    const conditionalRules = await load();
+    const rules = conditionalRules({
+      DB: {} as D1Database,
+      SHOPIFY_STORE_DOMAIN: 'naturism-test.myshopify.com',
+    });
+    expect(rules).toContainEqual({ jobName: 'shopify-customer-sync', maxSilentHours: 2 });
+  });
+
+  it('🚨partial は生存扱いしない — partial 定常 (= 同期が完了しない) は沈黙として検知すべき', async () => {
+    const conditionalRules = await load();
+    const rule = conditionalRules({
+      DB: {} as D1Database,
+      SHOPIFY_STORE_DOMAIN: 'naturism-test.myshopify.com',
+    }).find((r) => r.jobName === 'shopify-customer-sync');
+    expect(rule?.treatPartialAsAlive).toBeUndefined();
+  });
+});
+
+describe('DEFAULT_RULES — shopify-customer-sync の静的登録禁止 (回帰ガード)', () => {
+  it('🚨DEFAULT_RULES に shopify-customer-sync を再追加しない (conditionalRules 専属)', async () => {
+    const { DEFAULT_RULES } = await import('../services/cron-monitor.js');
+    expect(DEFAULT_RULES.some((r) => r.jobName === 'shopify-customer-sync')).toBe(false);
+  });
+});
+
 describe('DEFAULT_RULES registration', () => {
   it('webhook-delivery-cleanup が登録済 (= 1 日 1 回 cron、 maxSilentHours=30)', async () => {
     const { DEFAULT_RULES } = await import('../services/cron-monitor.js');
