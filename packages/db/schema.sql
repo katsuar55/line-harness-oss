@@ -2422,5 +2422,5 @@ CREATE INDEX IF NOT EXISTS idx_sub_intents_verify_pending
   WHERE verify_state = 'pending';
 CREATE INDEX IF NOT EXISTS idx_line_link_coupons_code
   ON line_link_coupons(coupon_code);
-CREATE INDEX IF NOT EXISTS idx_line_link_coupons_customer
+CREATE UNIQUE INDEX IF NOT EXISTS idx_line_link_coupons_customer
   ON line_link_coupons(shopify_customer_id);

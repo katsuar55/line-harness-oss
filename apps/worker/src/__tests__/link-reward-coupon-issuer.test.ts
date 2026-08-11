@@ -48,14 +48,22 @@ interface LinkCouponRow {
 class FakeDb {
   rows: LinkCouponRow[] = [];
   failInsertOnce = false;
+  /** 同顧客の別 friend 並行発行 (UNIQUE(shopify_customer_id) 違反) を再現 */
+  failInsertCustomerConflictOnce = false;
+  auditActions: string[] = [];
 
   prepare(sql: string) {
     const isSelectActive =
       sql.includes('FROM line_link_coupons') && sql.includes("status = 'issued'");
+    const isFindByCustomer =
+      sql.includes('SELECT coupon_code') &&
+      sql.includes('FROM line_link_coupons') &&
+      sql.includes('shopify_customer_id = ?') &&
+      !isSelectActive;
     const isFindByFriend =
       sql.includes('SELECT coupon_code') &&
       sql.includes('FROM line_link_coupons') &&
-      sql.includes('friend_id = ?') &&
+      sql.includes('WHERE friend_id = ?') &&
       !isSelectActive;
     const isInsertCoupon = sql.includes('INSERT INTO line_link_coupons');
     const isInsertAudit = sql.includes('INSERT INTO audit_logs');
@@ -65,6 +73,18 @@ class FakeDb {
           if (isFindByFriend) {
             const friendId = params[0] as string;
             const row = this.rows.find((r) => r.friend_id === friendId);
+            if (!row) return null;
+            return {
+              coupon_code: row.coupon_code,
+              discount_value: row.discount_value,
+              discount_currency: row.discount_currency,
+              expires_at: row.expires_at,
+              shopify_discount_code_id: row.shopify_discount_code_id,
+            };
+          }
+          if (isFindByCustomer) {
+            const cid = params[0] as string;
+            const row = this.rows.find((r) => r.shopify_customer_id === cid);
             if (!row) return null;
             return {
               coupon_code: row.coupon_code,
@@ -95,6 +115,26 @@ class FakeDb {
         all: async () => ({ results: [] }),
         run: async () => {
           if (isInsertCoupon) {
+            if (this.failInsertCustomerConflictOnce) {
+              this.failInsertCustomerConflictOnce = false;
+              // 同顧客が「別 friend」で並行 insert された状態を再現
+              // (friend refetch は miss → customer refetch で収束するべき)
+              this.rows.push({
+                id: 'cust-concurrent',
+                friend_id: 'other-friend',
+                shopify_customer_id: params[2] as string,
+                link_path: 'email_otp',
+                coupon_code: 'NLINK-CUSTCONF',
+                shopify_discount_code_id: 'gid://cust-concurrent',
+                discount_value: 500,
+                discount_currency: 'JPY',
+                issued_at: params[8] as string,
+                expires_at: (params[9] as string | null) ?? null,
+                status: 'issued',
+                line_account_id: null,
+              });
+              throw new Error('UNIQUE constraint failed: line_link_coupons.shopify_customer_id');
+            }
             if (this.failInsertOnce) {
               this.failInsertOnce = false;
               // 同 friend が並行 insert された状態を再現 (re-fetch で見つかる)
@@ -131,6 +171,10 @@ class FakeDb {
             return { success: true, meta: { changes: 1 } };
           }
           if (isInsertAudit) {
+            // audit_logs INSERT の action 列 (bind 順は audit-logger 実装依存のため
+            // 文字列 param から link_reward.* を拾う緩い記録に留める)
+            const act = params.find((p) => typeof p === 'string' && (p as string).startsWith('link_reward.'));
+            if (act) this.auditActions.push(act as string);
             return { success: true, meta: { changes: 1 } };
           }
           return { success: true };
@@ -337,6 +381,38 @@ describe('issueLinkRewardCoupon — issuance', () => {
     const res = await issueLinkRewardCoupon(db as unknown as D1Database, makeEnv(), issueOpts({ fetchImpl }));
     expect(res!.isExisting).toBe(true);
     expect(res!.code).toBe('NLINK-CONCURRENT');
+  });
+
+  it('🚨同一 customer が別 friend で再連携 (サポート解除→機種変更) → 2 枚目を出さない (採点 C1)', async () => {
+    const db = new FakeDb();
+    // 顧客 12345 は旧 friend OLD で発行済み
+    db.rows.push({
+      id: 'x', friend_id: 'OLD', shopify_customer_id: '12345', link_path: 'sub_link',
+      coupon_code: 'NLINK-FIRSTLIFE', shopify_discount_code_id: null,
+      discount_value: 500, discount_currency: 'JPY',
+      issued_at: '2026-08-01T00:00:00.000Z', expires_at: null,
+      status: 'issued', line_account_id: null,
+    });
+    const fetchImpl = makeSuccessFetch('NLINK-SECONDLIFE');
+    // 新 friend NEW (機種変更後の LINE) が同じ顧客 12345 で連携
+    const res = await issueLinkRewardCoupon(
+      db as unknown as D1Database,
+      makeEnv(),
+      issueOpts({ friendId: 'NEW', shopifyCustomerId: '12345', fetchImpl }),
+    );
+    expect(res).toBeNull(); // 発行しない
+    expect(fetchImpl).not.toHaveBeenCalled(); // Shopify にも書かない
+    expect(db.rows.length).toBe(1); // 台帳は 1 枚のまま
+    expect(db.auditActions).toContain('link_reward.duplicate_customer_suppressed');
+  });
+
+  it('UNIQUE(shopify_customer_id) 競合 (同顧客の別 friend 並行) → customer 側 re-fetch で収束', async () => {
+    const db = new FakeDb();
+    db.failInsertCustomerConflictOnce = true;
+    const fetchImpl = makeSuccessFetch('NLINK-MINE');
+    const res = await issueLinkRewardCoupon(db as unknown as D1Database, makeEnv(), issueOpts({ fetchImpl }));
+    expect(res!.isExisting).toBe(true);
+    expect(res!.code).toBe('NLINK-CUSTCONF');
   });
 });
 

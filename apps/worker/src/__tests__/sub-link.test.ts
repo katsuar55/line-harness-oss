@@ -1123,3 +1123,29 @@ describe('link reward hook (POST /api/liff/sub-link/redeem)', () => {
     expect(res.status).toBe(200);
   });
 });
+
+// 再注入ドリル (2026-08-11): waitUntil 登録そのものを検証する (account-link 側と同旨)。
+describe('link reward hook — waitUntil 登録 (redeem)', () => {
+  it('🚨新規連携成功 → executionCtx.waitUntil に発行 Promise が登録される', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1');
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      (c as unknown as { set: (k: string, v: unknown) => void }).set('liffUser', { friendId: 'f1', lineUserId: 'U1' });
+      await next();
+    });
+    app.route('/', subLink as never);
+    const waitUntil = vi.fn();
+    const res = await app.request(
+      '/api/liff/sub-link/redeem',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: 'T' }) },
+      { DB: db, LIFF_URL: 'https://liff.line.me/123-abc', SUB_LINK_ENABLED: 'true', LINK_REWARD_ENABLED: 'true' },
+      { waitUntil, passThroughOnException: () => {} } as unknown as ExecutionContext,
+    );
+    expect(res.status).toBe(200);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    expect(waitUntil.mock.calls[0][0]).toBeInstanceOf(Promise);
+  });
+});

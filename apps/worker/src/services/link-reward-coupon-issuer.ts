@@ -15,8 +15,10 @@
  * 設計 (referral-coupon-issuer.ts の同型 4 本目):
  *   - discountCodeBasicCreate (固定額 ¥500、usageLimit=1、appliesOncePerCustomer=true = 単回)。
  *   - combinesWith product+order 両 true (= ランク割引 NLR- と併用可、Plus 不要のクロスクラス)。
- *   - **UNIQUE(friend_id) が冪等キー = 1 friend 生涯 1 枚**。再連携・経路重複・並行 redeem は
- *     既発行チェック + INSERT UNIQUE 違反時の re-fetch で 1 枚に収束。
+ *   - **冪等キーは friend_id と shopify_customer_id の両方** (それぞれ UNIQUE):
+ *     同一 friend の再連携・経路重複・並行は UNIQUE(friend_id)、「サポート手動解除 →
+ *     別 LINE アカウントで再連携」(機種変更の定常運用) は UNIQUE(shopify_customer_id) で
+ *     1 枚に収束 = **1 人の顧客に生涯 1 枚** (2026-08-11 採点 C1)。
  *   - 有効期限 7 日 (紹介特典と同値、B2C best practice 3-7 日)。
  *
  * ⚠️ 本番ガード: LINK_REWARD_ENABLED='true' でなければ no-op (= 承認前は本番 Shopify に書き込まない)。
@@ -112,6 +114,27 @@ export async function findLinkRewardCoupon(
         LIMIT 1`,
     )
     .bind(friendId)
+    .first<ExistingLinkCouponRow>();
+  return row ?? null;
+}
+
+/**
+ * 顧客単位の既発行チェック (= 機種変更などで friend が変わっても 2 枚目を出さない)。
+ * サポートが旧 friend の連携を手動解除 → 同じ顧客が新 LINE で再連携、のサイクルは
+ * friend_id だけでは検知できない (2026-08-11 採点 C1)。
+ */
+export async function findLinkRewardCouponByCustomer(
+  db: D1Database,
+  shopifyCustomerId: string,
+): Promise<ExistingLinkCouponRow | null> {
+  const row = await db
+    .prepare(
+      `SELECT coupon_code, discount_value, discount_currency, expires_at, shopify_discount_code_id
+         FROM line_link_coupons
+        WHERE shopify_customer_id = ?
+        LIMIT 1`,
+    )
+    .bind(shopifyCustomerId)
     .first<ExistingLinkCouponRow>();
   return row ?? null;
 }
@@ -277,10 +300,28 @@ export async function issueLinkRewardCoupon(
     return null;
   }
 
-  // 2. 既発行確認 (friend_id で冪等 = 1 friend 生涯 1 枚。再連携・経路重複でも増えない)
+  // 2. 既発行確認 (friend_id で冪等 = 同一 friend の再連携・経路重複でも増えない)
   const existing = await findLinkRewardCoupon(db, friendId);
   if (existing) {
     return toIssued(existing);
+  }
+
+  // 2b. 顧客単位の既発行確認 (= 1 人の顧客に生涯 1 枚)。サポートが連携を手動解除して
+  //     同じ顧客が別 LINE アカウントで再連携するサイクル (機種変更の定常運用) では
+  //     friend_id が変わるため 2 の チェックを素通りする — ここで抑止する (採点 C1)。
+  //     表示は friend 単位 (getActiveLinkRewardCoupon) なので既存 code は返さず null。
+  const existingForCustomer = await findLinkRewardCouponByCustomer(db, shopifyCustomerId);
+  if (existingForCustomer) {
+    await auditSystem(db, {
+      action: 'link_reward.duplicate_customer_suppressed',
+      actorType: 'system',
+      targetType: 'friend',
+      targetId: friendId,
+      lineAccountId,
+      result: 'success',
+      metadata: { shopifyCustomerId, linkPath },
+    });
+    return null;
   }
 
   // 3. Shopify config 確認
@@ -376,13 +417,16 @@ export async function issueLinkRewardCoupon(
       )
       .run();
   } catch (err) {
-    // UNIQUE(friend_id) 違反 → 同 friend が並行発行された → re-fetch
+    // UNIQUE 違反 (friend_id = 同 friend の並行発行 / shopify_customer_id = 同顧客の
+    // 別 friend からの並行発行) → どちらのキーでも re-fetch して既存に収束させる
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(
       '[link-reward-issuer] INSERT failed (likely UNIQUE conflict), re-fetching existing:',
       errMsg,
     );
-    const refetch = await findLinkRewardCoupon(db, friendId);
+    const refetch =
+      (await findLinkRewardCoupon(db, friendId)) ??
+      (await findLinkRewardCouponByCustomer(db, shopifyCustomerId));
     if (refetch) {
       return toIssued(refetch);
     }

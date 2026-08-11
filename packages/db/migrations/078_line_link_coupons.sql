@@ -6,8 +6,11 @@
 --   email OTP verify の顧客対話 2 系統。cron 逆引き / admin import は対象外。
 --
 -- 設計 (migration 068 line_referral_coupons と同型の 4 本目):
---   - **UNIQUE(friend_id) が冪等キー** = 連携特典は 1 friend につき生涯 1 枚。
---     再連携・別経路での重複発行・並行 redeem はすべてこの制約で 1 枚に収束する。
+--   - **冪等キーは friend_id と shopify_customer_id の両方** (それぞれ UNIQUE):
+--     同一 friend の再連携・経路重複・並行 redeem は UNIQUE(friend_id) で、
+--     「サポートが連携を手動解除 → 同じ顧客が別 LINE アカウントで再連携」は
+--     UNIQUE INDEX(shopify_customer_id) で 1 枚に収束する (= 1 人の顧客に生涯 1 枚。
+--     2026-08-11 採点 C1: friend_id 単独だと機種変更サイクルで 2 枚目が出る)。
 --   - line_friend_coupons (welcome) の再利用は friend_id 列レベル UNIQUE が
 --     welcome 側で消費済みのため不可。line_referral_coupons の再利用は
 --     role CHECK ('referrer','referred') の破壊的 rebuild が要るため不可
@@ -44,5 +47,7 @@ CREATE TABLE IF NOT EXISTS line_link_coupons (
 
 CREATE INDEX IF NOT EXISTS idx_line_link_coupons_code
   ON line_link_coupons(coupon_code);
-CREATE INDEX IF NOT EXISTS idx_line_link_coupons_customer
+-- 顧客単位の生涯 1 枚 (機種変更などで friend が変わっても 2 枚目を出さない)。
+-- UNIQUE INDEX は table rebuild 不要の additive 変更。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_line_link_coupons_customer
   ON line_link_coupons(shopify_customer_id);

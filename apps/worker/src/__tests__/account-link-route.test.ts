@@ -201,3 +201,23 @@ describe('link reward hook (POST /api/liff/link/verify-code)', () => {
     expect(res.status).toBe(200);
   });
 });
+
+// 再注入ドリル (2026-08-11): waitUntil 登録そのものを検証する。
+// issuer 呼び出しの assert だけでは「waitUntil 未登録 (= 本番で応答後に Promise が
+// 殺され発行が不安定化)」の変異が素通りするため、executionCtx を注入して登録を固定する。
+describe('link reward hook — waitUntil 登録 (fire-and-forget の生存保証)', () => {
+  it('🚨verify 成功 → executionCtx.waitUntil に発行 Promise が登録される', async () => {
+    mockedVerify.mockResolvedValue({ ok: true, customerId: '777', backfilled: 0, metafieldWritten: true });
+    const app = makeApp();
+    const waitUntil = vi.fn();
+    const res = await app.request(
+      '/api/liff/link/verify-code',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'a@b.co', code: '123456' }) },
+      undefined,
+      { waitUntil, passThroughOnException: () => {} } as unknown as ExecutionContext,
+    );
+    expect(res.status).toBe(200);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    expect(waitUntil.mock.calls[0][0]).toBeInstanceOf(Promise);
+  });
+});
