@@ -57,12 +57,45 @@ describe('admin-ops.yml と C2 定数の一致', () => {
       "estimate_source = 'flow'",
       'flow_measured_at IS NOT NULL',
       'flow_measured_at >=',
-      'crit1_linked_over_30',
-      'crit2_measured_majority',
       'crit3_ingest_alive_72h',
     ]) {
       expect(yml).toContain(predicate);
     }
+  });
+});
+
+/**
+ * 🔄 2026-08-11 Katsu 決定で条件1/条件2 を撤廃した。撤廃は **doc と SQL の両方**を
+ * 同時に変えて初めて成立する (片方だけだと判定が嘘になる) ので、その対応関係を CI で固定する。
+ * 「消えたこと」だけを見ると、後日うっかり復活させても気づけない — 復活の検出も入れる。
+ */
+describe('gate 条件の撤廃 (2026-08-11) — doc と admin-ops.yml の同期', () => {
+  const DOC_PATH = resolve(HERE, '../../../../docs/SUBSCRIPTION_GATE_CRITERIA.md');
+  const doc = readFileSync(DOC_PATH, 'utf8');
+
+  it('撤廃した判定列が SQL から消えている (復活させるなら doc と同時に)', () => {
+    expect(yml).not.toContain('crit1_linked_over_30');
+    expect(yml).not.toContain('crit2_measured_majority');
+    // 「> 30」の閾値そのものも残っていない (コメントの言及だけが残る事故を防ぐ)
+    expect(yml).not.toMatch(/FROM reach\) > 30/);
+  });
+
+  it('撤廃後も実測値は情報列として残っている (Sprint A/C の効果測定に使う)', () => {
+    expect(yml).toContain('AS linked_reachable_active');
+    expect(yml).toContain('AS measured_active');
+    expect(yml).toContain('AS fresh_measured_active');
+  });
+
+  it('doc 側にも撤廃が明記されている (yml だけ変えて doc が古い状態を作らない)', () => {
+    expect(doc).toContain('2026-08-11');
+    expect(doc).toContain('撤廃');
+    expect(doc).toContain('crit1_linked_over_30');
+    expect(doc).toContain('crit2_measured_majority');
+  });
+
+  it('唯一残る阻止条件 (条件3) は doc と yml の双方に残っている', () => {
+    expect(yml).toContain('crit3_ingest_alive_72h');
+    expect(doc).toContain('crit3_ingest_alive_72h');
   });
 });
 

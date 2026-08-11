@@ -985,18 +985,34 @@ jobs:
             " | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
-          # C2: MENU / REMINDER を開ける数値条件 (docs/SUBSCRIPTION_GATE_CRITERIA.md が正)。
+          # C2: MENU / REMINDER を開ける条件 (docs/SUBSCRIPTION_GATE_CRITERIA.md が正)。
           # ここで毎回機械判定することで「条件に達したか」を目視計算せずに追える。
           #
-          # ⚠️ crit2 に鮮度述語 (flow_measured_at) を**入れないこと**。前例なし層
+          # 🔄 2026-08-11 Katsu 決定: **条件1 (LINE 到達 > 30) と 条件2 (実測が過半) は撤廃**。
+          # 判定列ごと削除してある — 使わない条件を 1/0 で出し続けると読む側が
+          # 「まだ守っている壁」と誤解するため。
+          # ⚠️ 撤廃した判定列の**識別子をこのファイルに書かないこと** (CI ガードが
+          # ファイル全文の非包含で復活を検出するので、コメント内の言及でも赤くなる。
+          # 識別子つきの説明は doc 側 = docs/SUBSCRIPTION_GATE_CRITERIA.md に置く)。
+          # 撤廃の根拠は doc 側に確認記録つきで書いてある (derived の推定日はすべて「ごろ」+
+          # 脚注で提示され、出せないときは日付を捏造しない = 条件2 が守っていたものは
+          # 表現側の恒久ガードで代替できている)。
+          # 数値そのものは linked_reachable_active / measured_active を**情報列**として残す
+          # (Sprint A/C = 連携特典 ¥300 と magic-link メールの効果測定に使う)。
+          # 復活させたくなったら doc とこの SQL を**必ず同時に**戻すこと
+          # (admin-ops-c2-constants.test.ts が両方向の drift を CI で検出する)。
+          #
+          # ⚠️ measured_active に鮮度述語 (flow_measured_at) を**入れないこと**。前例なし層
           # (last_order_at 欠落・本番 active の約半数) は恒久的に 'flow' で、トリガー1 が
           # 決済 7 日前にしか発火しないため、周期の大半で実測は正当に「古い」。
-          # 鮮度を crit2 に混ぜると健常時でも過半に届かず、条件が永久に満たされない。
+          # 鮮度を混ぜると健常時でも過半に届かず、数字が実態より悲観的になる。
           # 代わりに fresh_measured_active を**情報列**として併記し、Flow 停止は crit3
           # (受信の生存) で捕まえる。
-          echo '### gate 開放条件の判定 (C2) — 3 つとも 1 になるまで MENU / REMINDER は開けない' >> "$GITHUB_STEP_SUMMARY"
-          echo '条件1 = LINE 到達可能な連携済み active 契約 > 30 / 条件2 = active の過半が実測 (flow) / 条件3 = 直近 72h に実測受信あり。詳細と根拠: docs/SUBSCRIPTION_GATE_CRITERIA.md' >> "$GITHUB_STEP_SUMMARY"
-          echo '`fresh_measured_active` は参考値 (今この瞬間に送信資格を持つ実測数)。周期の大半で小さいのが正常 — crit2 と混同しないこと。' >> "$GITHUB_STEP_SUMMARY"
+          echo '### gate 開放条件の判定 (C2) — 現在の阻止条件は 条件3 のみ' >> "$GITHUB_STEP_SUMMARY"
+          echo '🔄 **2026-08-11 Katsu 決定で 条件1 (LINE 到達 > 30) と 条件2 (実測が過半) を撤廃**。条件1 = 開けること自体に実費も不可逆な公開影響もないため / 条件2 = 守っていたブランド毀損リスク (derived の推定日表示) を実 Flex で確認し、表現側 (「ごろ」+ 脚注 + 日付を捏造しない) の恒久ガードで代替できると確認したため。詳細と確認記録: docs/SUBSCRIPTION_GATE_CRITERIA.md' >> "$GITHUB_STEP_SUMMARY"
+          echo '条件1/条件2 の **1/0 判定列は意図的に削除**した (使わない条件を 1/0 で出し続けると「まだ守っている壁」と誤読されるため)。実測値は `linked_reachable_active` / `measured_active` を**情報列**として残し、Sprint A/C の効果測定に使う。' >> "$GITHUB_STEP_SUMMARY"
+          echo '条件3 = 直近 72h に実測受信あり (測定器の生存)。これが 0 だと開けても 1 通も飛ばない。' >> "$GITHUB_STEP_SUMMARY"
+          echo '`fresh_measured_active` は参考値 (今この瞬間に送信資格を持つ実測数)。周期の大半で小さいのが正常 — `measured_active` と混同しないこと。' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json --command "
             WITH a AS (
               SELECT * FROM subscription_contracts
@@ -1022,8 +1038,6 @@ jobs:
                  AND flow_measured_at >= datetime('now','+9 hours','-10 day')) AS fresh_measured_active,
               (SELECT n FROM reach) AS linked_reachable_active,
               (SELECT n FROM ingest) AS ingest_success_72h,
-              CASE WHEN (SELECT n FROM reach) > 30 THEN 1 ELSE 0 END AS crit1_linked_over_30,
-              CASE WHEN (SELECT n FROM meas) * 2 > (SELECT COUNT(*) FROM a) THEN 1 ELSE 0 END AS crit2_measured_majority,
               CASE WHEN (SELECT n FROM ingest) > 0 THEN 1 ELSE 0 END AS crit3_ingest_alive_72h
           " | tee -a "$GITHUB_STEP_SUMMARY"
           echo '### 参考: 全契約の内訳 (窓に関係なく)' >> "$GITHUB_STEP_SUMMARY"
