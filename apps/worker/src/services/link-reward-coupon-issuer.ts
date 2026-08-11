@@ -3,8 +3,11 @@
  *
  * 役割: LINE⇔Shopify アカウント連携を顧客自身が完了した瞬間に ¥300 OFF の
  *   Shopify 実クーポンを 1 枚発行する。
- *   狙い = gate 開放条件 crit1「LINE 到達可能な連携済み active 契約 >30」(現在 4) を
- *   動かす連携インセンティブ。「連携すると 1 秒でお得」を体感させる。
+ *   狙い = **LINE 到達可能な連携済み active 契約** (2026-08-11 実測 4 件) を動かす連携
+ *   インセンティブ。「連携すると 1 秒でお得」を体感させる。
+ *   ⚠️ かつての gate 開放条件 crit1 (>30) は **2026-08-11 Katsu 決定で撤廃済み**
+ *   (docs/SUBSCRIPTION_GATE_CRITERIA.md)。この施策の目的は「gate を開けるため」ではなく
+ *   「開けた面に人を通すため」に変わった。
  *
  * 呼び出し元 (route 層の waitUntil hook・顧客対話 2 経路のみ):
  *   - routes/sub-link.ts redeem 新規成功 (= App Proxy + magic-link 両経路、alreadyLinked=false のみ)
