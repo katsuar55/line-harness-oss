@@ -206,6 +206,32 @@ function portalPage(
     .coupon-act--fill{background:var(--gold-deep);color:#fff;border:1.5px solid var(--gold-deep)}
     .coupon-expiry{font-size:12px;font-weight:600;color:var(--ink-2);font-variant-numeric:tabular-nums}
     .coupon-expiry--soon{font-size:11px;font-weight:700;color:#b84a2e;background:#fff3ec;border-radius:999px;padding:2px 8px;display:inline-block}
+    /* ─ VITAL STRIP = 1 秒ダッシュボード (VITAL INSTRUMENT §3) ─
+       ランク / クーポン枚数 / 連携状態を fold 上で一目にする。**追加 fetch ゼロ** —
+       すべて既存 loader が取ったデータを寄せているだけ。
+       色覚対応: dot の色だけに意味を持たせず「連携済み/未連携」の文字と二重符号化する。
+       リング終端 #0d827d と空トラック --track (#e6efef) は 3:1 以上 (WCAG 1.4.11)。
+       ブランド原色ティールは §7-1 でポータル使用禁止なので、明るい側は --brand #2fa8ad。
+       アニメーションは足さない (モーション憲法: 動く枠は .ref-hero 1 枚だけ)。 */
+    .vs-grid{display:grid;grid-template-columns:1.25fr 1px 1fr 1px 1fr;align-items:stretch}
+    .vs-cell{display:flex;align-items:center;gap:8px;min-height:56px;padding:6px 6px;background:none;border:0;text-align:left;border-radius:12px;min-width:0}
+    .vs-div{background:linear-gradient(180deg,transparent,var(--hairline) 30%,var(--hairline) 70%,transparent)}
+    .vs-ring{--p:0%;width:40px;height:40px;border-radius:50%;flex:none;background:conic-gradient(from -90deg,#2fa8ad,#0d827d var(--p),var(--track) 0);display:flex;align-items:center;justify-content:center}
+    .vs-ring-in{width:32px;height:32px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:inset 0 0 0 1px #eef4f4}
+    .vs-num{font-size:24px;font-weight:800;color:#052422;letter-spacing:-.5px;min-width:26px;text-align:center;font-variant-numeric:tabular-nums}
+    .vs-meta{min-width:0}
+    .vs-b{display:block;font-size:12px;font-weight:700;color:#052422;line-height:1.3}
+    .vs-s{display:block;font-size:11px;font-weight:600;color:#66727d;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .vs-s.is-ng{color:#b84a2e} .vs-s.is-ok{color:#0f766e}
+    .vs-dot{width:12px;height:12px;border-radius:50%;flex:none;background:#c3cdd4}
+    .vs-dot.is-on{background:#0d827d;box-shadow:0 0 0 3px rgba(13,130,125,.18)}
+    .vs-dot.is-off{background:#d9573d;box-shadow:0 0 0 3px rgba(217,87,61,.15)}
+    .vs-sk{display:inline-block;width:44px;height:12px;border-radius:6px}
+    /* skeleton の stagger (新しい animation は足さず、既存 shimmer の delay だけずらす)。
+       .vs-cell は button なので nth-of-type は区切りの span を数えず 1..3 になる。 */
+    #vital-strip .vs-cell:nth-of-type(1) .skeleton{animation-delay:.15s}
+    #vital-strip .vs-cell:nth-of-type(2) .skeleton{animation-delay:.3s}
+    #vital-strip .vs-cell:nth-of-type(3) .skeleton{animation-delay:.45s}
     .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:8px}
     @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
     .progress-bar{transition:width .6s cubic-bezier(.4,0,.2,1)}
@@ -363,6 +389,27 @@ function portalPage(
 
     <!-- ===== HOME Section ===== -->
     <div id="section-home" class="section active space-y-4">
+      <!-- VITAL STRIP (§3): 1 秒ダッシュボード。ランク / クーポン枚数 / 連携状態。
+           追加 fetch ゼロ = 既存 loader が取ったデータを寄せるだけ。
+           3 セルとも「その先」へ跳ぶ導線 (行き止まりを作らない)。 -->
+      <div id="vital-strip" class="card" role="group" aria-label="あなたの現在ステータス" style="padding:4px 6px">
+        <div class="vs-grid">
+          <button type="button" class="vs-cell tap" onclick="vsJumpRank()" aria-label="会員ランクの詳細へ">
+            <span class="vs-ring" id="vs-ring" style="--p:0%"><span class="vs-ring-in" id="vs-rank-icon">🌱</span></span>
+            <span class="vs-meta"><b class="vs-b">ランク</b><small class="vs-s" id="vs-rank-sub"><span class="skeleton vs-sk"></span></small></span>
+          </button>
+          <span class="vs-div" aria-hidden="true"></span>
+          <button type="button" class="vs-cell tap" id="vs-coupon-cell" onclick="vsJumpCoupons()" aria-label="クーポン一覧へ">
+            <span class="vs-num" id="vs-coupon-n">–</span>
+            <span class="vs-meta"><b class="vs-b">クーポン</b><small class="vs-s" id="vs-coupon-sub"><span class="skeleton vs-sk"></span></small></span>
+          </button>
+          <span class="vs-div" aria-hidden="true"></span>
+          <button type="button" class="vs-cell tap" id="vs-link-cell" onclick="vsLinkTap()" aria-label="ストア連携の状態">
+            <span class="vs-dot" id="vs-link-dot"></span>
+            <span class="vs-meta"><b class="vs-b">連携</b><small class="vs-s" id="vs-link-sub"><span class="skeleton vs-sk"></span></small></span>
+          </button>
+        </div>
+      </div>
       <!-- 友だち追加 welcome クーポン (発行済みのときのみ表示・期限カウントダウン付き) -->
       <div id="welcome-coupon-card" class="card p-4" style="display:none"></div>
       <!-- 紹介特典クーポン (referred=紹介された/referrer=紹介した の実クーポン、発行済みのときのみ表示) -->
@@ -1866,6 +1913,10 @@ async function loadRank() {
       window.__shopifyLinked = false;
       try { showShopifyLinkHomeCard(); } catch (e) {}
     }
+    // VITAL STRIP (§3): ランク / 連携の 2 セルはこの応答だけで埋まる (追加 fetch なし)
+    try { vsSetRank(data.currentRank, data.progressPercent); } catch (e) {}
+    // 連携は単調性ガード (__shopifyLinked) と同じ向きに揃える — 一度 on にしたら off へ戻さない
+    try { vsSetLinked(window.__shopifyLinked === true || !!data.linked); } catch (e) {}
     if (data.currentRank) {
       const pct = data.progressPercent || 0;
       // Check if user is ambassador (will be set after loadAmbassador runs)
@@ -1918,6 +1969,110 @@ async function loadTip() {
   } catch { cardError(el, null, 'loadTip'); }
 }
 
+// ─── VITAL STRIP (§3): 1 秒ダッシュボード ───
+// **追加 fetch ゼロ**。各 loader が「自分の分」を set し、合計を書き直すだけ。
+// increment でなく set にするのは、loader が再試行されても二重計上しないため (冪等)。
+// 発生源は互いに素: /api/liff/coupons (台帳) と welcome/referral/link/friend (Shopify 個人コード)。
+window.__vsCoupons = { list: 0, welcome: 0, referral: 0, link: 0, friend: 0 };
+var vsCouponAnimated = false;
+
+function vsSetCoupons(key, n) {
+  try {
+    if (!window.__vsCoupons) { window.__vsCoupons = {}; }
+    window.__vsCoupons[key] = Number(n) || 0;
+    updateVsCouponCell();
+  } catch (e) {}
+}
+
+function vsCouponTotal() {
+  var c = window.__vsCoupons || {};
+  return (c.list || 0) + (c.welcome || 0) + (c.referral || 0) + (c.link || 0) + (c.friend || 0);
+}
+
+function updateVsCouponCell() {
+  var num = document.getElementById('vs-coupon-n');
+  var sub = document.getElementById('vs-coupon-sub');
+  if (!num || !sub) return;
+  var total = vsCouponTotal();
+  if (total <= 0) {
+    // 空状態は「無い」で終わらせず、もらう導線へ回遊させる (vsJumpCoupons が 0 枚なら紹介へ跳ぶ)
+    num.textContent = '–';
+    sub.textContent = 'もらう →';
+    sub.className = 'vs-s is-ng';
+    return;
+  }
+  sub.textContent = '使えます';
+  sub.className = 'vs-s is-ok';
+  // count-up は「0 枚 → 初めて枚数が入った」1 回だけ。5 系統が別々に着弾するたびに
+  // 数字が跳ねるのは目障りなので、2 回目以降は即値にする (モーション憲法: 常時アニメを作らない)
+  if (vsCouponAnimated || TAB_REDUCED_MOTION) { num.textContent = String(total); return; }
+  vsCouponAnimated = true;
+  var start = 0;
+  var t0 = 0;
+  var step = function(ts) {
+    if (!t0) { t0 = ts; }
+    var p = Math.min((ts - t0) / 400, 1);
+    num.textContent = String(Math.round(start + (total - start) * p));
+    if (p < 1) { requestAnimationFrame(step); } else { num.textContent = String(total); }
+  };
+  requestAnimationFrame(step);
+}
+
+function vsSetRank(currentRank, progressPercent) {
+  var ring = document.getElementById('vs-ring');
+  var icon = document.getElementById('vs-rank-icon');
+  var sub = document.getElementById('vs-rank-sub');
+  if (!ring || !icon || !sub) return;
+  var pct = Math.max(0, Math.min(100, Number(progressPercent) || 0));
+  ring.style.setProperty('--p', pct + '%');
+  if (currentRank) {
+    if (currentRank.icon) { icon.textContent = String(currentRank.icon); }
+    // 60代に最も意味があるのは % でなく「自分の格」の名前
+    sub.textContent = String(currentRank.name || '');
+    sub.className = 'vs-s';
+  } else {
+    sub.textContent = 'はじめて';
+    sub.className = 'vs-s';
+  }
+}
+
+function vsSetLinked(linked) {
+  var dot = document.getElementById('vs-link-dot');
+  var sub = document.getElementById('vs-link-sub');
+  if (!dot || !sub) return;
+  // 色覚対応: dot の色だけに意味を持たせず、文字と二重符号化する
+  if (linked) {
+    dot.className = 'vs-dot is-on';
+    sub.textContent = '連携済み';
+    sub.className = 'vs-s is-ok';
+  } else {
+    dot.className = 'vs-dot is-off';
+    sub.textContent = '未連携 →';
+    sub.className = 'vs-s is-ng';
+  }
+}
+
+function vsScrollTo(id) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  try { el.scrollIntoView({ behavior: TAB_REDUCED_MOTION ? 'auto' : 'smooth', block: 'start' }); }
+  catch (e) { el.scrollIntoView(); }
+}
+function vsJumpRank() { vsScrollTo('rank-card'); }
+function vsJumpCoupons() {
+  // 0 枚のときにクーポン一覧 (空表示) へ落とすと行き止まりになる → もらう導線へ
+  if (vsCouponTotal() <= 0) { vsJumpReferral(); return; }
+  vsScrollTo('coupons-card');
+}
+function vsJumpReferral() {
+  if (typeof scrollToReferralCard === 'function') { scrollToReferralCard(); return; }
+  vsScrollTo('referral-card');
+}
+function vsLinkTap() {
+  if (window.__shopifyLinked === true) { vsJumpRank(); return; }
+  if (typeof openShopifyLinkPage === 'function') { openShopifyLinkPage(); }
+}
+
 // ─── HOME: Coupons ───
 // LINE友だち限定クーポン (ランク不問の一律 % OFF)。管理トグル ON 時のみ表示。
 async function loadFriendCoupon() {
@@ -1928,7 +2083,7 @@ async function loadFriendCoupon() {
     // 「機能OFF/クーポンなし (200)」は非表示、「取得失敗」はエラーカード — 失敗を非表示に化けさせない
     if (apiFailed(res)) { cardError(el, res, 'loadFriendCoupon'); return; }
     const data = res.data;
-    if (!data || !data.enabled || !data.code) { el.style.display = 'none'; return; }
+    if (!data || !data.enabled || !data.code) { el.style.display = 'none'; vsSetCoupons('friend', 0); return; }
     el.style.display = 'block';
     el.style.background = 'linear-gradient(135deg,#eef8f8,#ffffff)';
     el.style.border = '1.5px solid rgba(47,168,173,.4)';
@@ -1942,6 +2097,7 @@ async function loadFriendCoupon() {
       '<code id="friend-coupon-code" class="flex-1 text-center text-sm font-bold tracking-widest bg-white border border-green-300 rounded-lg py-2">' + esc(data.code) + '</code>' +
       '<button onclick="copyFriendCoupon()" class="text-xs font-bold text-green-700 border border-green-300 bg-green-50 rounded-lg px-3 py-2">コピー</button></div>' +
       (data.applyUrl ? '<a href="' + esc(data.applyUrl) + '" target="_blank" class="block text-center btn-primary py-3 rounded-xl text-sm font-bold">このクーポンで買う →</a>' : '');
+    vsSetCoupons('friend', 1);
   } catch {
     cardError(el, null, 'loadFriendCoupon');
   }
@@ -1968,7 +2124,7 @@ async function loadWelcomeCoupon() {
     const res = await apiGet('/api/liff/welcome-coupon');
     if (apiFailed(res)) { cardError(el, res, 'loadWelcomeCoupon'); return; }
     var cp = res.data && res.data.coupon;
-    if (!cp || !cp.code) { el.style.display = 'none'; return; }
+    if (!cp || !cp.code) { el.style.display = 'none'; vsSetCoupons('welcome', 0); return; }
     el.style.display = 'block';
     // お得の主役カード: 汎用 orange でなくブランドコーラルで統一 (2026-07-07 パレット準拠)
     el.style.background = 'linear-gradient(135deg,#fff5ec,#ffffff)';
@@ -1984,6 +2140,7 @@ async function loadWelcomeCoupon() {
       '<code id="welcome-coupon-code" class="flex-1 text-center text-sm font-bold tracking-widest bg-white rounded-lg py-2" style="border:1px solid #f4c0ad">' + esc(cp.code) + '</code>' +
       '<button onclick="copyWelcomeCoupon()" class="text-xs font-bold text-coral rounded-lg px-3 py-2" style="border:1px solid #f4c0ad;background:#fff5ec">コピー</button></div>' +
       (cp.applyUrl ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" class="block text-center btn-coral py-3 rounded-xl text-sm font-bold">このクーポンで買う →</a>' : '');
+    vsSetCoupons('welcome', 1);
   } catch {
     cardError(el, null, 'loadWelcomeCoupon');
   }
@@ -2008,7 +2165,7 @@ async function loadReferralCoupon() {
     const res = await apiGet('/api/liff/referral-coupon');
     if (apiFailed(res)) { cardError(el, res, 'loadReferralCoupon'); return; }
     var list = (res.data && res.data.coupons) || [];
-    if (!list.length) { el.style.display = 'none'; return; }
+    if (!list.length) { el.style.display = 'none'; vsSetCoupons('referral', 0); return; }
     el.style.display = 'block';
     el.style.background = 'linear-gradient(135deg,#fff5ec,#ffffff)';
     el.style.border = '1.5px solid rgba(232,131,106,.4)';
@@ -2029,6 +2186,7 @@ async function loadReferralCoupon() {
         (cp.remainingText ? '<p class="text-xs text-coral mb-2" style="margin-top:-4px">⏳ ' + esc(cp.remainingText) + 'で終了</p>' : '');
     }).join('');
     el.innerHTML = head + items;
+    vsSetCoupons('referral', list.length);
   } catch {
     cardError(el, null, 'loadReferralCoupon');
   }
@@ -2065,7 +2223,7 @@ async function loadLinkCoupon() {
     const res = await apiGet('/api/liff/link-coupon');
     if (apiFailed(res)) { cardError(el, res, 'loadLinkCoupon'); return; }
     var cp = res.data && res.data.coupon;
-    if (!cp) { el.style.display = 'none'; return; }
+    if (!cp) { el.style.display = 'none'; vsSetCoupons('link', 0); return; }
     el.style.display = 'block';
     el.className = 'coupon-ticket coupon-ticket--gold';
     // 額は台帳の実値のみ。壊れた値で「¥0 OFF」や既定額の嘘を出さず、金額なしの見出しに退避する
@@ -2102,6 +2260,7 @@ async function loadLinkCoupon() {
       (cp.applyUrl
         ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" rel="noopener" class="tap coupon-act coupon-act--fill" style="width:100%">このクーポンで買う →</a>'
         : '');
+    vsSetCoupons('link', 1);
   } catch {
     el.className = 'card p-4';
     cardError(el, null, 'loadLinkCoupon');
@@ -2178,7 +2337,9 @@ async function loadCoupons() {
             (cp.expiresAt ? '<p class="text-xs text-gray-400">~' + esc(cp.expiresAt.slice(0, 10)) + '</p>' : '') + '</div>' +
             '<button onclick="copyRefCode(this)" data-code="' + esc(cp.code) + '" class="tap text-xs font-bold text-teal-700 rounded-full px-3 py-1 whitespace-nowrap" style="border:1px solid #bfe8e3;background:#effaf8">コピー</button></div>';
         }).join('');
+      vsSetCoupons('list', data.coupons.length);
     } else {
+      vsSetCoupons('list', 0);
       // 採点R1: 「無い」の告知でなく、クーポンを得る次の一手 (紹介ヒーロー) へ橋渡し。
       //   文言は gate 連動: off の間は referred 側 (=welcome、稼働中) の訴求のみ (景表法セーフ)。
       //   ⚠️ onclick 内に「バックスラッシュ+シングルクォート」で JS を書いてはいけない
@@ -3934,6 +4095,9 @@ window.__shopifyLinked = undefined;
 //                                     「連携済み」と出しても意味がないため)
 function markShopifyLinked() {
   window.__shopifyLinked = true;
+  // VITAL STRIP (§3): 連携が成立した**その瞬間**に strip も同期する
+  // (loadRank の再取得を待つと、連携直後の数秒だけ「未連携 →」が残る)
+  try { vsSetLinked(true); } catch (e) {}
   var nodes = document.querySelectorAll('[data-shopify-link-cta]');
   for (var i = 0; i < nodes.length; i++) {
     var card = nodes[i];
