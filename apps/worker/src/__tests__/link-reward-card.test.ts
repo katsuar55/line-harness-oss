@@ -43,7 +43,7 @@ interface RenderResult {
 
 async function render(
   apiResponse: unknown,
-  opts: { failed?: boolean; throws?: boolean } = {},
+  opts: { failed?: boolean; throws?: boolean; throwOnRender?: boolean } = {},
 ): Promise<RenderResult> {
   if (!escSrc || !block) throw new Error('loadLinkCoupon block not found in liff-pages.ts');
   // 🚨 初期状態を 'card p-4' にすると、実装のリセットを削除しても値が変わらず
@@ -55,6 +55,18 @@ async function render(
     style: { display: 'block' },
     innerHTML: '<!-- 前回の描画 -->',
   };
+  if (opts.throwOnRender) {
+    // 成功分岐で金の額装を付けた**後**に落ちる経路を作る (catch 側のリセットを測るため)
+    let held = el.innerHTML;
+    Object.defineProperty(el, 'innerHTML', {
+      get: () => held,
+      set: (v: string) => {
+        held = v;
+        if (String(v).indexOf('coupon-eyebrow') >= 0) throw new Error('render boom');
+      },
+      configurable: true,
+    });
+  }
   const cardErrorCalls: Array<{ retry: string | null }> = [];
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const factory = new Function(
@@ -177,6 +189,25 @@ describe('連携特典カード — 期限の切迫表現 (§2-E: 残 3 日以�
     expect(el.innerHTML).not.toContain('coupon-expiry--soon');
   });
 
+  // 🚨 mutation で判明: NaN ガードを外しても `left` が NaN になるだけで、
+  //    `NaN <= 3` は false なので**描画結果が同じ**になり検出できない (M6 SURVIVED)。
+  //    ヘルパーの戻り値の契約 (壊れた入力 → null であって NaN ではない) を直接固定する。
+  //    NaN を返す実装は、後から `left > N` 等の別の比較を足した瞬間に静かに壊れる。
+  it('linkCouponDaysLeft は壊れた入力に NaN でなく null を返す', () => {
+    const src = block ? block[0] : '';
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const daysLeft = new Function(`${src}\nreturn linkCouponDaysLeft;`)() as (
+      s: string | null,
+    ) => number | null;
+    for (const bad of ['not-a-date', '', null]) {
+      const v = daysLeft(bad as string);
+      expect(v).toBeNull();
+      expect(Number.isNaN(v as number)).toBe(false);
+    }
+    // 正常系は数値を返す
+    expect(typeof daysLeft(new Date(Date.now() + 3 * 86_400_000).toISOString())).toBe('number');
+  });
+
   it('remainingText なし → 期限表示ごと出さない (空の ⏳ を残さない)', async () => {
     const { el } = await render(coupon({ remainingText: null }));
     expect(el.innerHTML).not.toContain('⏳');
@@ -198,6 +229,15 @@ describe('連携特典カード — 状態遷移で金の額装を残さない',
 
   it('例外 → 金の額装を剥がしてから cardError (エラー文が金枠で出ない)', async () => {
     const { el, cardErrorCalls } = await render(null, { throws: true });
+    expect(cardErrorCalls.length).toBe(1);
+    expect(el.className).toBe('card p-4');
+  });
+
+  // 🚨 mutation で判明: apiGet が throw するケースだけだと、関数**先頭**のリセットが既に
+  //    効いているので catch 側のリセットを消しても緑のまま (M9 SURVIVED)。
+  //    catch のリセットが本当に要るのは「成功して金の額装を付けた**後**に落ちる」経路。
+  it('描画の途中で落ちても金の額装を残さない (成功後に throw する経路)', async () => {
+    const { el, cardErrorCalls } = await render(coupon(), { throwOnRender: true });
     expect(cardErrorCalls.length).toBe(1);
     expect(el.className).toBe('card p-4');
   });
@@ -357,6 +397,42 @@ describe('連携特典カード — 連携直後に本人へ届く', () => {
     const fn = pages.match(/function announceLinkCoupon\(\) \{[\s\S]*?\n\}/);
     expect(fn).toBeTruthy();
     expect(fn![0]).not.toMatch(/[¥￥]\s*\d/);
-    expect(fn![0]).toContain('data-link-coupon-note'); // 二重挿入ガード
+  });
+
+  // 🚨 mutation で判明: `toContain('data-link-coupon-note')` だけだと、**ガードの条件式**を
+  //    消しても setAttribute 側の同じ文字列が残るので素通りする (M24 SURVIVED)。
+  //    「早期 return の条件に既存判定が入っていること」を構造で見る。
+  it('告知は二重挿入しない (ガードの条件式そのものを固定する)', () => {
+    const fn = pages.match(/function announceLinkCoupon\(\) \{[\s\S]*?\n\}/);
+    expect(fn).toBeTruthy();
+    // 早期 return の行が、モーダル不在**と**既存ノートの両方を見ていること
+    // 条件式に `)` を含む (querySelector 呼び出し) ので `[^)]*` では途中で切れる
+    const guard = fn![0].match(/^\s*if \(.*\) return;$/m);
+    expect(guard).toBeTruthy();
+    expect(guard![0]).toContain('!card');
+    expect(guard![0]).toContain("querySelector('[data-link-coupon-note]')");
+    // 実際に 2 回呼んでも 1 つしか増えないことを DOM スタブで確認する
+    const notes: Array<Record<string, string>> = [];
+    const card = {
+      querySelector: (sel: string) =>
+        sel === '[data-link-coupon-note]'
+          ? (notes.length ? notes[0] : null)
+          : null,
+      insertBefore: (n: Record<string, string>) => notes.push(n),
+      appendChild: (n: Record<string, string>) => notes.push(n),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const factory = new Function(
+      'document',
+      'subLinkNode',
+      `${fn![0]}\nreturn announceLinkCoupon;`,
+    ) as (d: unknown, s: unknown) => () => void;
+    const announce = factory(
+      { querySelector: (sel: string) => (sel === '#sublink-overlay .sublink-card' ? card : null) },
+      () => ({ setAttribute: () => {} }) as unknown,
+    );
+    announce();
+    announce();
+    expect(notes.length).toBe(1);
   });
 });

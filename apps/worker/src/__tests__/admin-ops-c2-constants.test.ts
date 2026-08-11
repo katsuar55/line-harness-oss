@@ -91,9 +91,18 @@ describe('gate 条件の撤廃 (2026-08-11) — doc と admin-ops.yml の同期'
 
   it('doc 側にも撤廃が明記されている (yml だけ変えて doc が古い状態を作らない)', () => {
     expect(doc).toContain('2026-08-11');
-    expect(doc).toContain('撤廃');
     expect(doc).toContain('crit1_linked_over_30');
     expect(doc).toContain('crit2_measured_majority');
+    // 🚨 mutation で判明: 素の `toContain('撤廃')` は語が 1 つでも残れば通るため、
+    //    条件表の行を書き換えても素通りする (M20 SURVIVED)。**条件ごとに**固定する。
+    expect(doc).toContain('**2026-08-11 Katsu 決定で撤廃**'); // 条件1 (開放条件の表)
+    expect(doc).toContain('**2026-08-11 撤廃 (リスク実確認へ置換)**'); // 条件2 (開放条件の表)
+    expect(doc).toContain('**維持 (唯一の阻止条件)**'); // 条件3 (開放条件の表)
+    // 冒頭のサマリ表 (旧条件 → 扱い) も同じ結論であること。**同じ結論を 2 箇所に書いている**ので
+    // 両方を固定しないと、片方だけ書き換えて doc 内で矛盾させられる (M20 SURVIVED の経路)
+    expect(doc).toMatch(/\| 条件1 \(LINE 到達可能な連携済み active > 30\) \| \*\*撤廃\*\* \|/);
+    expect(doc).toMatch(/\| 条件2 \(active の過半が実測\) \| \*\*撤廃 \(リスク実確認へ置換\)\*\* \|/);
+    expect(doc).toMatch(/\| 条件3 \(直近 72h に実測受信\) \| \*\*維持\*\* \|/);
   });
 
   // 🚨 contains だけだと「撤廃」の語が残っていれば**真逆のことを書いた doc** でも通る。
