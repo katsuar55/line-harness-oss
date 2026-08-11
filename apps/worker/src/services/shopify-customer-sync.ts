@@ -32,8 +32,9 @@ const MAX_PAGES = 50; // 50 page × 250 件 = 12,500 件まで同期 (Workers CP
 export const SYNC_JOB_NAME = 'shopify-customer-sync';
 
 /**
- * watermark に持たせる重なり幅。ran_at は「実行完了時刻」なので、実行中に更新された
- * 顧客・cron の遅延・Shopify 側の反映遅延をこの幅で吸収する (重複 upsert は冪等)。
+ * watermark に持たせる重なり幅。基準は前回実行の「開始時刻」(metrics.startedAt) なので、
+ * 実行中に更新された顧客は基準時刻より後 = 次回の窓に必ず入る。この幅は cron の遅延・
+ * Shopify 側の反映遅延・時計ずれの吸収用 (重複 upsert は冪等なので広めでも無害)。
  */
 const WATERMARK_OVERLAP_MS = 15 * 60 * 1000;
 
@@ -47,6 +48,8 @@ export interface SyncShopifyCustomersResult {
   unsubscribed: number;
   pages: number;
   mode: SyncMode;
+  /** この実行の開始時刻 (UTC ISO)。metrics 経由で次回の watermark 基準になる */
+  startedAt: string;
   /** updated_at_min に使った ISO 時刻 (full sync では null) */
   updatedAtMin: string | null;
   /** SHOPIFY_STORE_DOMAIN 未設定など、実処理に入らなかった場合 true (heartbeat は skipped) */
@@ -79,26 +82,34 @@ export function toFiniteNumber(value: unknown): number | undefined {
 /**
  * 直近のクリーン成功 run から updated_at_min の watermark (UTC ISO) を導出する。
  *
+ * 基準時刻は metrics.startedAt (= 前回実行の開始時刻)。ran_at は「完了時刻」なので、
+ * 実行が長引いた場合に「fetch 済みページの顧客が実行中に更新される」窓が固定幅の
+ * 重なりを超えて恒久ミスになり得る — 開始時刻基準なら窓は実行時間に自動で伸びる。
+ * startedAt が欠ける行 (通常は無い) は ran_at に fallback する。
+ *
  * null (= フル同期に倒す) になる条件:
  *  - 成功 run が無い / metrics が無い・parse 不能
  *  - metrics に mode field が無い (2026-08-11 以前の旧形式。error 付きでも status='success' で
  *    記録されていた時期の行はカバレッジを信用できない)
- *  - ran_at が日時として解釈できない
+ *  - 基準時刻が日時として解釈できない
  */
 export function resolveWatermark(
   lastSuccess: { ran_at: string; metrics_json: string | null } | null,
 ): string | null {
   if (!lastSuccess?.metrics_json) return null;
-  let metrics: { mode?: unknown };
+  let metrics: { mode?: unknown; startedAt?: unknown };
   try {
-    metrics = JSON.parse(lastSuccess.metrics_json) as { mode?: unknown };
+    metrics = JSON.parse(lastSuccess.metrics_json) as { mode?: unknown; startedAt?: unknown };
   } catch {
     return null;
   }
   if (metrics.mode !== 'full' && metrics.mode !== 'incremental') return null;
-  const lastRanAt = new Date(lastSuccess.ran_at).getTime();
-  if (!Number.isFinite(lastRanAt)) return null;
-  return new Date(lastRanAt - WATERMARK_OVERLAP_MS).toISOString();
+  const base =
+    typeof metrics.startedAt === 'string' && Number.isFinite(new Date(metrics.startedAt).getTime())
+      ? new Date(metrics.startedAt).getTime()
+      : new Date(lastSuccess.ran_at).getTime();
+  if (!Number.isFinite(base)) return null;
+  return new Date(base - WATERMARK_OVERLAP_MS).toISOString();
 }
 
 export async function syncShopifyCustomers(
@@ -113,6 +124,7 @@ export async function syncShopifyCustomers(
     unsubscribed: 0,
     pages: 0,
     mode: 'full',
+    startedAt: new Date().toISOString(),
     updatedAtMin: null,
   };
 

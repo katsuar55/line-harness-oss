@@ -123,13 +123,33 @@ describe('resolveWatermark', () => {
     ).toBeNull();
   });
 
-  it('新形式 (mode あり) は ran_at - 15 分の UTC ISO を返す', () => {
+  it('新形式 (mode あり・startedAt 無し) は ran_at - 15 分の UTC ISO に fallback', () => {
     // 12:00 JST = 03:00 UTC → -15min = 02:45 UTC
     expect(
       resolveWatermark({ ran_at: ranAt, metrics_json: '{"mode":"full","synced":100}' }),
     ).toBe('2026-08-11T02:45:00.000Z');
     expect(
       resolveWatermark({ ran_at: ranAt, metrics_json: '{"mode":"incremental","synced":0}' }),
+    ).toBe('2026-08-11T02:45:00.000Z');
+  });
+
+  it('🚨startedAt があれば ran_at でなく開始時刻を基準にする — 長時間 run 中の更新を恒久ミスしない', () => {
+    // 実行に 20 分かかった想定: 開始 02:40 UTC・完了 (ran_at) 12:00 JST = 03:00 UTC。
+    // ran_at 基準だと 02:45 になり、02:40-02:45 に fetch 済みページで更新された顧客を失う。
+    expect(
+      resolveWatermark({
+        ran_at: ranAt,
+        metrics_json: '{"mode":"full","startedAt":"2026-08-11T02:40:00.000Z","synced":2750}',
+      }),
+    ).toBe('2026-08-11T02:25:00.000Z');
+  });
+
+  it('startedAt が不正文字列なら ran_at に fallback', () => {
+    expect(
+      resolveWatermark({
+        ran_at: ranAt,
+        metrics_json: '{"mode":"full","startedAt":"garbage"}',
+      }),
     ).toBe('2026-08-11T02:45:00.000Z');
   });
 });

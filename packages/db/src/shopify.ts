@@ -243,9 +243,12 @@ export interface BatchUpsertShopifyCustomerInput {
  * COALESCE の update 挙動 (指定があれば上書き・無ければ既存維持) は upsertShopifyCustomer と
  * 同一。既存行の id / created_at は保持される。
  *
- * 注意: 未指定 field は新規行で NULL になる (単発 upsert の 0 / '{}' とは異なる)。
- * excluded.* に 0 / '{}' を入れると conflict 側の COALESCE が既存値を潰すため両立できない。
- * cron 同期は orders_count / total_spent / metadata を常に渡すので実運用では差が出ない。
+ * 番号付きパラメータ (?N) を使う理由: excluded.* 参照だと「INSERT 時は 0 / '{}' に倒す」と
+ * 「UPDATE 時は既存維持」を両立できない (VALUES 側で COALESCE(?, 0) すると excluded が 0 に
+ * なり既存値を潰す)。VALUES 側と DO UPDATE 側で同じ ?N を参照し、それぞれの fallback を
+ * 書き分けることで単発 upsert (INSERT default 0/'{}' + UPDATE 既存維持) と完全一致させる。
+ * NULL を明示 bind すると schema の DEFAULT 句は適用されない点に注意 (segment-query の
+ * `total_spent >= ?` は NULL 行を除外してしまうため、新規行の 0 default は必須)。
  */
 export async function batchUpsertShopifyCustomers(
   db: D1Database,
@@ -255,18 +258,18 @@ export async function batchUpsertShopifyCustomers(
   const now = jstNow();
   const stmt = db.prepare(
     `INSERT INTO shopify_customers (id, shopify_customer_id, friend_id, email, phone, first_name, last_name, orders_count, total_spent, tags, metadata, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, COALESCE(?8, 0), COALESCE(?9, 0), ?10, COALESCE(?11, '{}'), ?12, ?13)
        ON CONFLICT(shopify_customer_id) DO UPDATE SET
-         friend_id = COALESCE(excluded.friend_id, friend_id),
-         email = COALESCE(excluded.email, email),
-         phone = COALESCE(excluded.phone, phone),
-         first_name = COALESCE(excluded.first_name, first_name),
-         last_name = COALESCE(excluded.last_name, last_name),
-         orders_count = COALESCE(excluded.orders_count, orders_count),
-         total_spent = COALESCE(excluded.total_spent, total_spent),
-         tags = COALESCE(excluded.tags, tags),
-         metadata = COALESCE(excluded.metadata, metadata),
-         updated_at = excluded.updated_at`,
+         friend_id = COALESCE(?3, friend_id),
+         email = COALESCE(?4, email),
+         phone = COALESCE(?5, phone),
+         first_name = COALESCE(?6, first_name),
+         last_name = COALESCE(?7, last_name),
+         orders_count = COALESCE(?8, orders_count),
+         total_spent = COALESCE(?9, total_spent),
+         tags = COALESCE(?10, tags),
+         metadata = COALESCE(?11, metadata),
+         updated_at = ?13`,
   );
   await db.batch(
     customers.map((c) =>

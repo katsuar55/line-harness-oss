@@ -664,8 +664,9 @@ async function scheduled(
   );
 
   // Shopify顧客同期（5分ごと実行、前回クリーン成功からの updated_at_min 差分同期、冪等なので安全）
-  // 2026-08-11: metrics の mode field は resolveWatermark の watermark 有効性判定に使う契約
-  // (mode 無し = 旧形式 = フル同期に倒す)。outcomeExtractor で部分失敗を partial として記録
+  // 2026-08-11: metrics の mode / startedAt field は resolveWatermark の契約
+  // (mode 無し = 旧形式 = フル同期に倒す。startedAt = 次回 watermark の基準時刻)。
+  // outcomeExtractor で部分失敗を partial として記録
   // (旧: error 付きでも success になる silent-fallback だった)。
   jobs.push(
     withHeartbeat(env.DB, 'shopify-customer-sync', () =>
@@ -674,6 +675,7 @@ async function scheduled(
         synced: r.synced,
         pages: r.pages,
         mode: r.mode,
+        startedAt: r.startedAt,
         updatedAtMin: r.updatedAtMin,
         error: r.error ?? null,
       }),
