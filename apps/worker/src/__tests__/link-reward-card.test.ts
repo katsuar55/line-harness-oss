@@ -39,6 +39,8 @@ interface FakeEl {
 interface RenderResult {
   el: FakeEl;
   cardErrorCalls: Array<{ retry: string | null }>;
+  /** VITAL STRIP (§3) への通知。追加 fetch ゼロ設計なので、ここが唯一の連絡経路 */
+  vsCalls: Array<[string, number]>;
 }
 
 async function render(
@@ -68,18 +70,21 @@ async function render(
     });
   }
   const cardErrorCalls: Array<{ retry: string | null }> = [];
+  const vsCalls: Array<[string, number]> = [];
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const factory = new Function(
     'document',
     'apiGet',
     'apiFailed',
     'cardError',
+    'vsSetCoupons',
     `${escSrc[0]}\n${block[0]}\nreturn loadLinkCoupon;`,
   ) as (
     d: unknown,
     g: unknown,
     f: unknown,
     ce: unknown,
+    vs: unknown,
   ) => () => Promise<void>;
   const loadLinkCoupon = factory(
     { getElementById: (id: string) => (id === 'link-coupon-card' ? el : null) },
@@ -92,9 +97,10 @@ async function render(
       cardErrorCalls.push({ retry: retry ?? null });
       _el.innerHTML = '<!-- error -->';
     },
+    (key: string, n: number) => vsCalls.push([key, n]),
   );
   await loadLinkCoupon();
-  return { el, cardErrorCalls };
+  return { el, cardErrorCalls, vsCalls };
 }
 
 const coupon = (over: Record<string, unknown> = {}) => ({
@@ -245,6 +251,34 @@ describe('連携特典カード — 状態遷移で金の額装を残さない',
   it('成功時は coupon-ticket--gold を付ける', async () => {
     const { el } = await render(coupon());
     expect(el.className).toBe('coupon-ticket coupon-ticket--gold');
+  });
+});
+
+/**
+ * VITAL STRIP (§3) は**追加 fetch ゼロ**設計なので、各 loader からの set が唯一の連絡経路。
+ * ここが漏れると strip の枚数が黙って実態とズレる (「クーポン 0 枚」と出しながらカードは出ている)。
+ * increment でなく **set** であること (= 再試行しても二重計上しない) も固定する。
+ */
+describe('連携特典カード — VITAL STRIP への通知', () => {
+  it('クーポンありで 1 を set する', async () => {
+    const { vsCalls } = await render(coupon());
+    expect(vsCalls).toEqual([['link', 1]]);
+  });
+
+  it('クーポン無しで 0 を set する (前回の枚数を残さない)', async () => {
+    const { vsCalls } = await render({ data: { coupon: null } });
+    expect(vsCalls).toEqual([['link', 0]]);
+  });
+
+  it('2 回続けて成功しても値は 1 のまま (increment でなく set)', async () => {
+    const a = await render(coupon());
+    const b = await render(coupon());
+    expect(a.vsCalls.concat(b.vsCalls)).toEqual([['link', 1], ['link', 1]]);
+  });
+
+  it('取得失敗のときは枚数を触らない (誤って 0 と言わない)', async () => {
+    const { vsCalls } = await render(null, { failed: true });
+    expect(vsCalls).toEqual([]);
   });
 });
 
