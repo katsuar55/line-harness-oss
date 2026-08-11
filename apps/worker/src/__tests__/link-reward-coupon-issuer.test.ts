@@ -2,13 +2,13 @@
  * Tests for link-reward-coupon-issuer (連携特典クーポン発行, Sprint A-1, 2026-08-11).
  *
  * 仕様:
- *   - 顧客自身の連携完了 (sub-link redeem 新規成功 / email OTP verify 成功) で ¥500 を 1 枚。
+ *   - 顧客自身の連携完了 (sub-link redeem 新規成功 / email OTP verify 成功) で ¥300 を 1 枚。
  *   - 冪等キーは friend_id (= 1 friend 生涯 1 枚。再連携・経路重複・並行でも増えない)。
  *
  * Covers:
  *   - gate off (LINK_REWARD_ENABLED!=true) → null、Shopify を呼ばない
  *   - 既発行 (friend_id 一致) → 冪等 return、Shopify を呼ばない
- *   - 新規発行 → 固定額¥500 / usageLimit:1 / combinesWith + DB INSERT (link_path 記録)
+ *   - 新規発行 → 固定額¥300 / usageLimit:1 / combinesWith + DB INSERT (link_path 記録)
  *   - config/token/HTTP/userErrors 失敗系 → null
  *   - UNIQUE(friend_id) 競合 → re-fetch して既存 code
  *   - generateLinkRewardCode の形式 / getActiveLinkRewardCoupon (単一・失効除外)
@@ -126,7 +126,7 @@ class FakeDb {
                 link_path: 'email_otp',
                 coupon_code: 'NLINK-CUSTCONF',
                 shopify_discount_code_id: 'gid://cust-concurrent',
-                discount_value: 500,
+                discount_value: 300,
                 discount_currency: 'JPY',
                 issued_at: params[8] as string,
                 expires_at: (params[9] as string | null) ?? null,
@@ -145,7 +145,7 @@ class FakeDb {
                 link_path: params[3] as string,
                 coupon_code: 'NLINK-CONCURRENT',
                 shopify_discount_code_id: 'gid://concurrent',
-                discount_value: 500,
+                discount_value: 300,
                 discount_currency: 'JPY',
                 issued_at: params[8] as string,
                 expires_at: (params[9] as string | null) ?? null,
@@ -258,20 +258,20 @@ describe('issueLinkRewardCoupon — gate / precondition', () => {
 });
 
 describe('issueLinkRewardCoupon — issuance', () => {
-  it('新規発行 → 固定額¥500 / usageLimit:1 / appliesOncePerCustomer:true / combinesWith + DB INSERT (link_path)', async () => {
+  it('新規発行 → 固定額¥300 / usageLimit:1 / appliesOncePerCustomer:true / combinesWith + DB INSERT (link_path)', async () => {
     const db = new FakeDb();
     const fetchImpl = makeSuccessFetch('NLINK-ABCD2345');
     const res = await issueLinkRewardCoupon(db as unknown as D1Database, makeEnv(), issueOpts({ fetchImpl }));
     expect(res).not.toBeNull();
     expect(res!.code).toBe('NLINK-ABCD2345');
-    expect(res!.discountValue).toBe(500);
+    expect(res!.discountValue).toBe(300);
     expect(res!.isExisting).toBe(false);
     expect(res!.expiresAt).toBe(new Date(FIXED_NOW + 7 * 86_400_000).toISOString());
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const init = (fetchImpl.mock.calls[0] as unknown[])[1] as RequestInit;
     const input = JSON.parse(init.body as string).variables.basicCodeDiscount;
-    expect(input.customerGets.value.discountAmount.amount).toBe(500);
+    expect(input.customerGets.value.discountAmount.amount).toBe(300);
     expect(input.usageLimit).toBe(1);
     expect(input.appliesOncePerCustomer).toBe(true);
     expect(input.combinesWith.orderDiscounts).toBe(true);
@@ -290,7 +290,7 @@ describe('issueLinkRewardCoupon — issuance', () => {
     db.rows.push({
       id: 'x', friend_id: 'A', shopify_customer_id: '12345', link_path: 'sub_link',
       coupon_code: 'NLINK-EXISTING', shopify_discount_code_id: 'gid://x',
-      discount_value: 500, discount_currency: 'JPY',
+      discount_value: 300, discount_currency: 'JPY',
       issued_at: '2026-08-01T00:00:00.000Z', expires_at: '2026-08-08T00:00:00.000Z',
       status: 'issued', line_account_id: null,
     });
@@ -302,12 +302,35 @@ describe('issueLinkRewardCoupon — issuance', () => {
     expect(db.rows.length).toBe(1);
   });
 
+  // 2026-08-11 の ¥500 → ¥300 変更は **既発行分に遡及しない**ことを固定する。
+  // 台帳 (line_link_coupons.discount_value) が正で、定数は「新規発行時の既定値」でしかない。
+  // ここが崩れると、顧客の手元にある ¥500 券を画面が ¥300 と表示する = 実額との不一致になる。
+  it('既発行の ¥500 券は台帳の額のまま返る (定数変更を遡及適用しない)', async () => {
+    const db = new FakeDb();
+    db.rows.push({
+      id: 'legacy', friend_id: 'A', shopify_customer_id: '12345', link_path: 'sub_link',
+      coupon_code: 'NLINK-LEGACY500', shopify_discount_code_id: 'gid://legacy',
+      discount_value: 500, discount_currency: 'JPY',
+      issued_at: '2026-08-01T00:00:00.000Z', expires_at: '2099-01-01T00:00:00.000Z',
+      status: 'issued', line_account_id: null,
+    });
+    const fetchImpl = makeSuccessFetch();
+    const res = await issueLinkRewardCoupon(db as unknown as D1Database, makeEnv(), issueOpts({ fetchImpl }));
+    expect(res!.isExisting).toBe(true);
+    expect(res!.discountValue).toBe(500);
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    // 表示系 (LIFF カードのソース) も台帳の額をそのまま返す
+    const shown = await getActiveLinkRewardCoupon(db as unknown as D1Database, 'A');
+    expect(shown!.discountValue).toBe(500);
+  });
+
   it('別経路 (email_otp) で再連携しても friend_id 冪等で同じ 1 枚', async () => {
     const db = new FakeDb();
     db.rows.push({
       id: 'x', friend_id: 'A', shopify_customer_id: '12345', link_path: 'sub_link',
       coupon_code: 'NLINK-FIRST', shopify_discount_code_id: null,
-      discount_value: 500, discount_currency: 'JPY',
+      discount_value: 300, discount_currency: 'JPY',
       issued_at: '2026-08-01T00:00:00.000Z', expires_at: null,
       status: 'issued', line_account_id: null,
     });
@@ -389,7 +412,7 @@ describe('issueLinkRewardCoupon — issuance', () => {
     db.rows.push({
       id: 'x', friend_id: 'OLD', shopify_customer_id: '12345', link_path: 'sub_link',
       coupon_code: 'NLINK-FIRSTLIFE', shopify_discount_code_id: null,
-      discount_value: 500, discount_currency: 'JPY',
+      discount_value: 300, discount_currency: 'JPY',
       issued_at: '2026-08-01T00:00:00.000Z', expires_at: null,
       status: 'issued', line_account_id: null,
     });
@@ -428,13 +451,13 @@ describe('getActiveLinkRewardCoupon (1 friend 1 枚)', () => {
     db.rows.push({
       id: 'c1', friend_id: 'A', shopify_customer_id: '12345', link_path: 'sub_link',
       coupon_code: 'NLINK-ACTIVE', shopify_discount_code_id: null,
-      discount_value: 500, discount_currency: 'JPY',
+      discount_value: 300, discount_currency: 'JPY',
       issued_at: '2026-08-08T00:00:00.000Z', expires_at: '2026-08-16T00:00:00.000Z',
       status: 'issued', line_account_id: null,
     });
     const res = await getActiveLinkRewardCoupon(db as unknown as D1Database, 'A', '2026-08-11T00:00:00.000Z');
     expect(res!.code).toBe('NLINK-ACTIVE');
-    expect(res!.discountValue).toBe(500);
+    expect(res!.discountValue).toBe(300);
   });
 
   it('失効済は null', async () => {
@@ -442,7 +465,7 @@ describe('getActiveLinkRewardCoupon (1 friend 1 枚)', () => {
     db.rows.push({
       id: 'c1', friend_id: 'A', shopify_customer_id: '12345', link_path: 'sub_link',
       coupon_code: 'NLINK-EXP', shopify_discount_code_id: null,
-      discount_value: 500, discount_currency: 'JPY',
+      discount_value: 300, discount_currency: 'JPY',
       issued_at: '2026-07-01T00:00:00.000Z', expires_at: '2026-07-08T00:00:00.000Z',
       status: 'issued', line_account_id: null,
     });
@@ -467,7 +490,7 @@ describe('findLinkRewardCoupon (friend_id)', () => {
     db.rows.push({
       id: 'x', friend_id: 'A', shopify_customer_id: '12345', link_path: 'email_otp',
       coupon_code: 'NLINK-XYZ', shopify_discount_code_id: null,
-      discount_value: 500, discount_currency: 'JPY',
+      discount_value: 300, discount_currency: 'JPY',
       issued_at: '2026-08-09T00:00:00.000Z', expires_at: null,
       status: 'issued', line_account_id: null,
     });

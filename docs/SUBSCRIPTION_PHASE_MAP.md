@@ -26,8 +26,8 @@ LINE トーク内で定期便のすべて (確認・スキップ・日付変更�
 |---|---|
 | 契約 read-model の収集 | ✅ LIVE (`SUBSCRIPTION_INGEST_ENABLED`)。契約 373 / active 142 |
 | Shopify Flow → 実測受信 | ✅ LIVE。3 トリガー設定済み・2026-08-04 に初受信を実測 |
-| 顧客可視面 (契約カード等) | ❌ gate OFF (`SUBSCRIPTION_MENU_ENABLED` 未投入) |
-| 決済リマインドの送信 | ❌ gate OFF (`SUBSCRIPTION_REMINDER_ENABLED` 未投入)。**今まで 1 通も送っていない** |
+| 顧客可視面 (契約カード等) | ❌ gate OFF (`SUBSCRIPTION_MENU_ENABLED` 未投入)。**2026-08-11 に Katsu が開放を承認済み — 投入待ち** |
+| 決済リマインドの送信 | ❌ gate OFF (`SUBSCRIPTION_REMINDER_ENABLED` 未投入)。**今まで 1 通も送っていない**。開放承認済み — 投入時点の送信対象は実測 **0 通** (窓内 6 件は全員 LINE 未連携。2026-08-11 実測) |
 | 送信の安全装置 | ✅ C2 で実測限定 + 鮮度 + 送信直前の関門 (2026-08-05) |
 
 ## 「LINE から今できること」の実態
@@ -65,9 +65,12 @@ LINE トーク内で定期便のすべて (確認・スキップ・日付変更�
    一時停止 1 / 解約 2。
    **最大の前提だった「スタッフが代行できるか」は 2026-08-05 の K4 で確定済み** = 着手可能になった。
    現状は**完全未実装** (テーブル・service・route・UI・gate すべて無し)
-2. **MENU gate の開放** — `docs/SUBSCRIPTION_GATE_CRITERIA.md` の 3 条件。
-   2026-08-04 実測で条件1 = 0〜数件 (要 >30)・条件2 = 1/142 (要 >50%) と未達。
-   分母を動かすのが **C3 (App Proxy 連携導線)**
+2. **MENU gate の開放** — 🔄 **2026-08-11 Katsu 決定で条件1 (>30) と条件2 (実測が過半) は撤廃**。
+   残る阻止条件は条件3 (直近 72h に実測受信) のみ。前提は数値でなく**リスクの実確認**
+   (derived の日付表示が「ごろ」+ 脚注で誠実か / Flex 320px) に置き換わった。
+   撤廃の根拠と確認記録は `docs/SUBSCRIPTION_GATE_CRITERIA.md` が正。
+   分母 (LINE 到達可能な契約者) を動かすのは **Sprint A (連携特典 ¥300) と
+   Sprint C (magic-link メール)** の仕事で、gate を閉じておくことでは増えない
 3. **Phase 3 (自社課金)** — ここまで来て初めて「LINE から即時実行」= North Star 到達。
    それまでは受理 → 代行なので、反映にタイムラグがある (顧客体験としてのタップ数は 1〜2 のまま)
 
@@ -80,14 +83,17 @@ C3 (連携導線 = 分母を動かす)
   ↓
 受理レイヤー §10-3 (LINE で 1 タップ受理 + スタッフ卓 /admin/ops)
   ↓
-MENU gate 開放 (3 条件到達後・Katsu 承認)
+MENU gate 開放 (条件3 + リスク実確認・Katsu 承認済み 2026-08-11)
   ↓
 リッチメニューに「サブスク」を追加   ← ここで初めて意味を持つ
   ↓
 REMINDER gate 開放 → Phase 3 (自社課金) → Huckleberry 卒業
 ```
 
-## 押してはいけない gate (K5)
+## gate の扱い (K5・🔄 2026-08-11 改訂)
 
-`SUBSCRIPTION_MENU_ENABLED` / `SUBSCRIPTION_REMINDER_ENABLED` / `BROADCAST_ALL_ENABLED` は
-**条件到達の報告があるまで投入しない** (2026-08-05 合意)。
+- `SUBSCRIPTION_MENU_ENABLED` / `SUBSCRIPTION_REMINDER_ENABLED` は
+  **2026-08-11 に Katsu が開放を承認済み** (前提 = `SUBSCRIPTION_GATE_CRITERIA.md` の
+  「確認記録 ①②」の実施。実施済み)。
+- **`BROADCAST_ALL_ENABLED` は従来どおり投入しない** — 今回の決定に含まれない。
+  一斉配信は影響範囲が桁違いなので、都度の承認が必要。

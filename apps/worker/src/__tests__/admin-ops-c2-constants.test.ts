@@ -57,12 +57,75 @@ describe('admin-ops.yml と C2 定数の一致', () => {
       "estimate_source = 'flow'",
       'flow_measured_at IS NOT NULL',
       'flow_measured_at >=',
-      'crit1_linked_over_30',
-      'crit2_measured_majority',
       'crit3_ingest_alive_72h',
     ]) {
       expect(yml).toContain(predicate);
     }
+  });
+});
+
+/**
+ * 🔄 2026-08-11 Katsu 決定で条件1/条件2 を撤廃した。撤廃は **doc と SQL の両方**を
+ * 同時に変えて初めて成立する (片方だけだと判定が嘘になる) ので、その対応関係を CI で固定する。
+ * 「消えたこと」だけを見ると、後日うっかり復活させても気づけない — 復活の検出も入れる。
+ */
+describe('gate 条件の撤廃 (2026-08-11) — doc と admin-ops.yml の同期', () => {
+  const DOC_PATH = resolve(HERE, '../../../../docs/SUBSCRIPTION_GATE_CRITERIA.md');
+  const doc = readFileSync(DOC_PATH, 'utf8');
+
+  it('撤廃した判定列が SQL から消えている (復活させるなら doc と同時に)', () => {
+    expect(yml).not.toContain('crit1_linked_over_30');
+    expect(yml).not.toContain('crit2_measured_majority');
+    // 🚨 識別子の完全一致だけだと、**閾値を変えて別名で復活**させると素通りする。
+    //    条件1 の形 (到達数の閾値比較) と条件2 の形 (過半数比較) を**形で**塞ぐ。
+    expect(yml).not.toMatch(/FROM reach\)\s*>\s*\d/); // 到達数の閾値判定
+    expect(yml).not.toMatch(/FROM meas\)\s*\*\s*2\s*>/); // 過半数判定
+    expect(yml).not.toMatch(/CASE WHEN[^\n]*FROM reach/); // 到達数を 1/0 に落とす判定
+  });
+
+  it('撤廃後も実測値は情報列として残っている (Sprint A/C の効果測定に使う)', () => {
+    expect(yml).toContain('AS linked_reachable_active');
+    expect(yml).toContain('AS measured_active');
+    expect(yml).toContain('AS fresh_measured_active');
+  });
+
+  it('doc 側にも撤廃が明記されている (yml だけ変えて doc が古い状態を作らない)', () => {
+    expect(doc).toContain('2026-08-11');
+    expect(doc).toContain('crit1_linked_over_30');
+    expect(doc).toContain('crit2_measured_majority');
+    // 🚨 mutation で判明: 素の `toContain('撤廃')` は語が 1 つでも残れば通るため、
+    //    条件表の行を書き換えても素通りする (M20 SURVIVED)。**条件ごとに**固定する。
+    expect(doc).toContain('**2026-08-11 Katsu 決定で撤廃**'); // 条件1 (開放条件の表)
+    expect(doc).toContain('**2026-08-11 撤廃 (リスク実確認へ置換)**'); // 条件2 (開放条件の表)
+    expect(doc).toContain('**維持 (唯一の阻止条件)**'); // 条件3 (開放条件の表)
+    // 冒頭のサマリ表 (旧条件 → 扱い) も同じ結論であること。**同じ結論を 2 箇所に書いている**ので
+    // 両方を固定しないと、片方だけ書き換えて doc 内で矛盾させられる (M20 SURVIVED の経路)
+    expect(doc).toMatch(/\| 条件1 \(LINE 到達可能な連携済み active > 30\) \| \*\*撤廃\*\* \|/);
+    expect(doc).toMatch(/\| 条件2 \(active の過半が実測\) \| \*\*撤廃 \(リスク実確認へ置換\)\*\* \|/);
+    expect(doc).toMatch(/\| 条件3 \(直近 72h に実測受信\) \| \*\*維持\*\* \|/);
+  });
+
+  // 🚨 contains だけだと「撤廃」の語が残っていれば**真逆のことを書いた doc** でも通る。
+  //    撤廃前の運用を指示する文言が**残っていないこと**も同時に固定する。
+  it('doc に撤廃前の運用指示が残っていない (両立しない記述の同居を許さない)', () => {
+    expect(doc).not.toContain('3 つとも `1` になるまで開けない');
+    expect(doc).not.toContain('crit1 = crit2 = 1');
+    // 「条件到達の報告があるまで押さない」は撤廃と両立しない (K5 の旧版)
+    expect(doc).not.toContain('条件到達の報告があるまで MENU / REMINDER / BROADCAST_ALL は押さない');
+    // BROADCAST_ALL だけは承認必須のままであることを明示していること (撤廃の巻き添えにしない)
+    expect(doc).toContain('BROADCAST_ALL_ENABLED');
+    expect(doc).toMatch(/BROADCAST_ALL_ENABLED[^\n]*承認必須/);
+  });
+
+  it('撤廃した条件の実測値は情報列として doc にも残っている (追跡をやめたわけではない)', () => {
+    expect(doc).toContain('linked_reachable_active');
+    expect(doc).toContain('measured_active');
+    expect(doc).toContain('情報列');
+  });
+
+  it('唯一残る阻止条件 (条件3) は doc と yml の双方に残っている', () => {
+    expect(yml).toContain('crit3_ingest_alive_72h');
+    expect(doc).toContain('crit3_ingest_alive_72h');
   });
 });
 

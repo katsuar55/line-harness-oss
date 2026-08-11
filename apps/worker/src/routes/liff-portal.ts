@@ -331,7 +331,7 @@ liffPortal.get('/api/liff/referral-coupon', async (c) => {
 });
 
 /**
- * GET /api/liff/link-coupon — アカウント連携特典の ¥500 実クーポン (Sprint A-1)。
+ * GET /api/liff/link-coupon — アカウント連携特典の ¥300 実クーポン (Sprint A-1)。
  * 連携完了時に issueLinkRewardCoupon (route hook) が発行した 1 friend 1 枚を返す。
  * gate off (= 機能未有効化) なら常に空 (= migration 078 未適用でも安全)。
  * idToken 認証必須 (= 本人の friendId に紐づくクーポンのみ)。
@@ -354,6 +354,9 @@ liffPortal.get('/api/liff/link-coupon', async (c) => {
       data: {
         coupon: {
           code: coupon.code,
+          // 🚨 定数 (DEFAULT_DISCOUNT_VALUE_JPY) を書かないこと。**台帳の値が唯一の正**で、
+          //    既発行の ¥500 券をここで ¥300 と言うと顧客の実額と食い違う。
+          //    liff-portal.test.ts は定数と異なる値 (450) で経路を測っている。
           discountValue: coupon.discountValue,
           expiresAt: coupon.expiresAt,
           remainingText: formatCouponCountdown(coupon.expiresAt, Date.now()),

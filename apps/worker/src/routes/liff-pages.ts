@@ -181,6 +181,31 @@ function portalPage(
     #ros-datetime.is-disabled{opacity:.4;pointer-events:none}
     @media(prefers-reduced-motion:reduce){#reorder-sheet .ros-panel{animation:none}}
     .card{background:#ffffff;border-radius:20px;border:1px solid var(--hairline);box-shadow:var(--shadow-rest),var(--edge-light)}
+    /* ─ クーポン = チケット様式 (VITAL INSTRUMENT §2-E) ─
+       左レール + 点線コードで金券感を出す。**ノッチ (左右の切込み円) は作らない** —
+       白カード上で背景色が合わず浮くため (デザイン審査で明示却下)。
+       --gold (#b8933f) は白地 2.88:1 / 金地 2.67:1 で **文字には使えない** (大文字 3:1 も不成立)。
+       金の「文字」は必ず --gold-ink #8a6a24 (白 5.04:1 / 金地 4.67:1 = AA)。#b8933f はレール等の
+       非テキスト装飾専用。動く枠は .ref-hero 1 枚だけ (モーション憲法) なので額装は静的。 */
+    .coupon-ticket{position:relative;border-radius:16px;padding:14px 14px 14px 20px;background:#fff;border:1px solid var(--hairline)}
+    .coupon-ticket::before{content:'';position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:3px;background:var(--grad-vital)}
+    /* 豪華版 (連携特典・2026-08-11 Katsu 指示「豪華なクーポンカード」): 金の額装 */
+    .coupon-ticket--gold{background:linear-gradient(158deg,#fffdf7 0%,var(--gold-wash) 100%);border:1.5px solid var(--gold-line);box-shadow:var(--shadow-float),var(--edge-light)}
+    .coupon-ticket--gold::before{background:linear-gradient(180deg,#e6d5a8,#b8933f 55%,#8a6a24)}
+    .coupon-eyebrow{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;letter-spacing:.06em;border-radius:999px;padding:2px 9px;background:var(--gold-deep);color:#fff}
+    .coupon-amt{font-size:32px;font-weight:800;line-height:1.05;letter-spacing:-.5px;color:var(--gold-ink);font-variant-numeric:tabular-nums}
+    .coupon-amt .coupon-amt-unit{font-size:17px;font-weight:800;margin-left:2px;letter-spacing:0}
+    .coupon-note{font-size:12px;line-height:1.55;color:var(--ink-2)}
+    .coupon-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px;font-weight:700;letter-spacing:.08em;color:#0f766e;background:var(--well);border:1.5px dashed #9fd4d2;border-radius:8px;padding:6px 8px;display:block;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .coupon-code--gold{color:var(--gold-ink);background:#fffdf7;border-color:#d3bd85}
+    .coupon-act{min-height:44px;display:inline-flex;align-items:center;justify-content:center;border-radius:10px;font-size:13px;font-weight:700;padding:0 12px;white-space:nowrap}
+    /* 輪郭は WCAG 1.4.11 (UI 部品の境界 3:1)。地 (#faf6ec) と面 (#fff) がほぼ同色なので
+       境界は枠線しかない — --gold-line #e6d5a8 は 1.35:1 で不足するため --gold-ink #8a6a24
+       (白 5.04:1 / 金地 4.67:1) を使う。 */
+    .coupon-act--ghost{border:1.5px solid var(--gold-ink);background:#fff;color:var(--gold-ink)}
+    .coupon-act--fill{background:var(--gold-deep);color:#fff;border:1.5px solid var(--gold-deep)}
+    .coupon-expiry{font-size:12px;font-weight:600;color:var(--ink-2);font-variant-numeric:tabular-nums}
+    .coupon-expiry--soon{font-size:11px;font-weight:700;color:#b84a2e;background:#fff3ec;border-radius:999px;padding:2px 8px;display:inline-block}
     .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:8px}
     @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
     .progress-bar{transition:width .6s cubic-bezier(.4,0,.2,1)}
@@ -2008,33 +2033,111 @@ async function loadReferralCoupon() {
     cardError(el, null, 'loadReferralCoupon');
   }
 }
+// 連携特典クーポン = 金の額装チケット (2026-08-11 Katsu「豪華なクーポンカード」+ §2-E チケット様式)。
+// 旧実装のティール 089591 (hex 文字列はガードの検出対象なので # を付けずに書く) は白地 3.67:1 で
+// 12px 太字には AA (4.5:1) 不成立だった。同様に 078783 も 4.37:1 で小文字には足りない — 金の文字は
+// --gold-ink #8a6a24 (白 5.04:1 / 金地 4.67:1)、塗りは --gold-deep #92400e (白文字 7.09:1) に統一する。
+// 金額は台帳 (line_link_coupons.discount_value) の値をそのまま出す = 既発行の ¥500 券は ¥500 のまま。
+// 残日数はサーバの formatCouponCountdown (welcome-coupon.ts) と**同じ床関数**で数える。
+// ceil で数えると「あと3日」と書かれた券が chip にならない 24 時間の窓ができる
+// (文言はサーバ = floor、強調はクライアント = ceil で 1 日ずれるため)。
+function linkCouponDaysLeft(expiresAt) {
+  if (!expiresAt) return null;
+  var t = Date.parse(expiresAt);
+  if (isNaN(t)) return null;
+  var remMs = t - Date.now();
+  if (remMs <= 0) return 0;
+  return Math.floor(Math.floor(remMs / 3600000) / 24);
+}
+// 「まもなく終了」に「で終了」を足すと『まもなく終了で終了』になる。
+// サーバが返すのは「あとN日」「あとN時間」「まもなく終了」の 3 形なので、
+// 「あと」で始まるときだけ述語を足す。
+function linkCouponExpiryPhrase(remainingText) {
+  var s = String(remainingText || '');
+  return s.indexOf('あと') === 0 ? s + 'で終了' : s;
+}
 async function loadLinkCoupon() {
   var el = document.getElementById('link-coupon-card');
   if (!el) return;
+  // 失敗・非表示の経路では通常カードの見た目に戻す (エラー文言が金の額装で出ないように)
+  el.className = 'card p-4';
   try {
     const res = await apiGet('/api/liff/link-coupon');
     if (apiFailed(res)) { cardError(el, res, 'loadLinkCoupon'); return; }
     var cp = res.data && res.data.coupon;
     if (!cp) { el.style.display = 'none'; return; }
     el.style.display = 'block';
-    el.style.background = 'linear-gradient(135deg,#e6faf9,#ffffff)';
-    el.style.border = '1.5px solid rgba(10,186,181,.45)';
-    var val = Number(cp.discountValue) || 500;
+    el.className = 'coupon-ticket coupon-ticket--gold';
+    // 額は台帳の実値のみ。壊れた値で「¥0 OFF」や既定額の嘘を出さず、金額なしの見出しに退避する
+    var raw = Number(cp.discountValue);
+    var val = (isFinite(raw) && raw > 0) ? raw : null;
+    var left = linkCouponDaysLeft(cp.expiresAt);
+    var expiry = cp.remainingText
+      ? (left !== null && left <= 3
+          ? '<span class="coupon-expiry--soon">⏳ ' + esc(linkCouponExpiryPhrase(cp.remainingText)) + '</span>'
+          : '<span class="coupon-expiry">⏳ ' + esc(linkCouponExpiryPhrase(cp.remainingText)) + '</span>')
+      : '';
+    // 🚨 「ほかの割引と併用できます」とは**書かない**。Shopify の combinesWith は双方向の握手で、
+    //    稼働中のクーポンはどれも実際には重ならない:
+    //      welcome ¥500 = combinesWith 未指定 (= 併用不可)
+    //      ランク割引 / 紹介 / 連携特典 = すべて customerGets.items:{all} = **同じ product クラス**で、
+    //      同一ラインの product 割引の重ねは Shopify Plus が必要 (2026-06-03 実測)
+    //    combinesWith を true にしてあるのは将来 order クラスの割引を作ったときのための備えであって、
+    //    今日の顧客に約束できる事実ではない。約束すると景表法上の「言い過ぎ」になり、
+    //    レジで弾かれた顧客の問い合わせを生む。
     el.innerHTML =
-      '<div class="flex items-center gap-2 mb-1">' +
-      '<span class="px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700;background:#0f766e;color:#fff">🔗 連携特典</span>' +
-      '<span class="text-xs font-bold" style="color:#089591">連携ありがとうございます</span></div>' +
-      '<p class="text-2xl font-extrabold mb-1" style="color:#078783">¥' + val + ' OFF クーポン</p>' +
-      '<p class="text-xs text-gray-500 mb-2">アカウント連携の特典です。公式ストアの全商品でお使いいただけます。</p>' +
-      '<div class="flex items-center gap-2 mb-2">' +
-      '<code class="flex-1 text-center text-sm font-bold tracking-widest bg-white rounded-lg py-2" style="border:1px solid #9adedb">' + esc(cp.code) + '</code>' +
-      '<button onclick="copyLinkCouponCode(this)" data-code="' + esc(cp.code) + '" class="text-xs font-bold rounded-lg px-3 py-2 whitespace-nowrap" style="border:1px solid #9adedb;background:#e6faf9;color:#078783">コピー</button>' +
-      (cp.applyUrl ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" class="text-xs font-bold rounded-lg px-3 py-2 whitespace-nowrap" style="background:#0f766e;color:#fff">使う</a>' : '') +
+      '<div class="flex items-center flex-wrap gap-2 mb-2">' +
+      '<span class="coupon-eyebrow">🔗 連携特典</span>' + expiry + '</div>' +
+      (val
+        ? '<p class="coupon-amt">¥' + val + '<span class="coupon-amt-unit">OFF</span></p>'
+        : '<p class="coupon-amt" style="font-size:22px">割引クーポン</p>') +
+      '<p class="coupon-note mt-1 mb-3">アカウント連携のお礼です。公式ストアの全商品にお使いいただけます。</p>' +
+      // 320px 端末では「コードをコピー」と「このクーポンで買う →」を横に並べると
+      // nowrap の最小幅合計がカード内幅 (約 254px) を超えて溢れる。コピーはコード行に寄せ、
+      // 主 CTA は 1 行占有にする (60代のタップ精度にも効く)。
+      '<div class="flex items-center gap-2 mb-3">' +
+      '<span class="coupon-code coupon-code--gold" style="flex:1 1 auto;min-width:0">' + esc(cp.code) + '</span>' +
+      '<button onclick="copyLinkCouponCode(this)" data-code="' + esc(cp.code) + '" class="tap coupon-act coupon-act--ghost" style="flex:0 0 auto">コピー</button>' +
       '</div>' +
-      (cp.remainingText ? '<p class="text-xs mb-1" style="color:#089591;margin-top:-4px">⏳ ' + esc(cp.remainingText) + 'で終了</p>' : '');
+      (cp.applyUrl
+        ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" rel="noopener" class="tap coupon-act coupon-act--fill" style="width:100%">このクーポンで買う →</a>'
+        : '');
   } catch {
+    el.className = 'card p-4';
     cardError(el, null, 'loadLinkCoupon');
   }
+}
+// 🚨 連携特典クーポンは redeem の HTTP 応答**後**に waitUntil で発行される。ポータルは init 時に
+// loadLinkCoupon() を済ませているので、後追いしないと **magic-link / App Proxy で連携した本人が
+// 特典カードを一度も見ない** (「連携すると 1 秒でお得」という施策そのものが届かない)。
+// gate OFF・発行失敗なら API は常に coupon:null を返すので、何度呼んでもカードは出ない = 無害。
+var LINK_COUPON_RETRY_MS = [1500, 4000, 9000];
+function linkCouponVisible() {
+  var el = document.getElementById('link-coupon-card');
+  return !!(el && el.className.indexOf('coupon-ticket') === 0);
+}
+function refreshLinkCouponAfterLink(attempt) {
+  var n = attempt || 0;
+  if (linkCouponVisible()) { announceLinkCoupon(); return; }
+  if (n >= LINK_COUPON_RETRY_MS.length) return; // 諦める (次回ポータルを開いたときに出る)
+  setTimeout(function() {
+    var p = null;
+    try { p = loadLinkCoupon(); } catch (e) { p = null; }
+    var next = function() {
+      if (linkCouponVisible()) { announceLinkCoupon(); } else { refreshLinkCouponAfterLink(n + 1); }
+    };
+    if (p && typeof p.then === 'function') { p.then(next, next); } else { next(); }
+  }, LINK_COUPON_RETRY_MS[n]);
+}
+// 連携完了モーダルがまだ開いていれば、特典が届いたことをその場で伝える。
+// **金額は書かない** — 正はカード側 (台帳の実値) なので、ここに数字を置くと二重管理の嘘になる。
+function announceLinkCoupon() {
+  var card = document.querySelector('#sublink-overlay .sublink-card');
+  if (!card || card.querySelector('[data-link-coupon-note]')) return;
+  var note = subLinkNode('p', 'sublink-body mb-4', '🎁 連携特典クーポンをホーム画面にお届けしました');
+  note.setAttribute('data-link-coupon-note', '1');
+  var btn = card.querySelector('button');
+  if (btn) { card.insertBefore(note, btn); } else { card.appendChild(note); }
 }
 function copyLinkCouponCode(btn) {
   var code = (btn && btn.getAttribute('data-code')) || '';
@@ -4266,6 +4369,8 @@ function subLinkRedeem(token, btn) {
       subLinkResult('🌿', '連携が完了しました', doneDesc);
       try { markShopifyLinked(); } catch (e) {}
       if (typeof loadRank === 'function') { try { loadRank(); } catch (e) {} }
+      // 連携特典クーポンは応答後の waitUntil で発行されるので、少し遅れて拾い直す
+      try { refreshLinkCouponAfterLink(0); } catch (e) {}
       return;
     }
     if (res && res.status === 401) { subLinkShowRetryCard(token, 'auth'); return; }

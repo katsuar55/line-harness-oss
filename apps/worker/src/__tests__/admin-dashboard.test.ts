@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
 import { adminDashboard } from '../routes/admin-dashboard.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { __test__ as linkReward } from '../services/link-reward-coupon-issuer.js';
 
 const API_KEY = 'test-key';
 
@@ -250,6 +251,21 @@ describe('GET /api/admin/dashboard', () => {
     );
     const json = (await res.json()) as { data: { features: Array<{ label: string; on: boolean }> } };
     expect(json.data.features.find((f) => f.label.includes('連携特典'))?.on).toBe(true);
+  });
+
+  // スタッフ画面のラベル金額は「顧客に案内してよい額」そのもの。発行側の定数と乖離すると
+  // スタッフが実額と違う金額を口頭・メールで案内する (回復しにくい信用の毀損)。
+  // ラベルを includes('連携特典') でしか見ていなかったため、金額だけ古いまま残る穴があった。
+  it('連携特典ラベルの金額が発行側の既定額 (DEFAULT_DISCOUNT_VALUE_JPY) と一致する', async () => {
+    const app = createApp();
+    const res = await app.request(
+      'http://localhost/api/admin/dashboard',
+      { method: 'GET', headers: { Authorization: `Bearer ${API_KEY}` } },
+      ENV(fakeDb(), { LINK_REWARD_ENABLED: 'true' }),
+    );
+    const json = (await res.json()) as { data: { features: Array<{ label: string }> } };
+    const label = json.data.features.find((f) => f.label.includes('連携特典'))?.label ?? '';
+    expect(label).toContain(`${linkReward.DEFAULT_DISCOUNT_VALUE_JPY}円`);
   });
 
   it('friendCoupon ON のとき data.friendCoupon.enabled=true と unansweredTop の shape を返す', async () => {

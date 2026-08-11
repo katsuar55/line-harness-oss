@@ -1,10 +1,13 @@
 /**
  * Link Reward Coupon Issuer Service (= 連携特典クーポン発行, Sprint A-1, 2026-08-11)
  *
- * 役割: LINE⇔Shopify アカウント連携を顧客自身が完了した瞬間に ¥500 OFF の
+ * 役割: LINE⇔Shopify アカウント連携を顧客自身が完了した瞬間に ¥300 OFF の
  *   Shopify 実クーポンを 1 枚発行する。
- *   狙い = gate 開放条件 crit1「LINE 到達可能な連携済み active 契約 >30」(現在 4) を
- *   動かす連携インセンティブ。「連携すると 1 秒でお得」を体感させる。
+ *   狙い = **LINE 到達可能な連携済み active 契約** (2026-08-11 実測 4 件) を動かす連携
+ *   インセンティブ。「連携すると 1 秒でお得」を体感させる。
+ *   ⚠️ かつての gate 開放条件 crit1 (>30) は **2026-08-11 Katsu 決定で撤廃済み**
+ *   (docs/SUBSCRIPTION_GATE_CRITERIA.md)。この施策の目的は「gate を開けるため」ではなく
+ *   「開けた面に人を通すため」に変わった。
  *
  * 呼び出し元 (route 層の waitUntil hook・顧客対話 2 経路のみ):
  *   - routes/sub-link.ts redeem 新規成功 (= App Proxy + magic-link 両経路、alreadyLinked=false のみ)
@@ -13,8 +16,17 @@
  *   (= 顧客の能動的アクションへの報酬という設計意図)。
  *
  * 設計 (referral-coupon-issuer.ts の同型 4 本目):
- *   - discountCodeBasicCreate (固定額 ¥500、usageLimit=1、appliesOncePerCustomer=true = 単回)。
- *   - combinesWith product+order 両 true (= ランク割引 NLR- と併用可、Plus 不要のクロスクラス)。
+ *   - discountCodeBasicCreate (固定額 ¥300、usageLimit=1、appliesOncePerCustomer=true = 単回)。
+ *   - combinesWith product+order 両 true。
+ *     ⚠️ 「重複して使用可能」(2026-08-11 Katsu) の実装はこの combinesWith が担うが、
+ *     **顧客に「併用できます」と案内してはいけない** (2026-08-11 監査 HIGH):
+ *       ① combinesWith は双方向の握手で、稼働中の welcome ¥500 は combinesWith 未指定 = 併用不可
+ *       ② 連携特典・紹介・ランクはいずれも customerGets.items:{all} = **同じ product クラス**。
+ *          同一ラインの product 割引の重ねは Shopify Plus が必要 (2026-06-03 実測)
+ *     = この設定は将来 order クラスの割引を作ったときのための備え。
+ *     文言の扱いと成立させる選択肢は docs/SPRINT_C_MAGIC_LINK_MAIL.md §6 に集約。
+ *     なお「同じコードを複数回」の指示ではないため usageLimit=1 / appliesOncePerCustomer=true は
+ *     据置 (1 人生涯 1 枚の冪等設計と対)。
  *   - **冪等キーは friend_id と shopify_customer_id の両方** (それぞれ UNIQUE):
  *     同一 friend の再連携・経路重複・並行は UNIQUE(friend_id)、「サポート手動解除 →
  *     別 LINE アカウントで再連携」(機種変更の定常運用) は UNIQUE(shopify_customer_id) で
@@ -39,7 +51,10 @@ import { auditSystem } from './audit-logger.js';
 // 定数
 // ============================================================
 
-const DEFAULT_DISCOUNT_VALUE_JPY = 500;
+// 2026-08-11 Katsu 決定: ¥500 → ¥300 (gate 開放 GO と同時。連携インセンティブとしての
+// 体感は残しつつ 1 枚あたりの実費を下げる。既発行分は台帳の discount_value を正とするため
+// この定数変更で遡及書換えは起きない = 過去の ¥500 券はそのまま有効)。
+const DEFAULT_DISCOUNT_VALUE_JPY = 300;
 // 紹介特典と同値 (B2C は希少性 + 損失回避で短期限が conversion ↑、業界 best practice 3-7 日)
 const DEFAULT_VALID_DAYS = 7;
 const SHOPIFY_API_VERSION = '2026-04';

@@ -100,6 +100,15 @@ name: Admin Ops
 #     直近14日の webhook 到達 (topic×status 件数) / 注文の friend 紐付け率 /
 #     financial_status 内訳 / fulfillments の friend 紐付け率。PII なし。
 #     「注文したのにミニアプリに出ない」時の一次切り分け用 (webhook 未達 vs 紐付け失敗)。
+#   apply-migration-078:
+#     migration 078 (連携特典クーポン台帳 line_link_coupons)。CREATE TABLE + INDEX のみ = additive・冪等。
+#     gate LINK_REWARD_ENABLED が既定 off なので、適用しただけでは本番挙動は変わらない。
+#   enable-link-reward / enable-subscription-menu / enable-subscription-reminder:
+#     Sprint A の gate 開放 3 手 (2026-08-11 Katsu 承認済み)。**この順序で実行すること**。
+#     各 op は前提を機械チェックしてから secret を投入する
+#     (078 未適用のまま link-reward を ON にすると、Shopify にだけコードが残って顧客に届かない /
+#      MENU 未確認のまま REMINDER を ON にすると「初めて見るカード」が push で届く)。
+#     詳細と根拠: docs/SUBSCRIPTION_GATE_CRITERIA.md
 #   faq-subscription-audit:
 #     read-only。定期便系 FAQ (auto_replies=チャット自動応答 / faq_items=LIFF FAQ タブ) の
 #     有効行を件数+既知文言の指紋で監査する (実態 = 定期便の操作はマイページのみ)。
@@ -154,6 +163,10 @@ on:
           - attach-custom-domain
           - apply-faq-v4
           - faq-subscription-audit
+          - apply-migration-078
+          - enable-link-reward
+          - enable-subscription-menu
+          - enable-subscription-reminder
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
         required: false
@@ -577,6 +590,114 @@ jobs:
           npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT name FROM sqlite_master WHERE type='table' AND name='sub_link_tokens'" | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # 連携特典クーポン台帳 (migration 078)。CREATE TABLE + INDEX のみ = additive・冪等。
+      # gate LINK_REWARD_ENABLED が既定 off なので、適用しただけでは本番挙動は変わらない。
+      - name: Apply migration 078 (link reward coupons, additive)
+        if: inputs.op == 'apply-migration-078'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute naturism-line-crm --remote \
+            --file ../../packages/db/migrations/078_line_link_coupons.sql
+          echo '### Verification (line_link_coupons table + 冪等キー 2 本)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name='line_link_coupons'" | tee -a "$GITHUB_STEP_SUMMARY"
+          # 1 人生涯 1 枚は UNIQUE(friend_id) と UNIQUE INDEX(shopify_customer_id) の 2 本で担保する。
+          # 片方だけだと機種変更サイクルで 2 枚目が出るので、両方あることを必ず確認する。
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name, \"unique\" FROM pragma_index_list('line_link_coupons')" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '### Verification (既定額が 300 であること)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name, dflt_value FROM pragma_table_info('line_link_coupons') WHERE name='discount_value'" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # 連携特典クーポン (¥300/7日) の発行を有効化。Sprint A-1。
+      - name: Enable link reward coupon (LINK_REWARD_ENABLED=true)
+        if: inputs.op == 'enable-link-reward'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # 前提: migration 078 適用済み。未適用のまま ON にすると、連携した顧客に対して
+          # Shopify のクーポンは発行されるのに台帳 INSERT が table 不在で失敗し、
+          # **顧客には出せないコードが Shopify 側にだけ残る** (回収不能なゴミ + 特典が届かない)。
+          TABLE=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name='line_link_coupons'")
+          if ! echo "$TABLE" | grep -q 'line_link_coupons'; then
+            echo '❌ line_link_coupons が存在しません — apply-migration-078 を先に実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          TMP="$RUNNER_TEMP/secrets.link-reward.json"
+          printf '{"LINK_REWARD_ENABLED":"true"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+          echo '⚠️ これ以降、顧客が自分で連携を完了すると ¥300 クーポンが実発行されます。実機で 1 件確認してください。' >> "$GITHUB_STEP_SUMMARY"
+
+      # 顧客可視面 (契約カード) の開放。2026-08-11 Katsu 承認済み。
+      - name: Enable subscription MENU (SUBSCRIPTION_MENU_ENABLED=true)
+        if: inputs.op == 'enable-subscription-menu'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # 前提: 受理レイヤー (SUB_INTENT_ENABLED) が入っていること。入っていない状態で MENU を
+          # 開けると、カードのボタンが「案内で終わる」旧トークンのままになる (§10 実装順序6)。
+          if ! npx wrangler secret list | grep -q 'SUB_INTENT_ENABLED'; then
+            echo '❌ SUB_INTENT_ENABLED が未投入です — 受理レイヤーを先に有効化してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          TMP="$RUNNER_TEMP/secrets.sub-menu.json"
+          printf '{"SUBSCRIPTION_MENU_ENABLED":"true"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+          echo '⚠️ これ以降、契約カードが顧客に見えます。実機で日付表示を確認してください (`contract-diagnose` で Shopify 画面と照合可)。' >> "$GITHUB_STEP_SUMMARY"
+
+      # 決済リマインドの送信開放。**ここで初めて push が飛ぶ**。2026-08-11 Katsu 承認済み。
+      - name: Enable subscription REMINDER (SUBSCRIPTION_REMINDER_ENABLED=true)
+        if: inputs.op == 'enable-subscription-reminder'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # 前提1: MENU が先 (docs/SUBSCRIPTION_GATE_CRITERIA.md の開放順序)。
+          # リマインドのカードは MENU と同じビルダーなので、MENU を確認せずに送ると
+          # 「初めて見るカード」が push で届く。
+          if ! npx wrangler secret list | grep -q 'SUBSCRIPTION_MENU_ENABLED'; then
+            echo '❌ SUBSCRIPTION_MENU_ENABLED が未投入です — MENU を先に開けて実機確認してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # 前提2: 条件3 (測定器の生存)。これが 0 だと開けても 1 通も飛ばない = 開ける意味がない。
+          ALIVE=$(npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            SELECT COUNT(*) AS n FROM cron_run_logs
+             WHERE job_name = 'teiki-flow-ingest' AND status = 'success'
+               AND datetime(ran_at) >= datetime('now','+9 hours','-72 hours')")
+          echo "$ALIVE" | tee -a "$GITHUB_STEP_SUMMARY"
+          if echo "$ALIVE" | grep -Eq '"n": *0'; then
+            echo '❌ 条件3 未達 (直近 72h に実測受信なし) — Shopify Flow の実行ログを確認してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo '### 開放時点の送信対象 (would_actually_send が 0 なら初回は誰にも飛ばない)' >> "$GITHUB_STEP_SUMMARY"
+          echo '判定の詳細は `reminder-dry-run` を参照。' >> "$GITHUB_STEP_SUMMARY"
+          TMP="$RUNNER_TEMP/secrets.sub-reminder.json"
+          printf '{"SUBSCRIPTION_REMINDER_ENABLED":"true"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+          echo '⚠️ これ以降、条件を満たした契約に決済リマインドが **実際に push されます**。' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Enable sub-link (SUB_LINK_ENABLED=true)
         if: inputs.op == 'enable-sub-link'
         working-directory: apps/worker
@@ -985,18 +1106,34 @@ jobs:
             " | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
-          # C2: MENU / REMINDER を開ける数値条件 (docs/SUBSCRIPTION_GATE_CRITERIA.md が正)。
+          # C2: MENU / REMINDER を開ける条件 (docs/SUBSCRIPTION_GATE_CRITERIA.md が正)。
           # ここで毎回機械判定することで「条件に達したか」を目視計算せずに追える。
           #
-          # ⚠️ crit2 に鮮度述語 (flow_measured_at) を**入れないこと**。前例なし層
+          # 🔄 2026-08-11 Katsu 決定: **条件1 (LINE 到達 > 30) と 条件2 (実測が過半) は撤廃**。
+          # 判定列ごと削除してある — 使わない条件を 1/0 で出し続けると読む側が
+          # 「まだ守っている壁」と誤解するため。
+          # ⚠️ 撤廃した判定列の**識別子をこのファイルに書かないこと** (CI ガードが
+          # ファイル全文の非包含で復活を検出するので、コメント内の言及でも赤くなる。
+          # 識別子つきの説明は doc 側 = docs/SUBSCRIPTION_GATE_CRITERIA.md に置く)。
+          # 撤廃の根拠は doc 側に確認記録つきで書いてある (derived の推定日はすべて「ごろ」+
+          # 脚注で提示され、出せないときは日付を捏造しない = 条件2 が守っていたものは
+          # 表現側の恒久ガードで代替できている)。
+          # 数値そのものは linked_reachable_active / measured_active を**情報列**として残す
+          # (Sprint A/C = 連携特典 ¥300 と magic-link メールの効果測定に使う)。
+          # 復活させたくなったら doc とこの SQL を**必ず同時に**戻すこと
+          # (admin-ops-c2-constants.test.ts が両方向の drift を CI で検出する)。
+          #
+          # ⚠️ measured_active に鮮度述語 (flow_measured_at) を**入れないこと**。前例なし層
           # (last_order_at 欠落・本番 active の約半数) は恒久的に 'flow' で、トリガー1 が
           # 決済 7 日前にしか発火しないため、周期の大半で実測は正当に「古い」。
-          # 鮮度を crit2 に混ぜると健常時でも過半に届かず、条件が永久に満たされない。
+          # 鮮度を混ぜると健常時でも過半に届かず、数字が実態より悲観的になる。
           # 代わりに fresh_measured_active を**情報列**として併記し、Flow 停止は crit3
           # (受信の生存) で捕まえる。
-          echo '### gate 開放条件の判定 (C2) — 3 つとも 1 になるまで MENU / REMINDER は開けない' >> "$GITHUB_STEP_SUMMARY"
-          echo '条件1 = LINE 到達可能な連携済み active 契約 > 30 / 条件2 = active の過半が実測 (flow) / 条件3 = 直近 72h に実測受信あり。詳細と根拠: docs/SUBSCRIPTION_GATE_CRITERIA.md' >> "$GITHUB_STEP_SUMMARY"
-          echo '`fresh_measured_active` は参考値 (今この瞬間に送信資格を持つ実測数)。周期の大半で小さいのが正常 — crit2 と混同しないこと。' >> "$GITHUB_STEP_SUMMARY"
+          echo '### gate 開放条件の判定 (C2) — 現在の阻止条件は 条件3 のみ' >> "$GITHUB_STEP_SUMMARY"
+          echo '🔄 **2026-08-11 Katsu 決定で 条件1 (LINE 到達 > 30) と 条件2 (実測が過半) を撤廃**。条件1 = 開けること自体に実費も不可逆な公開影響もないため / 条件2 = 守っていたブランド毀損リスク (derived の推定日表示) を実 Flex で確認し、表現側 (「ごろ」+ 脚注 + 日付を捏造しない) の恒久ガードで代替できると確認したため。詳細と確認記録: docs/SUBSCRIPTION_GATE_CRITERIA.md' >> "$GITHUB_STEP_SUMMARY"
+          echo '条件1/条件2 の **1/0 判定列は意図的に削除**した (使わない条件を 1/0 で出し続けると「まだ守っている壁」と誤読されるため)。実測値は `linked_reachable_active` / `measured_active` を**情報列**として残し、Sprint A/C の効果測定に使う。' >> "$GITHUB_STEP_SUMMARY"
+          echo '条件3 = 直近 72h に実測受信あり (測定器の生存)。これが 0 だと開けても 1 通も飛ばない。' >> "$GITHUB_STEP_SUMMARY"
+          echo '`fresh_measured_active` は参考値 (今この瞬間に送信資格を持つ実測数)。周期の大半で小さいのが正常 — `measured_active` と混同しないこと。' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler d1 execute naturism-line-crm --remote --json --command "
             WITH a AS (
               SELECT * FROM subscription_contracts
@@ -1022,8 +1159,6 @@ jobs:
                  AND flow_measured_at >= datetime('now','+9 hours','-10 day')) AS fresh_measured_active,
               (SELECT n FROM reach) AS linked_reachable_active,
               (SELECT n FROM ingest) AS ingest_success_72h,
-              CASE WHEN (SELECT n FROM reach) > 30 THEN 1 ELSE 0 END AS crit1_linked_over_30,
-              CASE WHEN (SELECT n FROM meas) * 2 > (SELECT COUNT(*) FROM a) THEN 1 ELSE 0 END AS crit2_measured_majority,
               CASE WHEN (SELECT n FROM ingest) > 0 THEN 1 ELSE 0 END AS crit3_ingest_alive_72h
           " | tee -a "$GITHUB_STEP_SUMMARY"
           echo '### 参考: 全契約の内訳 (窓に関係なく)' >> "$GITHUB_STEP_SUMMARY"
