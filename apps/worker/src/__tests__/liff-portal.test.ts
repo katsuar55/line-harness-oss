@@ -1046,6 +1046,53 @@ describe('LIFF More Tab APIs', () => {
     });
   });
 
+  // ─── Link coupon (連携特典クーポン表示・Sprint A-1・採点 C3/C5) ─────────
+  describe('GET /api/liff/link-coupon', () => {
+    it('gate off (LINK_REWARD_ENABLED 未設定) → coupon:null (DB を触らない = pre-migration 安全)', async () => {
+      const env = { ...mockEnv() };
+      const res = await moreApp.request(
+        '/api/liff/link-coupon',
+        { method: 'GET', headers: { 'X-Friend-Id': 'friend-1', 'X-Line-User-Id': 'U_EXISTING' } },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean; data: { coupon: unknown } };
+      expect(json.success).toBe(true);
+      expect(json.data.coupon).toBeNull();
+      expect((env.DB as unknown as { prepare: ReturnType<typeof vi.fn> }).prepare).not.toHaveBeenCalled();
+    });
+
+    it('未認証 → 401', async () => {
+      const res = await moreReq(moreApp, 'GET', '/api/liff/link-coupon', undefined, false);
+      expect(res.status).toBe(401);
+    });
+
+    it('gate on + 発行済み → 単数 coupon の応答 shape (code/discountValue/expiresAt/remainingText/applyUrl)', async () => {
+      const future = new Date(Date.now() + 3 * 86_400_000).toISOString();
+      const stmt = {
+        bind: vi.fn().mockReturnThis(),
+        first: vi.fn(async () => ({ coupon_code: 'NLINK-TEST2345', discount_value: 500, expires_at: future })),
+        all: vi.fn(async () => ({ results: [] })),
+        run: vi.fn(async () => ({ success: true })),
+      };
+      const env = { ...mockEnv(), LINK_REWARD_ENABLED: 'true', DB: { prepare: vi.fn(() => stmt) } as unknown as D1Database };
+      const res = await moreApp.request(
+        '/api/liff/link-coupon',
+        { method: 'GET', headers: { 'X-Friend-Id': 'friend-1', 'X-Line-User-Id': 'U_EXISTING' } },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const json = await res.json() as {
+        data: { coupon: { code: string; discountValue: number; expiresAt: string; remainingText: string | null; applyUrl: string | null } };
+      };
+      expect(json.data.coupon.code).toBe('NLINK-TEST2345');
+      expect(json.data.coupon.discountValue).toBe(500);
+      expect(json.data.coupon.expiresAt).toBe(future);
+      // 兄弟 endpoint (referral) は複数形 coupons — 本 endpoint は単数 coupon の契約を固定する
+      expect((json.data as Record<string, unknown>).coupons).toBeUndefined();
+    });
+  });
+
   // ─── Notification Prefs ─────────────────────────
   describe('GET /api/liff/notification-prefs', () => {
     it('returns default prefs when no record exists', async () => {

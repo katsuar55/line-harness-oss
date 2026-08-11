@@ -11,8 +11,15 @@
  * (= consumed_at IS NULL の CAS、 friends.shopify_customer_id の UNIQUE partial index)。
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+
+// 連携特典クーポン (Sprint A-1): redeem 成功 hook の発火だけを検証する (issuer 本体は
+// link-reward-coupon-issuer.test.ts で網羅済)。route は静的 import のみ = dynamic import 干渉なし。
+vi.mock('../services/link-reward-coupon-issuer.js', () => ({
+  issueLinkRewardCoupon: vi.fn(async () => null),
+}));
+
 import {
   generateSubLinkBatch,
   previewSubLinkToken,
@@ -21,7 +28,10 @@ import {
   maskEmail,
 } from '../services/sub-link.js';
 import { subLink } from '../routes/sub-link.js';
+import { issueLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
 import { toJstString } from '@line-crm/db';
+
+const mockedIssueLinkReward = vi.mocked(issueLinkRewardCoupon);
 
 // ============================================================
 // in-memory D1 fake (= CAS/UNIQUE を忠実に enforce)
@@ -1032,3 +1042,110 @@ function mkToken(token: string, cid: string, over: Partial<TokenRow> = {}): Toke
     created_at: toJstString(new Date()),
   };
 }
+
+// ============================================================
+// 連携特典クーポン hook (Sprint A-1, 2026-08-11)
+//   redeem 新規成功のときだけ発行する。冪等 (alreadyLinked) / 失敗では発行しない。
+// ============================================================
+
+describe('link reward hook (POST /api/liff/sub-link/redeem)', () => {
+  function routeEnv(db: D1Database) {
+    return {
+      DB: db,
+      LIFF_URL: 'https://liff.line.me/123-abc',
+      SUB_LINK_ENABLED: 'true',
+      LINK_REWARD_ENABLED: 'true',
+    } as unknown as Record<string, unknown>;
+  }
+  function authedApp(friendId: string, lineUserId = 'U1') {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      (c as unknown as { set: (k: string, v: unknown) => void }).set('liffUser', { friendId, lineUserId });
+      await next();
+    });
+    app.route('/', subLink as never);
+    return app;
+  }
+  async function postRedeem(app: Hono, db: D1Database, token: string) {
+    return app.request(
+      '/api/liff/sub-link/redeem',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) },
+      routeEnv(db),
+    );
+  }
+
+  beforeEach(() => {
+    mockedIssueLinkReward.mockReset();
+    mockedIssueLinkReward.mockResolvedValue(null);
+  });
+
+  it('🚨新規連携成功 → issuer が friendId/customerId/linkPath=sub_link で 1 回呼ばれる', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1');
+    const res = await postRedeem(authedApp('f1'), db, 'T');
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as { success: boolean; data: { alreadyLinked: boolean } };
+    expect(j.data.alreadyLinked).toBe(false);
+    expect(mockedIssueLinkReward).toHaveBeenCalledTimes(1);
+    const [, , opts] = mockedIssueLinkReward.mock.calls[0];
+    expect(opts).toMatchObject({ friendId: 'f1', shopifyCustomerId: '100', linkPath: 'sub_link' });
+  });
+
+  it('冪等再訪 (alreadyLinked=true) → issuer を呼ばない', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1', { shopify_customer_id: '100' });
+    const res = await postRedeem(authedApp('f1'), db, 'T');
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as { success: boolean; data: { alreadyLinked: boolean } };
+    expect(j.data.alreadyLinked).toBe(true);
+    expect(mockedIssueLinkReward).not.toHaveBeenCalled();
+  });
+
+  it('redeem 失敗 (無効トークン) → issuer を呼ばない', async () => {
+    const { db, store } = createDb();
+    seedFriend(store, 'f1');
+    const res = await postRedeem(authedApp('f1'), db, 'nope');
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(mockedIssueLinkReward).not.toHaveBeenCalled();
+  });
+
+  it('issuer が reject しても redeem 応答は成功のまま (fire-and-forget)', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1');
+    mockedIssueLinkReward.mockRejectedValueOnce(new Error('shopify down'));
+    const res = await postRedeem(authedApp('f1'), db, 'T');
+    expect(res.status).toBe(200);
+  });
+});
+
+// 再注入ドリル (2026-08-11): waitUntil 登録そのものを検証する (account-link 側と同旨)。
+describe('link reward hook — waitUntil 登録 (redeem)', () => {
+  it('🚨新規連携成功 → executionCtx.waitUntil に発行 Promise が登録される', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1');
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      (c as unknown as { set: (k: string, v: unknown) => void }).set('liffUser', { friendId: 'f1', lineUserId: 'U1' });
+      await next();
+    });
+    app.route('/', subLink as never);
+    const waitUntil = vi.fn();
+    const res = await app.request(
+      '/api/liff/sub-link/redeem',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: 'T' }) },
+      { DB: db, LIFF_URL: 'https://liff.line.me/123-abc', SUB_LINK_ENABLED: 'true', LINK_REWARD_ENABLED: 'true' },
+      { waitUntil, passThroughOnException: () => {} } as unknown as ExecutionContext,
+    );
+    expect(res.status).toBe(200);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    expect(waitUntil.mock.calls[0][0]).toBeInstanceOf(Promise);
+  });
+});

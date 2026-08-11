@@ -217,6 +217,11 @@ export type Env = {
     //   'true' で issueReferralCoupon が本番 Shopify に書込 (= 未設定なら no-op、 本番未書込)。
     //   ⚠️ 有効化前に migration 068 (line_referral_coupons) 適用が必要。
     REFERRAL_REWARD_ENABLED?: string;
+    // 連携特典クーポン発行 gate (Sprint A-1 2026-08-11): 顧客自身が LINE⇔Shopify 連携を
+    //   完了した瞬間 (sub-link redeem 新規成功 / email OTP verify 成功) に ¥500 クーポン発行。
+    //   'true' で issueLinkRewardCoupon が本番 Shopify に書込 (= 未設定なら no-op、 本番未書込)。
+    //   ⚠️ 有効化前に migration 078 (line_link_coupons) 適用が必要。
+    LINK_REWARD_ENABLED?: string;
     // サブスク・コンシェルジュ gate (WI-1 2026-07-14, docs/SUBSCRIPTION_ULTRAPLAN_2026-07-14.md):
     //   'true' でリッチメニュー「サブスク」postback / サブスク intent / 契約 read-model 導出が有効。
     //   ⚠️ 有効化手順 (順番厳守): ①migration 069 適用 → ②rebuild endpoint 実行 (gate 非連動、

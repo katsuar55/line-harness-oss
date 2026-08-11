@@ -236,6 +236,20 @@ describe('GET /api/admin/dashboard', () => {
     expect(features.find((f) => f.label.includes('ランク'))?.on).toBe(true);
     expect(features.find((f) => f.label.includes('紹介した人に500円'))?.on).toBe(false);
     expect(features.find((f) => f.label.includes('紹介した人に500円'))?.offText).toContain('案内NG');
+    // 連携特典 (Sprint A-1・採点 C2): gate 未投入なら OFF + 案内NG が見える
+    expect(features.find((f) => f.label.includes('連携特典'))?.on).toBe(false);
+    expect(features.find((f) => f.label.includes('連携特典'))?.offText).toContain('案内NG');
+  });
+
+  it('LINK_REWARD_ENABLED=true のとき連携特典行が ON になる (採点 C2)', async () => {
+    const app = createApp();
+    const res = await app.request(
+      'http://localhost/api/admin/dashboard',
+      { method: 'GET', headers: { Authorization: `Bearer ${API_KEY}` } },
+      ENV(fakeDb(), { LINK_REWARD_ENABLED: 'true' }),
+    );
+    const json = (await res.json()) as { data: { features: Array<{ label: string; on: boolean }> } };
+    expect(json.data.features.find((f) => f.label.includes('連携特典'))?.on).toBe(true);
   });
 
   it('friendCoupon ON のとき data.friendCoupon.enabled=true と unansweredTop の shape を返す', async () => {

@@ -4,6 +4,7 @@ import { getFriendCouponConfig } from '../services/friend-coupon-config.js';
 import { buildDiscountApplyUrl } from '../services/cart-permalink.js';
 import { getActiveWelcomeCoupon, formatCouponCountdown } from '../services/welcome-coupon.js';
 import { getActiveReferralCoupons } from '../services/referral-coupon-issuer.js';
+import { getActiveLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
 import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
 import { generateAiResponse } from '../services/ai-response.js';
 import { check } from '../middleware/rate-limit.js';
@@ -325,6 +326,43 @@ liffPortal.get('/api/liff/referral-coupon', async (c) => {
     return c.json({ success: true, data: { coupons, count: coupons.length } });
   } catch (err) {
     console.error('GET /api/liff/referral-coupon error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/liff/link-coupon — アカウント連携特典の ¥500 実クーポン (Sprint A-1)。
+ * 連携完了時に issueLinkRewardCoupon (route hook) が発行した 1 friend 1 枚を返す。
+ * gate off (= 機能未有効化) なら常に空 (= migration 078 未適用でも安全)。
+ * idToken 認証必須 (= 本人の friendId に紐づくクーポンのみ)。
+ */
+liffPortal.get('/api/liff/link-coupon', async (c) => {
+  try {
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    // 未有効化なら DB を触らず空 (= テーブル未存在の pre-migration でも安全)
+    if (c.env.LINK_REWARD_ENABLED !== 'true') {
+      return c.json({ success: true, data: { coupon: null } });
+    }
+
+    const coupon = await getActiveLinkRewardCoupon(c.env.DB, user.friendId);
+    if (!coupon) return c.json({ success: true, data: { coupon: null } });
+
+    return c.json({
+      success: true,
+      data: {
+        coupon: {
+          code: coupon.code,
+          discountValue: coupon.discountValue,
+          expiresAt: coupon.expiresAt,
+          remainingText: formatCouponCountdown(coupon.expiresAt, Date.now()),
+          applyUrl: buildDiscountApplyUrl(FRIEND_COUPON_STORE_DOMAIN, coupon.code),
+        },
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/liff/link-coupon error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

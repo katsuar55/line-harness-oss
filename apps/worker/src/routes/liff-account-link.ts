@@ -25,6 +25,7 @@ import {
   type VerifyCodeFailure,
 } from '../services/account-link.js';
 import type { Env } from '../index.js';
+import { issueLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
 
 const liffAccountLink = new Hono<Env>();
 
@@ -130,6 +131,20 @@ liffAccountLink.post('/api/liff/link/verify-code', async (c) => {
   });
 
   if (result.ok) {
+    // 連携特典クーポン (Sprint A-1): OTP 連携の成立時に発行。verifyAccountLinkCode の
+    // ok=true は新規 link 成立のみ (already_linked は failure code) なので常に対象。
+    // 台帳 UNIQUE(friend_id) が生涯 1 枚を保証。応答は待たせない (waitUntil)。
+    const issueP = issueLinkRewardCoupon(c.env.DB, c.env, {
+      friendId: user.friendId,
+      shopifyCustomerId: result.customerId,
+      linkPath: 'email_otp',
+    }).catch((err) =>
+      console.error(
+        '[account-link] link reward issue failed:',
+        err instanceof Error ? err.message : 'unknown',
+      ),
+    );
+    try { c.executionCtx.waitUntil(issueP); } catch { /* no exec ctx in tests */ }
     return c.json({
       success: true,
       data: {
