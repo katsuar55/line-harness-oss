@@ -2123,7 +2123,7 @@ CREATE TABLE IF NOT EXISTS line_link_coupons (
                            CHECK (link_path IN ('sub_link', 'email_otp', 'unknown')),
   coupon_code              TEXT NOT NULL,                  -- Shopify で発行された code (NLINK-)
   shopify_discount_code_id TEXT,                           -- Shopify GraphQL ID (gid://shopify/DiscountCodeNode/...)
-  discount_value           INTEGER NOT NULL DEFAULT 500,
+  discount_value           INTEGER NOT NULL DEFAULT 300,
   discount_currency        TEXT NOT NULL DEFAULT 'JPY',
   issued_at                TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   expires_at               TEXT,                           -- coupon 有効期限 (NULL = 無期限)
