@@ -181,6 +181,28 @@ function portalPage(
     #ros-datetime.is-disabled{opacity:.4;pointer-events:none}
     @media(prefers-reduced-motion:reduce){#reorder-sheet .ros-panel{animation:none}}
     .card{background:#ffffff;border-radius:20px;border:1px solid var(--hairline);box-shadow:var(--shadow-rest),var(--edge-light)}
+    /* ─ クーポン = チケット様式 (VITAL INSTRUMENT §2-E) ─
+       左レール + 点線コードで金券感を出す。**ノッチ (左右の切込み円) は作らない** —
+       白カード上で背景色が合わず浮くため (デザイン審査で明示却下)。
+       --gold (#b8933f) は白地 2.88:1 / 金地 2.67:1 で **文字には使えない** (大文字 3:1 も不成立)。
+       金の「文字」は必ず --gold-ink #8a6a24 (白 5.04:1 / 金地 4.67:1 = AA)。#b8933f はレール等の
+       非テキスト装飾専用。動く枠は .ref-hero 1 枚だけ (モーション憲法) なので額装は静的。 */
+    .coupon-ticket{position:relative;border-radius:16px;padding:14px 14px 14px 20px;background:#fff;border:1px solid var(--hairline)}
+    .coupon-ticket::before{content:'';position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:3px;background:var(--grad-vital)}
+    /* 豪華版 (連携特典・2026-08-11 Katsu 指示「豪華なクーポンカード」): 金の額装 */
+    .coupon-ticket--gold{background:linear-gradient(158deg,#fffdf7 0%,var(--gold-wash) 100%);border:1.5px solid var(--gold-line);box-shadow:var(--shadow-float),var(--edge-light)}
+    .coupon-ticket--gold::before{background:linear-gradient(180deg,#e6d5a8,#b8933f 55%,#8a6a24)}
+    .coupon-eyebrow{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;letter-spacing:.06em;border-radius:999px;padding:2px 9px;background:var(--gold-deep);color:#fff}
+    .coupon-amt{font-size:32px;font-weight:800;line-height:1.05;letter-spacing:-.5px;color:var(--gold-ink);font-variant-numeric:tabular-nums}
+    .coupon-amt .coupon-amt-unit{font-size:17px;font-weight:800;margin-left:2px;letter-spacing:0}
+    .coupon-note{font-size:12px;line-height:1.55;color:var(--ink-2)}
+    .coupon-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px;font-weight:700;letter-spacing:.08em;color:#0f766e;background:var(--well);border:1.5px dashed #9fd4d2;border-radius:8px;padding:6px 8px;display:block;text-align:center}
+    .coupon-code--gold{color:var(--gold-ink);background:#fffdf7;border-color:#d3bd85}
+    .coupon-act{min-height:44px;display:inline-flex;align-items:center;justify-content:center;border-radius:10px;font-size:13px;font-weight:700;padding:0 12px;white-space:nowrap}
+    .coupon-act--ghost{border:1.5px solid var(--gold-line);background:#fff;color:var(--gold-ink)}
+    .coupon-act--fill{background:var(--gold-deep);color:#fff;border:1.5px solid var(--gold-deep)}
+    .coupon-expiry{font-size:12px;font-weight:600;color:var(--ink-2);font-variant-numeric:tabular-nums}
+    .coupon-expiry--soon{font-size:11px;font-weight:700;color:#b84a2e;background:#fff3ec;border-radius:999px;padding:2px 8px;display:inline-block}
     .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:8px}
     @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
     .progress-bar{transition:width .6s cubic-bezier(.4,0,.2,1)}
@@ -2008,31 +2030,54 @@ async function loadReferralCoupon() {
     cardError(el, null, 'loadReferralCoupon');
   }
 }
+// 連携特典クーポン = 金の額装チケット (2026-08-11 Katsu「豪華なクーポンカード」+ §2-E チケット様式)。
+// 旧実装のティール 089591 (hex 文字列はガードの検出対象なので # を付けずに書く) は白地 3.67:1 で
+// 12px 太字には AA (4.5:1) 不成立だった。同様に 078783 も 4.37:1 で小文字には足りない — 金の文字は
+// --gold-ink #8a6a24 (白 5.04:1 / 金地 4.67:1)、塗りは --gold-deep #92400e (白文字 7.09:1) に統一する。
+// 金額は台帳 (line_link_coupons.discount_value) の値をそのまま出す = 既発行の ¥500 券は ¥500 のまま。
+function linkCouponDaysLeft(expiresAt) {
+  if (!expiresAt) return null;
+  var t = Date.parse(expiresAt);
+  if (isNaN(t)) return null;
+  return Math.ceil((t - Date.now()) / 86400000);
+}
 async function loadLinkCoupon() {
   var el = document.getElementById('link-coupon-card');
   if (!el) return;
+  // 失敗・非表示の経路では通常カードの見た目に戻す (エラー文言が金の額装で出ないように)
+  el.className = 'card p-4';
   try {
     const res = await apiGet('/api/liff/link-coupon');
     if (apiFailed(res)) { cardError(el, res, 'loadLinkCoupon'); return; }
     var cp = res.data && res.data.coupon;
     if (!cp) { el.style.display = 'none'; return; }
     el.style.display = 'block';
-    el.style.background = 'linear-gradient(135deg,#e6faf9,#ffffff)';
-    el.style.border = '1.5px solid rgba(10,186,181,.45)';
-    var val = Number(cp.discountValue) || 500;
+    el.className = 'coupon-ticket coupon-ticket--gold';
+    // 額は台帳の実値のみ。壊れた値で「¥0 OFF」や既定額の嘘を出さず、金額なしの見出しに退避する
+    var raw = Number(cp.discountValue);
+    var val = (isFinite(raw) && raw > 0) ? raw : null;
+    var left = linkCouponDaysLeft(cp.expiresAt);
+    var expiry = cp.remainingText
+      ? (left !== null && left <= 3
+          ? '<span class="coupon-expiry--soon">⏳ ' + esc(cp.remainingText) + 'で終了</span>'
+          : '<span class="coupon-expiry">⏳ ' + esc(cp.remainingText) + 'で終了</span>')
+      : '';
     el.innerHTML =
-      '<div class="flex items-center gap-2 mb-1">' +
-      '<span class="px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700;background:#0f766e;color:#fff">🔗 連携特典</span>' +
-      '<span class="text-xs font-bold" style="color:#089591">連携ありがとうございます</span></div>' +
-      '<p class="text-2xl font-extrabold mb-1" style="color:#078783">¥' + val + ' OFF クーポン</p>' +
-      '<p class="text-xs text-gray-500 mb-2">アカウント連携の特典です。公式ストアの全商品でお使いいただけます。</p>' +
-      '<div class="flex items-center gap-2 mb-2">' +
-      '<code class="flex-1 text-center text-sm font-bold tracking-widest bg-white rounded-lg py-2" style="border:1px solid #9adedb">' + esc(cp.code) + '</code>' +
-      '<button onclick="copyLinkCouponCode(this)" data-code="' + esc(cp.code) + '" class="text-xs font-bold rounded-lg px-3 py-2 whitespace-nowrap" style="border:1px solid #9adedb;background:#e6faf9;color:#078783">コピー</button>' +
-      (cp.applyUrl ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" class="text-xs font-bold rounded-lg px-3 py-2 whitespace-nowrap" style="background:#0f766e;color:#fff">使う</a>' : '') +
-      '</div>' +
-      (cp.remainingText ? '<p class="text-xs mb-1" style="color:#089591;margin-top:-4px">⏳ ' + esc(cp.remainingText) + 'で終了</p>' : '');
+      '<div class="flex items-center flex-wrap gap-2 mb-2">' +
+      '<span class="coupon-eyebrow">🔗 連携特典</span>' + expiry + '</div>' +
+      (val
+        ? '<p class="coupon-amt">¥' + val + '<span class="coupon-amt-unit">OFF</span></p>'
+        : '<p class="coupon-amt" style="font-size:22px">割引クーポン</p>') +
+      '<p class="coupon-note mt-1 mb-3">アカウント連携のお礼です。公式ストアの全商品にお使いいただけます。ほかの割引と重ねてお使いいただけます (送料の割引を除く)。</p>' +
+      '<div class="coupon-code coupon-code--gold mb-3">' + esc(cp.code) + '</div>' +
+      '<div class="flex items-center gap-2">' +
+      '<button onclick="copyLinkCouponCode(this)" data-code="' + esc(cp.code) + '" class="tap coupon-act coupon-act--ghost flex-1">コードをコピー</button>' +
+      (cp.applyUrl
+        ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" rel="noopener" class="tap coupon-act coupon-act--fill flex-1">このクーポンで買う →</a>'
+        : '') +
+      '</div>';
   } catch {
+    el.className = 'card p-4';
     cardError(el, null, 'loadLinkCoupon');
   }
 }

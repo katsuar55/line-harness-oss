@@ -1,7 +1,7 @@
 /**
  * Link Reward Coupon Issuer Service (= 連携特典クーポン発行, Sprint A-1, 2026-08-11)
  *
- * 役割: LINE⇔Shopify アカウント連携を顧客自身が完了した瞬間に ¥500 OFF の
+ * 役割: LINE⇔Shopify アカウント連携を顧客自身が完了した瞬間に ¥300 OFF の
  *   Shopify 実クーポンを 1 枚発行する。
  *   狙い = gate 開放条件 crit1「LINE 到達可能な連携済み active 契約 >30」(現在 4) を
  *   動かす連携インセンティブ。「連携すると 1 秒でお得」を体感させる。
@@ -13,8 +13,11 @@
  *   (= 顧客の能動的アクションへの報酬という設計意図)。
  *
  * 設計 (referral-coupon-issuer.ts の同型 4 本目):
- *   - discountCodeBasicCreate (固定額 ¥500、usageLimit=1、appliesOncePerCustomer=true = 単回)。
+ *   - discountCodeBasicCreate (固定額 ¥300、usageLimit=1、appliesOncePerCustomer=true = 単回)。
  *   - combinesWith product+order 両 true (= ランク割引 NLR- と併用可、Plus 不要のクロスクラス)。
+ *     ⚠️ 「重複して使用可能」(2026-08-11 Katsu) の実装はこの combinesWith が担う
+ *     (= 他の割引と**併用**できる)。同じコードを**複数回**使えるようにする指示ではないため、
+ *     usageLimit=1 / appliesOncePerCustomer=true は据置 (1 人生涯 1 枚の冪等設計と対)。
  *   - **冪等キーは friend_id と shopify_customer_id の両方** (それぞれ UNIQUE):
  *     同一 friend の再連携・経路重複・並行は UNIQUE(friend_id)、「サポート手動解除 →
  *     別 LINE アカウントで再連携」(機種変更の定常運用) は UNIQUE(shopify_customer_id) で
@@ -39,7 +42,10 @@ import { auditSystem } from './audit-logger.js';
 // 定数
 // ============================================================
 
-const DEFAULT_DISCOUNT_VALUE_JPY = 500;
+// 2026-08-11 Katsu 決定: ¥500 → ¥300 (gate 開放 GO と同時。連携インセンティブとしての
+// 体感は残しつつ 1 枚あたりの実費を下げる。既発行分は台帳の discount_value を正とするため
+// この定数変更で遡及書換えは起きない = 過去の ¥500 券はそのまま有効)。
+const DEFAULT_DISCOUNT_VALUE_JPY = 300;
 // 紹介特典と同値 (B2C は希少性 + 損失回避で短期限が conversion ↑、業界 best practice 3-7 日)
 const DEFAULT_VALID_DAYS = 7;
 const SHOPIFY_API_VERSION = '2026-04';

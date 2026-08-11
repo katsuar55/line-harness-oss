@@ -1071,7 +1071,7 @@ describe('LIFF More Tab APIs', () => {
       const future = new Date(Date.now() + 3 * 86_400_000).toISOString();
       const stmt = {
         bind: vi.fn().mockReturnThis(),
-        first: vi.fn(async () => ({ coupon_code: 'NLINK-TEST2345', discount_value: 500, expires_at: future })),
+        first: vi.fn(async () => ({ coupon_code: 'NLINK-TEST2345', discount_value: 300, expires_at: future })),
         all: vi.fn(async () => ({ results: [] })),
         run: vi.fn(async () => ({ success: true })),
       };
@@ -1086,7 +1086,7 @@ describe('LIFF More Tab APIs', () => {
         data: { coupon: { code: string; discountValue: number; expiresAt: string; remainingText: string | null; applyUrl: string | null } };
       };
       expect(json.data.coupon.code).toBe('NLINK-TEST2345');
-      expect(json.data.coupon.discountValue).toBe(500);
+      expect(json.data.coupon.discountValue).toBe(300);
       expect(json.data.coupon.expiresAt).toBe(future);
       // 兄弟 endpoint (referral) は複数形 coupons — 本 endpoint は単数 coupon の契約を固定する
       expect((json.data as Record<string, unknown>).coupons).toBeUndefined();

@@ -331,7 +331,7 @@ liffPortal.get('/api/liff/referral-coupon', async (c) => {
 });
 
 /**
- * GET /api/liff/link-coupon — アカウント連携特典の ¥500 実クーポン (Sprint A-1)。
+ * GET /api/liff/link-coupon — アカウント連携特典の ¥300 実クーポン (Sprint A-1)。
  * 連携完了時に issueLinkRewardCoupon (route hook) が発行した 1 friend 1 枚を返す。
  * gate off (= 機能未有効化) なら常に空 (= migration 078 未適用でも安全)。
  * idToken 認証必須 (= 本人の friendId に紐づくクーポンのみ)。
