@@ -96,9 +96,9 @@ LINE のトーク画面からそのままお送りいただけます。
 （お手続きはこの 1 タップだけです。パスワードの入力はありません）
 
 ── 連携された方へ ──
-お引き合わせが完了しますと、300円 OFF のクーポンを 1 枚お送りします。
+お引き合わせが完了しますと、300円 OFF のクーポンを 1 枚お届けします。
+LINE のミニアプリ（ホーム画面）でご確認いただけます。
 公式オンラインストアの全商品にお使いいただけます。
-ほかの割引と重ねてお使いいただけます（送料の割引を除く）。
 有効期限は発行から 7 日間です。
 
 ──
@@ -116,7 +116,7 @@ naturism（株式会社ケンコーエクスプレス）
 |---|---|
 | 「300円 OFF のクーポンを 1 枚」 | `DEFAULT_DISCOUNT_VALUE_JPY = 300`・friend_id と shopify_customer_id の二重 UNIQUE で**生涯 1 枚** |
 | 「全商品にお使いいただけます」 | `customerGets.items = { all: true }` |
-| 「ほかの割引と重ねて（送料の割引を除く）」 | `combinesWith: { productDiscounts: true, orderDiscounts: true, shippingDiscounts: false }` |
+| 「ミニアプリ（ホーム画面）でご確認いただけます」 | 発行は redeem 応答後の `waitUntil`。ポータルは `refreshLinkCouponAfterLink` で 1.5/4/9 秒後に拾い直し、連携完了モーダルにも「お届けしました」を出す |
 | 「有効期限は発行から 7 日間」 | `DEFAULT_VALID_DAYS = 7` |
 | 「リンクの有効期限は 30 日間」 | generate の `expiresInDays: 30` |
 | 「パスワードの入力はありません」 | magic-link は single-use トークン方式（LINE ログインのみ） |
@@ -162,7 +162,36 @@ ORDER BY sc.updated_at DESC LIMIT ?
 | 「期限切れ」と出る | 30 日経過。再発行して個別に送る (generate を対象 1 件で実行) |
 | クーポンが届かない | ポータルのホームに出る (トーク画面ではない)。連携直後は数秒かかることがある |
 | 2 回連携したら 2 枚もらえるか | もらえない (生涯 1 枚)。文面でも「1 枚」と明記済み |
-| ほかのクーポンと一緒に使えるか | 使える (送料の割引を除く) |
+| ほかのクーポンと一緒に使えるか | **一緒には使えない** (レジで 1 枚のみ)。理由は下の「併用について」 |
+
+---
+
+---
+
+## 6. 併用について (Katsu の「重複して使用可能」への回答)
+
+コード側は **`combinesWith: { productDiscounts: true, orderDiscounts: true, shippingDiscounts: false }`**
+を設定済み = 「重ねられるようにする」意思は実装に入っている。
+**ただし、今日の顧客に「併用できます」と案内してはいけない。** 理由:
+
+1. **`combinesWith` は双方向の握手**。相手側も許可していないと重ならない。
+   稼働中の **welcome ¥500 は `combinesWith` 未指定 = 併用不可** (`shopify-coupon-issuer.ts`)。
+2. **クラスが同じだと重ねられない**。連携特典・紹介特典・ランク割引はいずれも
+   `customerGets.items: { all: true }` = **同じ product クラス**。
+   同一ラインの product 割引どうしの重ねは **Shopify Plus が必要**
+   (2026-06-03 実測・memory `feedback_shopify_plus_discount_stacking`)。
+   ランク割引を「order クラス」にする設計意図はコメントに残っているが、
+   実際の mutation は product クラスになっている。
+
+→ **今の構成では、どのクーポンとも実際には重ならない。**
+「併用できます」と書くと、レジで弾かれた顧客の問い合わせと景表法上の「言い過ぎ」を生む。
+このため LIFF カードとメール文面の両方から併用の記述を外してある。
+
+**併用を本当に成立させたい場合の選択肢** (別タスク):
+- (a) ランク割引を **order クラス**に作り替える (`customerGets` でなく `customerGets` の
+  order-level 割引にする) → 連携特典 (product) × ランク (order) のクロスクラスで重なる
+- (b) welcome クーポンにも `combinesWith` を付ける (ただしクラスが同じなので (a) が先)
+- (c) Shopify Plus に上げる (実費・現時点では非現実的)
 
 ---
 

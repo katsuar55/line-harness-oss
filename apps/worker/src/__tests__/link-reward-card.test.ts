@@ -27,7 +27,7 @@ const pages = readFileSync(join(root, '..', 'routes', 'liff-pages.ts'), 'utf8').
 // ─────────────────────────────────────────────────────────────
 const escSrc = pages.match(/^function esc\(s\) \{.*$/m);
 const block = pages.match(
-  /function linkCouponDaysLeft\(expiresAt\) \{[\s\S]*?\n\}\nasync function loadLinkCoupon\(\) \{[\s\S]*?\n\}\n(?=function copyLinkCouponCode)/,
+  /function linkCouponDaysLeft\(expiresAt\) \{[\s\S]*?\nasync function loadLinkCoupon\(\) \{[\s\S]*?\n\}\n(?=\/\/ 🚨 連携特典クーポンは redeem)/,
 );
 
 interface FakeEl {
@@ -129,6 +129,40 @@ describe('連携特典カード — 期限の切迫表現 (§2-E: 残 3 日以�
     expect(el.innerHTML).toContain('coupon-expiry--soon');
   });
 
+  // 🚨 サーバ (formatCouponCountdown) は Math.floor で日数を数える。クライアントが ceil だと
+  // 3.5 日残 = サーバ「あと3日」/ クライアント 4 日で **強調されない 24 時間の窓**ができる。
+  it('残り 3.5 日 (サーバは「あと3日」と言う) でも切迫 chip になる — floor で数えている', async () => {
+    const { el } = await render(
+      coupon({ expiresAt: new Date(Date.now() + 3.5 * 86_400_000).toISOString(), remainingText: 'あと3日' }),
+    );
+    expect(el.innerHTML).toContain('coupon-expiry--soon');
+  });
+
+  it('残り 4.2 日 (サーバは「あと4日」) は切迫 chip にしない', async () => {
+    const { el } = await render(
+      coupon({ expiresAt: new Date(Date.now() + 4.2 * 86_400_000).toISOString(), remainingText: 'あと4日' }),
+    );
+    expect(el.innerHTML).not.toContain('coupon-expiry--soon');
+  });
+
+  // 🚨 サーバは残り 1 時間未満で「まもなく終了」を返す。素朴に 'で終了' を足すと
+  // 「まもなく終了で終了」という壊れた日本語が本番に出る (welcome/紹介カードは今もこの形)。
+  it('「まもなく終了」に「で終了」を足さない', async () => {
+    const { el } = await render(
+      coupon({ expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(), remainingText: 'まもなく終了' }),
+    );
+    expect(el.innerHTML).toContain('まもなく終了');
+    expect(el.innerHTML).not.toContain('まもなく終了で終了');
+    expect(el.innerHTML).toContain('coupon-expiry--soon');
+  });
+
+  it('「あと5時間」には「で終了」を足す', async () => {
+    const { el } = await render(
+      coupon({ expiresAt: new Date(Date.now() + 5 * 3_600_000).toISOString(), remainingText: 'あと5時間' }),
+    );
+    expect(el.innerHTML).toContain('あと5時間で終了');
+  });
+
   it('expiresAt が壊れていても落ちない (chip は出さない)', async () => {
     const { el } = await render(coupon({ expiresAt: 'not-a-date' }));
     expect(el.innerHTML).toContain('coupon-expiry"');
@@ -176,7 +210,7 @@ describe('連携特典カード — エスケープと安全規約', () => {
   it('applyUrl が無いときは「買う」リンクを出さない (href="" の死んだリンクを作らない)', async () => {
     const { el } = await render(coupon({ applyUrl: null }));
     expect(el.innerHTML).not.toContain('このクーポンで買う');
-    expect(el.innerHTML).toContain('コードをコピー');
+    expect(el.innerHTML).toContain('>コピー<');
   });
 
   it('onclick は名前付き関数のみ (引用符ネスト禁止規約)', () => {
@@ -223,6 +257,26 @@ describe('連携特典カード — AA (§7-1) とトークン規律', () => {
     expect(pages).toContain('.coupon-act{min-height:44px');
   });
 
+  // 🚨 320px 端末のカード内幅は約 254px。nowrap のボタンを 2 つ横に並べると溢れて横スクロールになる。
+  it('320px でボタンが溢れない配置 (コードとコピーが 1 行・主 CTA は幅いっぱい)', async () => {
+    const { el } = await render(coupon());
+    expect(el.innerHTML).toContain('>コピー<'); // 「コードをコピー」だと横並びで溢れる
+    expect(el.innerHTML).toContain('style="width:100%">このクーポンで買う');
+    // コード欄は縮められる (min-width:0 が無いと flex 子は縮まず溢れる)
+    expect(el.innerHTML).toContain('flex:1 1 auto;min-width:0');
+  });
+
+  it('コード欄は溢れずに省略される (長いコードでレイアウトを壊さない)', () => {
+    expect(pages).toMatch(/\.coupon-code\{[^}]*text-overflow:ellipsis/);
+  });
+
+  // WCAG 1.4.11: 地 (#faf6ec) と面 (#fff) がほぼ同色なので、境界は枠線しかない。
+  // --gold-line #e6d5a8 は 1.35:1 で不足する。
+  it('ghost ボタンの輪郭は --gold-ink (AA 側) を使う', () => {
+    expect(pages).toContain('.coupon-act--ghost{border:1.5px solid var(--gold-ink)');
+    expect(pages).not.toContain('.coupon-act--ghost{border:1.5px solid var(--gold-line)');
+  });
+
   it('額装は静的 (モーション憲法: 動く枠は .ref-hero 1 枚だけ)', () => {
     const css = pages.match(/\.coupon-ticket--gold\{[^}]*\}/);
     expect(css).toBeTruthy();
@@ -233,5 +287,57 @@ describe('連携特典カード — AA (§7-1) とトークン規律', () => {
 describe('連携特典の額 — コードとカードの単一の正', () => {
   it('発行側の既定額は 300 (2026-08-11 Katsu 決定)', () => {
     expect(linkReward.DEFAULT_DISCOUNT_VALUE_JPY).toBe(300);
+  });
+});
+
+/**
+ * 🚨 2026-08-11 監査 HIGH。Shopify の combinesWith は**双方向の握手**で、稼働中の
+ * welcome ¥500 は combinesWith 未指定 = 併用不可。さらに連携特典・紹介・ランクは
+ * いずれも customerGets.items:{all} = **同じ product クラス**で、同一ラインの重ねは Plus が要る。
+ * = 今の構成ではどのクーポンとも実際には重ならないので、「併用できます」と書いてはいけない。
+ */
+describe('連携特典カード — 成立しない併用を約束しない', () => {
+  it('カード本文に併用の約束を書かない', async () => {
+    const { el } = await render(coupon());
+    for (const claim of ['重ねて', '併用', '一緒にお使い', 'ほかの割引']) {
+      expect(el.innerHTML).not.toContain(claim);
+    }
+  });
+
+  it('実装が根拠にしている combinesWith は残っている (設定を消したわけではない)', () => {
+    const issuer = readFileSync(join(root, '..', 'services', 'link-reward-coupon-issuer.ts'), 'utf8');
+    expect(issuer).toContain('combinesWith: { productDiscounts: true, orderDiscounts: true');
+  });
+});
+
+/**
+ * 🚨 2026-08-11 監査 HIGH。クーポンは redeem の HTTP 応答**後**に waitUntil で発行される。
+ * ポータルは init で loadLinkCoupon() を済ませているので、後追いしないと
+ * magic-link / App Proxy で連携した本人が特典カードを一度も見ない。
+ */
+describe('連携特典カード — 連携直後に本人へ届く', () => {
+  it('redeem 成功ハンドラが後追い読み込みを呼ぶ', () => {
+    const redeem = pages.match(/function subLinkRedeem\(token, btn\) \{[\s\S]*?\n\}\n/);
+    expect(redeem).toBeTruthy();
+    expect(redeem![0]).toContain('refreshLinkCouponAfterLink(0)');
+    expect(redeem![0]).toContain('markShopifyLinked()');
+  });
+
+  it('後追いは有限回で止まる (無限ポーリングにしない)', () => {
+    const delays = pages.match(/var LINK_COUPON_RETRY_MS = \[([^\]]*)\]/);
+    expect(delays).toBeTruthy();
+    const ms = delays![1].split(',').map((s) => Number(s.trim()));
+    expect(ms.length).toBeGreaterThanOrEqual(2);
+    expect(ms.length).toBeLessThanOrEqual(5);
+    for (const v of ms) expect(v).toBeGreaterThanOrEqual(1000);
+    // 単調増加 (= backoff。等間隔の短周期ポーリングにしない)
+    for (let i = 1; i < ms.length; i++) expect(ms[i]).toBeGreaterThan(ms[i - 1]);
+  });
+
+  it('完了モーダルへの告知は金額を書かない (台帳が唯一の正)', () => {
+    const fn = pages.match(/function announceLinkCoupon\(\) \{[\s\S]*?\n\}/);
+    expect(fn).toBeTruthy();
+    expect(fn![0]).not.toMatch(/[¥￥]\s*\d/);
+    expect(fn![0]).toContain('data-link-coupon-note'); // 二重挿入ガード
   });
 });

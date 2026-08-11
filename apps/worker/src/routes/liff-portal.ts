@@ -354,7 +354,7 @@ liffPortal.get('/api/liff/link-coupon', async (c) => {
       data: {
         coupon: {
           code: coupon.code,
-          discountValue: coupon.discountValue,
+          discountValue: 300,
           expiresAt: coupon.expiresAt,
           remainingText: formatCouponCountdown(coupon.expiresAt, Date.now()),
           applyUrl: buildDiscountApplyUrl(FRIEND_COUPON_STORE_DOMAIN, coupon.code),

@@ -14,10 +14,16 @@
  *
  * 設計 (referral-coupon-issuer.ts の同型 4 本目):
  *   - discountCodeBasicCreate (固定額 ¥300、usageLimit=1、appliesOncePerCustomer=true = 単回)。
- *   - combinesWith product+order 両 true (= ランク割引 NLR- と併用可、Plus 不要のクロスクラス)。
- *     ⚠️ 「重複して使用可能」(2026-08-11 Katsu) の実装はこの combinesWith が担う
- *     (= 他の割引と**併用**できる)。同じコードを**複数回**使えるようにする指示ではないため、
- *     usageLimit=1 / appliesOncePerCustomer=true は据置 (1 人生涯 1 枚の冪等設計と対)。
+ *   - combinesWith product+order 両 true。
+ *     ⚠️ 「重複して使用可能」(2026-08-11 Katsu) の実装はこの combinesWith が担うが、
+ *     **顧客に「併用できます」と案内してはいけない** (2026-08-11 監査 HIGH):
+ *       ① combinesWith は双方向の握手で、稼働中の welcome ¥500 は combinesWith 未指定 = 併用不可
+ *       ② 連携特典・紹介・ランクはいずれも customerGets.items:{all} = **同じ product クラス**。
+ *          同一ラインの product 割引の重ねは Shopify Plus が必要 (2026-06-03 実測)
+ *     = この設定は将来 order クラスの割引を作ったときのための備え。
+ *     文言の扱いと成立させる選択肢は docs/SPRINT_C_MAGIC_LINK_MAIL.md §6 に集約。
+ *     なお「同じコードを複数回」の指示ではないため usageLimit=1 / appliesOncePerCustomer=true は
+ *     据置 (1 人生涯 1 枚の冪等設計と対)。
  *   - **冪等キーは friend_id と shopify_customer_id の両方** (それぞれ UNIQUE):
  *     同一 friend の再連携・経路重複・並行は UNIQUE(friend_id)、「サポート手動解除 →
  *     別 LINE アカウントで再連携」(機種変更の定常運用) は UNIQUE(shopify_customer_id) で
