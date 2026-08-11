@@ -117,7 +117,7 @@ describe('quiz UX batch', () => {
   });
 
   it('選択肢ボタンに tap feedback (2026-07-29: .nxq-opt の CSS :active scale へ移行)', () => {
-    expect(pages).toMatch(/\.nxq-opt:active\{transform:scale\(\.97\)\}/);
+    expect(pages).toMatch(/\.nxq-opt:active\{transform:scale\(\.96\)\}/);
   });
 
   it('esbuild backtick trap: quiz 変更ブロックに backtick を含まない', () => {
@@ -129,11 +129,11 @@ describe('quiz UX batch', () => {
 
 describe('uiux_feel (先進性方針: タップ柔らかく・skeleton 波状・reduced-motion 尊重)', () => {
   it('btn-primary :active scale = 0.95 (明確な押下感) + shadow 強化', () => {
-    expect(pages).toContain('.btn-primary:active{transform:scale(0.95)');
+    expect(pages).toContain('.btn-primary:active{transform:scale(.96)');
   });
 
   it('meal-btn に押下 scale feedback (2026-07-07 PM: 押し込み統一で translateY 同梱)', () => {
-    expect(pages).toMatch(/\.meal-btn:active\{transform:translateY\(1\.5px\) scale\(0\.95\)\}/);
+    expect(pages).toMatch(/\.meal-btn:active\{transform:translateY\(1\.5px\) scale\(\.96\)\}/);
   });
 
   it('fadeUp は 0.38s の soft curve (0.25s ease-out から延長)', () => {

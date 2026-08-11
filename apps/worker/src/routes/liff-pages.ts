@@ -75,15 +75,27 @@ function portalPage(
     *{-webkit-tap-highlight-color:transparent}
     /* naturism ブランドトークン (Dawn テーマ実測: naturism-category.css / settings_data.json) */
     :root{--brand:#2fa8ad;--brand-deep:#1d7d82;--brand-soft:#eef7f7;--brand-tint:#dff0f0;--brand-line:#e3ecec;--ink:#052422;--muted:#66727d;--coral:#ffb39c;--coral-deep:#d9573d;--coral-ink:#b84a2e;--coral-soft:#fff3ec}
+    /* ─ VITAL INSTRUMENT トークン (2026-08-11 デザインコンペ全会一致採択・既存 11 変数は温存) ─
+       白い精密計器 × 生命力のグラデ。鮮やか側は --brand #2fa8ad (§7-1 恒久ガードにより
+       ブランド原色ティール 0ABAB5 系はポータルで使用禁止 — 白文字 2.3:1 の事故色。hex 文字列
+       そのものがガードの検出対象なので、このコメントでも # を付けずに書いている)。
+       --action 系は白文字 AA (4.5:1+) を満たす塗り専用、--gold-ink は小文字 AA (白 5.05:1)。 */
+    :root{--action:#0f766e;--action-2:#0d827d;--ink-2:#3f4b55;--hairline:#dfe9e9;--track:#e6efef;--well:#f2f8f8;--gold:#b8933f;--gold-ink:#8a6a24;--gold-deep:#92400e;--gold-line:#e6d5a8;--gold-wash:#faf6ec;--grad-vital:linear-gradient(90deg,#2fa8ad,#0d827d);--grad-btn:linear-gradient(180deg,#11837c,#0f766e);--shadow-rest:0 1px 2px rgba(8,58,60,.05),0 8px 24px rgba(8,58,60,.07);--shadow-float:0 2px 6px rgba(8,58,60,.08),0 16px 40px rgba(8,58,60,.10);--edge-light:inset 0 1px 0 rgba(255,255,255,.85);--ease:cubic-bezier(.22,1,.36,1);--dur-tap:120ms;--dur-ui:240ms;--dur-gauge:700ms}
     body{font-family:'Noto Sans JP',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(165deg,#f2fafa 0%,#f8fafc 45%,#f3f7f8 100%);min-height:100vh;color:#052422}
-    .tab-active{color:#1d7d82;border-bottom:2.5px solid #2fa8ad;font-weight:600}
-    .tab-inactive{color:#475569;border-bottom:2.5px solid transparent}
+    /* タブ: 下線をグラデの「レーザーレール」に (VITAL INSTRUMENT §2-B)。
+       クラス名は switchTab が文字列 replace で参照する契約 — 名前は不変・値だけ変える。 */
+    .tab-active{color:#052422;font-weight:700;border-bottom:none;background:linear-gradient(90deg,#2fa8ad,#1d7d82) bottom/100% 3px no-repeat}
+    .tab-inactive{color:#3f4b55;border-bottom:none;font-weight:600}
     nav button{transition:color .2s,border-color .2s;white-space:nowrap}
+    /* 60代タップ精度: 4 タブは 13px + 48px タップ域 (markup の text-xs には specificity で勝つ) */
+    .tab-strip button{font-size:13px;min-height:48px}
     /* 60代可読性 (§7-1): gradient の明るい側 #2fa8ad は白文字で 2.87:1、中間 #269398 でも 3.68:1 と
        AA (4.5:1) に届かない。ラベルは 14px bold で大文字扱いにもならないため solid #0f766e (5.47:1) に統一する。
        #0f766e は Flex/メール面で既に使っている既存トークンなので新色は増えない。ブランドはティール基軸のまま。 */
-    .btn-primary{background:#0f766e;color:#fff;border:none;border-radius:999px !important;letter-spacing:.02em;box-shadow:0 2px 8px rgba(15,118,110,.28);transition:transform .15s,box-shadow .15s}
-    .btn-primary:active{transform:scale(0.95) translateY(1.5px);box-shadow:0 2px 6px rgba(29,125,130,.35)}
+    .btn-primary{background:var(--grad-btn);color:#fff;border:none;border-radius:999px !important;letter-spacing:.04em;min-height:48px;box-shadow:0 2px 8px rgba(15,118,110,.28);transition:transform .15s,box-shadow .15s}
+    /* ↑ VITAL INSTRUMENT: 縦グラデ #11837c→#0f766e は両端とも白文字 4.6:1+ で AA 維持
+       (旧・横グラデ #2fa8ad 側 2.87:1 の再来ではない)。字間 .04em はハイブランドの CTA 慣行。 */
+    .btn-primary:active{transform:scale(.96) translateY(1.5px);box-shadow:0 2px 6px rgba(29,125,130,.35)}
     /* 連携カード (magic-link 着地面) の 60代トークン (§7-2): 本文≥16px / 行間1.6 / タップ領域≥48px /
        日付・プランは 20px bold #0f766e。全 .btn-primary への min-height 一括適用は 40+ 箇所の
        レイアウト回帰を伴うため、本 PR が所有するこの面に限定する。 */
@@ -104,7 +116,7 @@ function portalPage(
        物理的に AA 不可 (#e8836a=2.66:1) なので白文字塗りを廃し、薄ピーチ地 + コーラル文字 + コーラル枠へ。
        艶コーラル #d9573d は大数字 (≥24px/太字 = 3:1 で足りる) 専用に隔離。#b84a2e は小文字 AA (白 5.18 / #fff3ec 4.75)。 */
     .btn-coral{background:#fff3ec;color:#b84a2e;border:1.5px solid #eaa588;border-radius:999px !important;font-weight:700;letter-spacing:.02em;box-shadow:0 2px 10px rgba(217,87,61,.18);transition:transform .15s,background .15s,box-shadow .15s}
-    .btn-coral:active{transform:scale(0.95) translateY(1.5px);background:#ffe6db;box-shadow:0 1px 4px rgba(217,87,61,.24)}
+    .btn-coral:active{transform:scale(.96) translateY(1.5px);background:#ffe6db;box-shadow:0 1px 4px rgba(217,87,61,.24)}
     .text-coral{color:#b84a2e !important}
     .text-coral-lg{color:#d9573d !important}
     .chip-coral{background:#fff3ec;color:#b84a2e;border:1px solid #f0b49f}
@@ -122,7 +134,7 @@ function portalPage(
     .nxq-opts{display:grid;gap:9px}
     .nxq-opt{display:flex;align-items:center;gap:10px;width:100%;min-height:52px;padding:12px 14px;border-radius:14px;border:1.5px solid #e3ecec;background:#fff;color:#182229;font-size:14px;font-weight:600;text-align:left;cursor:pointer;transition:transform .16s cubic-bezier(.22,1,.36,1),border-color .2s,background-color .2s}
     .nxq-opt b{flex:none;width:26px;height:26px;border-radius:50%;background:rgba(232,131,95,.12);color:#E8835F;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
-    .nxq-opt:active{transform:scale(.97)}
+    .nxq-opt:active{transform:scale(.96)}
     .nxq-opt.is-picked{border-color:#E8835F;background:#fdf6f2}
     .nxq-opt--rank b{min-width:38px;width:auto;height:24px;border-radius:99px;font-size:10.5px;padding:0 4px}
     .nxq-opt--rank b.is-empty{background:transparent;border:1.5px dashed rgba(31,38,46,.25)}
@@ -148,7 +160,7 @@ function portalPage(
     .nxq-bval{font-size:12px;font-weight:700;color:#66727d;text-align:right;font-variant-numeric:tabular-nums}
     .nxq-rdesc{font-size:13.5px;color:#66727d;line-height:1.75;margin-bottom:16px}
     .nxq-rcta{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;min-height:48px;padding:12px 28px;border-radius:99px;font-size:15px;font-weight:700;color:#fff;background:linear-gradient(135deg,#2fa8ad,#1d7d82);box-shadow:0 8px 22px rgba(47,168,173,.35);text-decoration:none;transition:transform .25s cubic-bezier(.22,1,.36,1),box-shadow .25s}
-    .nxq-rcta:active{transform:scale(.97)}
+    .nxq-rcta:active{transform:scale(.96)}
     @media(prefers-reduced-motion:reduce){.nxq-bfill,.nxq-progress span,.nxq-opt{transition:none}}
     /* ===== 再注文シート (2026-07-30) — ティファニーブルー系 =====
        ブランドのティファニーブルー原色は白文字 2.5:1 で §7-1 AA 不足のため、
@@ -163,12 +175,12 @@ function portalPage(
     .ros-seg-btn.is-on{border-color:#0d827d;background:#0d827d;color:#fff;box-shadow:0 4px 14px rgba(13,130,125,.35)}
     .ros-seg-btn.is-on .ros-seg-sub{color:#fff}
     .ros-primary{display:block;width:100%;border:0;border-radius:999px;padding:14px;font-size:15px;font-weight:700;color:#fff;background:#0d827d;box-shadow:0 8px 22px rgba(13,130,125,.4);cursor:pointer;transition:transform .15s}
-    .ros-primary:active{transform:scale(.97)}
+    .ros-primary:active{transform:scale(.96)}
     .ros-primary:disabled{opacity:.55}
     .ros-gray{border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:12px;padding:10px 4px;font-size:11px;font-weight:600;line-height:1.5}
     #ros-datetime.is-disabled{opacity:.4;pointer-events:none}
     @media(prefers-reduced-motion:reduce){#reorder-sheet .ros-panel{animation:none}}
-    .card{background:#ffffff;border-radius:20px;border:1px solid #e3ecec;box-shadow:0 2px 6px rgba(24,34,41,.05),0 12px 32px rgba(24,34,41,.06)}
+    .card{background:#ffffff;border-radius:20px;border:1px solid var(--hairline);box-shadow:var(--shadow-rest),var(--edge-light)}
     .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:8px}
     @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
     .progress-bar{transition:width .6s cubic-bezier(.4,0,.2,1)}
@@ -181,7 +193,7 @@ function portalPage(
     input:focus,textarea:focus,select:focus{outline:none;border-color:#2fa8ad;box-shadow:0 0 0 3px rgba(47,168,173,.15)}
     input[type="range"]{height:6px;border-radius:3px;accent-color:#2fa8ad}
     .mood-btn,.skin-btn,.bowel-btn{transition:border-color .15s,background .15s,transform .1s}
-    .mood-btn:active,.skin-btn:active,.bowel-btn:active{transform:translateY(1.5px) scale(0.95)}
+    .mood-btn:active,.skin-btn:active,.bowel-btn:active{transform:translateY(1.5px) scale(.96)}
     .gender-btn{transition:all .15s;border-radius:12px !important}
     #toast{backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);background:rgba(15,23,42,.85);font-weight:500;letter-spacing:.02em}
     #loading{background:linear-gradient(160deg,#f2fafa 0%,#f8fafc 40%,#faf5ff 100%)}
@@ -191,11 +203,11 @@ function portalPage(
     /* Ambassador badge */
     /* §7-1: 10px 白文字を amber gradient (#fbbf24=1.67:1 / #f59e0b=2.15:1) に載せていたので solid #92400e
        (白 7.0:1) へ。 ゴールドの「特別感」は枠と影で残す (10px は large text の緩和が使えない)。 */
-    .ambassador-badge{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:#92400e;color:#fff;border:1px solid #fbbf24;box-shadow:0 1px 4px rgba(146,64,14,.3);animation:badgePop .4s cubic-bezier(.34,1.56,.64,1)}
+    .ambassador-badge{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;background:#92400e;color:#fff;border:1px solid #fbbf24;box-shadow:0 1px 4px rgba(146,64,14,.3);animation:badgePop .4s cubic-bezier(.34,1.56,.64,1)}
     @keyframes badgePop{from{transform:scale(0);opacity:0}to{transform:scale(1);opacity:1}}
     /* Ambassador sparkle rank card */
-    .rank-ambassador{position:relative;background:linear-gradient(135deg,rgba(251,191,36,.08) 0%,rgba(245,158,11,.04) 50%,rgba(255,255,255,.9) 100%) !important;border:1.5px solid rgba(251,191,36,.25) !important;overflow:hidden}
-    .rank-ambassador::before{content:'';position:absolute;top:-50%;left:-50%;width:200%;height:200%;background:conic-gradient(from 0deg,transparent 0%,rgba(251,191,36,.06) 10%,transparent 20%,rgba(245,158,11,.04) 30%,transparent 40%);animation:sparkleRotate 8s linear infinite}
+    .rank-ambassador{position:relative;background:var(--gold-wash) !important;border:1px solid var(--gold-line) !important;overflow:hidden}
+    .rank-ambassador::before{content:'';position:absolute;top:-50%;left:-50%;width:200%;height:200%;background:conic-gradient(from 0deg,transparent 0%,rgba(251,191,36,.03) 10%,transparent 20%,rgba(245,158,11,.02) 30%,transparent 40%);animation:sparkleRotate 14s linear infinite}
     @keyframes sparkleRotate{to{transform:rotate(360deg)}}
     .sparkle-dots{position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;overflow:hidden}
     .sparkle-dot{position:absolute;width:4px;height:4px;border-radius:50%;background:radial-gradient(circle,#fbbf24,transparent);animation:sparkle 2s ease-in-out infinite}
@@ -210,7 +222,7 @@ function portalPage(
     #subscriptions-list .skeleton{animation-delay:.45s}
     #notif-prefs-list .skeleton{animation-delay:.15s}
     #faq-list .skeleton{animation-delay:.3s}
-    .meal-btn:active{transform:translateY(1.5px) scale(0.95)}
+    .meal-btn:active{transform:translateY(1.5px) scale(.96)}
     /* 2026-07-07 没入スクロール (Katsu 指示: 高級感×先進性・大胆に・軽量に) — 3D カード cascade + スクロール進捗 */
     #scroll-progress{position:fixed;top:0;left:0;width:100%;height:2.5px;z-index:60;background:linear-gradient(90deg,#80c8cd,#2fa8ad,#ffb39c);transform-origin:0 50%;transform:scaleX(0);pointer-events:none}
     #scroll-leaf{position:fixed;top:-1px;left:-4px;z-index:61;font-size:13px;line-height:1;pointer-events:none;filter:drop-shadow(0 1px 2px rgba(29,125,130,.35))}
@@ -218,6 +230,13 @@ function portalPage(
     .sr-in{opacity:1;transform:perspective(900px) translateY(0) rotateX(0) scale(1);transition:transform .7s cubic-bezier(.22,1,.36,1),opacity .55s ease-out}
     .tab-strip{overflow-x:auto;scrollbar-width:none}
     .tab-strip::-webkit-scrollbar{display:none}
+    /* ヘッダ下端の「通電レール」— 静的グラデ (アニメなし。計器盤の精密さは光らせずに描く) */
+    header.sticky{position:sticky}
+    header.sticky::after{content:'';position:absolute;left:0;right:0;bottom:0;height:1px;background:linear-gradient(90deg,transparent,rgba(47,168,173,.55),transparent);pointer-events:none}
+    /* モーション憲法 (VITAL INSTRUMENT 採択 2026-08-11):
+       「動く枠」は .ref-hero 1 枚だけ (お得=動、格式=静)。常時アニメの新設禁止。
+       達成演出は 1 回きり (iteration-count:1)。新規 animation/transition を足すときは
+       必ず下の prefers-reduced-motion ブロックにも同時追記すること。 */
     /* ─ 友だち紹介ヒーロー (実機FB第5弾 2026-07-10: 「お得感を演出」— 動くグラデ枠 + シャイン + 弾む🎁) ─ */
     .ref-hero{position:relative;border-radius:20px;padding:2px;background:linear-gradient(120deg,#2fa8ad,#ffb39c,#d9573d,#2fa8ad);background-size:300% 300%;animation:refBorder 7s ease infinite}
     .ref-hero-inner{background:linear-gradient(160deg,#fffdfb,#fff5ec);border-radius:18px;padding:18px 16px;overflow:hidden;position:relative}
@@ -260,11 +279,13 @@ function portalPage(
     .active\\:bg-green-100:active,.active\\:bg-emerald-100:active{background-color:#d3ecec !important}
     .hover\\:border-green-400:hover{border-color:#7cc6c9 !important}
     .text-gray-800{color:#052422 !important}
+    /* §7-1 AA 是正: Tailwind .text-gray-400 (#9ca3af) は白地 2.54:1 で本文使用不可 → muted へ */
+    .text-gray-400{color:#66727d !important}
     /* 全ボタン「柔らかく押し込む」触感 (個別定義 .btn-primary 等はそちらが優先される) */
     button,.tap{transition:transform .12s cubic-bezier(.22,1,.36,1)}
-    button:active,.tap:active,label:active,a[onclick]:active{transform:translateY(1.5px) scale(0.97)}
+    button:active,.tap:active,label:active,a[onclick]:active{transform:translateY(1.5px) scale(.96)}
     /* quiz 選択肢の active:scale-[0.98] は詳細度で global を打ち消すため、translateY を同梱して統一 (review HIGH) */
-    .active\\:scale-\\[0\\.98\\]:active{transform:translateY(1.5px) scale(0.98) !important}
+    .active\\:scale-\\[0\\.98\\]:active{transform:translateY(1.5px) scale(.96) !important}
     @media(prefers-reduced-motion:reduce){.skeleton,.streak-fire,.ambassador-badge,.sparkle-dot,.rank-ambassador::before,.section,#quiz-result{animation:none !important}.btn-primary:active,.btn-coral:active,.meal-btn:active,.mood-btn:active,.skin-btn:active,.bowel-btn:active,button:active,.tap:active,label:active,a[onclick]:active{transform:none !important}.sr{opacity:1 !important;transform:none !important}.sr-in{transition:none !important}#scroll-progress,#scroll-leaf{display:none}}
   </style>
 </head>
@@ -275,7 +296,7 @@ function portalPage(
   <div id="scroll-leaf" aria-hidden="true">🌿</div>
 
   <!-- Header -->
-  <header class="sticky top-0 z-50" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(0,0,0,.06)">
+  <header class="sticky top-0 z-50" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px) saturate(1.5);-webkit-backdrop-filter:blur(16px) saturate(1.5);border-bottom:none">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
       <!-- 公式ロゴ (オフィシャルサイトと同一の Shopify CDN SVG。テーマ更新等で URL が変わったら onerror fallback) -->
       <h1 class="flex items-center" style="margin:0;line-height:1">
@@ -295,7 +316,7 @@ function portalPage(
         </div>
         <!-- 4タブ再設計: アバターをタップ → マイアカウント (プロフィール/設定/サポート)。
              採点R1: 旧・装飾 div と同見た目ではタップ可能に見えない → ティールの halo + サイズを言語ボタンに揃える -->
-        <button id="user-avatar" onclick="switchTab('account')" aria-label="マイアカウント" class="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-100 to-green-50 shadow-sm overflow-hidden flex items-center justify-center text-sm" style="padding:0;cursor:pointer;box-shadow:0 0 0 2px rgba(47,168,173,.45),0 1px 3px rgba(0,0,0,.08)">👤</button>
+        <button id="user-avatar" onclick="switchTab('account')" aria-label="マイアカウント" class="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-100 to-green-50 shadow-sm overflow-hidden flex items-center justify-center text-sm" style="padding:0;cursor:pointer;box-shadow:0 0 0 2px #fff,0 0 0 3.5px rgba(47,168,173,.55),0 1px 3px rgba(0,0,0,.08)">👤</button>
       </div>
     </div>
   </header>
@@ -2147,7 +2168,8 @@ function showConfetti() {
   if (TAB_REDUCED_MOTION) return; // 採点R1: reduced-motion では紙吹雪を出さない (トーストが節目を伝える)
   var overlay = document.getElementById('confetti-overlay');
   overlay.style.display = 'block';
-  var colors = ['#2fa8ad', '#f59e0b', '#ec4899', '#3b82f6', '#8b5cf6'];
+  // ブランド固定パレット (VITAL INSTRUMENT: 原色 confetti は安っぽさの徴候 — ティール/ゴールド/白/淡ティールに限定)
+  var colors = ['#2fa8ad', '#b8933f', '#ffffff', '#dff0f0'];
   var html = '';
   for (var i = 0; i < 30; i++) {
     var x = Math.random() * 100;

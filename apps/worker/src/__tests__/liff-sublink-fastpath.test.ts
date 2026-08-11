@@ -1034,11 +1034,20 @@ describe('全 LIFF surface の実行ボタンが白文字 AA を満たす (§7-1
   });
 
   it.each(surfaces.filter(([l]) => l !== '/liff/my-rank'))(
-    '%s: btn-primary が solid #0f766e (5.47:1)',
+    '%s: btn-primary の塗りが AA 安全形にピン留めされている (--grad-btn or solid #0f766e)',
     async (_label, path, appOf) => {
       const app = await appOf();
       const res = await app.request(path, {}, baseEnv as unknown as Record<string, unknown>);
-      expect(await res.text()).toMatch(/\.btn-primary\{background:#0f766e/);
+      const html = await res.text();
+      // VITAL INSTRUMENT (2026-08-11): ポータルは縦グラデ var(--grad-btn) に移行。
+      // ガードの意図 (AA 破壊グラデの再来防止) は維持する — token 側の両端 hex を
+      // ピン留めし、#11837c (4.67:1) / #0f766e (5.47:1) 以外へ変えると赤になる。
+      const usesToken = /\.btn-primary\{background:var\(--grad-btn\)/.test(html);
+      if (usesToken) {
+        expect(html).toMatch(/--grad-btn:linear-gradient\(180deg,#11837c,#0f766e\)/);
+      } else {
+        expect(html).toMatch(/\.btn-primary\{background:#0f766e/);
+      }
     },
   );
 });

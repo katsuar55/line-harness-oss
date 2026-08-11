@@ -38,7 +38,8 @@ describe('ヘッダー: 公式ロゴ', () => {
 
 describe('タブ可読性と改行', () => {
   it('tab-inactive は #475569 (薄すぎ #94a3b8 を廃止)', () => {
-    expect(pages).toMatch(/\.tab-inactive\{color:#475569/);
+    // VITAL INSTRUMENT (2026-08-11): さらに 1 段濃い #3f4b55 (--ink-2、白地 9.2:1) へ
+    expect(pages).toMatch(/\.tab-inactive\{color:#3f4b55/);
     expect(pages).not.toMatch(/\.tab-inactive\{color:#94a3b8/);
   });
 

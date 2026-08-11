@@ -41,8 +41,10 @@ describe('LINE黄緑の封印 (naturism ティール統一)', () => {
 
   it('ブランドトークン :root と AA 合格 solid の btn-primary (pill 形状)', () => {
     expect(pages).toMatch(/:root\{--brand:#2fa8ad;--brand-deep:#1d7d82/);
-    // 2026-07-26 §7-1: gradient は明るい側 #2fa8ad が白文字 2.87:1 で AA 不成立 → solid #0f766e (5.47:1)。
-    expect(pages).toMatch(/\.btn-primary\{background:#0f766e;color:#fff/);
+    // 2026-07-26 §7-1: 横グラデは明るい側 #2fa8ad が白文字 2.87:1 で AA 不成立 → solid 化。
+    // 2026-08-11 VITAL INSTRUMENT: 縦グラデ var(--grad-btn) へ移行 (両端 #11837c 4.67:1 /
+    // #0f766e 5.47:1 で AA 維持)。hex のピン留めは liff-sublink-fastpath.test.ts 側が担う。
+    expect(pages).toMatch(/\.btn-primary\{background:var\(--grad-btn\);color:#fff/);
     expect(pages).not.toMatch(/\.btn-primary\{background:linear-gradient/);
     expect(pages).toMatch(/\.btn-primary\{[^}]*border-radius:999px !important/);
   });
@@ -61,7 +63,8 @@ describe('LINE黄緑の封印 (naturism ティール統一)', () => {
   });
 
   it('tab-active / theme-color / 入力 focus / range / spinner / tour dot もティール', () => {
-    expect(pages).toMatch(/\.tab-active\{color:#1d7d82;border-bottom:2\.5px solid #2fa8ad/);
+    // VITAL INSTRUMENT: 下線 → グラデの「レーザーレール」(ティール基軸は不変)
+    expect(pages).toMatch(/\.tab-active\{color:#052422;font-weight:700;border-bottom:none;background:linear-gradient\(90deg,#2fa8ad,#1d7d82\)/);
     expect(pages).toContain('<meta name="theme-color" content="#2fa8ad">');
     expect(pages).toMatch(/input:focus[^}]*border-color:#2fa8ad/);
     expect(pages).toMatch(/accent-color:#2fa8ad/);
@@ -70,8 +73,10 @@ describe('LINE黄緑の封印 (naturism ティール統一)', () => {
 });
 
 describe('コントラストと触感', () => {
-  it('カードは白 + #e3ecec 枠 + Dawn 影 (背景と同化しない)', () => {
-    expect(pages).toMatch(/\.card\{background:#ffffff;border-radius:20px;border:1px solid #e3ecec/);
+  it('カードは白 + ヘアライン枠 + ティール色相の影 (背景と同化しない)', () => {
+    // VITAL INSTRUMENT: 枠は --hairline (#dfe9e9 = #e3ecec より 1 段締め)、影はティール色相
+    expect(pages).toMatch(/\.card\{background:#ffffff;border-radius:20px;border:1px solid var\(--hairline\)/);
+    expect(pages).toMatch(/--hairline:#dfe9e9/);
   });
 
   it('入力欄はカード内で差が出る (背景 #fbfdfd + 枠 #dbe9e9)', () => {
@@ -80,16 +85,17 @@ describe('コントラストと触感', () => {
 
   it('全ボタン「柔らかく押し込む」触感 (translateY + scale) + reduced-motion では無効', () => {
     // 採点R1: onclick アンカー CTA にも押し込み触感を拡張 (a[onclick]:active)
-    expect(pages).toMatch(/button:active,\.tap:active,label:active,a\[onclick\]:active\{transform:translateY\(1\.5px\) scale\(0\.97\)\}/);
+    expect(pages).toMatch(/button:active,\.tap:active,label:active,a\[onclick\]:active\{transform:translateY\(1\.5px\) scale\(\.96\)\}/);
     expect(pages).toMatch(/prefers-reduced-motion:reduce\)[\s\S]{0,700}button:active[\s\S]{0,120}transform:none !important/);
   });
 
   it('個別 :active ルールも translateY を同梱 — 押し込み触感が全ボタンで統一 (review confirmed 2件)', () => {
-    expect(pages).toMatch(/\.mood-btn:active,\.skin-btn:active,\.bowel-btn:active\{transform:translateY\(1\.5px\) scale\(0\.95\)\}/);
-    expect(pages).toMatch(/\.meal-btn:active\{transform:translateY\(1\.5px\) scale\(0\.95\)\}/);
-    expect(pages).toMatch(/\.btn-primary:active\{transform:scale\(0\.95\) translateY\(1\.5px\)/);
-    // quiz 選択肢 active:scale-[0.98] は詳細度で global を打ち消すため専用 override
-    expect(pages).toContain('.active\\\\:scale-\\\\[0\\\\.98\\\\]:active{transform:translateY(1.5px) scale(0.98) !important}');
+    // VITAL INSTRUMENT: 全タップを scale(.96) に統一 (押し込み感の署名を 1 つに)
+    expect(pages).toMatch(/\.mood-btn:active,\.skin-btn:active,\.bowel-btn:active\{transform:translateY\(1\.5px\) scale\(\.96\)\}/);
+    expect(pages).toMatch(/\.meal-btn:active\{transform:translateY\(1\.5px\) scale\(\.96\)\}/);
+    expect(pages).toMatch(/\.btn-primary:active\{transform:scale\(\.96\) translateY\(1\.5px\)/);
+    // quiz 選択肢 active:scale-[0.98] は詳細度で global を打ち消すため専用 override (値は .96 に統一)
+    expect(pages).toContain('.active\\\\:scale-\\\\[0\\\\.98\\\\]:active{transform:translateY(1.5px) scale(.96) !important}');
   });
 
   it('本文の基調色は ink #052422 (body + text-gray-800 skin)', () => {
