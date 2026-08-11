@@ -354,7 +354,10 @@ liffPortal.get('/api/liff/link-coupon', async (c) => {
       data: {
         coupon: {
           code: coupon.code,
-          discountValue: 300,
+          // 🚨 定数 (DEFAULT_DISCOUNT_VALUE_JPY) を書かないこと。**台帳の値が唯一の正**で、
+          //    既発行の ¥500 券をここで ¥300 と言うと顧客の実額と食い違う。
+          //    liff-portal.test.ts は定数と異なる値 (450) で経路を測っている。
+          discountValue: coupon.discountValue,
           expiresAt: coupon.expiresAt,
           remainingText: formatCouponCountdown(coupon.expiresAt, Date.now()),
           applyUrl: buildDiscountApplyUrl(FRIEND_COUPON_STORE_DOMAIN, coupon.code),

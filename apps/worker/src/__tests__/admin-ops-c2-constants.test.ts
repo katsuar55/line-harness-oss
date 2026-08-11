@@ -76,8 +76,11 @@ describe('gate 条件の撤廃 (2026-08-11) — doc と admin-ops.yml の同期'
   it('撤廃した判定列が SQL から消えている (復活させるなら doc と同時に)', () => {
     expect(yml).not.toContain('crit1_linked_over_30');
     expect(yml).not.toContain('crit2_measured_majority');
-    // 「> 30」の閾値そのものも残っていない (コメントの言及だけが残る事故を防ぐ)
-    expect(yml).not.toMatch(/FROM reach\) > 30/);
+    // 🚨 識別子の完全一致だけだと、**閾値を変えて別名で復活**させると素通りする。
+    //    条件1 の形 (到達数の閾値比較) と条件2 の形 (過半数比較) を**形で**塞ぐ。
+    expect(yml).not.toMatch(/FROM reach\)\s*>\s*\d/); // 到達数の閾値判定
+    expect(yml).not.toMatch(/FROM meas\)\s*\*\s*2\s*>/); // 過半数判定
+    expect(yml).not.toMatch(/CASE WHEN[^\n]*FROM reach/); // 到達数を 1/0 に落とす判定
   });
 
   it('撤廃後も実測値は情報列として残っている (Sprint A/C の効果測定に使う)', () => {
@@ -91,6 +94,24 @@ describe('gate 条件の撤廃 (2026-08-11) — doc と admin-ops.yml の同期'
     expect(doc).toContain('撤廃');
     expect(doc).toContain('crit1_linked_over_30');
     expect(doc).toContain('crit2_measured_majority');
+  });
+
+  // 🚨 contains だけだと「撤廃」の語が残っていれば**真逆のことを書いた doc** でも通る。
+  //    撤廃前の運用を指示する文言が**残っていないこと**も同時に固定する。
+  it('doc に撤廃前の運用指示が残っていない (両立しない記述の同居を許さない)', () => {
+    expect(doc).not.toContain('3 つとも `1` になるまで開けない');
+    expect(doc).not.toContain('crit1 = crit2 = 1');
+    // 「条件到達の報告があるまで押さない」は撤廃と両立しない (K5 の旧版)
+    expect(doc).not.toContain('条件到達の報告があるまで MENU / REMINDER / BROADCAST_ALL は押さない');
+    // BROADCAST_ALL だけは承認必須のままであることを明示していること (撤廃の巻き添えにしない)
+    expect(doc).toContain('BROADCAST_ALL_ENABLED');
+    expect(doc).toMatch(/BROADCAST_ALL_ENABLED[^\n]*承認必須/);
+  });
+
+  it('撤廃した条件の実測値は情報列として doc にも残っている (追跡をやめたわけではない)', () => {
+    expect(doc).toContain('linked_reachable_active');
+    expect(doc).toContain('measured_active');
+    expect(doc).toContain('情報列');
   });
 
   it('唯一残る阻止条件 (条件3) は doc と yml の双方に残っている', () => {

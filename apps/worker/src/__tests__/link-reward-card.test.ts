@@ -46,7 +46,15 @@ async function render(
   opts: { failed?: boolean; throws?: boolean } = {},
 ): Promise<RenderResult> {
   if (!escSrc || !block) throw new Error('loadLinkCoupon block not found in liff-pages.ts');
-  const el: FakeEl = { className: 'card p-4', style: { display: 'none' }, innerHTML: '' };
+  // 🚨 初期状態を 'card p-4' にすると、実装のリセットを削除しても値が変わらず
+  //    「金の額装を残さない」系のテストが**全部 vacuous** になる (2026-08-11 監査 HIGH)。
+  //    現実に守りたいのは「前回は成功して金の額装が付いていた要素を、次の失敗で使い回す」
+  //    経路なので、スタブも**前回成功後の状態**から始める。
+  const el: FakeEl = {
+    className: 'coupon-ticket coupon-ticket--gold',
+    style: { display: 'block' },
+    innerHTML: '<!-- 前回の描画 -->',
+  };
   const cardErrorCalls: Array<{ retry: string | null }> = [];
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const factory = new Function(
@@ -176,7 +184,7 @@ describe('連携特典カード — 期限の切迫表現 (§2-E: 残 3 日以�
 });
 
 describe('連携特典カード — 状態遷移で金の額装を残さない', () => {
-  it('クーポン無し → 非表示 + 通常カード class に戻す', async () => {
+  it('クーポン無し → 非表示 + 通常カード class に戻す (前回の金の額装を引き継がない)', async () => {
     const { el } = await render({ data: { coupon: null } });
     expect(el.style.display).toBe('none');
     expect(el.className).toBe('card p-4');
@@ -232,11 +240,16 @@ describe('連携特典カード — AA (§7-1) とトークン規律', () => {
   it('🚨--gold #b8933f を新たな文字色に使っていない (白地 2.88:1 = 大文字 3:1 すら不成立)', () => {
     // 既知の例外は `.nxq-rname--premium` 1 箇所だけ (nxq 診断は本サイトのミラー = 意匠の聖域。
     // 2.88:1 は large-text 3:1 をわずかに割るので、聖域の外へ広げないことをここで固定する)。
-    const goldTextUses = [...pages.matchAll(/color:\s*#b8933f/gi)];
+    // 🚨 `color:` の素朴な一致は **border-color / background-color も拾う** (= doc が許可した
+    //    装飾用途で誤検出し、最短の直し方が「期待値を 2 に上げる」になってガードが緩む)。
+    //    前が `-` や英数字でない `color:` だけを文字色として数える。
+    const goldTextUses = [...pages.matchAll(/(?<![-\w])color:\s*#b8933f/gi)];
     expect(goldTextUses.length).toBe(1);
     expect(pages).toContain('.nxq-rname--premium{color:#b8933f}');
     // var(--gold) 経由の文字色は 1 つも作らない (トークン名だと AA の危うさが見えなくなるため)
-    expect(pages).not.toMatch(/color:\s*var\(--gold\)/);
+    expect(pages).not.toMatch(/(?<![-\w])color:\s*var\(--gold\)/);
+    // rgb()/rgba() 記法での回り込みも塞ぐ (#b8933f = rgb(184,147,63))
+    expect(pages).not.toMatch(/rgb\(\s*184\s*,\s*147\s*,\s*63/i);
   });
 
   it('金の文字は --gold-ink / --gold-deep のみ (AA 合格側)', () => {
@@ -250,7 +263,8 @@ describe('連携特典カード — AA (§7-1) とトークン規律', () => {
   });
 
   it('ノッチ (左右の切込み円) を作っていない — 白カード上で浮くため審査で却下済み', () => {
-    expect(pages).not.toContain('.coupon-ticket::after');
+    // 完全一致だと `--gold::after` や 1 コロンの `:after` を見逃す
+    expect(pages).not.toMatch(/\.coupon-ticket[\w-]*::?after/);
   });
 
   it('操作ボタンのタップ域は 44px 以上', () => {
@@ -278,9 +292,14 @@ describe('連携特典カード — AA (§7-1) とトークン規律', () => {
   });
 
   it('額装は静的 (モーション憲法: 動く枠は .ref-hero 1 枚だけ)', () => {
-    const css = pages.match(/\.coupon-ticket--gold\{[^}]*\}/);
-    expect(css).toBeTruthy();
-    expect(css![0]).not.toContain('animation');
+    // `--gold{...}` 本体だけ見ると ::before や別ルールに足された常時アニメを見逃す。
+    // クーポン系の**全ルール**を集めて検査する。
+    const rules = [...pages.matchAll(/\.coupon-[\w-]*(?:::?[\w-]+)?\s*(?:,\s*\.[\w-]+)*\{[^}]*\}/g)].map((m) => m[0]);
+    expect(rules.length).toBeGreaterThan(5); // ルールを 1 つも拾えていないなら測れていない
+    for (const r of rules) {
+      expect(r).not.toContain('animation');
+      expect(r).not.toContain('@keyframes');
+    }
   });
 });
 

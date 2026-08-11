@@ -70,7 +70,7 @@ import {
 } from '@line-crm/db';
 import { dispatch } from './channel-dispatcher.js';
 import { deterministicRetryKey } from './subscription-billing-reminder.js';
-import { BILLING_DEADLINE_LEAD_DAYS } from './subscription-concierge.js';
+import { BILLING_DEADLINE_LEAD_DAYS, subIntentPresentableDate } from './subscription-concierge.js';
 import { addDays, parseOrderSubscriptionTags } from './subscription-contracts.js';
 import { computePromisedBy } from './business-calendar.js';
 
@@ -248,7 +248,23 @@ export async function acceptSubIntent(
   const contract = await getSubscriptionContract(db, input.contractKey);
   if (!contract) return { status: 'contract_not_found' };
 
-  const currentEstimate = contract.next_billing_estimate?.slice(0, 10) ?? null;
+  const nowMs = input.nowMs ?? Date.now();
+  // 🚨 生の next_billing_estimate ではなく **カードが提示してよい日付** を使う
+  //    (= stale (過去日) は null に畳む。subIntentPresentableDate と同じ規則)。
+  //    生の列を使うと、推定が過去日に腐った契約で次のことが起きる:
+  //      ・カードは isStaleEstimate で日付を隠し「マイページでご確認ください」と出す
+  //      ・postback の y も d0 も 'unknown' で運ばれる (画面に日付が無いので当然)
+  //      ・なのに受理系だけが腐った日付から締切を作り、
+  //        「今回の変更受付期限 (8月3日) を過ぎているため承れません」と
+  //        **画面に一度も出していない過去日を断定して**返す
+  //    しかもその日付は derived (推定) なので、実態と違う可能性がある。
+  //    subIntentPresentableDate の doc-comment が既にこの意図を書いているのに、
+  //    acceptSubIntent だけが取り残されていた (2026-08-11 監査 HIGH)。
+  //    畳んだ結果 deadlineAt = null になり、skip/date は「推定日なし」の契約と同じ扱い
+  //    (= 受理してスタッフが実態を見て処理する) になる。これは無言で断るより誠実。
+  //    ⚠️ cycle key も 'unknown' に揃うので、**postback の y と台帳のキーが初めて一致**する
+  //    (従来は y='C:unknown' なのに台帳は 'C:2026-08-03' で作られる乖離があった)。
+  const currentEstimate = subIntentPresentableDate(contract, nowMs);
   let presentedForRecord: string | null = null;
   if (input.presentedDate !== undefined && input.presentedDate !== null) {
     const presented = input.presentedDate.slice(0, 10);
@@ -274,7 +290,6 @@ export async function acceptSubIntent(
     : null;
 
   const executor = input.executor ?? 'human';
-  const nowMs = input.nowMs ?? Date.now();
   const now = toJstString(new Date(nowMs));
   const cycleKey = buildCycleKey(input.contractKey, scheduledDate);
   // resume は締切に縛られない (再開意思を期限で失効させる理由がない)

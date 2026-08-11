@@ -63,6 +63,7 @@ import {
 import { handleSubIntentPostback } from '../services/sub-intent-postback.js';
 import {
   subIntentPostbackData,
+  subIntentCycleKey,
   buildBillingReminderMessages,
   SUB_INTENT_POSTBACK_VERSION,
 } from '../services/subscription-concierge.js';
@@ -1873,6 +1874,43 @@ describe('§4-1 受理時の約束と開示', () => {
       executor: 'blocked', nowMs: AFTER_DEADLINE_MS,
     });
     expect(blocked.status).toBe('accepted');
+  });
+
+  // 🚨 2026-08-11 監査 HIGH: 推定が過去日に腐った契約 (本番 active に 8 件) では、
+  //    カードは isStaleEstimate で日付を隠し「マイページでご確認ください」と出し、
+  //    postback の y も d0 も 'unknown' で運ばれる。にもかかわらず acceptSubIntent だけが
+  //    **生の next_billing_estimate** から締切を作っていたため、
+  //    「今回の変更受付期限 (8月17日) を過ぎているため承れません」と
+  //    画面に一度も出していない過去日 (しかも derived = 実態と違いうる) を断定して返していた。
+  //    subIntentPresentableDate の doc-comment が既にこの意図を書いているのに、
+  //    受理系の中心だけが取り残されていた。
+  it('🚨推定が過去日 (stale) の契約は「画面に無い過去日」で断らない — 推定なしと同じ扱いで受理する', async () => {
+    const stale: ContractSeed = { ...CONTRACT, next_billing_estimate: '2026-08-20', estimate_source: 'derived' };
+    const { db, store } = createDb({ contracts: [stale], friends: [FRIEND] });
+    const res = await acceptSubIntent(db, {
+      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: NOW_MS,
+    });
+    expect(res.status).toBe('accepted');
+    if (res.status !== 'accepted') throw new Error('setup');
+    // 腐った推定から締切を作らない (作ると即 deadline_passed になり、上の誤案内に戻る)
+    expect(res.intent.deadline_at).toBeNull();
+    // 台帳のサイクル鍵は postback の y (= 'C1:unknown') と一致する。
+    // 従来は y='C1:unknown' なのに台帳は 'C1:2026-08-20' で作られる乖離があった。
+    expect(res.intent.target_cycle_key).toBe(subIntentCycleKey(
+      { contract_id: 'C1', next_billing_estimate: '2026-08-20' } as never, NOW_MS,
+    ));
+    expect(res.intent.target_cycle_key).toContain(':unknown');
+    expect(store.intents.size).toBe(1);
+  });
+
+  it('推定が未来なら従来どおり締切を作る (stale 畳みが健全なケースを壊していない)', async () => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const res = await acceptSubIntent(db, {
+      contractNs: 'hb', contractKey: 'C1', op: 'skip', requestedBy: 'customer', nowMs: NOW_MS,
+    });
+    if (res.status !== 'accepted') throw new Error('setup');
+    expect(res.intent.deadline_at).toContain('2026-09-07');
+    expect(res.intent.target_cycle_key).toBe('C1:2026-09-10');
   });
 
   it('金曜受理 + 土曜締切 → promise_after_deadline (受理していない)。了承すれば受理される', async () => {
