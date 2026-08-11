@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "prebuild": "pnpm --filter @line-crm/shared --filter @line-crm/line-sdk build",
+    "prebuild": "pnpm --filter @line-crm/shared --filter @line-crm/line-sdk run build",
     "build": "vite build",
     "preview": "vite preview",
-    "predeploy": "pnpm --filter @line-crm/shared --filter @line-crm/line-sdk build",
+    "predeploy": "pnpm --filter @line-crm/shared --filter @line-crm/line-sdk run build",
     "deploy": "vite build && wrangler deploy && node ../../scripts/post-deploy-check.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
