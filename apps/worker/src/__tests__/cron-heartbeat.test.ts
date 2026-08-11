@@ -125,4 +125,79 @@ describe('withHeartbeat', () => {
     ).rejects.toBe('literal string');
     expect(insertCalls[0]?.errorSummary).toBe('literal string');
   });
+
+  // ============================================================
+  // outcomeExtractor (2026-08-11: 戻り値 error の silent-fallback 解消)
+  // ============================================================
+
+  it('🚨outcomeExtractor が partial を返すと status=partial + errorSummary で記録される', async () => {
+    const result = await withHeartbeat(
+      mockDb,
+      'partial-job',
+      async () => ({ synced: 100, error: 'D1_ERROR: Network connection lost.' }),
+      (r) => ({ synced: r.synced, error: r.error ?? null }),
+      (r) => (r.error ? { status: 'partial', errorSummary: r.error } : { status: 'success' }),
+    );
+    expect(result.synced).toBe(100);
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0]).toMatchObject({
+      jobName: 'partial-job',
+      status: 'partial',
+      errorSummary: 'D1_ERROR: Network connection lost.',
+    });
+    // metrics は outcome と独立に記録される
+    expect(insertCalls[0]?.metrics).toEqual({
+      synced: 100,
+      error: 'D1_ERROR: Network connection lost.',
+    });
+  });
+
+  it('outcomeExtractor が skipped を返すと status=skipped で記録される', async () => {
+    await withHeartbeat(
+      mockDb,
+      'skipped-job',
+      async () => ({ skipped: true as const }),
+      undefined,
+      () => ({ status: 'skipped' }),
+    );
+    expect(insertCalls[0]).toMatchObject({ jobName: 'skipped-job', status: 'skipped' });
+  });
+
+  it('outcomeExtractor がエラー無し結果に success を返すと従来どおり success', async () => {
+    await withHeartbeat(
+      mockDb,
+      'clean-job',
+      async () => ({ synced: 5, error: undefined }),
+      undefined,
+      (r) => (r.error ? { status: 'partial', errorSummary: r.error } : { status: 'success' }),
+    );
+    expect(insertCalls[0]).toMatchObject({ status: 'success' });
+    expect(insertCalls[0]?.errorSummary).toBeUndefined();
+  });
+
+  it('outcomeExtractor が throw しても heartbeat は success として記録される', async () => {
+    const result = await withHeartbeat(
+      mockDb,
+      'bad-outcome-extractor',
+      async () => 'OK',
+      undefined,
+      () => {
+        throw new Error('outcome extractor blew up');
+      },
+    );
+    expect(result).toBe('OK');
+    expect(insertCalls[0]?.status).toBe('success');
+  });
+
+  it('outcomeExtractor が不正 status を返したら success に倒す (heartbeat を落とさない)', async () => {
+    await withHeartbeat(
+      mockDb,
+      'invalid-outcome',
+      async () => 'OK',
+      undefined,
+      // 実装バグ想定: 'error' は throw 経路専用なので outcome としては不正
+      () => ({ status: 'error' as unknown as 'partial' }),
+    );
+    expect(insertCalls[0]?.status).toBe('success');
+  });
 });

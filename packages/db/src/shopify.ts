@@ -219,6 +219,79 @@ export async function upsertShopifyCustomer(
     .first<{ id: string; shopify_customer_id: string; [key: string]: unknown }>())!;
 }
 
+export interface BatchUpsertShopifyCustomerInput {
+  shopifyCustomerId: string;
+  friendId?: string;
+  email?: string;
+  phone?: string;
+  firstName?: string;
+  lastName?: string;
+  ordersCount?: number;
+  totalSpent?: number;
+  tags?: string;
+  metadata?: string;
+}
+
+/**
+ * shopify_customers を 1 回の db.batch() でまとめて upsert する (cron 一括同期用)。
+ *
+ * upsertShopifyCustomer は 1 顧客あたり D1 round-trip が 3 回 (SELECT→UPDATE/INSERT→SELECT)
+ * 走るため、数千件のフル同期では 1 invocation の途中で D1 接続断が起きて完走できなかった
+ * (2026-08-11 調査: shopify-customer-sync の cron_run_logs 全行に D1_ERROR が残る状態)。
+ * ON CONFLICT 1 文に畳むことでページ (250 件) あたり 1 round-trip にする。
+ *
+ * COALESCE の update 挙動 (指定があれば上書き・無ければ既存維持) は upsertShopifyCustomer と
+ * 同一。既存行の id / created_at は保持される。
+ *
+ * 番号付きパラメータ (?N) を使う理由: excluded.* 参照だと「INSERT 時は 0 / '{}' に倒す」と
+ * 「UPDATE 時は既存維持」を両立できない (VALUES 側で COALESCE(?, 0) すると excluded が 0 に
+ * なり既存値を潰す)。VALUES 側と DO UPDATE 側で同じ ?N を参照し、それぞれの fallback を
+ * 書き分けることで単発 upsert (INSERT default 0/'{}' + UPDATE 既存維持) と完全一致させる。
+ * NULL を明示 bind すると schema の DEFAULT 句は適用されない点に注意 (segment-query の
+ * `total_spent >= ?` は NULL 行を除外してしまうため、新規行の 0 default は必須)。
+ */
+export async function batchUpsertShopifyCustomers(
+  db: D1Database,
+  customers: BatchUpsertShopifyCustomerInput[],
+): Promise<void> {
+  if (customers.length === 0) return;
+  const now = jstNow();
+  const stmt = db.prepare(
+    `INSERT INTO shopify_customers (id, shopify_customer_id, friend_id, email, phone, first_name, last_name, orders_count, total_spent, tags, metadata, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, COALESCE(?8, 0), COALESCE(?9, 0), ?10, COALESCE(?11, '{}'), ?12, ?13)
+       ON CONFLICT(shopify_customer_id) DO UPDATE SET
+         friend_id = COALESCE(?3, friend_id),
+         email = COALESCE(?4, email),
+         phone = COALESCE(?5, phone),
+         first_name = COALESCE(?6, first_name),
+         last_name = COALESCE(?7, last_name),
+         orders_count = COALESCE(?8, orders_count),
+         total_spent = COALESCE(?9, total_spent),
+         tags = COALESCE(?10, tags),
+         metadata = COALESCE(?11, metadata),
+         updated_at = ?13`,
+  );
+  await db.batch(
+    customers.map((c) =>
+      stmt.bind(
+        crypto.randomUUID(),
+        c.shopifyCustomerId,
+        c.friendId ?? null,
+        c.email ?? null,
+        c.phone ?? null,
+        c.firstName ?? null,
+        c.lastName ?? null,
+        c.ordersCount ?? null,
+        c.totalSpent ?? null,
+        c.tags ?? null,
+        c.metadata ?? null,
+        now,
+        now,
+      ),
+    ),
+  );
+}
+
 export async function getShopifyCustomers(
   db: D1Database,
   filters?: {

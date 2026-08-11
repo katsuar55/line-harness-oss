@@ -24,12 +24,29 @@
 import { insertCronRunLog } from '@line-crm/db';
 
 /**
+ * fn() が正常 return した場合の記録 status を戻り値から判定した結果。
+ *
+ * 2026-08-11: エラーを throw せず戻り値の error field で報告する job
+ * (例: shopify-customer-sync) が、部分失敗でも常に status='success' で
+ * 記録される silent-fallback を解消するために導入。
+ * - 'partial': 実行はしたが一部失敗 (errorSummary に理由を残す)
+ * - 'skipped': gating / 未設定で実処理なし
+ * - 'error' はここでは指定不可 (fn() の throw 経路専用)
+ */
+export interface HeartbeatOutcome {
+  status: 'success' | 'partial' | 'skipped';
+  errorSummary?: string;
+}
+
+/**
  * cron 関数を heartbeat 付きで実行する。
  *
  * @param db D1 binding
  * @param jobName cron_run_logs に記録される job 名
  * @param fn 実行する cron 関数 (async)
  * @param metricsExtractor 戻り値から metrics オブジェクトを抽出する任意関数
+ * @param outcomeExtractor 戻り値から status / errorSummary を判定する任意関数
+ *   (未指定・抽出失敗・不正 status は従来どおり 'success')
  * @returns fn() の戻り値をそのまま返す
  * @throws fn() が throw した場合、heartbeat 書き込み後に同じエラーを再 throw
  */
@@ -38,13 +55,16 @@ export async function withHeartbeat<T>(
   jobName: string,
   fn: () => Promise<T>,
   metricsExtractor?: (result: T) => object,
+  outcomeExtractor?: (result: T) => HeartbeatOutcome,
 ): Promise<T> {
   try {
     const result = await fn();
+    const outcome = outcomeExtractor ? safeOutcome(outcomeExtractor, result) : undefined;
     await safeRecord(db, {
       jobName,
-      status: 'success',
+      status: outcome?.status ?? 'success',
       metrics: metricsExtractor ? safeExtract(metricsExtractor, result) : undefined,
+      errorSummary: outcome?.errorSummary,
     });
     return result;
   } catch (err) {
@@ -80,6 +100,22 @@ async function safeRecord(
 function safeExtract<T>(extractor: (r: T) => object, result: T): object | undefined {
   try {
     return extractor(result);
+  } catch {
+    return undefined;
+  }
+}
+
+const VALID_OUTCOME_STATUSES: ReadonlySet<string> = new Set(['success', 'partial', 'skipped']);
+
+function safeOutcome<T>(
+  extractor: (r: T) => HeartbeatOutcome,
+  result: T,
+): HeartbeatOutcome | undefined {
+  try {
+    const outcome = extractor(result);
+    // 抽出関数のバグで不正 status が返っても heartbeat 自体は落とさない
+    if (!outcome || !VALID_OUTCOME_STATUSES.has(outcome.status)) return undefined;
+    return outcome;
   } catch {
     return undefined;
   }
