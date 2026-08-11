@@ -25,6 +25,7 @@ import {
   type RedeemFailure,
 } from '../services/sub-link.js';
 import type { Env } from '../index.js';
+import { issueLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
 
 const subLink = new Hono<Env>();
 
@@ -165,6 +166,22 @@ subLink.post('/api/liff/sub-link/redeem', async (c) => {
       lineUserId: user.lineUserId,
     });
     if (result.ok) {
+      // 連携特典クーポン (Sprint A-1): 新規連携の成立時のみ発行。
+      // alreadyLinked (= 冪等再訪 / 競合回復) には出さない — 「連携した瞬間の報酬」であり、
+      // UNIQUE(friend_id) の台帳冪等と二重の防御になる。応答は待たせない (waitUntil)。
+      if (!result.alreadyLinked) {
+        const issueP = issueLinkRewardCoupon(c.env.DB, c.env, {
+          friendId: user.friendId,
+          shopifyCustomerId: result.summary.customerId,
+          linkPath: 'sub_link',
+        }).catch((err) =>
+          console.error(
+            '[sub-link] link reward issue failed:',
+            err instanceof Error ? err.message : 'unknown',
+          ),
+        );
+        try { c.executionCtx.waitUntil(issueP); } catch { /* no exec ctx in tests */ }
+      }
       return c.json({
         success: true,
         data: { linked: true, alreadyLinked: result.alreadyLinked, ...result.summary },

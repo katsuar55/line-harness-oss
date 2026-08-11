@@ -13,12 +13,20 @@ vi.mock('../services/account-link.js', () => ({
   verifyAccountLinkCode: vi.fn(),
 }));
 
+// 連携特典クーポン (Sprint A-1): verify 成功 hook の発火だけを検証する
+// (issuer 本体は link-reward-coupon-issuer.test.ts で網羅済)
+vi.mock('../services/link-reward-coupon-issuer.js', () => ({
+  issueLinkRewardCoupon: vi.fn(async () => null),
+}));
+
 import { liffAccountLink } from '../routes/liff-account-link.js';
 import { requestAccountLinkCode, verifyAccountLinkCode } from '../services/account-link.js';
+import { issueLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
 import type { Env } from '../index.js';
 
 const mockedRequest = vi.mocked(requestAccountLinkCode);
 const mockedVerify = vi.mocked(verifyAccountLinkCode);
+const mockedIssueLinkReward = vi.mocked(issueLinkRewardCoupon);
 
 function makeApp(opts: { liffUser?: { lineUserId: string; friendId: string } | null } = {}): Hono<Env> {
   const app = new Hono<Env>();
@@ -45,6 +53,8 @@ function postJson(app: Hono<Env>, path: string, body: unknown, raw?: string) {
 beforeEach(() => {
   mockedRequest.mockReset();
   mockedVerify.mockReset();
+  mockedIssueLinkReward.mockReset();
+  mockedIssueLinkReward.mockResolvedValue(null);
 });
 
 // ============================================================
@@ -158,3 +168,36 @@ describe('POST /api/liff/link/verify-code', () => {
 });
 
 type VerifyCode = 'locked' | 'customer_not_found' | 'customer_conflict' | 'shopify_error' | 'disabled';
+
+// ============================================================
+// 連携特典クーポン hook (Sprint A-1, 2026-08-11)
+//   verify 成功 (= 新規 link 成立) のときだけ発行する。
+// ============================================================
+
+describe('link reward hook (POST /api/liff/link/verify-code)', () => {
+  it('🚨verify 成功 → issuer が friendId/customerId/linkPath=email_otp で 1 回呼ばれる', async () => {
+    mockedVerify.mockResolvedValue({ ok: true, customerId: '777', backfilled: 0, metafieldWritten: true });
+    const app = makeApp();
+    const res = await postJson(app, '/api/liff/link/verify-code', { email: 'a@b.co', code: '123456' });
+    expect(res.status).toBe(200);
+    expect(mockedIssueLinkReward).toHaveBeenCalledTimes(1);
+    const [, , opts] = mockedIssueLinkReward.mock.calls[0];
+    expect(opts).toMatchObject({ friendId: 'friend-1', shopifyCustomerId: '777', linkPath: 'email_otp' });
+  });
+
+  it('verify 失敗 (already_linked 含む) → issuer を呼ばない', async () => {
+    mockedVerify.mockResolvedValue({ ok: false, code: 'already_linked' });
+    const app = makeApp();
+    const res = await postJson(app, '/api/liff/link/verify-code', { email: 'a@b.co', code: '123456' });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(mockedIssueLinkReward).not.toHaveBeenCalled();
+  });
+
+  it('issuer が reject しても verify 応答は成功のまま (fire-and-forget)', async () => {
+    mockedVerify.mockResolvedValue({ ok: true, customerId: '777', backfilled: 0, metafieldWritten: false });
+    mockedIssueLinkReward.mockRejectedValueOnce(new Error('shopify down'));
+    const app = makeApp();
+    const res = await postJson(app, '/api/liff/link/verify-code', { email: 'a@b.co', code: '123456' });
+    expect(res.status).toBe(200);
+  });
+});

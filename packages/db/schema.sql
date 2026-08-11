@@ -2114,6 +2114,30 @@ CREATE TABLE IF NOT EXISTS sub_intents (
   verify_baseline_json TEXT,
   verified_at          TEXT);
 
+-- from 078_line_link_coupons.sql
+CREATE TABLE IF NOT EXISTS line_link_coupons (
+  id                       TEXT PRIMARY KEY,
+  friend_id                TEXT NOT NULL,                  -- 連携を完了した friend (= クーポン所有者)
+  shopify_customer_id      TEXT NOT NULL,                  -- 連携先 Shopify customer (numeric id)
+  link_path                TEXT NOT NULL DEFAULT 'unknown'
+                           CHECK (link_path IN ('sub_link', 'email_otp', 'unknown')),
+  coupon_code              TEXT NOT NULL,                  -- Shopify で発行された code (NLINK-)
+  shopify_discount_code_id TEXT,                           -- Shopify GraphQL ID (gid://shopify/DiscountCodeNode/...)
+  discount_value           INTEGER NOT NULL DEFAULT 500,
+  discount_currency        TEXT NOT NULL DEFAULT 'JPY',
+  issued_at                TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  expires_at               TEXT,                           -- coupon 有効期限 (NULL = 無期限)
+  redeemed_at              TEXT,                           -- 使用時刻 (将来 orders webhook で更新)
+  status                   TEXT NOT NULL DEFAULT 'issued'
+                           CHECK (status IN ('issued', 'redeemed', 'expired', 'revoked')),
+  line_account_id          TEXT,
+  metadata                 TEXT,                           -- JSON (Shopify API response の subset 等)
+  FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id) ON DELETE SET NULL,
+  -- 連携特典は 1 friend につき生涯 1 枚 = 冪等キー (再連携で 2 枚目は出ない)
+  UNIQUE (friend_id)
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -2396,3 +2420,7 @@ CREATE INDEX IF NOT EXISTS idx_sub_intents_contract
 CREATE INDEX IF NOT EXISTS idx_sub_intents_verify_pending
   ON sub_intents(verify_state)
   WHERE verify_state = 'pending';
+CREATE INDEX IF NOT EXISTS idx_line_link_coupons_code
+  ON line_link_coupons(coupon_code);
+CREATE INDEX IF NOT EXISTS idx_line_link_coupons_customer
+  ON line_link_coupons(shopify_customer_id);

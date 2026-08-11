@@ -321,6 +321,8 @@ function portalPage(
       <div id="welcome-coupon-card" class="card p-4" style="display:none"></div>
       <!-- 紹介特典クーポン (referred=紹介された/referrer=紹介した の実クーポン、発行済みのときのみ表示) -->
       <div id="referral-coupon-card" class="card p-4" style="display:none"></div>
+      <!-- 連携特典クーポン (Sprint A-1: アカウント連携完了の報酬、発行済みのときのみ表示) -->
+      <div id="link-coupon-card" class="card p-4" style="display:none"></div>
       <!-- LINE友だち限定クーポン (管理トグル ON 時のみ表示) -->
       <div id="friend-coupon-card" class="card p-4" style="display:none"></div>
       ${shopifyLinkUrl ? `<!-- C3: オンラインストア連携 (未連携と判明したときだけ出す)。
@@ -1342,7 +1344,7 @@ async function initLiff() {
         loadShopData(); loadSubscriptionsOnce();
       }
     } catch (e) { /* prefetch は最適化 — 失敗しても通常経路で読む */ }
-    await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadWelcomeCoupon(), loadReferralCoupon(), loadFriendCoupon(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake(), loadBadges()]);
+    await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadWelcomeCoupon(), loadReferralCoupon(), loadLinkCoupon(), loadFriendCoupon(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake(), loadBadges()]);
     initOptInCard();
     initAccountHint();
     await loadRank();
@@ -1984,6 +1986,45 @@ async function loadReferralCoupon() {
   } catch {
     cardError(el, null, 'loadReferralCoupon');
   }
+}
+async function loadLinkCoupon() {
+  var el = document.getElementById('link-coupon-card');
+  if (!el) return;
+  try {
+    const res = await apiGet('/api/liff/link-coupon');
+    if (apiFailed(res)) { cardError(el, res, 'loadLinkCoupon'); return; }
+    var cp = res.data && res.data.coupon;
+    if (!cp) { el.style.display = 'none'; return; }
+    el.style.display = 'block';
+    el.style.background = 'linear-gradient(135deg,#e6faf9,#ffffff)';
+    el.style.border = '1.5px solid rgba(10,186,181,.45)';
+    var val = Number(cp.discountValue) || 500;
+    el.innerHTML =
+      '<div class="flex items-center gap-2 mb-1">' +
+      '<span class="px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700;background:#0ABAB5;color:#fff">🔗 連携特典</span>' +
+      '<span class="text-xs font-bold" style="color:#089591">連携ありがとうございます</span></div>' +
+      '<p class="text-2xl font-extrabold mb-1" style="color:#078783">¥' + val + ' OFF クーポン</p>' +
+      '<p class="text-xs text-gray-500 mb-2">アカウント連携の特典です。公式ストアの全商品でお使いいただけます。</p>' +
+      '<div class="flex items-center gap-2 mb-2">' +
+      '<code class="flex-1 text-center text-sm font-bold tracking-widest bg-white rounded-lg py-2" style="border:1px solid #9adedb">' + esc(cp.code) + '</code>' +
+      '<button onclick="copyLinkCouponCode(this)" data-code="' + esc(cp.code) + '" class="text-xs font-bold rounded-lg px-3 py-2 whitespace-nowrap" style="border:1px solid #9adedb;background:#e6faf9;color:#078783">コピー</button>' +
+      (cp.applyUrl ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" class="text-xs font-bold rounded-lg px-3 py-2 whitespace-nowrap" style="background:#0ABAB5;color:#fff">使う</a>' : '') +
+      '</div>' +
+      (cp.remainingText ? '<p class="text-xs mb-1" style="color:#089591;margin-top:-4px">⏳ ' + esc(cp.remainingText) + 'で終了</p>' : '');
+  } catch {
+    cardError(el, null, 'loadLinkCoupon');
+  }
+}
+function copyLinkCouponCode(btn) {
+  var code = (btn && btn.getAttribute('data-code')) || '';
+  // copyRefCode と同イディオム: コピー失敗時に成功トーストを出さない
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code)
+        .then(function() { showToast('クーポンコードをコピーしました'); })
+        .catch(function() { showToast('コピーできませんでした。コードを長押ししてください'); });
+    } else { showToast('コピーできませんでした。コードを長押ししてください'); }
+  } catch (e) { showToast('コピーできませんでした。コードを長押ししてください'); }
 }
 function copyRefCode(btn) {
   var code = (btn && btn.getAttribute('data-code')) || '';
