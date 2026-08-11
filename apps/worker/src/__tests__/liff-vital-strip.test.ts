@@ -36,12 +36,25 @@ function makeEl(id: string): FakeEl {
   };
 }
 
+/** strip の公開関数。`never[]` にすると呼び出し側の引数が全部型エラーになるので明示する */
+interface StripApi {
+  vsSetCoupons: (key: string, n: unknown) => void;
+  vsSetRank: (rank: { name?: string; icon?: string } | null, pct: unknown) => void;
+  vsSetLinked: (linked: boolean) => void;
+  vsJumpRank: () => void;
+  vsJumpCoupons: () => void;
+  vsJumpReferral: () => void;
+  vsLinkTap: () => void;
+  vsCouponTotal: () => number;
+  updateVsCouponCell: () => void;
+}
+
 interface Harness {
   els: Record<string, FakeEl>;
   scrolled: string[];
   linkPageOpened: number;
   referralScrolled: number;
-  api: Record<string, (...a: never[]) => unknown>;
+  api: StripApi;
   win: Record<string, unknown>;
 }
 
@@ -72,14 +85,15 @@ function makeHarness(opts: { reducedMotion?: boolean } = {}): Harness {
               vsJumpRank: vsJumpRank, vsJumpCoupons: vsJumpCoupons, vsJumpReferral: vsJumpReferral,
               vsLinkTap: vsLinkTap, vsCouponTotal: vsCouponTotal,
               updateVsCouponCell: updateVsCouponCell };`,
-  ) as (...a: unknown[]) => Record<string, (...a: never[]) => unknown>;
+  ) as (...a: unknown[]) => StripApi;
 
   const api = factory(
     { getElementById: (id: string) => els[id] ?? null },
     win,
     // 既定は reduced-motion 扱い = count-up を即値にして決定的にテストする
     opts.reducedMotion !== false,
-    (cb: FrameRequestCallback) => { cb(0); return 0; },
+    // worker の tsconfig に DOM lib は無いので FrameRequestCallback は使わない
+    (cb: (t: number) => void) => { cb(0); return 0; },
     () => { referralScrolled++; },
     () => { linkPageOpened++; },
   );
@@ -201,8 +215,8 @@ describe('VITAL STRIP — クーポン枚数 (5 系統の合算)', () => {
 
   it('壊れた値 (NaN / undefined) は 0 として扱い、NaN を表示しない', () => {
     const h = makeHarness();
-    h.api.vsSetCoupons('list', 'abc' as never);
-    h.api.vsSetCoupons('welcome', undefined as never);
+    h.api.vsSetCoupons('list', 'abc');
+    h.api.vsSetCoupons('welcome', undefined);
     expect(h.api.vsCouponTotal()).toBe(0);
     expect(h.els['vs-coupon-n'].textContent).toBe('–');
   });
@@ -211,7 +225,7 @@ describe('VITAL STRIP — クーポン枚数 (5 系統の合算)', () => {
 describe('VITAL STRIP — ランクと連携の表示', () => {
   it('ランク名とアイコンと進捗リングを埋める', () => {
     const h = makeHarness();
-    h.api.vsSetRank({ name: 'Silver', icon: '🥈' } as never, 42);
+    h.api.vsSetRank({ name: 'Silver', icon: '🥈' }, 42);
     expect(h.els['vs-rank-icon'].textContent).toBe('🥈');
     expect(h.els['vs-rank-sub'].textContent).toBe('Silver');
     expect(h.els['vs-ring'].style.props['--p']).toBe('42%');
@@ -219,15 +233,15 @@ describe('VITAL STRIP — ランクと連携の表示', () => {
 
   it('進捗は 0-100 にクランプする (リングが一周以上回らない)', () => {
     const h = makeHarness();
-    h.api.vsSetRank({ name: 'Gold' } as never, 250);
+    h.api.vsSetRank({ name: 'Gold' }, 250);
     expect(h.els['vs-ring'].style.props['--p']).toBe('100%');
-    h.api.vsSetRank({ name: 'Gold' } as never, -5);
+    h.api.vsSetRank({ name: 'Gold' }, -5);
     expect(h.els['vs-ring'].style.props['--p']).toBe('0%');
   });
 
   it('未購入 (ランクなし) は「はじめて」— 死んだグレー行にしない', () => {
     const h = makeHarness();
-    h.api.vsSetRank(null as never, 0);
+    h.api.vsSetRank(null, 0);
     expect(h.els['vs-rank-sub'].textContent).toBe('はじめて');
   });
 
