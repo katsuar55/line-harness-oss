@@ -26,6 +26,9 @@ const pages = readFileSync(join(root, '..', 'routes', 'liff-pages.ts'), 'utf8').
 // render を実際に走らせるための最小ハーネス (ロジックを test 側で再実装しない)
 // ─────────────────────────────────────────────────────────────
 const escSrc = pages.match(/^function esc\(s\) \{.*$/m);
+// couponExpiryPhrase は welcome / 紹介 / 連携特典の 3 カード共有なので、
+// 連携特典ブロックの**外**にある。実装を再実装せず、ソースから抜いて注入する。
+const phraseSrc = pages.match(/function couponExpiryPhrase\(remainingText\) \{[\s\S]*?\n\}/);
 const block = pages.match(
   /function linkCouponDaysLeft\(expiresAt\) \{[\s\S]*?\nasync function loadLinkCoupon\(\) \{[\s\S]*?\n\}\n(?=\/\/ 🚨 連携特典クーポンは redeem)/,
 );
@@ -47,7 +50,7 @@ async function render(
   apiResponse: unknown,
   opts: { failed?: boolean; throws?: boolean; throwOnRender?: boolean } = {},
 ): Promise<RenderResult> {
-  if (!escSrc || !block) throw new Error('loadLinkCoupon block not found in liff-pages.ts');
+  if (!escSrc || !block || !phraseSrc) throw new Error('loadLinkCoupon block not found in liff-pages.ts');
   // 🚨 初期状態を 'card p-4' にすると、実装のリセットを削除しても値が変わらず
   //    「金の額装を残さない」系のテストが**全部 vacuous** になる (2026-08-11 監査 HIGH)。
   //    現実に守りたいのは「前回は成功して金の額装が付いていた要素を、次の失敗で使い回す」
@@ -78,7 +81,7 @@ async function render(
     'apiFailed',
     'cardError',
     'vsSetCoupons',
-    `${escSrc[0]}\n${block[0]}\nreturn loadLinkCoupon;`,
+    `${escSrc[0]}\n${phraseSrc[0]}\n${block[0]}\nreturn loadLinkCoupon;`,
   ) as (
     d: unknown,
     g: unknown,
