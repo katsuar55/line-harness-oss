@@ -24,8 +24,32 @@
  *   - packages/db/migrations/050_line_friend_coupons.sql (= schema、 redeemed_at/status 列)
  */
 
+/**
+ * redemption を追跡するクーポン台帳。**テーブル名は SQL に bind できない**ので、
+ * 呼び出し側の文字列をそのまま埋めず、この閉じた対応表からのみ解決する。
+ *
+ * 3 台帳は redemption に必要な列 (id / friend_id / coupon_code / redeemed_at / status /
+ * line_account_id / metadata) が同形で、status の CHECK も同一 (issued|redeemed|expired|revoked)。
+ * 表示側 (getActive*) はいずれも `status='issued'` で絞るので、ここで redeemed に落とせば
+ * カードは自然に消える。
+ */
+export const COUPON_LEDGER_TABLES = Object.freeze({
+  /** 友だち追加 welcome クーポン (migration 050) */
+  friend: 'line_friend_coupons',
+  /** 友達紹介の報酬クーポン (migration 068) */
+  referral: 'line_referral_coupons',
+  /** LINE⇔Shopify 連携特典クーポン (migration 078) */
+  link: 'line_link_coupons',
+} as const);
+
+export type CouponLedger = keyof typeof COUPON_LEDGER_TABLES;
+
+export const COUPON_LEDGERS = Object.freeze(
+  Object.keys(COUPON_LEDGER_TABLES) as CouponLedger[],
+);
+
 export interface RedeemCouponResult {
-  /** couponCode が line_friend_coupons の row に一致したか */
+  /** couponCode が台帳の row に一致したか */
   matched: boolean;
   /** 一致した coupon の friend_id (未一致なら null) */
   friendId: string | null;
@@ -62,6 +86,29 @@ export async function redeemFriendCouponByCode(
   redeemedAtIso: string,
   metadata?: Record<string, unknown>,
 ): Promise<RedeemCouponResult> {
+  return redeemCouponByCode(db, 'friend', couponCode, redeemedAtIso, metadata);
+}
+
+/**
+ * 台帳を指定して redemption を確定する (`redeemFriendCouponByCode` の一般形)。
+ *
+ * テーブル名は `COUPON_LEDGER_TABLES` からのみ解決する。型でも閉じているが、
+ * **JS から任意文字列を渡された場合に SQL へ流れないよう実行時にも検証する** (多層防御)。
+ */
+export async function redeemCouponByCode(
+  db: D1Database,
+  ledger: CouponLedger,
+  couponCode: string,
+  redeemedAtIso: string,
+  metadata?: Record<string, unknown>,
+): Promise<RedeemCouponResult> {
+  const table = Object.prototype.hasOwnProperty.call(COUPON_LEDGER_TABLES, ledger)
+    ? COUPON_LEDGER_TABLES[ledger]
+    : undefined;
+  if (!table) {
+    throw new Error(`redeemCouponByCode: unknown ledger ${String(ledger)}`);
+  }
+
   const trimmed = (couponCode ?? '').trim();
   if (!trimmed) {
     return { matched: false, friendId: null, lineAccountId: null, redeemed: false, alreadyRedeemed: false };
@@ -70,7 +117,7 @@ export async function redeemFriendCouponByCode(
   const row = await db
     .prepare(
       `SELECT id, friend_id, line_account_id, redeemed_at, status
-         FROM line_friend_coupons
+         FROM ${table}
         WHERE coupon_code = ? COLLATE NOCASE
         LIMIT 1`,
     )
@@ -94,7 +141,7 @@ export async function redeemFriendCouponByCode(
   const patch = JSON.stringify({ redemption: { ...(metadata ?? {}), redeemedAt: redeemedAtIso } });
   const res = await db
     .prepare(
-      `UPDATE line_friend_coupons
+      `UPDATE ${table}
           SET redeemed_at = ?,
               status = 'redeemed',
               metadata = json_patch(COALESCE(metadata, '{}'), ?)

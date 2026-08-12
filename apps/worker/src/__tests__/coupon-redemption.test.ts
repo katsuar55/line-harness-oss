@@ -276,7 +276,18 @@ describe('processOrderCouponRedemption', () => {
       shopifyOrderId: '1',
       topic: 'orders/create',
     });
-    expect(r).toEqual({ codesChecked: 0, matched: 0, redeemed: 0, redeemedFriendIds: [] });
+    expect(r).toEqual({
+      codesChecked: 0,
+      matched: 0,
+      redeemed: 0,
+      redeemedFriendIds: [],
+      // 台帳別の内訳は「code が 0 件」でも形を保つ (呼び出し側が常に同じ shape を読める)
+      byLedger: {
+        friend: { matched: 0, redeemed: 0 },
+        referral: { matched: 0, redeemed: 0 },
+        link: { matched: 0, redeemed: 0 },
+      },
+    });
     expect(db.auditInserts.length).toBe(0);
   });
 
