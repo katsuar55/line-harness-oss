@@ -15,7 +15,7 @@
  *   - redeemed_at は issuer (shopify-coupon-issuer.ts) の issued_at と同形式 (UTC ISO 'Z') で揃える。
  */
 
-import { redeemFriendCouponByCode } from '@line-crm/db';
+import { redeemCouponByCode, COUPON_LEDGERS, type CouponLedger } from '@line-crm/db';
 import { auditSystem } from './audit-logger.js';
 
 interface ShopifyDiscountCodeEntry {
@@ -53,16 +53,31 @@ export function extractDiscountCodes(body: Record<string, unknown>): string[] {
 export interface ProcessRedemptionResult {
   /** 注文に乗っていた (重複排除後の) discount code 数 */
   codesChecked: number;
-  /** line_friend_coupons に一致した code 数 */
+  /** いずれかの台帳に一致した code 数 (全台帳の合計) */
   matched: number;
-  /** この呼び出しで実際に redeemed へ遷移させた code 数 */
+  /** この呼び出しで実際に redeemed へ遷移させた code 数 (全台帳の合計) */
   redeemed: number;
   /**
-   * この呼び出しで「初回 redemption」を確定した coupon の所有 friend_id 群 (重複排除)。
-   * 紹介報酬 (referred がクーポン利用 → referrer に報酬) の起点として caller が使う。
+   * 🚨 この呼び出しで「初回 redemption」を確定した **welcome クーポン**の所有 friend_id 群。
+   *
+   * **welcome 由来のみ**であることが契約。caller (routes/shopify.ts) はこれを
+   * `processReferralRewardOnPurchase` = 「紹介された人が welcome クーポンを使ったので
+   * 紹介者に ¥500 実クーポンを発行する」の起点に使うため、他台帳を混ぜてはいけない:
+   *   - 連携特典 ¥300 を使った人が紹介報酬を発火させてしまう
+   *   - 紹介報酬 ¥500 を使った人が、さらに別の紹介報酬を発火させてしまう
+   * どちらも**実クーポンの誤発行 (= 実費)** になる。
    */
   redeemedFriendIds: string[];
+  /** 台帳別の内訳 (可観測性用。どのクーポンが使われているかを cron ログで追える) */
+  byLedger: Record<CouponLedger, { matched: number; redeemed: number }>;
 }
+
+/** 台帳ごとの audit action 名 (既存の welcome 分は名前を変えない) */
+const AUDIT_ACTION: Record<CouponLedger, string> = {
+  friend: 'line_friend_coupon.redeemed',
+  referral: 'line_referral_coupon.redeemed',
+  link: 'line_link_coupon.redeemed',
+};
 
 export interface ProcessRedemptionParams {
   body: Record<string, unknown>;
@@ -81,9 +96,15 @@ export async function processOrderCouponRedemption(
   db: D1Database,
   params: ProcessRedemptionParams,
 ): Promise<ProcessRedemptionResult> {
+  const emptyByLedger = (): Record<CouponLedger, { matched: number; redeemed: number }> =>
+    COUPON_LEDGERS.reduce(
+      (acc, l) => { acc[l] = { matched: 0, redeemed: 0 }; return acc; },
+      {} as Record<CouponLedger, { matched: number; redeemed: number }>,
+    );
+
   const codes = extractDiscountCodes(params.body);
   if (codes.length === 0) {
-    return { codesChecked: 0, matched: 0, redeemed: 0, redeemedFriendIds: [] };
+    return { codesChecked: 0, matched: 0, redeemed: 0, redeemedFriendIds: [], byLedger: emptyByLedger() };
   }
 
   const nowMs = (params.now ?? Date.now)();
@@ -94,43 +115,58 @@ export async function processOrderCouponRedemption(
   let matched = 0;
   let redeemed = 0;
   const redeemedFriendIds = new Set<string>();
+  const byLedger = emptyByLedger();
 
   for (const code of codes) {
-    try {
-      const result = await redeemFriendCouponByCode(db, code, redeemedAtIso, {
-        shopifyOrderId: params.shopifyOrderId,
-        topic: params.topic,
-        orderNumber: typeof orderNumber === 'number' || typeof orderNumber === 'string' ? orderNumber : null,
-        financialStatus: typeof financialStatus === 'string' ? financialStatus : null,
-      });
-
-      if (result.matched) matched += 1;
-      if (result.redeemed) {
-        redeemed += 1;
-        if (result.friendId) redeemedFriendIds.add(result.friendId);
-        // 初回 redemption のみ audit に残す (= 転換の監査証跡、 admin /audit-logs で観察)。
-        await auditSystem(db, {
-          action: 'line_friend_coupon.redeemed',
-          actorType: 'webhook',
-          targetType: 'friend',
-          targetId: result.friendId ?? undefined,
-          lineAccountId: result.lineAccountId,
-          result: 'success',
-          metadata: {
-            code,
-            shopifyOrderId: params.shopifyOrderId,
-            topic: params.topic,
-          },
+    // 全台帳を引く (どこで一致したかで打ち切らない)。code は shop 内で一意なので実際には
+    // 高々 1 台帳しか当たらないが、**台帳の並び順に結果が依存しない**方が推論しやすく、
+    // 「順番を入れ替えたら壊れる」種類のバグを作らない。1 注文の code は通常 0〜2 個。
+    for (const ledger of COUPON_LEDGERS) {
+      try {
+        const result = await redeemCouponByCode(db, ledger, code, redeemedAtIso, {
+          shopifyOrderId: params.shopifyOrderId,
+          topic: params.topic,
+          orderNumber: typeof orderNumber === 'number' || typeof orderNumber === 'string' ? orderNumber : null,
+          financialStatus: typeof financialStatus === 'string' ? financialStatus : null,
         });
+
+        if (result.matched) { matched += 1; byLedger[ledger].matched += 1; }
+        if (result.redeemed) {
+          redeemed += 1;
+          byLedger[ledger].redeemed += 1;
+          // 🚨 紹介報酬の起点になるので **welcome 由来だけ**を積む (他台帳を混ぜると実費の誤発行)
+          if (ledger === 'friend' && result.friendId) redeemedFriendIds.add(result.friendId);
+          // 初回 redemption のみ audit に残す (= 転換の監査証跡、 admin /audit-logs で観察)。
+          await auditSystem(db, {
+            action: AUDIT_ACTION[ledger],
+            actorType: 'webhook',
+            targetType: 'friend',
+            targetId: result.friendId ?? undefined,
+            lineAccountId: result.lineAccountId,
+            result: 'success',
+            metadata: {
+              code,
+              ledger,
+              shopifyOrderId: params.shopifyOrderId,
+              topic: params.topic,
+            },
+          });
+        }
+      } catch (err) {
+        console.error(
+          `[coupon-redemption] redeem failed for code ${code} (ledger ${ledger}, order ${params.shopifyOrderId}):`,
+          err,
+        );
+        // 1 台帳の失敗は他台帳・他 code を止めない (テーブル未作成の環境も想定)
       }
-    } catch (err) {
-      console.error(
-        `[coupon-redemption] redeem failed for code ${code} (order ${params.shopifyOrderId}):`,
-        err,
-      );
-      // 1 code の失敗は他 code を止めない
     }
   }
 
-  return { codesChecked: codes.length, matched, redeemed, redeemedFriendIds: [...redeemedFriendIds] };
+  return {
+    codesChecked: codes.length,
+    matched,
+    redeemed,
+    redeemedFriendIds: [...redeemedFriendIds],
+    byLedger,
+  };
 }
