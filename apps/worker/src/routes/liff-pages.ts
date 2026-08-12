@@ -2074,6 +2074,16 @@ function vsLinkTap() {
 }
 
 // ─── HOME: Coupons ───
+// 🚨 期限文言の述語付けは**必ずここを通す**。サーバ (welcome-coupon.ts formatCouponCountdown) が
+//    返すのは「あとN日」「あとN時間」「まもなく終了」の 3 形で、素朴に 'で終了' を連結すると
+//    最後のケースが **「まもなく終了で終了」** という壊れた日本語になる (2026-08-11 に本番の
+//    welcome / 紹介カードで実際に出ていた)。「あと」で始まるときだけ述語を足す。
+//    welcome / 紹介 / 連携特典の 3 カードが共有する (友だち限定クーポンは期限表示を持たない)。
+function couponExpiryPhrase(remainingText) {
+  var s = String(remainingText || '');
+  return s.indexOf('あと') === 0 ? s + 'で終了' : s;
+}
+
 // LINE友だち限定クーポン (ランク不問の一律 % OFF)。管理トグル ON 時のみ表示。
 async function loadFriendCoupon() {
   var el = document.getElementById('friend-coupon-card');
@@ -2133,7 +2143,7 @@ async function loadWelcomeCoupon() {
     el.innerHTML =
       '<div class="flex items-center gap-2 mb-1">' +
       '<span class="chip-coral px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700">🎁 あなた専用</span>' +
-      (cp.remainingText ? '<span class="text-xs font-bold text-coral">⏳ ' + esc(cp.remainingText) + 'で終了</span>' : '') + '</div>' +
+      (cp.remainingText ? '<span class="text-xs font-bold text-coral">⏳ ' + esc(couponExpiryPhrase(cp.remainingText)) + '</span>' : '') + '</div>' +
       '<p class="text-2xl font-extrabold text-coral-lg mb-1">' + currency + Number(cp.discountValue) + ' OFF クーポン</p>' +
       '<p class="text-xs text-gray-500 mb-2">友だち追加のお礼です。公式ストアの初回購入にお使いいただけます。</p>' +
       '<div class="flex items-center gap-2 mb-3">' +
@@ -2183,7 +2193,7 @@ async function loadReferralCoupon() {
         '<button onclick="copyRefCode(this)" data-code="' + esc(cp.code) + '" class="text-xs font-bold text-coral rounded-lg px-3 py-2 whitespace-nowrap" style="border:1px solid #f4c0ad;background:#fff5ec">コピー</button>' +
         (cp.applyUrl ? '<a href="' + esc(cp.applyUrl) + '" target="_blank" class="text-xs font-bold btn-coral rounded-lg px-3 py-2 whitespace-nowrap">使う</a>' : '') +
         '</div>' +
-        (cp.remainingText ? '<p class="text-xs text-coral mb-2" style="margin-top:-4px">⏳ ' + esc(cp.remainingText) + 'で終了</p>' : '');
+        (cp.remainingText ? '<p class="text-xs text-coral mb-2" style="margin-top:-4px">⏳ ' + esc(couponExpiryPhrase(cp.remainingText)) + '</p>' : '');
     }).join('');
     el.innerHTML = head + items;
     vsSetCoupons('referral', list.length);
@@ -2207,13 +2217,6 @@ function linkCouponDaysLeft(expiresAt) {
   if (remMs <= 0) return 0;
   return Math.floor(Math.floor(remMs / 3600000) / 24);
 }
-// 「まもなく終了」に「で終了」を足すと『まもなく終了で終了』になる。
-// サーバが返すのは「あとN日」「あとN時間」「まもなく終了」の 3 形なので、
-// 「あと」で始まるときだけ述語を足す。
-function linkCouponExpiryPhrase(remainingText) {
-  var s = String(remainingText || '');
-  return s.indexOf('あと') === 0 ? s + 'で終了' : s;
-}
 async function loadLinkCoupon() {
   var el = document.getElementById('link-coupon-card');
   if (!el) return;
@@ -2232,8 +2235,8 @@ async function loadLinkCoupon() {
     var left = linkCouponDaysLeft(cp.expiresAt);
     var expiry = cp.remainingText
       ? (left !== null && left <= 3
-          ? '<span class="coupon-expiry--soon">⏳ ' + esc(linkCouponExpiryPhrase(cp.remainingText)) + '</span>'
-          : '<span class="coupon-expiry">⏳ ' + esc(linkCouponExpiryPhrase(cp.remainingText)) + '</span>')
+          ? '<span class="coupon-expiry--soon">⏳ ' + esc(couponExpiryPhrase(cp.remainingText)) + '</span>'
+          : '<span class="coupon-expiry">⏳ ' + esc(couponExpiryPhrase(cp.remainingText)) + '</span>')
       : '';
     // 🚨 「ほかの割引と併用できます」とは**書かない**。Shopify の combinesWith は双方向の握手で、
     //    稼働中のクーポンはどれも実際には重ならない:
