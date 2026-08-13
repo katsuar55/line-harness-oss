@@ -738,3 +738,76 @@ describe('syncAiModelsCatalog — name skip', () => {
     expect(result.errors).toBe(0);
   });
 });
+
+// ============================================================
+// 既定 fetch 経路 (= 本番が通る経路) の this 束縛 regression
+//
+// 2026-08-13 本番障害: CLOUDFLARE_API_TOKEN 投入までこの経路は一度も実行されず、
+// 投入直後の初回 run (08-12 04:00 JST) で
+// 「Illegal invocation: function called with incorrect `this` reference」
+// が発生した。上の全テストが fetchImpl を注入していたため、既定値の束縛は
+// 2.5 ヶ月間ノーカバレッジだった。
+//
+// Workers の global fetch は this=globalThis を要求する brand check を持つが、
+// Node の undici fetch は this を見ないので、素直に呼ぶだけでは再現しない。
+// そこで globalThis.fetch を **Workers と同じ brand check を持つ stub** に差し替え、
+// 既定経路が正しい this で呼ぶことを実測する。
+// ============================================================
+
+describe('syncAiModelsCatalog — 既定 fetch の this 束縛 (Workers Illegal invocation regression)', () => {
+  it('fetchImpl 未注入でも Illegal invocation にならず sync が完走する', async () => {
+    const { syncAiModelsCatalog } = await import('../services/ai-models-catalog.js');
+
+    const observedThis: unknown[] = [];
+    const original = globalThis.fetch;
+    // Workers ランタイムの brand check を模す: global fetch は this が
+    // globalThis (または呼出時 undefined) でなければ throw する。
+    const workersLikeFetch = function (this: unknown, _input: unknown, _init?: unknown) {
+      observedThis.push(this);
+      if (this !== undefined && this !== globalThis) {
+        throw new TypeError(
+          'Illegal invocation: function called with incorrect `this` reference.',
+        );
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify(
+            makeCloudflareResponse([
+              { name: '@cf/meta/llama-4-scout-17b-16e-instruct', task: { name: 'Text Generation' } },
+            ]),
+          ),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+    };
+    globalThis.fetch = workersLikeFetch as unknown as typeof fetch;
+
+    try {
+      const result = await syncAiModelsCatalog({
+        DB: makeFakeDb(),
+        CLOUDFLARE_ACCOUNT_ID: 'acc',
+        CLOUDFLARE_API_TOKEN: 'tok',
+        AI_MODELS_SYNC_FORCE: 'true',
+        // Discord は呼ばせない (この test の関心は Cloudflare API 呼出の this のみ)
+      });
+
+      // 修正前はここが errors=1 / fetched=0 になり、cron_run_logs に
+      // status='error' + Illegal invocation が記録されていた。
+      expect(result.errors).toBe(0);
+      expect(result.fetched).toBe(1);
+      expect(result.inserted).toBe(1);
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    // 実際に既定経路が呼ばれたことと、その this が global 側であることを固定する
+    expect(observedThis.length).toBeGreaterThan(0);
+    for (const t of observedThis) {
+      expect(t === undefined || t === globalThis).toBe(true);
+    }
+
+    // cron_run_logs に error が残っていないこと (= silent fail 検知の本丸)
+    const errorRuns = state.cronRunCalls.filter((c) => c.status === 'error');
+    expect(errorRuns).toHaveLength(0);
+  });
+});

@@ -163,7 +163,11 @@ interface FetchOptions {
 
 async function fetchCloudflareModels(opts: FetchOptions): Promise<CloudflareModelResult[]> {
   const url = `${CLOUDFLARE_API_BASE}/accounts/${encodeURIComponent(opts.accountId)}/ai/models/search?per_page=200`;
-  const response = await opts.fetchImpl(url, {
+  // ⚠️ `opts.fetchImpl(...)` と property 経由で呼ぶと `this = opts` になり、
+  // Workers の global fetch (this=globalThis 必須) で Illegal invocation になる。
+  // 必ず local const に取り出してから呼ぶ (this=undefined = global が許容する形)。
+  const { fetchImpl } = opts;
+  const response = await fetchImpl(url, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${opts.apiToken}`,
@@ -191,7 +195,10 @@ export async function syncAiModelsCatalog(
   options: AiModelsSyncOptions = {},
 ): Promise<AiModelsSyncResult> {
   const now = options.now ?? new Date();
-  const fetchImpl = options.fetchImpl ?? fetch;
+  // default は必ず bind する (CLAUDE.md「Workers コーディングルール」)。
+  // この値は下流で object property に載る (FetchOptions.fetchImpl) ため、
+  // unbound のままだと呼出時に this が奪われる。
+  const fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
   const staleGraceDays = options.staleGraceDays ?? DEFAULT_STALE_GRACE_DAYS;
   const force = env.AI_MODELS_SYNC_FORCE === 'true';
 

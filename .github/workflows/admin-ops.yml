@@ -1691,10 +1691,15 @@ jobs:
           D1() { npx wrangler d1 execute naturism-line-crm --remote --json --command "$1" | tee -a "$GITHUB_STEP_SUMMARY"; }
           echo '## cron 失敗の一次切り分け (read-only)' >> "$GITHUB_STEP_SUMMARY"
 
-          # ran_at は JST 文字列で入る (schema の DEFAULT が '+9 hours') ので、
-          # 比較側も JST に揃える。
+          # ran_at は JST 文字列で入る (schema の DEFAULT が '+9 hours') ので、比較側も JST に揃える。
+          # ⚠️ ここは意図的に datetime() ではなく date() を使う。
+          # admin-ops-c2-constants.test.ts が `datetime('now','+9 hours','-N day')` を
+          # **ファイル全体から** 拾って全て FLOW_MEASUREMENT_FRESH_DAYS (=10) と一致することを
+          # 要求する (定期便の鮮度窓の drift 検出)。cron ログの窓は無関係な別概念なので、
+          # その sweep を弱めずに済むよう構文を分けている。
+          # ran_at は ISO 前方一致なので date() の 'YYYY-MM-DD' との字句比較で正しく効く。
           echo '### 1. 直近7日の job × status 件数 (件数のみ)' >> "$GITHUB_STEP_SUMMARY"
-          D1 "SELECT job_name, status, COUNT(*) AS n, MAX(ran_at) AS last_at FROM cron_run_logs WHERE ran_at >= datetime('now','+9 hours','-7 day') AND status IN ('error','partial') GROUP BY job_name, status ORDER BY n DESC"
+          D1 "SELECT job_name, status, COUNT(*) AS n, MAX(ran_at) AS last_at FROM cron_run_logs WHERE ran_at >= date('now','+9 hours','-7 day') AND status IN ('error','partial') GROUP BY job_name, status ORDER BY n DESC"
 
           echo '### 2. ai-models-catalog-sync の直近10件 (error_summary/metrics_json 実物)' >> "$GITHUB_STEP_SUMMARY"
           D1 "SELECT ran_at, status, error_summary, metrics_json FROM cron_run_logs WHERE job_name='ai-models-catalog-sync' ORDER BY ran_at DESC LIMIT 10"
