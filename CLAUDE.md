@@ -167,6 +167,8 @@ WORKER_URL: string
 | パターン | 理由 |
 |---|---|
 | `class X { f = globalThis.fetch }` 等で global function を class field / object property に unbound 保持 | Workers ランタイムで `instance.f(...)` 呼出時に `this=instance` になり、global が要求する `this=globalThis` と不一致で Illegal invocation |
+| unbound な global を **options オブジェクトに載せて別関数へ渡し**、渡された側で `opts.fetchImpl(...)` と property 経由で呼ぶ | 上記の class field 版と同じ事故。`const fetchImpl = options.fetchImpl ?? fetch` 自体は「その場で呼ぶ限り」安全なので見逃されやすいが、**下流で object property に載った瞬間に危険に変わる**。2026-08-13 に `ai-models-catalog.ts` で実発生 (下記参照) |
+| secret / gate 待ちで **一度も実行されない経路**を、mock 注入テストだけで「カバー済み」とみなす | 2026-05-26 に書かれた catalog sync は `CLOUDFLARE_API_TOKEN` 未投入の間ずっと graceful skip で、既定 fetch 経路は 2.5 ヶ月間 1 度も実行されなかった。37 件の既存テストが**全て `fetchImpl` を注入**していたため既定値は完全ノーカバレッジ。token 投入の翌朝 (2026-08-12 04:00 JST) の初回実行で即 Illegal invocation。**「本番で初めて通る経路」は投入前に必ず bind 経路ごと test で通す** |
 | `const { method } = globalThis.crypto.subtle` の destructure 後に `method(...)` を呼ぶ | 同上 (prototype method の context 喪失) |
 | Workers ランタイムのテスト省略 + Node mock のみで完結させる | mock が default 値の bind 部分を bypass するため、unbound バグが本番初実行まで隠れる |
 
@@ -178,13 +180,16 @@ WORKER_URL: string
 | 関数 scope で global を参照 | `const fetchImpl = options.fetchImpl ?? fetch; await fetchImpl(...)` (これは `this` 不要、 OK) |
 | crypto.subtle method を使う | `await crypto.subtle.sign(...)` のようにオブジェクト経由で直接呼ぶ。destructure しない |
 | default 値の bind を test で固める | `expect(internalFetch.name).toMatch(/^bound /)` のような unit test で「bound 済み」 を検証 (例: `packages/email-sdk/__tests__/resend-client.test.ts`) |
+| Node の vitest で Illegal invocation を**実際に再現**する | Node の undici fetch は `this` を見ないので素直に呼んでも再現しない。`globalThis.fetch` を **Workers と同じ brand check を持つ stub** (`this` が `undefined`/`globalThis` 以外なら throw) に差し替え、`fetchImpl` を**注入せず**に呼ぶ (例: `ai-models-catalog.test.ts` の「既定 fetch の this 束縛」)。mutation で実際に落ちることまで確認する |
 
 ### 自己点検チェックリスト (Workers 用 class を書く前)
 
 - [ ] 外部から渡された optional dep の default に **global function** を入れていないか?
 - [ ] その default は `bind(globalThis)` してあるか?
+- [ ] その値は下流で **object property / class field に載る**か? 載るなら呼出は `obj.f(...)` でなく local const 経由にしてあるか?
 - [ ] テストは default 値の bind 経路を実際に呼ぶか? (mock 経由でないか?)
 - [ ] regression test (bind name/identity チェック) を 1 件追加したか?
+- [ ] その経路は **secret / gate 待ちで本番未実行**ではないか? 未実行なら、投入前に test で必ず通しておく
 
 ### 違反時の必須アクション
 

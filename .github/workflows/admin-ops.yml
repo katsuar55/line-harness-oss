@@ -113,6 +113,13 @@ name: Admin Ops
 #     read-only。定期便系 FAQ (auto_replies=チャット自動応答 / faq_items=LIFF FAQ タブ) の
 #     有効行を件数+既知文言の指紋で監査する (実態 = 定期便の操作はマイページのみ)。
 #     あわせて AI 応答モデルの実測分布 (conversation_logs) を出す。本文・PII は出さない。
+#   cron-failure-diagnose:
+#     read-only。ダッシュボード system.failingJobs に出た cron の一次切り分け。
+#     ① 直近7日の job×status 件数 ② ai-models-catalog-sync の error_summary/metrics 実物
+#     ③ Cloudflare AI models API を **workflow 側の token** で叩いた結果 (HTTP と件数のみ)。
+#     ③ が 200 なら endpoint/account は健全 = 原因は worker 側 (token 権限 or 実装) に絞れる。
+#     error_summary は本 job では実装が生成する内部文字列のみ (PII なし) なので出力してよい。
+#     他 job は件数のみ (未知の文字列を公開ログに出さないため)。
 #
 # ⚠️ repo は PUBLIC = workflow ログ/サマリは公開される。secret の値・顧客データ (PII) を
 #    echo/サマリ出力する op を追加してはならない (名前・件数のみ可)。
@@ -167,6 +174,7 @@ on:
           - enable-link-reward
           - enable-subscription-menu
           - enable-subscription-reminder
+          - cron-failure-diagnose
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
         required: false
@@ -1663,3 +1671,63 @@ jobs:
 
           echo '### 7. AI 応答モデルの実測 (直近30日・conversation_logs・model 名と件数のみ)' >> "$GITHUB_STEP_SUMMARY"
           D1 "SELECT ai_layer, ai_model, COUNT(*) AS n FROM conversation_logs WHERE created_at >= date('now','-30 day') GROUP BY ai_layer, ai_model ORDER BY n DESC"
+
+      # ダッシュボード system.failingJobs に出た cron の一次切り分け (read-only)。
+      # 「どの job が」だけ分かっても原因は分からないので、error_summary の実物と
+      # 外形 probe を 1 op で並べる。
+      # ⚠️ repo は PUBLIC — error_summary を出すのは ai-models-catalog-sync だけに限定する
+      #    (この job の error_summary は実装が生成する内部文字列のみ = PII なし。
+      #     他 job は未知の文字列を含み得るので件数だけにする)。
+      - name: Cron failure diagnose (read-only)
+        if: inputs.op == 'cron-failure-diagnose'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # tee: wrangler のエラーは stdout に出る。`>>` だけだと summary に飲まれて
+          # ログ側が「exit 1 とだけ言う無言の失敗」になる。
+          D1() { npx wrangler d1 execute naturism-line-crm --remote --json --command "$1" | tee -a "$GITHUB_STEP_SUMMARY"; }
+          echo '## cron 失敗の一次切り分け (read-only)' >> "$GITHUB_STEP_SUMMARY"
+
+          # ran_at は JST 文字列で入る (schema の DEFAULT が '+9 hours') ので、比較側も JST に揃える。
+          # ⚠️ ここは意図的に datetime() ではなく date() を使う。
+          # admin-ops-c2-constants.test.ts が `datetime('now','+9 hours','-N day')` を
+          # **ファイル全体から** 拾って全て FLOW_MEASUREMENT_FRESH_DAYS (=10) と一致することを
+          # 要求する (定期便の鮮度窓の drift 検出)。cron ログの窓は無関係な別概念なので、
+          # その sweep を弱めずに済むよう構文を分けている。
+          # ran_at は ISO 前方一致なので date() の 'YYYY-MM-DD' との字句比較で正しく効く。
+          echo '### 1. 直近7日の job × status 件数 (件数のみ)' >> "$GITHUB_STEP_SUMMARY"
+          D1 "SELECT job_name, status, COUNT(*) AS n, MAX(ran_at) AS last_at FROM cron_run_logs WHERE ran_at >= date('now','+9 hours','-7 day') AND status IN ('error','partial') GROUP BY job_name, status ORDER BY n DESC"
+
+          echo '### 2. ai-models-catalog-sync の直近10件 (error_summary/metrics_json 実物)' >> "$GITHUB_STEP_SUMMARY"
+          D1 "SELECT ran_at, status, error_summary, metrics_json FROM cron_run_logs WHERE job_name='ai-models-catalog-sync' ORDER BY ran_at DESC LIMIT 10"
+
+          echo '### 3. Cloudflare AI models API 外形 probe (workflow 側 token・HTTP と件数のみ)' >> "$GITHUB_STEP_SUMMARY"
+          # worker が叩くのと同じ URL/クエリ。token は workflow 側 (deploy 用) なので
+          # worker の secret とは別物 — ここが 200 なら「endpoint と account は健全」が確定し、
+          # 原因は worker 側 (token 権限 or 実装) に絞れる。
+          HTTP=$(curl -s -o /tmp/aimodels.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/models/search?per_page=200")
+          SUCCESS=$(node -e "try{const d=require('/tmp/aimodels.json');console.log(d.success)}catch(e){console.log('parse-error')}")
+          COUNT=$(node -e "try{const d=require('/tmp/aimodels.json');console.log(Array.isArray(d.result)?d.result.length:'not-array')}catch(e){console.log('parse-error')}")
+          NAMED=$(node -e "try{const d=require('/tmp/aimodels.json');const r=Array.isArray(d.result)?d.result:[];console.log(r.filter(m=>m&&m.name).length)}catch(e){console.log('parse-error')}")
+          ERRCODES=$(node -e "try{const d=require('/tmp/aimodels.json');console.log(JSON.stringify((d.errors||[]).map(e=>e&&e.code)))}catch(e){console.log('parse-error')}")
+          {
+            echo "- http_status: \`${HTTP}\`"
+            echo "- success: \`${SUCCESS}\`"
+            echo "- result_len: \`${COUNT}\` / name を持つ件数: \`${NAMED}\`"
+            echo "- error codes: \`${ERRCODES}\`"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo '### 読み方'
+            echo '- 2 の error_summary が `Cloudflare API returned 403` → worker の token 権限不足 (Workers AI read を付与 / ダッシュボードで確認)'
+            echo '- 2 が `Cloudflare API returned 404` かつ 3 が 200 → worker の CLOUDFLARE_ACCOUNT_ID が別値'
+            echo '- 2 が `Cloudflare API success=false` → API 側のエラー (3 の error codes と突き合わせ)'
+            echo '- 2 が `Illegal invocation...` → 実装バグ (global fetch を object property 経由で呼んでいる)'
+            echo '- 3 が 200 かつ result_len > 0 なのに 2 が error → 原因は worker 側に確定'
+          } >> "$GITHUB_STEP_SUMMARY"
