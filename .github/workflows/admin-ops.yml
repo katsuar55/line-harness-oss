@@ -1686,14 +1686,18 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          D1() { npx wrangler d1 execute naturism-line-crm --remote --json --command "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          # tee: wrangler のエラーは stdout に出る。`>>` だけだと summary に飲まれて
+          # ログ側が「exit 1 とだけ言う無言の失敗」になる。
+          D1() { npx wrangler d1 execute naturism-line-crm --remote --json --command "$1" | tee -a "$GITHUB_STEP_SUMMARY"; }
           echo '## cron 失敗の一次切り分け (read-only)' >> "$GITHUB_STEP_SUMMARY"
 
+          # ran_at は JST 文字列で入る (schema の DEFAULT が '+9 hours') ので、
+          # 比較側も JST に揃える。
           echo '### 1. 直近7日の job × status 件数 (件数のみ)' >> "$GITHUB_STEP_SUMMARY"
-          D1 "SELECT job_name, status, COUNT(*) AS n, MAX(ran_at) AS last_at FROM cron_run_logs WHERE ran_at >= datetime('now','-7 day') AND status IN ('error','partial') GROUP BY job_name, status ORDER BY n DESC"
+          D1 "SELECT job_name, status, COUNT(*) AS n, MAX(ran_at) AS last_at FROM cron_run_logs WHERE ran_at >= datetime('now','+9 hours','-7 day') AND status IN ('error','partial') GROUP BY job_name, status ORDER BY n DESC"
 
-          echo '### 2. ai-models-catalog-sync の直近10件 (error_summary/metrics 実物)' >> "$GITHUB_STEP_SUMMARY"
-          D1 "SELECT ran_at, status, error_summary, metrics FROM cron_run_logs WHERE job_name='ai-models-catalog-sync' ORDER BY ran_at DESC LIMIT 10"
+          echo '### 2. ai-models-catalog-sync の直近10件 (error_summary/metrics_json 実物)' >> "$GITHUB_STEP_SUMMARY"
+          D1 "SELECT ran_at, status, error_summary, metrics_json FROM cron_run_logs WHERE job_name='ai-models-catalog-sync' ORDER BY ran_at DESC LIMIT 10"
 
           echo '### 3. Cloudflare AI models API 外形 probe (workflow 側 token・HTTP と件数のみ)' >> "$GITHUB_STEP_SUMMARY"
           # worker が叩くのと同じ URL/クエリ。token は workflow 側 (deploy 用) なので
