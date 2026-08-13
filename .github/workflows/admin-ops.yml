@@ -1716,7 +1716,7 @@ jobs:
             echo "- success: \`${SUCCESS}\`"
             echo "- result_len: \`${COUNT}\` / name を持つ件数: \`${NAMED}\`"
             echo "- error codes: \`${ERRCODES}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
           {
             echo '### 読み方'
