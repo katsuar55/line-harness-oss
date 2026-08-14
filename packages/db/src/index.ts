@@ -57,6 +57,7 @@ export * from './account-link-stats';
 export * from './sub-link-tokens';
 export * from './sub-intents';
 export * from './coupon-redemption';
+export * from './referral-coupon-queue';
 
 /**
  * Thin wrapper around D1Database.

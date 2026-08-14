@@ -27,7 +27,8 @@ const phraseSrc = pages.match(/function couponExpiryPhrase\(remainingText\) \{[\
 /** カードごとの loader をソースから抜き出す (test 側で再実装しない) */
 const LOADERS = {
   welcome: /async function loadWelcomeCoupon\(\) \{[\s\S]*?\n\}/,
-  referral: /async function loadReferralCoupon\(\) \{[\s\S]*?\n\}/,
+  // 順次活性化 (2026-08-13): loader が参照する待機スタック helper ごと抜き出す
+  referral: /var refCouponRefetched = false;[\s\S]*?async function loadReferralCoupon\(\) \{[\s\S]*?\n\}/,
   link: /function linkCouponDaysLeft\(expiresAt\) \{[\s\S]*?\nasync function loadLinkCoupon\(\) \{[\s\S]*?\n\}/,
 } as const;
 
@@ -64,7 +65,7 @@ async function renderCard(card: CardKey, remainingText: string | null): Promise<
   const el: FakeEl = { className: 'card p-4', style: { display: 'none' }, innerHTML: '' };
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const factory = new Function(
-    'document', 'apiGet', 'apiFailed', 'cardError', 'vsSetCoupons',
+    'document', 'apiGet', 'apiFailed', 'cardError', 'vsSetCoupons', 'vsSetCouponsWaiting',
     `${escSrc[0]}\n${phraseSrc[0]}\n${src[0]}\nreturn ${ENTRY[card]};`,
   ) as (...a: unknown[]) => () => Promise<void>;
   const load = factory(
@@ -72,6 +73,7 @@ async function renderCard(card: CardKey, remainingText: string | null): Promise<
     async () => payloadFor(card, remainingText),
     () => false,
     (_el: FakeEl) => { _el.innerHTML = '<!-- error -->'; },
+    () => {},
     () => {},
   );
   await load();

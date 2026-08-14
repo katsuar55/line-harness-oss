@@ -281,6 +281,7 @@ describe('processOrderCouponRedemption', () => {
       matched: 0,
       redeemed: 0,
       redeemedFriendIds: [],
+      redeemedReferralFriendIds: [],
       // 台帳別の内訳は「code が 0 件」でも形を保つ (呼び出し側が常に同じ shape を読める)
       byLedger: {
         friend: { matched: 0, redeemed: 0 },

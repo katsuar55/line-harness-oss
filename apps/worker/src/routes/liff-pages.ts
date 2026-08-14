@@ -1974,12 +1974,21 @@ async function loadTip() {
 // increment でなく set にするのは、loader が再試行されても二重計上しないため (冪等)。
 // 発生源は互いに素: /api/liff/coupons (台帳) と welcome/referral/link/friend (Shopify 個人コード)。
 window.__vsCoupons = { list: 0, welcome: 0, referral: 0, link: 0, friend: 0 };
+// 順次活性化 (R1): 紹介クーポンの待機枚数。主数字には**混ぜない** (「3枚使える」との誤認防止)。
+window.__vsCouponsWaiting = 0;
 var vsCouponAnimated = false;
 
 function vsSetCoupons(key, n) {
   try {
     if (!window.__vsCoupons) { window.__vsCoupons = {}; }
     window.__vsCoupons[key] = Number(n) || 0;
+    updateVsCouponCell();
+  } catch (e) {}
+}
+
+function vsSetCouponsWaiting(n) {
+  try {
+    window.__vsCouponsWaiting = Number(n) || 0;
     updateVsCouponCell();
   } catch (e) {}
 }
@@ -1994,14 +2003,17 @@ function updateVsCouponCell() {
   var sub = document.getElementById('vs-coupon-sub');
   if (!num || !sub) return;
   var total = vsCouponTotal();
+  var waiting = Number(window.__vsCouponsWaiting) || 0;
   if (total <= 0) {
-    // 空状態は「無い」で終わらせず、もらう導線へ回遊させる (vsJumpCoupons が 0 枚なら紹介へ跳ぶ)
+    // 空状態は「無い」で終わらせず、もらう導線へ回遊させる (vsJumpCoupons が 0 枚なら紹介へ跳ぶ)。
+    // 待機だけある (= 次の1枚を準備中) ときはその旨を出す。
     num.textContent = '–';
-    sub.textContent = 'もらう →';
+    sub.textContent = waiting > 0 ? '+' + waiting + '枚 待機' : 'もらう →';
     sub.className = 'vs-s is-ng';
     return;
   }
-  sub.textContent = '使えます';
+  // 待機は主数字に混ぜない (「3枚使える」との誤認防止 — R1 は 1 注文 1 枚)
+  sub.textContent = waiting > 0 ? '+' + waiting + '枚 待機' : '使えます';
   sub.className = 'vs-s is-ok';
   // count-up は「0 枚 → 初めて枚数が入った」1 回だけ。5 系統が別々に着弾するたびに
   // 数字が跳ねるのは目障りなので、2 回目以降は即値にする (モーション憲法: 常時アニメを作らない)
@@ -2168,6 +2180,18 @@ function copyWelcomeCoupon() {
     } else { showToast('コピーできませんでした。コードを長押ししてください'); }
   } catch (e) { showToast('コピーできませんでした。コードを長押ししてください'); }
 }
+// 順次活性化 (R1, 2026-08-13): 紹介クーポンは「使えるのは常に1枚ずつ・残りは待機」。
+// 待機ぶんはコード・期限を出さない (期限は活性化時起算なので、出すと不誠実になる)。
+// T3 自己修復: 使える1枚が無いのに待機がある応答を受けたら、サーバ側 waitUntil の活性化が
+// 反映される頃合い (3.5s) に一度だけ再取得する (ポーリングはしない)。
+var refCouponRefetched = false;
+function referralWaitingBlock(queued) {
+  if (!(queued > 0)) return '';
+  return '<div class="rounded-lg px-3 py-2 mb-1" style="background:#fff5ec;border:1px dashed #f4c0ad">' +
+    '<p class="text-xs font-bold text-coral mb-0.5">🎟 待機中 ' + queued + '枚</p>' +
+    '<p class="text-xs text-gray-500">1枚お使いいただくごとに、次の1枚が自動でひらきます(ご注文の確認後、通常数分以内)。使えるようになってから60日間有効です。</p>' +
+    '</div>';
+}
 async function loadReferralCoupon() {
   var el = document.getElementById('referral-coupon-card');
   if (!el) return;
@@ -2175,18 +2199,34 @@ async function loadReferralCoupon() {
     const res = await apiGet('/api/liff/referral-coupon');
     if (apiFailed(res)) { cardError(el, res, 'loadReferralCoupon'); return; }
     var list = (res.data && res.data.coupons) || [];
-    if (!list.length) { el.style.display = 'none'; vsSetCoupons('referral', 0); return; }
+    var queued = Number(res.data && res.data.queuedCount) || 0;
+    vsSetCouponsWaiting(queued);
+    if (!list.length && !queued) { el.style.display = 'none'; vsSetCoupons('referral', 0); return; }
     el.style.display = 'block';
     el.style.background = 'linear-gradient(135deg,#fff5ec,#ffffff)';
     el.style.border = '1.5px solid rgba(232,131,106,.4)';
+    if (!list.length) {
+      // 使える1枚が無いが待機がある = サーバが T3 活性化を仕掛けた直後。少し待って一度だけ再取得。
+      el.innerHTML =
+        '<div class="flex items-center gap-2 mb-1">' +
+        '<span class="chip-coral px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700">🎁 紹介特典</span></div>' +
+        referralWaitingBlock(queued) +
+        '<p class="text-xs text-gray-500">次のクーポンをご用意しています。少しお待ちください…</p>';
+      vsSetCoupons('referral', 0);
+      if (!refCouponRefetched) {
+        refCouponRefetched = true;
+        setTimeout(function() { loadReferralCoupon(); }, 3500);
+      }
+      return;
+    }
     var val = Number(list[0].discountValue) || 500;
-    // 紹介した側の獲得クーポンは成立ごとに増える → 全枚数を一覧表示
+    var availLabel = list.length === 1 ? 'いま使える1枚' : list.length + '枚 利用可能';
     var head =
       '<div class="flex items-center gap-2 mb-1">' +
       '<span class="chip-coral px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700">🎁 紹介特典</span>' +
-      '<span class="text-xs font-bold text-coral">' + list.length + '枚 利用可能</span></div>' +
+      '<span class="text-xs font-bold text-coral">' + availLabel + '</span></div>' +
       '<p class="text-2xl font-extrabold text-coral-lg mb-1">¥' + val + ' OFF クーポン</p>' +
-      '<p class="text-xs text-gray-500 mb-2">ご紹介ありがとうございます!お友だちが購入するたびに増えます。公式ストアでお使いいただけます。</p>';
+      '<p class="text-xs text-gray-500 mb-2">ご紹介ありがとうございます!お友だちが購入するたびに増えます。公式ストアでお使いいただけます(紹介クーポンは1回のご注文に1枚)。</p>';
     var items = list.map(function(cp) {
       return '<div class="flex items-center gap-2 mb-2">' +
         '<code class="flex-1 text-center text-sm font-bold tracking-widest bg-white rounded-lg py-2" style="border:1px solid #f4c0ad">' + esc(cp.code) + '</code>' +
@@ -2195,7 +2235,7 @@ async function loadReferralCoupon() {
         '</div>' +
         (cp.remainingText ? '<p class="text-xs text-coral mb-2" style="margin-top:-4px">⏳ ' + esc(couponExpiryPhrase(cp.remainingText)) + '</p>' : '');
     }).join('');
-    el.innerHTML = head + items;
+    el.innerHTML = head + items + referralWaitingBlock(queued);
     vsSetCoupons('referral', list.length);
   } catch {
     cardError(el, null, 'loadReferralCoupon');
@@ -2238,14 +2278,13 @@ async function loadLinkCoupon() {
           ? '<span class="coupon-expiry--soon">⏳ ' + esc(couponExpiryPhrase(cp.remainingText)) + '</span>'
           : '<span class="coupon-expiry">⏳ ' + esc(couponExpiryPhrase(cp.remainingText)) + '</span>')
       : '';
-    // 🚨 「ほかの割引と併用できます」とは**書かない**。Shopify の combinesWith は双方向の握手で、
-    //    稼働中のクーポンはどれも実際には重ならない:
-    //      welcome ¥500 = combinesWith 未指定 (= 併用不可)
-    //      ランク割引 / 紹介 / 連携特典 = すべて customerGets.items:{all} = **同じ product クラス**で、
-    //      同一ラインの product 割引の重ねは Shopify Plus が必要 (2026-06-03 実測)
-    //    combinesWith を true にしてあるのは将来 order クラスの割引を作ったときのための備えであって、
-    //    今日の顧客に約束できる事実ではない。約束すると景表法上の「言い過ぎ」になり、
-    //    レジで弾かれた顧客の問い合わせを生む。
+    // 🚨 「ほかの割引と併用できます」は**まだ書かない** — 実装が本番に乗ってから (順序厳守)。
+    //    🔴 2026-08-13 本番実測で旧前提は訂正済み: 4 系統とも items:{all} = **ORDER クラス**で、
+    //    ランク/紹介/連携は combinesWith 設定済み = **実際に重なる** (Plus 不要。旧「同じ product
+    //    クラスで Plus 必須」は誤り)。残る穴は welcome の combinesWith 未指定と min¥2,000 未設定。
+    //    PR-C (welcome combinesWith + 全券 min¥2,000) が本番に乗った後、UX 採点済みの帯文言
+    //    「クーポンは併用できます — 1回のご注文につき紹介クーポンは1枚まで・¥2,000以上のご注文で」
+    //    に差し替える (docs/SPRINT_C_MAGIC_LINK_MAIL.md §6)。先に書くと景表法の「言い過ぎ」。
     el.innerHTML =
       '<div class="flex items-center flex-wrap gap-2 mb-2">' +
       '<span class="coupon-eyebrow">🔗 連携特典</span>' + expiry + '</div>' +

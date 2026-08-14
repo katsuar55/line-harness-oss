@@ -21,7 +21,10 @@ import { getShopifyAccessToken } from '../services/shopify-token.js';
 // 第2波-⑤: welcome クーポン redemption 追跡。 軽量 service のため static import
 // (vi.mock + dynamic import 干渉トラップ回避、 CLAUDE.md テストルール準拠)。
 import { processOrderCouponRedemption } from '../services/coupon-redemption.js';
-import { processReferralRewardOnPurchase } from '../services/referral-reward.js';
+import {
+  processReferralRewardOnPurchase,
+  activateAndNotifyNextReferralCoupon,
+} from '../services/referral-reward.js';
 import {
   deriveContractFromOrder,
   applyCustomerTagsToContracts,
@@ -585,6 +588,17 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
             const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
             for (const referredFriendId of redemption.redeemedFriendIds) {
               await processReferralRewardOnPurchase(db, c.env, lineClient, { referredFriendId });
+            }
+          }
+
+          // 順次活性化 T1 (R1, 2026-08-13): 紹介クーポンの初回 redemption 勝者イベントで、
+          //   その friend の queue から次の 1 枚を活性化 + LINE push。
+          //   起点は redeemedReferralFriendIds (勝者のみ) = orders/updated 連投では空になるため
+          //   二重活性化しない (第二防壁は DB 層の単文 UPDATE claim)。
+          if (redemption.redeemedReferralFriendIds.length > 0) {
+            const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+            for (const friendId of redemption.redeemedReferralFriendIds) {
+              await activateAndNotifyNextReferralCoupon(db, c.env, lineClient, { friendId });
             }
           }
         } catch (err) {

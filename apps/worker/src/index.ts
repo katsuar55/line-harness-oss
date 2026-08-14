@@ -124,6 +124,7 @@ import { processCronCleanup } from './services/cron-cleanup.js';
 import { processAccountLinkCleanup } from './services/account-link-cleanup.js';
 import { processWebhookDeliveryCleanup } from './services/webhook-delivery-cleanup.js';
 import { processConversationLogCleanup } from './services/conversation-log-cleanup.js';
+import { processCouponExpirySweep } from './services/coupon-expiry-sweep.js';
 import { withHeartbeat } from './services/cron-heartbeat.js';
 import { createLogger } from './services/logger.js';
 import { buildEmailDispatchConfig } from './services/email-dispatch-config.js';
@@ -222,6 +223,12 @@ export type Env = {
     //   'true' で issueLinkRewardCoupon が本番 Shopify に書込 (= 未設定なら no-op、 本番未書込)。
     //   ⚠️ 有効化前に migration 078 (line_link_coupons) 適用が必要。
     LINK_REWARD_ENABLED?: string;
+    // クーポン期限 sweep + 紹介 queue T2 活性化 gate (順次活性化 R1, 2026-08-13):
+    //   'true' で日次 JST 03:40 に ①3台帳の期限切れ status='expired' 確定 ②stuck activating 復旧
+    //   ③待機 queue の次の 1 枚を活性化 + LINE push。⚠️ 有効化前に migration 079 適用が必要。
+    //   sweep 未開放でも queue は T1 (webhook) / T3 (ポータル閲覧) で前進する (デッドロックなし)。
+    COUPON_SWEEP_ENABLED?: string;
+    COUPON_SWEEP_FORCE?: string;               // 'true' で JST 03:40 gating を bypass (テスト/手動)
     // サブスク・コンシェルジュ gate (WI-1 2026-07-14, docs/SUBSCRIPTION_ULTRAPLAN_2026-07-14.md):
     //   'true' でリッチメニュー「サブスク」postback / サブスク intent / 契約 read-model 導出が有効。
     //   ⚠️ 有効化手順 (順番厳守): ①migration 069 適用 → ②rebuild endpoint 実行 (gate 非連動、
@@ -756,6 +763,22 @@ async function scheduled(
       }
     }).catch((err) =>
       console.error('conversation-log-cleanup failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // クーポン期限 sweep + 紹介 queue T2 活性化 (順次活性化 R1, 2026-08-13):
+  //   JST 03:40-03:44 のみ trigger (= 03:00/03:10/03:20/03:30 の cleanup 系列と stagger)。
+  //   gate COUPON_SWEEP_ENABLED (既定 off = dormant)。COUPON_SWEEP_FORCE='true' で bypass。
+  //   self-record は service 内 (insertCronRunLog) — 詳細は services/coupon-expiry-sweep.ts。
+  jobs.push(
+    processCouponExpirySweep(env as unknown as Parameters<typeof processCouponExpirySweep>[0]).then((r) => {
+      if (r.triggered) {
+        console.info(
+          `coupon-expiry-sweep: expired=${r.expired.friend}/${r.expired.referral}/${r.expired.link} activated=${r.activated} pushed=${r.pushed} errors=${r.errors}`,
+        );
+      }
+    }).catch((err) =>
+      console.error('coupon-expiry-sweep failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 

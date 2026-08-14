@@ -68,6 +68,12 @@ export interface ProcessRedemptionResult {
    * どちらも**実クーポンの誤発行 (= 実費)** になる。
    */
   redeemedFriendIds: string[];
+  /**
+   * この呼び出しで「初回 redemption」を確定した**紹介クーポン (referral 台帳)** の所有 friend_id 群。
+   * 順次活性化 (R1) の T1 トリガー: この friend の queue から次の 1 枚を活性化する起点。
+   * welcome の redeemedFriendIds とは意味が異なる (こちらは紹介報酬を発火**させない**)。
+   */
+  redeemedReferralFriendIds: string[];
   /** 台帳別の内訳 (可観測性用。どのクーポンが使われているかを cron ログで追える) */
   byLedger: Record<CouponLedger, { matched: number; redeemed: number }>;
 }
@@ -104,7 +110,14 @@ export async function processOrderCouponRedemption(
 
   const codes = extractDiscountCodes(params.body);
   if (codes.length === 0) {
-    return { codesChecked: 0, matched: 0, redeemed: 0, redeemedFriendIds: [], byLedger: emptyByLedger() };
+    return {
+      codesChecked: 0,
+      matched: 0,
+      redeemed: 0,
+      redeemedFriendIds: [],
+      redeemedReferralFriendIds: [],
+      byLedger: emptyByLedger(),
+    };
   }
 
   const nowMs = (params.now ?? Date.now)();
@@ -115,6 +128,7 @@ export async function processOrderCouponRedemption(
   let matched = 0;
   let redeemed = 0;
   const redeemedFriendIds = new Set<string>();
+  const redeemedReferralFriendIds = new Set<string>();
   const byLedger = emptyByLedger();
 
   for (const code of codes) {
@@ -136,6 +150,10 @@ export async function processOrderCouponRedemption(
           byLedger[ledger].redeemed += 1;
           // 🚨 紹介報酬の起点になるので **welcome 由来だけ**を積む (他台帳を混ぜると実費の誤発行)
           if (ledger === 'friend' && result.friendId) redeemedFriendIds.add(result.friendId);
+          // 順次活性化 (R1) の T1 起点: 紹介クーポンの初回 redemption 勝者イベントのみ。
+          //   matched や alreadyRedeemed では積まない (= orders/updated 連投で二重活性化しない。
+          //   実際の活性化側も DB 層 claim で守るが、起点自体を勝者イベントに絞るのが第一防壁)。
+          if (ledger === 'referral' && result.friendId) redeemedReferralFriendIds.add(result.friendId);
           // 初回 redemption のみ audit に残す (= 転換の監査証跡、 admin /audit-logs で観察)。
           await auditSystem(db, {
             action: AUDIT_ACTION[ledger],
@@ -167,6 +185,7 @@ export async function processOrderCouponRedemption(
     matched,
     redeemed,
     redeemedFriendIds: [...redeemedFriendIds],
+    redeemedReferralFriendIds: [...redeemedReferralFriendIds],
     byLedger,
   };
 }

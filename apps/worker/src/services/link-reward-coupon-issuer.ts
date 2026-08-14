@@ -18,13 +18,13 @@
  * 設計 (referral-coupon-issuer.ts の同型 4 本目):
  *   - discountCodeBasicCreate (固定額 ¥300、usageLimit=1、appliesOncePerCustomer=true = 単回)。
  *   - combinesWith product+order 両 true。
- *     ⚠️ 「重複して使用可能」(2026-08-11 Katsu) の実装はこの combinesWith が担うが、
- *     **顧客に「併用できます」と案内してはいけない** (2026-08-11 監査 HIGH):
- *       ① combinesWith は双方向の握手で、稼働中の welcome ¥500 は combinesWith 未指定 = 併用不可
- *       ② 連携特典・紹介・ランクはいずれも customerGets.items:{all} = **同じ product クラス**。
- *          同一ラインの product 割引の重ねは Shopify Plus が必要 (2026-06-03 実測)
- *     = この設定は将来 order クラスの割引を作ったときのための備え。
- *     文言の扱いと成立させる選択肢は docs/SPRINT_C_MAGIC_LINK_MAIL.md §6 に集約。
+ *     🔴 2026-08-13 本番実測で前提が訂正された: items:{all} の discountCodeBasicCreate は
+ *     **ORDER クラス**になり (「注文の割引」表示)、order×order の併用はこの店舗で有効。
+ *     = 本クーポンは紹介 NREF- / ランク NLR- と**実際に重なる** (Plus 不要)。
+ *     残る穴は welcome の combinesWith 未指定のみ (PR-C で追加)。
+ *     旧記述「同じ product クラスなので Plus 必須・どれとも重ならない」(2026-08-11 監査) は誤り。
+ *     顧客向けの併用文言は PR-C (min¥2,000 + welcome combinesWith) が本番に乗ってから掲出する。
+ *     経緯と体系は docs/SPRINT_C_MAGIC_LINK_MAIL.md §6 に集約。
  *     なお「同じコードを複数回」の指示ではないため usageLimit=1 / appliesOncePerCustomer=true は
  *     据置 (1 人生涯 1 枚の冪等設計と対)。
  *   - **冪等キーは friend_id と shopify_customer_id の両方** (それぞれ UNIQUE):

@@ -219,7 +219,8 @@ describe('issueReferralCoupon — issuance', () => {
     expect(res!.role).toBe('referrer');
     expect(res!.discountValue).toBe(500);
     expect(res!.isExisting).toBe(false);
-    expect(res!.expiresAt).toBe(new Date(FIXED_NOW + 7 * 86_400_000).toISOString());
+    // 2026-08-13 R1: 期限 7 → 60 日 (起点 = 発行/活性化時点。待機中は走らない)
+    expect(res!.expiresAt).toBe(new Date(FIXED_NOW + 60 * 86_400_000).toISOString());
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const init = (fetchImpl.mock.calls[0] as unknown[])[1] as RequestInit;
