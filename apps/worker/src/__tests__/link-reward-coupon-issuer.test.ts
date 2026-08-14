@@ -266,7 +266,8 @@ describe('issueLinkRewardCoupon — issuance', () => {
     expect(res!.code).toBe('NLINK-ABCD2345');
     expect(res!.discountValue).toBe(300);
     expect(res!.isExisting).toBe(false);
-    expect(res!.expiresAt).toBe(new Date(FIXED_NOW + 7 * 86_400_000).toISOString());
+    // 2026-08-13 Katsu 確定: 連携特典は 7 → 30 日
+    expect(res!.expiresAt).toBe(new Date(FIXED_NOW + 30 * 86_400_000).toISOString());
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const init = (fetchImpl.mock.calls[0] as unknown[])[1] as RequestInit;

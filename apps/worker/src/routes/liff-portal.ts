@@ -5,6 +5,7 @@ import { buildDiscountApplyUrl } from '../services/cart-permalink.js';
 import { getActiveWelcomeCoupon, formatCouponCountdown } from '../services/welcome-coupon.js';
 import { getActiveReferralCoupons } from '../services/referral-coupon-issuer.js';
 import { activateAndNotifyNextReferralCoupon } from '../services/referral-reward.js';
+import { upgradeWelcomeCouponForReferred } from '../services/welcome-upgrade.js';
 import { LineClient } from '@line-crm/line-sdk';
 import { getActiveLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
 import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
@@ -1504,6 +1505,19 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
       referrerFriendId: link.friend_id,
       referredFriendId: user.friendId,
     });
+
+    // 格上げ (Ultraplan PR-C R3): 紹介経由と確定した瞬間、referred の welcome ¥300 を ¥500 へ。
+    //   応答は待たせない (waitUntil)。二重格上げは metadata CAS が防ぐ。
+    //   welcome 未発行 (claim が follow より先) は ¥500 直接発行 + push 1 本に統合。
+    const upgradeWork = upgradeWelcomeCouponForReferred(
+      c.env.DB,
+      c.env,
+      new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN),
+      { friendId: user.friendId },
+    ).catch((err) => {
+      console.error('[liff-portal] welcome upgrade failed:', err instanceof Error ? err.name : 'unknown');
+    });
+    try { c.executionCtx.waitUntil(upgradeWork); } catch { /* no exec ctx in tests */ }
 
     return c.json({
       success: true,

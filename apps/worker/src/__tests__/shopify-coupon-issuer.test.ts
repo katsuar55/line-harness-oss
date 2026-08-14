@@ -262,7 +262,8 @@ describe('issueCouponForFriend — 新規発行 (success path)', () => {
     expect(result).not.toBeNull();
     expect(result?.code).toBe('LINE-NEW12345');
     expect(result?.isExisting).toBe(false);
-    expect(result?.discountValue).toBe(500);
+    // 2026-08-13 Katsu 決定 (Ultraplan): welcome は ¥500 → ¥300 (紹介経由は格上げで ¥500)
+    expect(result?.discountValue).toBe(300);
     expect(result?.discountCurrency).toBe('JPY');
     expect(result?.shopifyDiscountCodeId).toBe('gid://shopify/DiscountCodeNode/new1');
     // 5β-1d-2e: default valid days = 3 (= 90 → 3 に短縮)
@@ -294,7 +295,7 @@ describe('issueCouponForFriend — 新規発行 (success path)', () => {
     expect(db.auditRows[0].target_id).toBe('friend-B');
     const successMeta = JSON.parse(db.auditRows[0].metadata) as Record<string, unknown>;
     expect(successMeta.code).toBe('LINE-NEW12345');
-    expect(successMeta.discountValue).toBe(500);
+    expect(successMeta.discountValue).toBe(300); // 2026-08-13 ¥300 化
     expect(successMeta.validDays).toBe(3);
   });
 

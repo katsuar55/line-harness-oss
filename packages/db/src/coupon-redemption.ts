@@ -114,7 +114,7 @@ export async function redeemCouponByCode(
     return { matched: false, friendId: null, lineAccountId: null, redeemed: false, alreadyRedeemed: false };
   }
 
-  const row = await db
+  let row = await db
     .prepare(
       `SELECT id, friend_id, line_account_id, redeemed_at, status
          FROM ${table}
@@ -123,6 +123,24 @@ export async function redeemCouponByCode(
     )
     .bind(trimmed)
     .first<CouponLookupRow>();
+
+  // welcome 格上げ (¥300→¥500) の旧コード照合 (Ultraplan PR-C R3):
+  //   格上げは同一行の coupon_code を新 ¥500 コードへ書き換え、旧 ¥300 コードは
+  //   metadata.upgrade.oldCode に退避する。deactivate が届く前にチェックアウトを終えた注文は
+  //   旧コードで届くため、ここで拾わないと redemption (と紹介者報酬の発火) が永久に落ちる。
+  //   実際に使われたのは ¥300 だが「welcome を使った」事実は同じなので同一行を redeem する
+  //   (残った新 ¥500 は最大 ¥500・旧期限内の有界露出。audit の oldCodeRedeemed で観測可能)。
+  if (!row && ledger === 'friend') {
+    row = await db
+      .prepare(
+        `SELECT id, friend_id, line_account_id, redeemed_at, status
+           FROM ${table}
+          WHERE json_extract(COALESCE(metadata, '{}'), '$.upgrade.oldCode') = ? COLLATE NOCASE
+          LIMIT 1`,
+      )
+      .bind(trimmed)
+      .first<CouponLookupRow>();
+  }
 
   if (!row) {
     return { matched: false, friendId: null, lineAccountId: null, redeemed: false, alreadyRedeemed: false };

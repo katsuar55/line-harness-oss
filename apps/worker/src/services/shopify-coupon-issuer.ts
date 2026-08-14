@@ -29,7 +29,14 @@ import { auditSystem } from './audit-logger.js';
 // 定数
 // ============================================================
 
-const DEFAULT_DISCOUNT_VALUE_JPY = 500;
+// 2026-08-13 Katsu 決定 (Ultraplan): ¥500 → ¥300。全員の初回購入動機付けとしては存続し、
+// 紹介経由 (claim 成立) の人だけ ¥500 へ**格上げ** (upgradeWelcomeCouponForReferred) =
+// 「紹介された方がお得」を体験として残す。既発行分は台帳の discount_value が正 (遡及書換なし)。
+const DEFAULT_DISCOUNT_VALUE_JPY = 300;
+// 紹介経由の格上げ後の額
+export const UPGRADED_DISCOUNT_VALUE_JPY = 500;
+// 全券共通の最低購入金額 (Katsu 確定 ¥2,000 — 小型缶 ¥389/¥430 が ¥0 になる事故を防ぐ)
+export const MIN_SUBTOTAL_JPY = 2000;
 // 5β-1d-2e (2026-05-19): 90 日 → 3 日 に短縮 (= マーケ最適化、 業界 best practice 3-7 日)
 // 根拠: 行動経済学的 (希少性 + 損失回避 + 後悔回避) で短期限が conversion ↑、
 // HubSpot 調査で 48h 限定 coupon の redemption rate は 30 日 coupon の 3-4 倍
@@ -190,7 +197,18 @@ async function callShopifyDiscountCreate(
       customerGets: {
         value: { discountAmount: { amount: discountAmount, appliesOnEachItem: false } },
         items: { all: true },
+        // 定期便チェックアウトでも使える (単発は従来どおり)。
+        appliesOnOneTimePurchase: true,
+        appliesOnSubscription: true,
       },
+      // 🚨 appliesOnSubscription とセットで**必須**: 契約に保存されたコードは条件を再評価せず
+      //   recurringCycleLimit まで毎サイクル適用され続ける (0/未指定=無期限の危険側)。
+      //   1 = 初回サイクルのみ。外すと ¥300 が毎回の定期便に永久に引かれ、我々からは契約から外せない。
+      recurringCycleLimit: 1,
+      // 併用ON (2026-08-13 Katsu 決定)。4 系統は全て ORDER クラス (本番実測) で、これで
+      //   紹介・連携・ランクと実際に重なる。min¥2,000 が過剰値引きのガード。
+      combinesWith: { productDiscounts: true, orderDiscounts: true, shippingDiscounts: false },
+      minimumRequirement: { subtotal: { greaterThanOrEqualToSubtotal: String(MIN_SUBTOTAL_JPY) } },
       appliesOncePerCustomer: true,
       usageLimit: 1,
     },
