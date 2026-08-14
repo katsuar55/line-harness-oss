@@ -4,6 +4,8 @@ import { getFriendCouponConfig } from '../services/friend-coupon-config.js';
 import { buildDiscountApplyUrl } from '../services/cart-permalink.js';
 import { getActiveWelcomeCoupon, formatCouponCountdown } from '../services/welcome-coupon.js';
 import { getActiveReferralCoupons } from '../services/referral-coupon-issuer.js';
+import { activateAndNotifyNextReferralCoupon } from '../services/referral-reward.js';
+import { LineClient } from '@line-crm/line-sdk';
 import { getActiveLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
 import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
 import { generateAiResponse } from '../services/ai-response.js';
@@ -65,6 +67,7 @@ import {
   getLatestActiveRecommendation,
   markRecommendationStatus,
   jstNow,
+  countWaitingReferralCoupons,
 } from '@line-crm/db';
 import type {
   NutritionDeficit,
@@ -310,7 +313,7 @@ liffPortal.get('/api/liff/referral-coupon', async (c) => {
 
     // 未有効化なら DB を触らず空 (= テーブル未存在の pre-migration でも安全)
     if (c.env.REFERRAL_REWARD_ENABLED !== 'true') {
-      return c.json({ success: true, data: { coupons: [], count: 0 } });
+      return c.json({ success: true, data: { coupons: [], count: 0, queuedCount: 0 } });
     }
 
     const active = await getActiveReferralCoupons(c.env.DB, user.friendId);
@@ -323,7 +326,26 @@ liffPortal.get('/api/liff/referral-coupon', async (c) => {
       applyUrl: buildDiscountApplyUrl(FRIEND_COUPON_STORE_DOMAIN, cp.code),
     }));
 
-    return c.json({ success: true, data: { coupons, count: coupons.length } });
+    // 順次活性化 (R1): 待機枚数 (queue waiting)。fail-safe 0 (= migration 079 未適用でも安全)。
+    const queuedCount = await countWaitingReferralCoupons(c.env.DB, user.friendId);
+
+    // T3 pull 検算: 使える 1 枚が無いのに待機がある = T1 (webhook) の取りこぼし or 失効による解放。
+    //   顧客が見に来た瞬間に自己修復する (sweep gate 未開放でも queue がデッドロックしない第三経路)。
+    //   応答は待たせない (waitUntil) — 次回 fetch (カード側の遅延再取得) で反映される。
+    if (coupons.length === 0 && queuedCount > 0) {
+      // static import (dynamic import は vi.mock 干渉トラップ — CLAUDE.md テストルール)
+      const work = activateAndNotifyNextReferralCoupon(
+        c.env.DB,
+        c.env,
+        new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN),
+        { friendId: user.friendId },
+      ).catch((err) => {
+        console.error('[liff-portal] T3 referral activation failed:', err instanceof Error ? err.name : 'unknown');
+      });
+      try { c.executionCtx.waitUntil(work); } catch { /* no exec ctx in tests */ }
+    }
+
+    return c.json({ success: true, data: { coupons, count: coupons.length, queuedCount } });
   } catch (err) {
     console.error('GET /api/liff/referral-coupon error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);

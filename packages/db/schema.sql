@@ -2138,6 +2138,25 @@ CREATE TABLE IF NOT EXISTS line_link_coupons (
   UNIQUE (friend_id)
 );
 
+-- from 079_line_referral_coupon_queue.sql
+CREATE TABLE IF NOT EXISTS line_referral_coupon_queue (
+  id                    TEXT PRIMARY KEY,
+  friend_id             TEXT NOT NULL,                  -- referrer (紹介した側)
+  reward_id             TEXT NOT NULL UNIQUE,           -- referral_rewards.id (冪等キー)
+  line_account_id       TEXT,
+  planned_code          TEXT NOT NULL,                  -- 活性化時に使う予定の NREF- code
+  discount_value        INTEGER NOT NULL DEFAULT 500,   -- 値引き額 (発行時の台帳が正)
+  status                TEXT NOT NULL DEFAULT 'waiting'
+                        CHECK (status IN ('waiting', 'activating', 'activated', 'cancelled')),
+  created_at            TEXT NOT NULL,                  -- 獲得 (紹介成立) 時刻 = FIFO の順序
+  activation_started_at TEXT,                           -- activating に入った時刻 (stuck 検出)
+  activated_at          TEXT,
+  activated_coupon_id   TEXT,                           -- 活性化後の line_referral_coupons.id
+  metadata              TEXT,                           -- JSON (再駆動履歴等)
+  FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id) ON DELETE SET NULL
+);
+
 -- Indexes from migrations
 CREATE INDEX IF NOT EXISTS idx_entry_routes_ref ON entry_routes (ref_code);
 CREATE INDEX IF NOT EXISTS idx_ref_tracking_ref    ON ref_tracking (ref_code);
@@ -2424,3 +2443,5 @@ CREATE INDEX IF NOT EXISTS idx_line_link_coupons_code
   ON line_link_coupons(coupon_code);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_line_link_coupons_customer
   ON line_link_coupons(shopify_customer_id);
+CREATE INDEX IF NOT EXISTS idx_lrcq_friend_status_created
+  ON line_referral_coupon_queue(friend_id, status, created_at);

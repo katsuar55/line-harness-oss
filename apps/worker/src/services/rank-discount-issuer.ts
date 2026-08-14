@@ -161,8 +161,11 @@ async function callRankDiscountCreate(
         value: { percentage: discountPercent / 100 },
         items: { all: true },
       },
-      // A2: order/product 両クラスと併用許可 (= 将来サブスク併用 13%)。 same-line product 重ねは Plus 必要だが
-      //     cross-class (rank=order × sub=product) なら Plus 不要。
+      // 🔴 2026-08-13 本番実測: items:{all} の discountCodeBasicCreate は **ORDER クラス**になる
+      //   (本 NLR- コードは admin 上「注文の割引」表示・「1回の注文につき複数を適用できます」実測)。
+      //   combinesWith 設定済みの紹介 NREF- / 連携 NLINK- とは order×order で**実際に重なる** (Plus 不要。
+      //   Plus が要るのは同一カートラインの product 割引 2 枚重ねのみ)。旧コメントの
+      //   「rank=order × sub=product のクロスクラス」という説明は誤りだった。
       combinesWith: { productDiscounts: true, orderDiscounts: true, shippingDiscounts: false },
       appliesOncePerCustomer: false, // ランク割引は再利用可
       usageLimit: null, // 無制限 (= 常時割引)

@@ -15,7 +15,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../services/referral-coupon-issuer.js', () => ({
-  issueReferralCoupon: vi.fn(),
+  issueOrEnqueueReferralCoupon: vi.fn(),
+  activateNextQueuedReferralCoupon: vi.fn(async () => null),
 }));
 vi.mock('../services/channel-dispatcher.js', () => ({
   dispatch: vi.fn(),
@@ -27,12 +28,13 @@ vi.mock('../services/audit-logger.js', () => ({
 import {
   processReferralRewardOnPurchase,
   buildReferrerRewardMessage,
+  buildReferrerQueuedMessage,
   type ReferralRewardEnv,
 } from '../services/referral-reward.js';
-import { issueReferralCoupon } from '../services/referral-coupon-issuer.js';
+import { issueOrEnqueueReferralCoupon } from '../services/referral-coupon-issuer.js';
 import { dispatch } from '../services/channel-dispatcher.js';
 
-const mockIssue = issueReferralCoupon as ReturnType<typeof vi.fn>;
+const mockIssue = issueOrEnqueueReferralCoupon as ReturnType<typeof vi.fn>;
 const mockDispatch = dispatch as ReturnType<typeof vi.fn>;
 
 interface RewardRow {
@@ -124,13 +126,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockDispatch.mockResolvedValue({ results: [{ channel: 'line', status: 'sent' }] });
   mockIssue.mockResolvedValue({
-    code: 'NREF-R-REWARD01',
-    discountValue: 500,
-    discountCurrency: 'JPY',
-    role: 'referrer',
-    expiresAt: new Date(FIXED_NOW + 7 * 86_400_000).toISOString(),
-    isExisting: false,
-    shopifyDiscountCodeId: 'gid://x',
+    kind: 'issued',
+    coupon: {
+      code: 'NREF-R-REWARD01',
+      discountValue: 500,
+      discountCurrency: 'JPY',
+      role: 'referrer',
+      expiresAt: new Date(FIXED_NOW + 60 * 86_400_000).toISOString(),
+      isExisting: false,
+      shopifyDiscountCodeId: 'gid://x',
+    },
   });
 });
 
@@ -197,11 +202,11 @@ describe('processReferralRewardOnPurchase', () => {
     expect(mockDispatch).not.toHaveBeenCalled();
   });
 
-  it('coupon 発行失敗 (issue が null) → flip せず・push せず', async () => {
+  it('coupon 発行失敗 (kind=failed) → flip せず・push せず', async () => {
     const db = new FakeDb();
     db.rewards.push(reward({ id: 'rw1', referrer_friend_id: 'A', referred_friend_id: 'B' }));
     db.friends['A'] = { line_user_id: 'U_referrer' };
-    mockIssue.mockResolvedValueOnce(null);
+    mockIssue.mockResolvedValueOnce({ kind: 'failed' });
 
     const res = await processReferralRewardOnPurchase(db as unknown as D1Database, makeEnv(), fakeLineClient, { referredFriendId: 'B', now: () => FIXED_NOW });
     expect(res.rewarded).toBe(0);
@@ -260,19 +265,49 @@ describe('processReferralRewardOnPurchase', () => {
     expect(mockDispatch).not.toHaveBeenCalled();
   });
 
-  it('referrer が既にクーポン受給済 (isExisting) → reward 行は flip するが push しない (誤通知防止・review MEDIUM)', async () => {
+  it('referrer が既にクーポン受給済 (kind=existing) → reward 行は flip するが push しない (誤通知防止・review MEDIUM)', async () => {
     const db = new FakeDb();
     db.rewards.push(reward({ id: 'rw1', referrer_friend_id: 'A', referred_friend_id: 'B' }));
     db.friends['A'] = { line_user_id: 'U_A' };
     mockIssue.mockResolvedValueOnce({
-      code: 'NREF-R-EXISTING', discountValue: 500, discountCurrency: 'JPY', role: 'referrer',
-      expiresAt: new Date(FIXED_NOW + 7 * 86_400_000).toISOString(), isExisting: true, shopifyDiscountCodeId: 'gid://x',
+      kind: 'existing',
+      coupon: {
+        code: 'NREF-R-EXISTING', discountValue: 500, discountCurrency: 'JPY', role: 'referrer',
+        expiresAt: new Date(FIXED_NOW + 60 * 86_400_000).toISOString(), isExisting: true, shopifyDiscountCodeId: 'gid://x',
+      },
     });
     const res = await processReferralRewardOnPurchase(db as unknown as D1Database, makeEnv(), fakeLineClient, { referredFriendId: 'B', now: () => FIXED_NOW });
     expect(res.rewarded).toBe(1);
     expect(res.pushed).toBe(0);
     expect(db.rewards[0].status).toBe('rewarded'); // terminal 化 (再処理防止)
     expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it('順次活性化 (kind=queued) → flip する + 「順番待ち」variant を push (コードは含まない)', async () => {
+    const db = new FakeDb();
+    db.rewards.push(reward({ id: 'rw1', referrer_friend_id: 'A', referred_friend_id: 'B' }));
+    db.friends['A'] = { line_user_id: 'U_A' };
+    mockIssue.mockResolvedValueOnce({ kind: 'queued', waitingCount: 2 });
+
+    const res = await processReferralRewardOnPurchase(db as unknown as D1Database, makeEnv(), fakeLineClient, { referredFriendId: 'B', now: () => FIXED_NOW });
+    expect(res.rewarded).toBe(1);
+    expect(res.pushed).toBe(1);
+    expect(db.rewards[0].status).toBe('rewarded'); // queued でも報酬は確定 (T1/T2/T3 が後で活性化)
+    const payload = mockDispatch.mock.calls[0][1] as { linePayload: { messages: Array<{ altText: string; contents: unknown }> } };
+    const json = JSON.stringify(payload.linePayload.messages[0]);
+    expect(json).toContain('待機中 2枚');
+    expect(json).not.toContain('NREF-'); // コードはまだ存在しない
+  });
+});
+
+describe('buildReferrerQueuedMessage', () => {
+  it('待機枚数と「自動でひらきます」を含み、クーポンコードを含まない', () => {
+    const msg = buildReferrerQueuedMessage(3, 'https://liff.line.me/123');
+    expect(msg.type).toBe('flex');
+    const json = JSON.stringify(msg.contents);
+    expect(json).toContain('待機中 3枚');
+    expect(json).toContain('自動でひらきます');
+    expect(json).toContain('クーポンを見る');
   });
 });
 

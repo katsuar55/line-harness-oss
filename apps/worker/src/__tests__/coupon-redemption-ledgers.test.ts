@@ -211,6 +211,37 @@ describe('🚨redemption — 紹介報酬の誤発火を防ぐ (実費の誤発�
   });
 });
 
+describe('🎟 順次活性化 T1 の起点 (redeemedReferralFriendIds) — 勝者イベントのみ', () => {
+  it('紹介クーポンの初回 redemption **だけ** が redeemedReferralFriendIds に入る', async () => {
+    const db = new LedgerDb({
+      friend: [row({ id: 'W1', coupon_code: 'LINE-AAAA1111', friend_id: 'fW' })],
+      link: [row({ id: 'L1', coupon_code: 'NLINK-BBBB2222', friend_id: 'fL' })],
+      referral: [row({ id: 'R1', coupon_code: 'NREF-CCCC3333', friend_id: 'fR' })],
+    });
+    const r = await run(db, ['LINE-AAAA1111', 'NLINK-BBBB2222', 'NREF-CCCC3333']);
+    expect(r.redeemedReferralFriendIds).toEqual(['fR']);
+  });
+
+  it('既に redeemed の紹介クーポン (orders/updated 連投) では**空** = 二重活性化しない', async () => {
+    const db = new LedgerDb({
+      referral: [row({ id: 'R1', coupon_code: 'NREF-CCCC3333', friend_id: 'fR', redeemed_at: '2026-08-13T00:00:00.000Z', status: 'redeemed' })],
+    });
+    const r = await run(db, ['NREF-CCCC3333']);
+    expect(r.byLedger.referral.matched).toBe(1); // matched はする
+    expect(r.redeemedReferralFriendIds).toEqual([]); // が、勝者イベントではない
+  });
+
+  it('welcome / 連携の redemption は redeemedReferralFriendIds に入らない', async () => {
+    const db = new LedgerDb({
+      friend: [row({ id: 'W1', coupon_code: 'LINE-AAAA1111', friend_id: 'fW' })],
+      link: [row({ id: 'L1', coupon_code: 'NLINK-BBBB2222', friend_id: 'fL' })],
+    });
+    const r = await run(db, ['LINE-AAAA1111', 'NLINK-BBBB2222']);
+    expect(r.redeemed).toBe(2);
+    expect(r.redeemedReferralFriendIds).toEqual([]);
+  });
+});
+
 describe('redemption — 冪等性と隔離', () => {
   it('同じ webhook を 2 回受けても二重に redeem しない (audit も 1 回だけ)', async () => {
     const db = new LedgerDb({ link: [row({ id: 'L1', coupon_code: 'NLINK-ABCD2345', friend_id: 'fL' })] });

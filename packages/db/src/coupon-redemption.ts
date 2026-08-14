@@ -160,6 +160,42 @@ export async function redeemCouponByCode(
   };
 }
 
+/**
+ * 期限切れクーポンの失効確定 (status='issued' → 'expired')。日次 sweep から呼ばれる。
+ *
+ * ⚠️ 必ず `status='issued'` に限定する — blanket の expires_at 条件だけだと 'redeemed' 行を
+ *   'expired' で上書きして転換率 stats を破壊する (採点ループ 統合検証の指摘)。
+ *   逆方向 (夜間 sweep で expired 化した後に遅れて届いた redemption webhook) は
+ *   redeemCouponByCode が `WHERE redeemed_at IS NULL` 条件なので expired → redeemed に
+ *   上書きできる。この非対称は意図 (使用の事実 > 失効の推定)。
+ *
+ * @returns 失効させた行数
+ */
+export async function markExpiredCoupons(
+  db: D1Database,
+  ledger: CouponLedger,
+  nowIso: string,
+): Promise<number> {
+  const table = Object.prototype.hasOwnProperty.call(COUPON_LEDGER_TABLES, ledger)
+    ? COUPON_LEDGER_TABLES[ledger]
+    : undefined;
+  if (!table) {
+    throw new Error(`markExpiredCoupons: unknown ledger ${String(ledger)}`);
+  }
+  const res = await db
+    .prepare(
+      `UPDATE ${table}
+          SET status = 'expired'
+        WHERE status = 'issued'
+          AND redeemed_at IS NULL
+          AND expires_at IS NOT NULL
+          AND expires_at < ?`,
+    )
+    .bind(nowIso)
+    .run();
+  return res.meta?.changes ?? 0;
+}
+
 export interface CouponRedemptionStats {
   /** 発行総数 (filter 適用後) */
   issued: number;
