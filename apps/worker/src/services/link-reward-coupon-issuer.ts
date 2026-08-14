@@ -55,8 +55,9 @@ import { auditSystem } from './audit-logger.js';
 // 体感は残しつつ 1 枚あたりの実費を下げる。既発行分は台帳の discount_value を正とするため
 // この定数変更で遡及書換えは起きない = 過去の ¥500 券はそのまま有効)。
 const DEFAULT_DISCOUNT_VALUE_JPY = 300;
-// 紹介特典と同値 (B2C は希少性 + 損失回避で短期限が conversion ↑、業界 best practice 3-7 日)
-const DEFAULT_VALID_DAYS = 7;
+// 2026-08-13 Katsu 確定: 7 → 30 日。連携は「いつでもできる行動」への報酬なので、
+// 短期限の焦らしより「連携すれば確実に使える」信頼を優先する。
+const DEFAULT_VALID_DAYS = 30;
 const SHOPIFY_API_VERSION = '2026-04';
 // reply window 外 (= 連携 HTTP 応答後の waitUntil) のため 8s
 const SHOPIFY_TIMEOUT_MS = 8_000;
@@ -234,9 +235,17 @@ async function callLinkDiscountCreate(
       customerGets: {
         value: { discountAmount: { amount: discountAmount, appliesOnEachItem: false } },
         items: { all: true },
+        // 定期便チェックアウトでも使える (単発は従来どおり)。
+        appliesOnOneTimePurchase: true,
+        appliesOnSubscription: true,
       },
-      // ランク割引 (order-class) と併用可にする (= クロスクラス、Plus 不要)。
+      // 🚨 appliesOnSubscription とセットで**必須** (1 = 初回サイクルのみ)。外すと ¥300 が
+      //   毎サイクル永久に引かれ、契約からは我々の app では外せない (owner=Huckleberry のみ)。
+      recurringCycleLimit: 1,
+      // 4 系統は全て ORDER クラス (2026-08-13 本番実測) — welcome/紹介/ランクと実際に重なる。
       combinesWith: { productDiscounts: true, orderDiscounts: true, shippingDiscounts: false },
+      // 全券共通の最低購入 ¥2,000 (Katsu 確定)
+      minimumRequirement: { subtotal: { greaterThanOrEqualToSubtotal: '2000' } },
       appliesOncePerCustomer: true, // 単回
       usageLimit: 1, // 単回
       tags: ['link-reward'],

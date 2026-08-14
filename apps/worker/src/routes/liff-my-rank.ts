@@ -595,7 +595,10 @@ function renderAbout(d){
     '</button>' +
     '<div id="about-body" class="acc-body">' +
       '<div class="pb-2" style="border-top:1px solid #f1f5f9">'+rows+'</div>' +
-      '<p class="text-[11px] text-gray-400 px-5 pb-4 pt-1 leading-relaxed">過去12ヶ月のお買い上げ金額で、毎月1日に自動で判定します（降格あり）。割引はサブスク割引と重ねてご利用いただけます。</p>' +
+      // ⚠️「サブスク割引と重ねて」は削除 (2026-08-13): 現行ランクコードは appliesOnSubscription
+      //   未設定 = 定期便チェックアウトで入力できないため、この文言は実装が裏付けない (景表法)。
+      //   PR-D (ランク×定期便: cycle:0 で契約に固着) が本番に乗ったら「定期便×会員ランク」カードで復活する。
+      '<p class="text-[11px] text-gray-400 px-5 pb-4 pt-1 leading-relaxed">過去12ヶ月のお買い上げ金額で、毎月1日に自動で判定します（降格あり）。</p>' +
     '</div>';
   var toggle = document.getElementById('about-toggle');
   var body = document.getElementById('about-body');

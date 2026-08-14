@@ -223,10 +223,17 @@ async function callReferralDiscountCreate(
       customerGets: {
         value: { discountAmount: { amount: discountAmount, appliesOnEachItem: false } },
         items: { all: true },
+        // 定期便チェックアウトでも使える (単発は従来どおり)。
+        appliesOnOneTimePurchase: true,
+        appliesOnSubscription: true,
       },
-      // ランク割引 (order-class) と併用可にする (= クロスクラス、 Plus 不要)。
-      // welcome は combinesWith 未指定 (= 併用不可) だが、 紹介はランク併用を明示要件とする。
+      // 🚨 appliesOnSubscription とセットで**必須** (1 = 初回サイクルのみ)。外すと ¥500 が
+      //   毎サイクル永久に引かれ、契約からは我々の app では外せない (owner=Huckleberry のみ)。
+      recurringCycleLimit: 1,
+      // 4 系統は全て ORDER クラス (2026-08-13 本番実測) — welcome/連携/ランクと実際に重なる。
       combinesWith: { productDiscounts: true, orderDiscounts: true, shippingDiscounts: false },
+      // 全券共通の最低購入 ¥2,000 (Katsu 確定 — 過剰値引きの唯一のガード)
+      minimumRequirement: { subtotal: { greaterThanOrEqualToSubtotal: '2000' } },
       appliesOncePerCustomer: true, // 単回
       usageLimit: 1, // 単回
       tags: ['referral', `referral-${role}`],
