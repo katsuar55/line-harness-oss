@@ -288,7 +288,7 @@ export async function issueRankDiscountForFriend(
     return null;
   }
 
-  // 2. 既存 active 確認 (冪等 = 同 rank/percent **かつ残寿命 ≥ 14日** なら再利用)。
+  // 2. 既存 active 確認 (冪等 = 同 rank/percent **かつ残寿命 ≥ REISSUE_MIN_REMAINING_DAYS 日** なら再利用)。
   //   残寿命不足・期限切れは再発行へ落ちる (旧 45日失効後に二度と再発行されないバグの根治)。
   //   ⚠️ getActiveRankDiscount は期限**無フィルタ**であること (期限切れ active 行も拾って
   //   supersede しないと、その行が永久に active のまま残留する — 採点 CONFIRMED の回帰)。
