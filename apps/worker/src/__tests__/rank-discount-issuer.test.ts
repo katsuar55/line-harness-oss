@@ -199,14 +199,29 @@ describe('issueRankDiscountForFriend', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     const input = captured!.variables.basicCodeDiscount as {
-      customerGets: { value: { percentage: number }; items: { all: boolean } };
+      customerGets: {
+        value: { percentage: number };
+        items: { all: boolean };
+        appliesOnSubscription: boolean;
+        appliesOnOneTimePurchase: boolean;
+      };
       combinesWith: Record<string, boolean>;
       code: string;
       usageLimit: number | null;
       appliesOncePerCustomer: boolean;
+      recurringCycleLimit: number;
+      minimumRequirement: { subtotal: { greaterThanOrEqualToSubtotal: string } };
+      customerSelection: Record<string, unknown>;
     };
     expect(input.customerGets.value.percentage).toBeCloseTo(0.06);
     expect(input.customerGets.items.all).toBe(true);
+    // PR-D: 定期便対応 (appliesOnSubscription は customerGets の中) + cycle 0 = 契約に無期限固着
+    expect(input.customerGets.appliesOnSubscription).toBe(true);
+    expect(input.customerGets.appliesOnOneTimePurchase).toBe(true);
+    expect(input.recurringCycleLimit).toBe(0); // 🚨 固定額券の 1 と逆 — ランク%は毎サイクル継続が仕様
+    expect(input.minimumRequirement.subtotal.greaterThanOrEqualToSubtotal).toBe('2000');
+    // 未連携 friend (fake db は friends を返さない) → 従来どおり all
+    expect(input.customerSelection).toEqual({ all: true });
     expect(input.combinesWith).toEqual({
       productDiscounts: true,
       orderDiscounts: true,
@@ -295,6 +310,8 @@ describe('issueRankDiscountForFriend', () => {
 });
 
 describe('getActiveRankDiscountCode (5b アクセサ)', () => {
+  const NOW_ISO = '2026-08-15T00:00:00.000Z';
+
   it('active があれば {code, discountPercent}', async () => {
     const db = makeDb();
     await insertRankDiscount(db, {
@@ -307,7 +324,7 @@ describe('getActiveRankDiscountCode (5b アクセサ)', () => {
       issuedAt: '2026-06-04T00:00:00Z',
       expiresAt: null,
     });
-    expect(await getActiveRankDiscountCode(db, 'fa')).toEqual({
+    expect(await getActiveRankDiscountCode(db, 'fa', NOW_ISO)).toEqual({
       code: 'NLR-GOLD-AAAA2345',
       discountPercent: 6,
     });
@@ -315,6 +332,21 @@ describe('getActiveRankDiscountCode (5b アクセサ)', () => {
 
   it('無ければ null', async () => {
     const db = makeDb();
-    expect(await getActiveRankDiscountCode(db, 'none')).toBeNull();
+    expect(await getActiveRankDiscountCode(db, 'none', NOW_ISO)).toBeNull();
+  });
+
+  it('期限切れコードは null (PR-D: 死んだコードを permalink に出さない → lazy 再発行が発火)', async () => {
+    const db = makeDb();
+    await insertRankDiscount(db, {
+      id: 'i2',
+      friendId: 'fb',
+      rankId: 'gold',
+      code: 'NLR-GOLD-DEAD2345',
+      shopifyDiscountNodeId: 'gid://x/2',
+      discountPercent: 6,
+      issuedAt: '2026-06-04T00:00:00Z',
+      expiresAt: '2026-07-19T00:00:00.000Z', // NOW より過去
+    });
+    expect(await getActiveRankDiscountCode(db, 'fb', NOW_ISO)).toBeNull();
   });
 });

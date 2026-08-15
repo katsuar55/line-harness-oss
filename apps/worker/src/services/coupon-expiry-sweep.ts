@@ -9,6 +9,10 @@
  *      次の活性化は planned_code で再 create し、code 重複エラーは「前回成功済み」として回収される。
  *   ③ 待機 queue を持ち生きた紹介クーポンが無い friend へ、次の 1 枚を活性化 + LINE push。
  *      (T1 = webhook 検知の取りこぼし・失効による解放の両方をここで救済する)
+ *   ④ superseded ランクコード (NLR-) の Shopify 側 deactivate (PR-D 2026-08-15)。
+ *      issuer が supersede 直後に inline で撃つ deactivate が失敗した行
+ *      (shopify_deactivated_at IS NULL) を拾って再試行し、マーカーを立てて前進する。
+ *      migration 080 未適用環境では列不在エラーを捕捉して静かに skip (live-safe)。
  *
  * gate: COUPON_SWEEP_ENABLED='true' (既定 off)。COUPON_SWEEP_FORCE='true' で時刻 gating bypass。
  *   ⚠️ ②③ の活性化は REFERRAL_REWARD_ENABLED も要求する (Shopify 書込ガードは issuer 層が持つ)。
@@ -30,7 +34,9 @@ import {
   insertCronRunLog,
   markExpiredCoupons,
   listFriendsWithActivatableQueue,
+  listRankDiscountsNeedingShopifyDeactivation,
   listStuckActivatingRows,
+  markRankDiscountShopifyDeactivated,
   revertQueueRowToWaiting,
   COUPON_LEDGERS,
   type CouponLedger,
@@ -40,6 +46,8 @@ import {
   activateAndNotifyNextReferralCoupon,
   type ReferralRewardEnv,
 } from './referral-reward.js';
+import { deactivateDiscountCode } from './shopify-discount-admin.js';
+import { getShopifyAccessToken } from './shopify-token.js';
 
 export interface CouponSweepEnv extends ReferralRewardEnv {
   DB: D1Database;
@@ -55,6 +63,8 @@ export interface CouponSweepOptions {
   now?: Date;
   /** 1 run で活性化する friend 数の上限 (Shopify write 暴発防止) */
   activationCap?: number;
+  /** ④ 1 run で deactivate する superseded ランクコード数の上限 (PR-D) */
+  rankDeactivationCap?: number;
   /** test 用 LineClient 注入 */
   lineClient?: LineClient;
 }
@@ -69,6 +79,8 @@ export interface CouponSweepResult {
   activated: number;
   /** 活性化時の LINE push 成功数 */
   pushed: number;
+  /** ④ superseded ランクコードの Shopify 側 deactivate をマークできた行数 (PR-D) */
+  rankDeactivated: number;
   /** 個別失敗の数 (全体は止めない) */
   errors: number;
 }
@@ -78,6 +90,8 @@ const TRIGGER_HOUR = 3;
 const TRIGGER_MINUTE_FROM = 40;
 const TRIGGER_MINUTE_TO_EXCLUSIVE = 45;
 const DEFAULT_ACTIVATION_CAP = 20;
+// ④ 1 run で deactivate する superseded ランクコード数の上限 (Shopify write 暴発防止)
+const DEFAULT_RANK_DEACTIVATION_CAP = 20;
 
 export function isCouponSweepWindow(now: Date): boolean {
   const jst = new Date(now.getTime() + 9 * 3600 * 1000);
@@ -104,6 +118,7 @@ export async function processCouponExpirySweep(
     stuckReverted: 0,
     activated: 0,
     pushed: 0,
+    rankDeactivated: 0,
     errors: 0,
   };
 
@@ -174,6 +189,57 @@ export async function processCouponExpirySweep(
     console.error('[coupon-sweep] T2 scan failed (pre-migration?):', err instanceof Error ? err.name : 'unknown');
   }
 
+  // ④ superseded ランクコードの Shopify 側 deactivate (PR-D, migration 080 マーカーで前進)。
+  //   issuer が supersede 直後に inline で撃つ deactivate の失敗分をここで回収する。
+  //   期限切れ済み・node_id 無しの行は Shopify 側で自然死/対象外なので API を呼ばずマークのみ。
+  if (env.SHOPIFY_STORE_DOMAIN && env.SHOPIFY_CLIENT_ID && env.SHOPIFY_CLIENT_SECRET) {
+    try {
+      const rankCap = options.rankDeactivationCap ?? DEFAULT_RANK_DEACTIVATION_CAP;
+      const pending = await listRankDiscountsNeedingShopifyDeactivation(env.DB, rankCap);
+      let accessToken: string | null = null;
+      for (const row of pending) {
+        try {
+          const alreadyDead = row.expiresAt !== null && row.expiresAt <= nowIso;
+          if (!row.shopifyDiscountNodeId || alreadyDead) {
+            if (await markRankDiscountShopifyDeactivated(env.DB, row.id, nowIso)) {
+              result.rankDeactivated += 1;
+            }
+            continue;
+          }
+          // token は必要になった最初の 1 回だけ取得 (全行スキップの run では取得しない)
+          if (accessToken === null) {
+            accessToken = await getShopifyAccessToken(env.DB, env);
+          }
+          const dr = await deactivateDiscountCode(
+            env.SHOPIFY_STORE_DOMAIN,
+            accessToken,
+            row.shopifyDiscountNodeId,
+          );
+          if (dr.ok) {
+            if (await markRankDiscountShopifyDeactivated(env.DB, row.id, nowIso)) {
+              result.rankDeactivated += 1;
+            }
+          } else {
+            result.errors += 1;
+            console.error('[coupon-sweep] rank deactivate failed id=', row.id, dr.error);
+          }
+        } catch (err) {
+          result.errors += 1;
+          console.error(
+            '[coupon-sweep] rank deactivate failed:',
+            err instanceof Error ? err.name : 'unknown',
+          );
+        }
+      }
+    } catch (err) {
+      // 列 shopify_deactivated_at 未追加 (migration 080 未適用) → ④ は静かに skip
+      console.error(
+        '[coupon-sweep] rank deactivation scan failed (pre-migration?):',
+        err instanceof Error ? err.name : 'unknown',
+      );
+    }
+  }
+
   // self-record (= cron-monitor で silent 検知できるよう記録)
   try {
     await insertCronRunLog(env.DB, {
@@ -186,6 +252,7 @@ export async function processCouponExpirySweep(
         stuckReverted: result.stuckReverted,
         activated: result.activated,
         pushed: result.pushed,
+        rankDeactivated: result.rankDeactivated,
         errors: result.errors,
       },
     });
@@ -206,4 +273,5 @@ export const __test__ = {
   TRIGGER_MINUTE_FROM,
   TRIGGER_MINUTE_TO_EXCLUSIVE,
   DEFAULT_ACTIVATION_CAP,
+  DEFAULT_RANK_DEACTIVATION_CAP,
 };

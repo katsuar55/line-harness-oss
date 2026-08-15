@@ -4,11 +4,15 @@
  * 役割: 会員ランクに応じた常時%OFF 割引を、 顧客別 Shopify コード (NLR-{rank}-{suffix}) で発行する。
  *   3タップ単発購入 (cart permalink ?discount={code}) で利用。
  *
- * 設計 (A2 クロスクラス前提):
- *   - discountCodeBasicCreate (percentage, items.all, customerSelection.all)。
- *   - combinesWith product+order 両 true (= 将来のサブスク併用 13% スタッキングに備える)。
+ * 設計 (PR-D 2026-08-15 で改訂 — 全 4 系統 ORDER クラス・定期便対応):
+ *   - discountCodeBasicCreate (percentage, items.all)。連携済み (shopify_customer_id 保有) は
+ *     customerSelection を **customer 限定**で発行 (SNS 漏洩リークの止血)。未連携は従来の all。
+ *   - customerGets.appliesOnSubscription + recurringCycleLimit: **0** (= 無期限。固定額 3 券の
+ *     cycle:1 とは逆 — ランク%は契約に固着して毎サイクル継続が仕様)。min ¥2,000 同梱。
+ *   - combinesWith product+order 両 true (= 紹介 NREF- / 連携 NLINK- と order×order で実際に重なる)。
  *   - 再利用可 (usageLimit=null, appliesOncePerCustomer=false)。 cb-admin 感謝クーポンとは別 namespace。
- *   - friend ごとに active は1つ。 ランク変更時は旧を superseded 化 + 新規 issue。
+ *   - friend ごとに active は1つ。 ランク変更・残寿命 <14日 で旧を superseded 化 + 新規 issue +
+ *     旧コードを discountCodeDeactivate (失敗は日次 sweep が shopify_deactivated_at NULL を再試行)。
  *   - GraphQL は Shopify dev MCP validate_graphql_codeblocks で検証済 (write_discounts scope)。
  *
  * ⚠️ 本番ガード: RANK_DISCOUNT_ENABLED='true' でなければ no-op (= 承認前は本番 Shopify に書き込まない)。
@@ -24,9 +28,12 @@
 
 import { getShopifyAccessToken } from './shopify-token.js';
 import { auditSystem } from './audit-logger.js';
+import { deactivateDiscountCode } from './shopify-discount-admin.js';
 import {
   getActiveRankDiscount,
+  getFriendById,
   insertRankDiscount,
+  markRankDiscountShopifyDeactivated,
   supersedeActiveRankDiscounts,
 } from '@line-crm/db';
 
@@ -42,6 +49,13 @@ const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const CODE_SUFFIX_LENGTH = 8;
 // 月次再判定 + buffer。 superseded した旧コードも自動失効させる
 const DEFAULT_VALID_DAYS = 45;
+// 冪等再利用の最低残寿命 (PR-D 2026-08-15): 従来は同 rank なら無条件再利用だったため、
+//   45日で Shopify 側が失効しても DB は active のままコードが二度と再発行されなかった。
+//   残寿命がこの日数を切ったら supersede + 再発行する。⚠️ 値の根拠 (採点ループ算術確定):
+//   月1 cron (毎月1日) の時点で残寿命は最短 45-31=14日 → 14 なら再利用 (毎月全員再発行を回避)。
+//   35日等にすると月1 cron が毎回全員分を再発行して Shopify write が爆発する。
+const REISSUE_MIN_REMAINING_DAYS = 14;
+const REISSUE_MIN_REMAINING_MS = REISSUE_MIN_REMAINING_DAYS * 86_400_000;
 const CODE_NAMESPACE = 'NLR'; // naturism loyalty rank (= cb-admin 感謝クーポンと衝突回避)
 
 // ============================================================
@@ -131,6 +145,7 @@ async function callRankDiscountCreate(
   rankId: string,
   startsAt: string,
   endsAt: string,
+  customerGid: string | null,
   fetchImpl: typeof fetch,
 ): Promise<ShopifyRankCreateResult> {
   const mutation = `
@@ -154,21 +169,36 @@ async function callRankDiscountCreate(
       code,
       startsAt,
       endsAt,
-      // PR3 (friend↔customer link) 完成後に context + 特定顧客へ絞る。 現状は friend 別シークレットコードで配布。
-      customerSelection: { all: true },
+      // 顧客限定 (PR-D 2026-08-15 abuse CRITICAL #2): shopify_customer_id 保有者 (= 連携済み) は
+      //   customer 限定で発行する。従来の all + usageLimit 無制限は SNS に漏れると誰でも常時%OFF
+      //   になる唯一の非有界リークで止血手段が無かった。未連携 friend のみ従来の all で発行
+      //   (シークレットコード配布 = 従来リスクと同等、連携が進むほど自然に閉じる)。
+      customerSelection: customerGid ? { customers: { add: [customerGid] } } : { all: true },
       customerGets: {
         // percentage は 0.00-1.00 の小数 (= Shopify schema)。 4% → 0.04
         value: { percentage: discountPercent / 100 },
         items: { all: true },
+        // 定期便チェックアウトで入力可 (PR-D)。単発は従来どおり。
+        //   ⚠️ appliesOnSubscription は customerGets の中 (トップレベルは GraphQL エラー — 採点確定)
+        appliesOnOneTimePurchase: true,
+        appliesOnSubscription: true,
       },
+      // 🚨 ランク%は固定額 3 券 (cycle:1) と**逆**で 0 = 無期限 (採点ループ確定仕様)。
+      //   契約に保存されたコードは条件を再評価せず毎サイクル適用され続ける (公式確定) —
+      //   「2回目以降 5% + ランク%が毎回のお届けに継続」はこの 0 が実現する。
+      //   ストア側で 45 日失効・再発行しても、既存契約に入った%は契約時点のまま継続する
+      //   (= 「お申し込み時点のランクで固定」の誠実開示が my-rank カード側で必須)。
+      recurringCycleLimit: 0,
       // 🔴 2026-08-13 本番実測: items:{all} の discountCodeBasicCreate は **ORDER クラス**になる
       //   (本 NLR- コードは admin 上「注文の割引」表示・「1回の注文につき複数を適用できます」実測)。
       //   combinesWith 設定済みの紹介 NREF- / 連携 NLINK- とは order×order で**実際に重なる** (Plus 不要。
       //   Plus が要るのは同一カートラインの product 割引 2 枚重ねのみ)。旧コメントの
       //   「rank=order × sub=product のクロスクラス」という説明は誤りだった。
       combinesWith: { productDiscounts: true, orderDiscounts: true, shippingDiscounts: false },
+      // 全券共通の最低購入 ¥2,000 (Katsu 確定 — 過剰値引きの唯一のガード)
+      minimumRequirement: { subtotal: { greaterThanOrEqualToSubtotal: '2000' } },
       appliesOncePerCustomer: false, // ランク割引は再利用可
-      usageLimit: null, // 無制限 (= 常時割引)
+      usageLimit: null, // 無制限 (= 常時割引。漏洩リスクは customer 限定側で止血)
       tags: ['loyalty', `rank-${rankId}`],
     },
   };
@@ -251,17 +281,25 @@ export async function issueRankDiscountForFriend(
     return null;
   }
 
-  // 2. 既存 active 確認 (冪等 = 同 rank/percent なら再利用)
+  // 2. 既存 active 確認 (冪等 = 同 rank/percent **かつ残寿命 ≥ 14日** なら再利用)。
+  //   残寿命不足・期限切れは再発行へ落ちる (旧 45日失効後に二度と再発行されないバグの根治)。
+  //   ⚠️ getActiveRankDiscount は期限**無フィルタ**であること (期限切れ active 行も拾って
+  //   supersede しないと、その行が永久に active のまま残留する — 採点 CONFIRMED の回帰)。
+  const now = nowFn();
   const existing = await getActiveRankDiscount(db, friendId);
   if (existing && existing.rankId === rankId && existing.discountPercent === discountPercent) {
-    return {
-      code: existing.code,
-      discountPercent: existing.discountPercent,
-      rankId: existing.rankId,
-      expiresAt: existing.expiresAt,
-      isExisting: true,
-      shopifyDiscountNodeId: existing.shopifyDiscountNodeId,
-    };
+    const expiresMs = existing.expiresAt ? Date.parse(existing.expiresAt) : Infinity;
+    // NaN (不正な expires_at) は比較が false になり再発行へ落ちる = 安全側
+    if (expiresMs - now >= REISSUE_MIN_REMAINING_MS) {
+      return {
+        code: existing.code,
+        discountPercent: existing.discountPercent,
+        rankId: existing.rankId,
+        expiresAt: existing.expiresAt,
+        isExisting: true,
+        shopifyDiscountNodeId: existing.shopifyDiscountNodeId,
+      };
+    }
   }
 
   // 3. Shopify config
@@ -289,8 +327,32 @@ export async function issueRankDiscountForFriend(
     return null;
   }
 
-  // 5. 生成 + Shopify 発行
-  const now = nowFn();
+  // 5. 連携状態の確認 (PR-D): shopify_customer_id 保有者は customer 限定で発行する。
+  //   lookup 失敗時は fail-closed (= 発行しない)。連携済み顧客のコードを transient エラーで
+  //   all (非有界) に落とすと、この PR が塞いだ唯一のリークを偶発的に再現するため。
+  //   発行は月次 cron + my-rank 閲覧 (lazy) で自動再試行される = 無発行は回復可能。
+  let customerGid: string | null;
+  try {
+    const friend = await getFriendById(db, friendId);
+    customerGid = friend?.shopify_customer_id
+      ? `gid://shopify/Customer/${friend.shopify_customer_id}`
+      : null;
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error('[rank-discount-issuer] friend lookup failed (fail-closed):', errMsg);
+    await auditSystem(db, {
+      action: 'loyalty_rank_discount.issue_failed',
+      targetType: 'friend',
+      targetId: friendId,
+      lineAccountId,
+      result: 'failure',
+      errorMessage: errMsg,
+      metadata: { stage: 'friend_lookup', rankId },
+    });
+    return null;
+  }
+
+  // 6. 生成 + Shopify 発行
   const validDays = options.validDays ?? DEFAULT_VALID_DAYS;
   const startsAt = new Date(now).toISOString();
   const endsAt = new Date(now + validDays * 86_400_000).toISOString();
@@ -304,6 +366,7 @@ export async function issueRankDiscountForFriend(
     rankId,
     startsAt,
     endsAt,
+    customerGid,
     fetchImpl,
   );
   if (!result.ok) {
@@ -320,7 +383,7 @@ export async function issueRankDiscountForFriend(
     return null;
   }
 
-  // 6. 新規 insert を先行 (= 失敗時は旧 active を温存し no-active 窓を作らない)。 成功後に旧 active を supersede。
+  // 7. 新規 insert を先行 (= 失敗時は旧 active を温存し no-active 窓を作らない)。 成功後に旧 active を supersede。
   const isoNow = new Date(now).toISOString();
   const id = crypto.randomUUID();
   try {
@@ -361,6 +424,34 @@ export async function issueRankDiscountForFriend(
         err instanceof Error ? err.message : String(err),
       );
     }
+    // 旧コードを Shopify 側でも殺す (PR-D)。従来は endsAt (最長45日) まで旧%が生きたままだった。
+    //   順序は insert先行→deactivate (no-active 窓を作らない設計を維持)。新旧が同時に生きる窓は
+    //   この数百 ms のみ + 同時利用には両コードを同一 checkout に入力する必要があり実害は無視できる。
+    //   best-effort: 失敗時はマーカー NULL のまま残り、日次 sweep (03:40) が拾って再試行する。
+    //   期限切れ済みの旧コードは Shopify 側で自然死しているため API を呼ばずマークのみ。
+    try {
+      const alreadyDead = existing.expiresAt !== null && existing.expiresAt <= isoNow;
+      if (!existing.shopifyDiscountNodeId || alreadyDead) {
+        await markRankDiscountShopifyDeactivated(db, existing.id, isoNow);
+      } else {
+        const dr = await deactivateDiscountCode(
+          env.SHOPIFY_STORE_DOMAIN,
+          accessToken,
+          existing.shopifyDiscountNodeId,
+          fetchImpl,
+        );
+        if (dr.ok) {
+          await markRankDiscountShopifyDeactivated(db, existing.id, isoNow);
+        } else {
+          console.error('[rank-discount-issuer] old code deactivate failed (sweep が再試行):', dr.error);
+        }
+      }
+    } catch (err) {
+      console.error(
+        '[rank-discount-issuer] old code deactivate failed (sweep が再試行):',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   await auditSystem(db, {
@@ -375,6 +466,8 @@ export async function issueRankDiscountForFriend(
       rankId,
       discountPercent,
       validDays,
+      customerLimited: customerGid !== null,
+      supersededId: existing?.id ?? null,
     },
   });
 
@@ -399,6 +492,8 @@ export const __test__ = {
   SHOPIFY_API_VERSION,
   SHOPIFY_TIMEOUT_MS,
   DEFAULT_VALID_DAYS,
+  REISSUE_MIN_REMAINING_DAYS,
+  REISSUE_MIN_REMAINING_MS,
   CODE_CHARS,
   CODE_SUFFIX_LENGTH,
   CODE_NAMESPACE,

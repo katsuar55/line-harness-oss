@@ -68,13 +68,24 @@ export async function getActiveRankDiscount(
   return row ? rowToRankDiscount(row) : null;
 }
 
-/** 5b 用の軽量アクセサ: active 割引の code+percent のみ (= cart permalink 生成用)。 */
+/**
+ * 5b 用の軽量アクセサ: active 割引の code+percent のみ (= cart permalink 生成用)。
+ *
+ * PR-D (2026-08-15): nowIso を受け取り**期限切れコードを返さない** (Shopify 側は endsAt で
+ * 死んでいるため、permalink に載せると checkout で無言で無視される)。表示側が null を
+ * 受けると lazy 再発行 (liff-my-rank) が発火し、閲覧起点で自己修復する。
+ * ⚠️ このフィルタは表示アクセサ限定。getActiveRankDiscount (issuer の supersede 用) に
+ * 足すと「期限切れ active 行が supersede されず永久残留」する回帰になる (採点 CONFIRMED)。
+ */
 export async function getActiveRankDiscountCode(
   db: D1Database,
   friendId: string,
+  nowIso: string,
 ): Promise<{ code: string; discountPercent: number } | null> {
   const d = await getActiveRankDiscount(db, friendId);
-  return d ? { code: d.code, discountPercent: d.discountPercent } : null;
+  if (!d) return null;
+  if (d.expiresAt && d.expiresAt <= nowIso) return null;
+  return { code: d.code, discountPercent: d.discountPercent };
 }
 
 export interface InsertRankDiscountInput {
@@ -140,4 +151,70 @@ export async function supersedeActiveRankDiscounts(
         .bind(supersededAt, friendId)
         .run();
   return res.meta?.changes ?? 0;
+}
+
+// ============================================================
+// PR-D (2026-08-15): supersede 済みコードの Shopify 側無効化の進捗管理 (migration 080)
+// ============================================================
+
+export interface PendingShopifyDeactivation {
+  id: string;
+  friendId: string;
+  code: string;
+  shopifyDiscountNodeId: string | null;
+  expiresAt: string | null;
+}
+
+/**
+ * superseded 済みで Shopify 側の無効化が未完了 (shopify_deactivated_at IS NULL) の行を列挙。
+ * sweep (coupon-expiry-sweep) が呼び、deactivate 成功/不要判定でマーカーを立てて前進する。
+ * node_id NULL の行 (Shopify 発行前に失敗した行等) も返す — API は呼べないが、マークして
+ * 走査から外さないと永久に scan に乗り続ける。
+ */
+export async function listRankDiscountsNeedingShopifyDeactivation(
+  db: D1Database,
+  limit: number,
+): Promise<PendingShopifyDeactivation[]> {
+  const res = await db
+    .prepare(
+      `SELECT id, friend_id, code, shopify_discount_node_id, expires_at
+         FROM loyalty_rank_discounts
+        WHERE status = 'superseded' AND shopify_deactivated_at IS NULL
+        ORDER BY superseded_at ASC
+        LIMIT ?`,
+    )
+    .bind(limit)
+    .all<{
+      id: string;
+      friend_id: string;
+      code: string;
+      shopify_discount_node_id: string | null;
+      expires_at: string | null;
+    }>();
+  return (res.results ?? []).map((r) => ({
+    id: r.id,
+    friendId: r.friend_id,
+    code: r.code,
+    shopifyDiscountNodeId: r.shopify_discount_node_id ?? null,
+    expiresAt: r.expires_at ?? null,
+  }));
+}
+
+/**
+ * Shopify 側の無効化完了 (or 不要判定) をマークする。CAS (NULL の行のみ更新) で
+ * 並行 sweep との二重記録を防ぐ。戻り値 = マークできたか。
+ */
+export async function markRankDiscountShopifyDeactivated(
+  db: D1Database,
+  id: string,
+  deactivatedAt: string,
+): Promise<boolean> {
+  const res = await db
+    .prepare(
+      `UPDATE loyalty_rank_discounts SET shopify_deactivated_at = ?
+        WHERE id = ? AND shopify_deactivated_at IS NULL`,
+    )
+    .bind(deactivatedAt, id)
+    .run();
+  return (res.meta?.changes ?? 0) > 0;
 }

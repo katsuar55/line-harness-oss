@@ -61,7 +61,13 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
 
   // ─── 3タップ購入 (= PR5-5b): ランク割引コード + cart permalink ───
   // ランク割引は RANK_DISCOUNT_ENABLED 有効化 (= 5c 承認後) で発行される。未発行なら null → コード無し cart に graceful。
-  const rankDiscount = await getActiveRankDiscountCode(c.env.DB, liffUser.friendId).catch(() => null);
+  // PR-D: 期限切れコードは null 扱い (Shopify 側は endsAt で死んでいる) → 下の lazy 発行が
+  //   再発行をトリガーし、閲覧起点で自己修復する (月次 cron の再発行と二重の網)。
+  const rankDiscount = await getActiveRankDiscountCode(
+    c.env.DB,
+    liffUser.friendId,
+    new Date().toISOString(),
+  ).catch(() => null);
   // 死んだbackend修正 (Task#2): 適格 (非regular) なのに未発行なら発行をトリガー。
   //   ① RANK_DISCOUNT_ENABLED 有効時のみ呼ぶ (= gated off では呼出ゼロ・log noise なし)
   //   ② waitUntil で fire-and-forget (= Shopify 発行の最大 8s を GET hot path に乗せない)。
@@ -161,6 +167,16 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
       // 3タップ購入 (= PR5-5b)。 code 自体は URL に内包 (= 認証済本人のみ取得)。
       rankDiscount: rankDiscount ? { discountPercent: rankDiscount.discountPercent } : null,
       discountApplyUrl,
+      // 定期便×会員ランク訴求 (PR-D, gated): 実店舗検証ゲート 7 項目の通過後に
+      //   Admin Ops op `enable-rank-subscription-appeal` で開放する。gate OFF = null で
+      //   カード非表示 = 顧客可視の変化ゼロ (景表法: 実装→検証→表記の順序)。
+      //   code は既に discountApplyUrl 経由で認証済本人へ渡っているものと同一 (新規露出なし)。
+      subscriptionRank:
+        c.env.RANK_SUBSCRIPTION_APPEAL_ENABLED === 'true' &&
+        rankDiscount &&
+        rankDiscount.discountPercent > 0
+          ? { code: rankDiscount.code, discountPercent: rankDiscount.discountPercent }
+          : null,
       quickBuy,
       // 自前アカウント連携 (Phase 2、 gated)
       linked,
@@ -256,6 +272,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
     <section id="progress-card" style="display:none;"></section>
     <section id="link-card" style="display:none;"></section>
     <section id="shop-card" style="display:none;"></section>
+    <section id="subrank-card" style="display:none;"></section>
     <section id="coupons-card" style="display:none;"></section>
     <section id="about-card" style="display:none;"></section>
     <a id="store-cta" href="https://${escapeHtml(storeDomain)}" style="display:none;" class="block text-center card tap" >
@@ -301,6 +318,9 @@ var DEMO_DATA = {
     { id: 'platinum', name: 'プラチナ', discountPercent: 8, minTrailing12moJpy: 45000 }
   ],
   rankDiscount: { discountPercent: 4 },
+  // 定期便×会員ランク訴求はゲート通過前のため demo でも出さない (?demo=1 は公開 URL —
+  // サンプルでも訴求文言を実装検証前に公衆へ見せない。ゲート通過後に demo 値を足してよい)
+  subscriptionRank: null,
   discountApplyUrl: 'https://naturism-diet.com/discount/NLR-SILVER-DEMO2345',
   quickBuy: [
     { title: 'KOSO in naturism ToGo (Pink) 180粒 (30日分)', price: '2830', imageUrl: null, url: 'https://naturism-diet.com/cart/42884926636285:1?discount=NLR-SILVER-DEMO2345' },
@@ -539,6 +559,34 @@ function renderShop(d){
   card.innerHTML = html;
 }
 
+// ─── 定期便×会員ランク (= PR-D, gated: API が subscriptionRank を返すときのみ描画) ───
+// A案文言: 適用の約束と「契約時点で固定」の誠実開示を**同視野・同サイズ**で並べる (採点 UX 確定)。
+function renderSubRank(d){
+  var card = document.getElementById('subrank-card');
+  if(!card) return;
+  var sr = d.subscriptionRank;
+  var pct = (sr && Number.isFinite(sr.discountPercent)) ? Math.floor(sr.discountPercent) : 0;
+  if(!sr || !sr.code || pct <= 0){ card.style.display='none'; return; }
+  card.className = 'card p-5 rise';
+  card.style.display = 'block';
+  card.innerHTML =
+    '<div class="flex items-center gap-2 mb-2"><span class="text-base">&#x1F501;</span>' +
+      '<p class="text-sm font-bold text-gray-700">定期便×会員ランク</p></div>' +
+    '<p class="text-sm text-gray-700 leading-relaxed mb-2">定期便のお申し込み時にランクコードをご入力いただくと、お申し込み時点のランクの割引率 <b style="color:#0f766e">' + pct + '% OFF</b> が毎回のお届けに自動で適用され続けます。</p>' +
+    '<p class="text-sm text-gray-700 leading-relaxed mb-3">割引率はお申し込み時点のランクで固定されます。その後ランクが変わっても、すでにご契約中の定期便には反映されません。</p>' +
+    '<div class="flex items-center gap-3 p-3 rounded-xl" style="background:linear-gradient(135deg,#f0fdfa,#faf5ff);border:1px solid #e2e8f0">' +
+      '<div class="flex-1 min-w-0">' +
+        '<p class="text-[11px] text-gray-500">定期便チェックアウトのクーポン欄に入力</p>' +
+        '<p class="text-[13px] font-bold mt-0.5 font-mono truncate" style="color:#0f766e">' + esc(sr.code) + '</p>' +
+      '</div>' +
+      '<button type="button" data-code="' + esc(sr.code) + '" class="subrank-copy tap shrink-0 text-xs font-bold text-white px-3 py-2 rounded-lg shadow" style="background:#0f766e">コピー</button>' +
+    '</div>';
+  var btns = card.querySelectorAll('.subrank-copy');
+  for (var i=0;i<btns.length;i++){
+    btns[i].addEventListener('click', function(){ copyCode(this.getAttribute('data-code')); });
+  }
+}
+
 function renderCoupons(d){
   var card = document.getElementById('coupons-card');
   card.className = 'card p-5 rise';
@@ -595,9 +643,9 @@ function renderAbout(d){
     '</button>' +
     '<div id="about-body" class="acc-body">' +
       '<div class="pb-2" style="border-top:1px solid #f1f5f9">'+rows+'</div>' +
-      // ⚠️「サブスク割引と重ねて」は削除 (2026-08-13): 現行ランクコードは appliesOnSubscription
-      //   未設定 = 定期便チェックアウトで入力できないため、この文言は実装が裏付けない (景表法)。
-      //   PR-D (ランク×定期便: cycle:0 で契約に固着) が本番に乗ったら「定期便×会員ランク」カードで復活する。
+      // ⚠️「サブスク割引と重ねて」の復活は「定期便×会員ランク」カード (renderSubRank) が担う
+      //   (PR-D 2026-08-15 実装済み・gate RANK_SUBSCRIPTION_APPEAL_ENABLED 配下)。
+      //   実店舗検証ゲート 7 項目の通過前に gate を開けないこと (景表法: 実装→検証→表記)。
       '<p class="text-[11px] text-gray-400 px-5 pb-4 pt-1 leading-relaxed">過去12ヶ月のお買い上げ金額で、毎月1日に自動で判定します（降格あり）。</p>' +
     '</div>';
   var toggle = document.getElementById('about-toggle');
@@ -616,6 +664,7 @@ function renderAll(d){
   renderProgress(d);
   renderLink(d);
   renderShop(d);
+  renderSubRank(d);
   renderCoupons(d);
   renderAbout(d);
   var cta=document.getElementById('store-cta'); if(cta) cta.style.display='block';

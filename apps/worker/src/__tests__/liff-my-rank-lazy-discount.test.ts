@@ -74,11 +74,11 @@ function makeApp() {
   return app;
 }
 
-async function callApi(db: D1Database) {
+async function callApi(db: D1Database, envOverrides: Record<string, string> = {}) {
   const res = await makeApp().request(
     '/api/liff/my-rank',
     undefined,
-    { DB: db, RANK_DISCOUNT_ENABLED: 'true' } as unknown as Env['Bindings'],
+    { DB: db, RANK_DISCOUNT_ENABLED: 'true', ...envOverrides } as unknown as Env['Bindings'],
   );
   return { status: res.status, body: (await res.json()) as { success: boolean; data?: any } };
 }
@@ -114,5 +114,46 @@ describe('my-rank LIFF — lazy rank discount issuance', () => {
     const { body } = await callApi(makeDb(15000, existing));
     expect(mockIssue).not.toHaveBeenCalled();
     expect(body.data.rankDiscount).toEqual({ discountPercent: 4 });
+  });
+
+  it('期限切れ active は「無い」扱い → lazy 再発行が発火 + rankDiscount null (PR-D 自己修復)', async () => {
+    const expired: RankDiscountRowLike = {
+      id: 'd2', friend_id: 'f1', rank_id: 'silver', code: 'NLR-SILVER-DEAD',
+      shopify_discount_node_id: 'gid', discount_percent: 4, status: 'active',
+      brand_id: null, issued_at: '2026-06-01T00:00:00+09:00',
+      expires_at: '2026-07-16T00:00:00.000Z', // 過去 (Shopify 側は endsAt で自然死済み)
+    };
+    const { body } = await callApi(makeDb(15000, expired));
+    expect(mockIssue).toHaveBeenCalledTimes(1); // 死んだコードを再発行する唯一の閲覧起点
+    expect(body.data.rankDiscount).toBeNull(); // 死んだコードを permalink に出さない
+    expect(body.data.discountApplyUrl).toBeNull();
+  });
+});
+
+describe('my-rank LIFF — 定期便×会員ランク訴求 (PR-D, gated)', () => {
+  const active: RankDiscountRowLike = {
+    id: 'd1', friend_id: 'f1', rank_id: 'silver', code: 'NLR-SILVER-SUB1',
+    shopify_discount_node_id: 'gid', discount_percent: 4, status: 'active',
+    brand_id: null, issued_at: '2026-06-01T00:00:00+09:00', expires_at: null,
+  };
+
+  beforeEach(() => {
+    mockIssue.mockReset();
+    mockIssue.mockResolvedValue(null);
+  });
+
+  it('gate 未投入 (既定) → subscriptionRank null = 顧客可視の変化ゼロ', async () => {
+    const { body } = await callApi(makeDb(15000, active));
+    expect(body.data.subscriptionRank).toBeNull();
+  });
+
+  it('gate ON + active コードあり → {code, discountPercent} を返す', async () => {
+    const { body } = await callApi(makeDb(15000, active), { RANK_SUBSCRIPTION_APPEAL_ENABLED: 'true' });
+    expect(body.data.subscriptionRank).toEqual({ code: 'NLR-SILVER-SUB1', discountPercent: 4 });
+  });
+
+  it('gate ON でもコード未発行なら null (訴求だけ先行させない)', async () => {
+    const { body } = await callApi(makeDb(15000, null), { RANK_SUBSCRIPTION_APPEAL_ENABLED: 'true' });
+    expect(body.data.subscriptionRank).toBeNull();
   });
 });

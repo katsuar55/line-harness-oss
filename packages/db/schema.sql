@@ -1891,8 +1891,9 @@ CREATE TABLE IF NOT EXISTS loyalty_rank_discounts (
   issued_at                TEXT NOT NULL,                   -- 発行時刻 (JST ISO)
   expires_at               TEXT,                            -- NULL=無期限 (= 既定は ~45日で再発行)
   superseded_at            TEXT,                            -- supersede 時刻
-  created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+  created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+
+  shopify_deactivated_at TEXT);
 
 -- from 064_account_link_codes.sql
 CREATE TABLE IF NOT EXISTS account_link_codes (
@@ -2445,3 +2446,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_line_link_coupons_customer
   ON line_link_coupons(shopify_customer_id);
 CREATE INDEX IF NOT EXISTS idx_lrcq_friend_status_created
   ON line_referral_coupon_queue(friend_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_loyalty_rank_discounts_pending_deactivation
+  ON loyalty_rank_discounts(status, shopify_deactivated_at)
+  WHERE shopify_deactivated_at IS NULL;
