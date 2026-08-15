@@ -189,6 +189,19 @@ describe('失効確定 + stuck 復旧 + T2 (実 SQLite)', () => {
     expect(row.shopify_deactivated_at).toBeNull();
   });
 
+  it('④ 冪等: マーク済み行は再実行で再走査されない (API 追撃なし)', async () => {
+    raw.prepare(
+      `INSERT INTO loyalty_rank_discounts (id, friend_id, rank_id, code, shopify_discount_node_id, discount_percent, status, issued_at, expires_at, superseded_at)
+       VALUES ('rd_i', 'F1', 'silver', 'NLR-S-I', 'gid://d/1', 4, 'superseded', '2026-07-01T00:00:00.000Z', '2026-09-30T00:00:00.000Z', '2026-08-01T00:00:00.000Z')`,
+    ).run();
+    const env = makeEnv({ SHOPIFY_STORE_DOMAIN: 'x.myshopify.com', SHOPIFY_CLIENT_ID: 'i', SHOPIFY_CLIENT_SECRET: 's' });
+    const r1 = await processCouponExpirySweep(env, { now: IN_WINDOW, lineClient: fakeLineClient });
+    expect(r1.rankDeactivated).toBe(1);
+    const r2 = await processCouponExpirySweep(env, { now: IN_WINDOW, lineClient: fakeLineClient });
+    expect(r2.rankDeactivated).toBe(0);
+    expect(mockDeactivate).toHaveBeenCalledTimes(1); // 2 run 通算で 1 回だけ
+  });
+
   it('④ rankDeactivationCap で 1 run の処理数を制限 (残りは次回)', async () => {
     for (const [id, code] of [['rd_1', 'NLR-S-1'], ['rd_2', 'NLR-S-2']]) {
       raw.prepare(

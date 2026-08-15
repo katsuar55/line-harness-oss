@@ -30,7 +30,18 @@ interface RankDiscountRowLike {
   expires_at: string | null;
 }
 
-function makeDb(trailingTotal: number, rankDiscount: RankDiscountRowLike | null = null): D1Database {
+interface ProductRowLike {
+  title: string;
+  price: string | null;
+  image_url: string | null;
+  variants_json: string;
+}
+
+function makeDb(
+  trailingTotal: number,
+  rankDiscount: RankDiscountRowLike | null = null,
+  products: ProductRowLike[] = [],
+): D1Database {
   return {
     prepare(sql: string) {
       const stmt = {
@@ -53,6 +64,9 @@ function makeDb(trailingTotal: number, rankDiscount: RankDiscountRowLike | null 
           return null;
         },
         async all<T>(): Promise<{ results: T[]; success: boolean }> {
+          if (sql.includes('FROM shopify_products')) {
+            return { results: products as unknown as T[], success: true };
+          }
           return { results: [], success: true };
         },
         async run(): Promise<{ success: boolean; meta: { changes: number } }> {
@@ -130,30 +144,61 @@ describe('my-rank LIFF — lazy rank discount issuance', () => {
   });
 });
 
-describe('my-rank LIFF — 定期便×会員ランク訴求 (PR-D, gated)', () => {
+describe('my-rank LIFF — quickBuy の min¥2,000 誠実化 (PR-D)', () => {
+  // B案 (2026-08-15): 定期便×ランク訴求 (subscriptionRank) は API から**返さない**。
+  //   ランクコードは単発専用・quickBuy は ¥2,000 以上の商品にだけコードを付ける。
   const active: RankDiscountRowLike = {
-    id: 'd1', friend_id: 'f1', rank_id: 'silver', code: 'NLR-SILVER-SUB1',
+    id: 'd1', friend_id: 'f1', rank_id: 'silver', code: 'NLR-SILVER-QB1',
     shopify_discount_node_id: 'gid', discount_percent: 4, status: 'active',
     brand_id: null, issued_at: '2026-06-01T00:00:00+09:00', expires_at: null,
   };
+  const products: ProductRowLike[] = [
+    { title: '30日分', price: '2830', image_url: null, variants_json: '[{"id":111}]' },
+    { title: '3日分', price: '430', image_url: null, variants_json: '[{"id":222}]' },
+    // price null は Number(null)=0 で「¥2,000 未満」経路に落ちる。非数値文字列 (NaN) は
+    // Number.isFinite ガードだけが守る別経路 — mutation M17 で SURVIVED した死角を固定する
+    { title: '価格不明(null)', price: null, image_url: null, variants_json: '[{"id":333}]' },
+    { title: '価格不明(非数値)', price: 'N/A', image_url: null, variants_json: '[{"id":444}]' },
+  ];
 
   beforeEach(() => {
     mockIssue.mockReset();
     mockIssue.mockResolvedValue(null);
   });
 
-  it('gate 未投入 (既定) → subscriptionRank null = 顧客可視の変化ゼロ', async () => {
-    const { body } = await callApi(makeDb(15000, active));
-    expect(body.data.subscriptionRank).toBeNull();
+  it('¥2,000 以上の商品だけ discounted=true + URL にコード付与', async () => {
+    const { body } = await callApi(makeDb(15000, active, products));
+    const qb = body.data.quickBuy as Array<{ title: string; url: string; discounted: boolean }>;
+    expect(qb).toHaveLength(3); // QUICK_BUY_LIMIT=3 で 4 件目は切られる
+    expect(qb[0].discounted).toBe(true);
+    expect(qb[0].url).toContain('discount=NLR-SILVER-QB1');
+    // ¥430: コードを付けても checkout で無言で外れる → 付けない + ラベルも出さない (景表法)
+    expect(qb[1].discounted).toBe(false);
+    expect(qb[1].url).not.toContain('discount=');
+    // 価格不明 (null) は Number(null)=0 → ¥2,000 未満扱いで安全側 (コード無し)
+    expect(qb[2].discounted).toBe(false);
+    expect(qb[2].url).not.toContain('discount=');
   });
 
-  it('gate ON + active コードあり → {code, discountPercent} を返す', async () => {
-    const { body } = await callApi(makeDb(15000, active), { RANK_SUBSCRIPTION_APPEAL_ENABLED: 'true' });
-    expect(body.data.subscriptionRank).toEqual({ code: 'NLR-SILVER-SUB1', discountPercent: 4 });
+  it('非数値 price (NaN) も安全側 = コード無し (Number.isFinite ガードの専用検証)', async () => {
+    // NaN 商品を先頭に置き、LIMIT に切られず必ず評価される並びで検証する
+    const nanFirst: ProductRowLike[] = [products[3], products[0]];
+    const { body } = await callApi(makeDb(15000, active, nanFirst));
+    const qb = body.data.quickBuy as Array<{ title: string; url: string; discounted: boolean }>;
+    expect(qb[0].discounted).toBe(false);
+    expect(qb[0].url).not.toContain('discount=');
+    expect(qb[1].discounted).toBe(true); // 同一応答内の対照 (コード自体は生きている)
   });
 
-  it('gate ON でもコード未発行なら null (訴求だけ先行させない)', async () => {
-    const { body } = await callApi(makeDb(15000, null), { RANK_SUBSCRIPTION_APPEAL_ENABLED: 'true' });
-    expect(body.data.subscriptionRank).toBeNull();
+  it('コード未発行なら全行 discounted=false (従来どおり素の permalink)', async () => {
+    const { body } = await callApi(makeDb(15000, null, products));
+    const qb = body.data.quickBuy as Array<{ url: string; discounted: boolean }>;
+    expect(qb.every((q) => !q.discounted)).toBe(true);
+    expect(qb.every((q) => !q.url.includes('discount='))).toBe(true);
+  });
+
+  it('API 応答に subscriptionRank を含めない (B案: 定期便訴求は HB ランク側の別 PR)', async () => {
+    const { body } = await callApi(makeDb(15000, active, products));
+    expect('subscriptionRank' in body.data).toBe(false);
   });
 });

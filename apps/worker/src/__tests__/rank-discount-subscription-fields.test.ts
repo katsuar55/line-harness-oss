@@ -1,9 +1,10 @@
 /**
- * ランク NLR- issuer の mutation payload 契約 (Ultraplan PR-D) — 実 SQLite + fetch body 実測。
+ * ランク NLR- issuer の mutation payload 契約 (Ultraplan PR-D / B案 2026-08-15) — 実 SQLite + fetch body 実測。
  *
  * 🚨 最重要 2 点:
- *   - recurringCycleLimit は **0** (固定額 3 券の 1 と逆)。契約に保存された%は再評価なしで
- *     毎サイクル適用され続ける (公式確定) — 「2回目以降 5% + ランク%継続」はこの 0 が実現する。
+ *   - **appliesOnSubscription は false 固定** (B案: 定期便のランク%は Huckleberry ネイティブ
+ *     会員ランクが担う)。true に変わると「契約固着コード% + HB ランク%」の二重取りが成立する。
+ *     recurringCycleLimit は付けない (A案 cycle:0 は破棄)。
  *   - customerSelection は連携済み (shopify_customer_id 保有) なら **customer 限定**。
  *     従来の all + usageLimit 無制限は SNS 漏洩で止血不能な唯一の非有界リークだった
  *     (採点ループ abuse CRITICAL #2)。
@@ -60,8 +61,8 @@ const ENV_ON = {
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('ランク NLR- の payload 契約 (定期便固着 / 顧客限定 / min¥2,000)', () => {
-  it('連携済み friend → customer 限定 + cycle:0 + サブスク可 + min¥2,000 (契約の全量)', async () => {
+describe('ランク NLR- の payload 契約 (単発専用固定 / 顧客限定 / min¥2,000)', () => {
+  it('連携済み friend → customer 限定 + 単発専用 (subscription false) + min¥2,000 (契約の全量)', async () => {
     const raw = createSchemaDb();
     insertFriend(raw, 'F1');
     raw.prepare(`UPDATE friends SET shopify_customer_id = '777' WHERE id = 'F1'`).run();
@@ -76,10 +77,10 @@ describe('ランク NLR- の payload 契約 (定期便固着 / 顧客限定 / mi
     const input = captured[0];
     // 顧客限定 (リーク止血の本丸)
     expect(input.customerSelection).toEqual({ customers: { add: ['gid://shopify/Customer/777'] } });
-    // 定期便固着の 3 点セット
-    expect(input.customerGets?.appliesOnSubscription).toBe(true);
+    // 🚨 B案: 単発専用固定 — true に変わると HB ランク%との二重取りが成立する
+    expect(input.customerGets?.appliesOnSubscription).toBe(false);
     expect(input.customerGets?.appliesOnOneTimePurchase).toBe(true);
-    expect(input.recurringCycleLimit).toBe(0); // 🚨 固定額券の 1 と逆 — 毎サイクル継続が仕様
+    expect(input.recurringCycleLimit).toBeUndefined(); // A案 cycle:0 は破棄 (付けない)
     // 共通ガード
     expect(input.minimumRequirement?.subtotal?.greaterThanOrEqualToSubtotal).toBe('2000');
     expect(input.combinesWith).toEqual({ productDiscounts: true, orderDiscounts: true, shippingDiscounts: false });

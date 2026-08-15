@@ -214,11 +214,6 @@ export type Env = {
     // 自社内製ロイヤリティ PR5 (2026-06-04): ランク割引コードの本番発行 gate
     //   'true' で issueRankDiscountForFriend が本番 Shopify に書込 (= 未設定なら no-op、 本番未書込)。
     RANK_DISCOUNT_ENABLED?: string;
-    // 定期便×会員ランク訴求 gate (Ultraplan PR-D 2026-08-15):
-    //   'true' で my-rank に「定期便×会員ランク」カード (A案文言 + 契約時点固定の誠実開示) を表示。
-    //   ⚠️ 開放は実店舗検証ゲート 7 項目 (plan ファイル参照) の通過後・Katsu 指示で
-    //   Admin Ops op `enable-rank-subscription-appeal` から (景表法: 実装→検証→表記の順)。
-    RANK_SUBSCRIPTION_APPEAL_ENABLED?: string;
     // 友だち紹介の referrer 報酬クーポン発行 gate (2026-07-10): referred がクーポン利用購入時に発行
     //   'true' で issueReferralCoupon が本番 Shopify に書込 (= 未設定なら no-op、 本番未書込)。
     //   ⚠️ 有効化前に migration 068 (line_referral_coupons) 適用が必要。

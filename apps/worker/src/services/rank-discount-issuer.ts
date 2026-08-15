@@ -4,15 +4,16 @@
  * 役割: 会員ランクに応じた常時%OFF 割引を、 顧客別 Shopify コード (NLR-{rank}-{suffix}) で発行する。
  *   3タップ単発購入 (cart permalink ?discount={code}) で利用。
  *
- * 設計 (PR-D 2026-08-15 で改訂 — 全 4 系統 ORDER クラス・定期便対応):
+ * 設計 (PR-D 2026-08-15 改訂・B案 = 定期便ランク%は Huckleberry ネイティブ会員ランクが担当):
  *   - discountCodeBasicCreate (percentage, items.all)。連携済み (shopify_customer_id 保有) は
  *     customerSelection を **customer 限定**で発行 (SNS 漏洩リークの止血)。未連携は従来の all。
- *   - customerGets.appliesOnSubscription + recurringCycleLimit: **0** (= 無期限。固定額 3 券の
- *     cycle:1 とは逆 — ランク%は契約に固着して毎サイクル継続が仕様)。min ¥2,000 同梱。
+ *   - **単発購入専用** (appliesOnSubscription: false 明示 = HB ランク%との二重取り防止)。
+ *     min ¥2,000 同梱 (全券共通ガード)。
  *   - combinesWith product+order 両 true (= 紹介 NREF- / 連携 NLINK- と order×order で実際に重なる)。
  *   - 再利用可 (usageLimit=null, appliesOncePerCustomer=false)。 cb-admin 感謝クーポンとは別 namespace。
- *   - friend ごとに active は1つ。 ランク変更・残寿命 <14日 で旧を superseded 化 + 新規 issue +
- *     旧コードを discountCodeDeactivate (失敗は日次 sweep が shopify_deactivated_at NULL を再試行)。
+ *   - friend ごとに active は1つ。 ランク変更・残寿命 <13日 で旧を superseded 化 + 新規 issue +
+ *     旧コードを discountCodeDeactivate (失敗は日次 sweep [gate COUPON_SWEEP_ENABLED] が
+ *     shopify_deactivated_at NULL を再試行)。
  *   - GraphQL は Shopify dev MCP validate_graphql_codeblocks で検証済 (write_discounts scope)。
  *
  * ⚠️ 本番ガード: RANK_DISCOUNT_ENABLED='true' でなければ no-op (= 承認前は本番 Shopify に書き込まない)。
@@ -52,9 +53,11 @@ const DEFAULT_VALID_DAYS = 45;
 // 冪等再利用の最低残寿命 (PR-D 2026-08-15): 従来は同 rank なら無条件再利用だったため、
 //   45日で Shopify 側が失効しても DB は active のままコードが二度と再発行されなかった。
 //   残寿命がこの日数を切ったら supersede + 再発行する。⚠️ 値の根拠 (採点ループ算術確定):
-//   月1 cron (毎月1日) の時点で残寿命は最短 45-31=14日 → 14 なら再利用 (毎月全員再発行を回避)。
-//   35日等にすると月1 cron が毎回全員分を再発行して Shopify write が爆発する。
-const REISSUE_MIN_REMAINING_DAYS = 14;
+//   月1 cron (毎月1日) の時点で残寿命は最短 45-31=14日。閾値 14 だと cron の数秒の実行
+//   ジッタで 13日23時間59分 と判定され「毎月全員再発行」へ雪崩れる knife-edge になる
+//   (採点 R1 finding) → **13 で丸1日の slack** を持たせる。35日等にすると月1 cron が
+//   毎回全員分を再発行して Shopify write が爆発する (plan の許容帯は 10-14日)。
+const REISSUE_MIN_REMAINING_DAYS = 13;
 const REISSUE_MIN_REMAINING_MS = REISSUE_MIN_REMAINING_DAYS * 86_400_000;
 const CODE_NAMESPACE = 'NLR'; // naturism loyalty rank (= cb-admin 感謝クーポンと衝突回避)
 
@@ -173,22 +176,26 @@ async function callRankDiscountCreate(
       //   customer 限定で発行する。従来の all + usageLimit 無制限は SNS に漏れると誰でも常時%OFF
       //   になる唯一の非有界リークで止血手段が無かった。未連携 friend のみ従来の all で発行
       //   (シークレットコード配布 = 従来リスクと同等、連携が進むほど自然に閉じる)。
+      //   ゲスト checkout でも「プロフィールのメール/電話の入力」で適格判定される (Shopify 公式・
+      //   採点ループの敵対的検証で確認)。別メールで checkout すると割引が外れる edge は
+      //   B案 検証ゲートの実測項目。
+      //   ⚠️ customerSelection は 2026-04 で deprecated (context 推奨・動作は正常)。API version を
+      //   上げる時は 4 issuer (welcome/紹介/連携/ランク) 一括で DiscountContextInput へ移行すること。
       customerSelection: customerGid ? { customers: { add: [customerGid] } } : { all: true },
       customerGets: {
         // percentage は 0.00-1.00 の小数 (= Shopify schema)。 4% → 0.04
         value: { percentage: discountPercent / 100 },
         items: { all: true },
-        // 定期便チェックアウトで入力可 (PR-D)。単発は従来どおり。
-        //   ⚠️ appliesOnSubscription は customerGets の中 (トップレベルは GraphQL エラー — 採点確定)
+        // 🚨 NLR- は**単発購入専用** (B案 2026-08-15 Katsu 決定): 定期便のランク%は
+        //   Huckleberry ネイティブ会員ランク (毎サイクル現在ランク) が担う。ここを true に
+        //   すると「契約に固着したコード% + HB ランク%」の二重取りが成立してしまうため、
+        //   将来も true へ変えないこと (変えるなら HB ランク側の停止とセットで)。
+        //   ⚠️ appliesOnSubscription は customerGets の中 (トップレベルは GraphQL エラー)。
         appliesOnOneTimePurchase: true,
-        appliesOnSubscription: true,
+        appliesOnSubscription: false,
       },
-      // 🚨 ランク%は固定額 3 券 (cycle:1) と**逆**で 0 = 無期限 (採点ループ確定仕様)。
-      //   契約に保存されたコードは条件を再評価せず毎サイクル適用され続ける (公式確定) —
-      //   「2回目以降 5% + ランク%が毎回のお届けに継続」はこの 0 が実現する。
-      //   ストア側で 45 日失効・再発行しても、既存契約に入った%は契約時点のまま継続する
-      //   (= 「お申し込み時点のランクで固定」の誠実開示が my-rank カード側で必須)。
-      recurringCycleLimit: 0,
+      // recurringCycleLimit は付けない (appliesOnSubscription: false では定期便に乗らないため
+      //   無意味。A案の cycle:0 は B案採択で破棄)。
       // 🔴 2026-08-13 本番実測: items:{all} の discountCodeBasicCreate は **ORDER クラス**になる
       //   (本 NLR- コードは admin 上「注文の割引」表示・「1回の注文につき複数を適用できます」実測)。
       //   combinesWith 設定済みの紹介 NREF- / 連携 NLINK- とは order×order で**実際に重なる** (Plus 不要。
@@ -428,6 +435,8 @@ export async function issueRankDiscountForFriend(
     //   順序は insert先行→deactivate (no-active 窓を作らない設計を維持)。新旧が同時に生きる窓は
     //   この数百 ms のみ + 同時利用には両コードを同一 checkout に入力する必要があり実害は無視できる。
     //   best-effort: 失敗時はマーカー NULL のまま残り、日次 sweep (03:40) が拾って再試行する。
+    //   ⚠️ sweep は gate COUPON_SWEEP_ENABLED (2026-08-15 時点で本番未投入) の内側 — gate 開放まで
+    //   再試行網は dormant で、失敗した旧コードは endsAt まで生存する (被害は 45 日で有界)。
     //   期限切れ済みの旧コードは Shopify 側で自然死しているため API を呼ばずマークのみ。
     try {
       const alreadyDead = existing.expiresAt !== null && existing.expiresAt <= isoNow;

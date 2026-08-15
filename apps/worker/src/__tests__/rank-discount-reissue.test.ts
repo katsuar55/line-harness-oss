@@ -4,9 +4,10 @@
  * 根治対象バグ: 従来は同 rank なら無条件再利用のため、45日で Shopify 側が失効しても
  * DB は active のままコードが二度と再発行されなかった。
  *
- * 閾値の契約 (採点ループ算術確定):
- *   - 残寿命 ≥ 14日 → 再利用 (月1 cron [残最短 45-31=14日] で毎月全員再発行しない)
- *   - 残寿命 < 14日 / 期限切れ → supersede + 再発行 + 旧コード deactivate
+ * 閾値の契約 (採点ループ算術確定 + R2 knife-edge 修正):
+ *   - 残寿命 ≥ 13日 → 再利用 (月1 cron [残最短 45-31=14日] で毎月全員再発行しない。
+ *     14 だと cron の秒ジッタで全員再発行へ雪崩れるため 13 = 丸1日の slack)
+ *   - 残寿命 < 13日 / 期限切れ → supersede + 再発行 + 旧コード deactivate
  * 回帰ガード: getActiveRankDiscount は期限**無フィルタ** — 期限切れ active 行も supersede
  *   されること (フィルタを足すと期限切れ行が永久に active 残留する — 採点 CONFIRMED)。
  */
@@ -18,6 +19,7 @@ vi.mock('../services/shopify-token.js', () => ({
 vi.mock('../services/audit-logger.js', () => ({ auditSystem: vi.fn(async () => {}) }));
 
 import { issueRankDiscountForFriend, __test__ } from '../services/rank-discount-issuer.js';
+import { markRankDiscountShopifyDeactivated } from '@line-crm/db';
 import { createSchemaDb, asD1, insertFriend } from './helpers/sqlite-d1.js';
 import type { SqliteDatabase } from './helpers/sqlite-d1.js';
 
@@ -93,7 +95,7 @@ beforeEach(() => {
 });
 
 describe('冪等再利用の残寿命閾値', () => {
-  it('残寿命 15日 (≥14) → 再利用・Shopify 未呼出', async () => {
+  it('残寿命 15日 (≥13) → 再利用・Shopify 未呼出', async () => {
     seedActiveRow(raw, {
       id: 'old', friendId: 'F1', rankId: 'silver', percent: 4, code: 'NLR-SILVER-KEEP1234',
       nodeId: 'gid://old/1', expiresAt: new Date(NOW + 15 * DAY).toISOString(),
@@ -107,7 +109,7 @@ describe('冪等再利用の残寿命閾値', () => {
     expect(fn).not.toHaveBeenCalled();
   });
 
-  it('残寿命ちょうど 14日 (境界) → 再利用', async () => {
+  it('残寿命ちょうど閾値 (13日・境界) → 再利用', async () => {
     seedActiveRow(raw, {
       id: 'old', friendId: 'F1', rankId: 'silver', percent: 4, code: 'NLR-SILVER-EDGE1234',
       nodeId: 'gid://old/1', expiresAt: new Date(NOW + __test__.REISSUE_MIN_REMAINING_MS).toISOString(),
@@ -135,10 +137,10 @@ describe('冪等再利用の残寿命閾値', () => {
 });
 
 describe('残寿命不足 → supersede + 再発行 + 旧コード deactivate', () => {
-  it('残寿命 13日 → 新コード発行・旧 superseded・deactivate 実呼出・マーカー記録', async () => {
+  it('残寿命 12日 (<13) → 新コード発行・旧 superseded・deactivate 実呼出・マーカー記録', async () => {
     seedActiveRow(raw, {
       id: 'old', friendId: 'F1', rankId: 'silver', percent: 4, code: 'NLR-SILVER-OLD12345',
-      nodeId: 'gid://old/1', expiresAt: new Date(NOW + 13 * DAY).toISOString(),
+      nodeId: 'gid://old/1', expiresAt: new Date(NOW + 12 * DAY).toISOString(),
     });
     const { fn, kinds, getDeactivatedGid } = makeFetch();
     const r = await issueRankDiscountForFriend(db, ENV_ON, {
@@ -186,6 +188,16 @@ describe('残寿命不足 → supersede + 再発行 + 旧コード deactivate', 
     const old = rowById(raw, 'old');
     expect(old.status).toBe('superseded');
     expect(old.shopify_deactivated_at).toBeNull();
+  });
+
+  it('マーカー CAS: 二重マークは false・先勝ちの時刻を保持 (並行 sweep の二重記録防止)', async () => {
+    seedActiveRow(raw, {
+      id: 'row1', friendId: 'F1', rankId: 'silver', percent: 4, code: 'NLR-SILVER-CAS12345',
+      nodeId: 'gid://old/1', expiresAt: null,
+    });
+    expect(await markRankDiscountShopifyDeactivated(db, 'row1', '2026-08-15T00:00:00.000Z')).toBe(true);
+    expect(await markRankDiscountShopifyDeactivated(db, 'row1', '2026-08-16T00:00:00.000Z')).toBe(false);
+    expect(rowById(raw, 'row1').shopify_deactivated_at).toBe('2026-08-15T00:00:00.000Z');
   });
 
   it('ランク変更 (percent 違い) → 残寿命が十分でも supersede + 再発行 + deactivate', async () => {

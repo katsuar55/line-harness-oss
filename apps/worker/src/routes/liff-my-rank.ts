@@ -12,6 +12,7 @@ import {
 } from '@line-crm/db';
 import { buildCartPermalink, buildDiscountApplyUrl } from '../services/cart-permalink.js';
 import { issueRankDiscountForFriend } from '../services/rank-discount-issuer.js';
+import { MIN_SUBTOTAL_JPY } from '../services/shopify-coupon-issuer.js';
 
 // 顧客向けストアフロント (= 公式ドメイン)。SHOPIFY_STORE_DOMAIN は Admin/API 用なので使わない。
 const STORE_DOMAIN = 'naturism-diet.com';
@@ -104,8 +105,18 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
   const discountCode = rankDiscount?.code ?? null;
   const discountApplyUrl = discountCode ? buildDiscountApplyUrl(STORE_DOMAIN, discountCode) : null;
 
-  // かんたん購入: アクティブ商品の先頭 variant で cart permalink (= ランク割引コードがあれば自動付与)。
-  const quickBuy: Array<{ title: string; price: string | null; imageUrl: string | null; url: string }> = [];
+  // かんたん購入: アクティブ商品の先頭 variant で cart permalink。
+  // PR-D: NLR- コードに min ¥2,000 が付いたため、¥2,000 未満の商品にはコードを**付けない**
+  //   (付けても checkout で無言で外れる = 「割引適用済み」表示が虚偽になる。採点 CONFIRMED)。
+  //   discounted フラグを UI に渡し、割引ラベルは適用される行にだけ出す。
+  //   price 不明 (null/非数値) は安全側 = コード無しで出す。
+  const quickBuy: Array<{
+    title: string;
+    price: string | null;
+    imageUrl: string | null;
+    url: string;
+    discounted: boolean;
+  }> = [];
   try {
     const products = await getShopifyProducts(c.env.DB, { status: 'active', limit: 8 });
     for (const prod of products) {
@@ -119,9 +130,22 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
       } catch {
         variantId = null;
       }
-      const url = buildCartPermalink(STORE_DOMAIN, [{ variantId, quantity: 1 }], discountCode);
+      const priceJpy = Number(prod.price);
+      const discountEligible =
+        discountCode !== null && Number.isFinite(priceJpy) && priceJpy >= MIN_SUBTOTAL_JPY;
+      const url = buildCartPermalink(
+        STORE_DOMAIN,
+        [{ variantId, quantity: 1 }],
+        discountEligible ? discountCode : null,
+      );
       if (url) {
-        quickBuy.push({ title: prod.title, price: prod.price, imageUrl: prod.image_url, url });
+        quickBuy.push({
+          title: prod.title,
+          price: prod.price,
+          imageUrl: prod.image_url,
+          url,
+          discounted: discountEligible,
+        });
       }
       if (quickBuy.length >= QUICK_BUY_LIMIT) break;
     }
@@ -167,16 +191,9 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
       // 3タップ購入 (= PR5-5b)。 code 自体は URL に内包 (= 認証済本人のみ取得)。
       rankDiscount: rankDiscount ? { discountPercent: rankDiscount.discountPercent } : null,
       discountApplyUrl,
-      // 定期便×会員ランク訴求 (PR-D, gated): 実店舗検証ゲート 7 項目の通過後に
-      //   Admin Ops op `enable-rank-subscription-appeal` で開放する。gate OFF = null で
-      //   カード非表示 = 顧客可視の変化ゼロ (景表法: 実装→検証→表記の順序)。
-      //   code は既に discountApplyUrl 経由で認証済本人へ渡っているものと同一 (新規露出なし)。
-      subscriptionRank:
-        c.env.RANK_SUBSCRIPTION_APPEAL_ENABLED === 'true' &&
-        rankDiscount &&
-        rankDiscount.discountPercent > 0
-          ? { code: rankDiscount.code, discountPercent: rankDiscount.discountPercent }
-          : null,
+      // B案 (2026-08-15 Katsu 決定): 定期便×ランク% は Huckleberry ネイティブ会員ランクが担う。
+      //   A案の「定期便×会員ランク」カード (契約時点固定の訴求) はここに載っていたが破棄した。
+      //   B案 検証ゲート通過後、「定期便は累計でランクが育つ」文言の別カードを新 PR で載せる。
       quickBuy,
       // 自前アカウント連携 (Phase 2、 gated)
       linked,
@@ -272,7 +289,6 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
     <section id="progress-card" style="display:none;"></section>
     <section id="link-card" style="display:none;"></section>
     <section id="shop-card" style="display:none;"></section>
-    <section id="subrank-card" style="display:none;"></section>
     <section id="coupons-card" style="display:none;"></section>
     <section id="about-card" style="display:none;"></section>
     <a id="store-cta" href="https://${escapeHtml(storeDomain)}" style="display:none;" class="block text-center card tap" >
@@ -318,13 +334,11 @@ var DEMO_DATA = {
     { id: 'platinum', name: 'プラチナ', discountPercent: 8, minTrailing12moJpy: 45000 }
   ],
   rankDiscount: { discountPercent: 4 },
-  // 定期便×会員ランク訴求はゲート通過前のため demo でも出さない (?demo=1 は公開 URL —
-  // サンプルでも訴求文言を実装検証前に公衆へ見せない。ゲート通過後に demo 値を足してよい)
-  subscriptionRank: null,
   discountApplyUrl: 'https://naturism-diet.com/discount/NLR-SILVER-DEMO2345',
+  // ¥2,000 未満の商品はコード無し URL + discounted:false (= min ¥2,000 の実挙動を demo でも忠実に)
   quickBuy: [
-    { title: 'KOSO in naturism ToGo (Pink) 180粒 (30日分)', price: '2830', imageUrl: null, url: 'https://naturism-diet.com/cart/42884926636285:1?discount=NLR-SILVER-DEMO2345' },
-    { title: 'KOSO in naturism (Pink) 18粒 (3日分)', price: '430', imageUrl: null, url: 'https://naturism-diet.com/cart/42885035819261:1?discount=NLR-SILVER-DEMO2345' }
+    { title: 'KOSO in naturism ToGo (Pink) 180粒 (30日分)', price: '2830', imageUrl: null, url: 'https://naturism-diet.com/cart/42884926636285:1?discount=NLR-SILVER-DEMO2345', discounted: true },
+    { title: 'KOSO in naturism (Pink) 18粒 (3日分)', price: '430', imageUrl: null, url: 'https://naturism-diet.com/cart/42885035819261:1', discounted: false }
   ],
   linked: false,
   accountLinkEnabled: true
@@ -538,53 +552,31 @@ function renderShop(d){
     (pct > 0 ? '<span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:#eef7f7;color:#0f766e">ランク特典 ' + pct + '% OFF</span>' : '') +
   '</div>';
   if (applyUrl){
-    html += '<a href="' + esc(applyUrl) + '" class="tap block text-center text-white text-sm font-bold py-3 rounded-xl shadow mb-3" style="background:#0f766e">' +
-      (pct > 0 ? pct + '% OFF を使ってお買い物' : 'お買い物にすすむ') + ' &rarr;</a>';
+    html += '<a href="' + esc(applyUrl) + '" class="tap block text-center text-white text-sm font-bold py-3 rounded-xl shadow mb-1.5" style="background:#0f766e">' +
+      (pct > 0 ? pct + '% OFF を使ってお買い物' : 'お買い物にすすむ') + ' &rarr;</a>' +
+      // min ¥2,000 の開示 (PR-D): 条件なしの「割引」断定は有利誤認になる。税込/税抜は実測前なので書かない。
+      '<p class="text-[11px] text-gray-400 mb-3 text-center">ランク割引は ¥2,000以上のご注文で適用されます</p>';
   }
   if (items.length){
-    if (applyUrl) html += '<p class="text-xs text-gray-400 mb-2">かんたん購入 (割引適用済み)</p>';
+    if (applyUrl) html += '<p class="text-xs text-gray-400 mb-2">かんたん購入</p>';
     html += '<div class="space-y-2">' + items.map(function(q){
       var price = q.price ? '¥' + Number(q.price).toLocaleString('ja-JP') : '';
       var img = q.imageUrl
         ? '<img src="' + esc(q.imageUrl) + '" alt="" style="width:48px;height:48px;object-fit:cover;border-radius:10px;flex-shrink:0">'
         : '<div style="width:48px;height:48px;border-radius:10px;background:#f1f5f9;flex-shrink:0"></div>';
+      // 割引ラベルはサーバが「本当にコードが乗る」と判定した行 (discounted=true) にだけ出す
+      var badge = (q.discounted && pct > 0)
+        ? '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded" style="background:#eef7f7;color:#0f766e">' + pct + '% OFF適用</span>'
+        : '';
       return '<a href="' + esc(q.url) + '" class="tap flex items-center gap-3 p-2.5 rounded-xl" style="border:1px solid #e2e8f0">' +
         img +
         '<div class="flex-1 min-w-0"><p class="text-xs font-bold text-gray-800 truncate">' + esc(q.title) + '</p>' +
-          (price ? '<p class="text-xs text-gray-500 mt-0.5">' + esc(price) + '</p>' : '') + '</div>' +
+          '<p class="text-xs text-gray-500 mt-0.5">' + esc(price) + (badge ? ' ' + badge : '') + '</p>' + '</div>' +
         '<span class="text-xs font-bold text-white px-3 py-1.5 rounded-lg shrink-0" style="background:#0f766e">購入</span>' +
       '</a>';
     }).join('') + '</div>';
   }
   card.innerHTML = html;
-}
-
-// ─── 定期便×会員ランク (= PR-D, gated: API が subscriptionRank を返すときのみ描画) ───
-// A案文言: 適用の約束と「契約時点で固定」の誠実開示を**同視野・同サイズ**で並べる (採点 UX 確定)。
-function renderSubRank(d){
-  var card = document.getElementById('subrank-card');
-  if(!card) return;
-  var sr = d.subscriptionRank;
-  var pct = (sr && Number.isFinite(sr.discountPercent)) ? Math.floor(sr.discountPercent) : 0;
-  if(!sr || !sr.code || pct <= 0){ card.style.display='none'; return; }
-  card.className = 'card p-5 rise';
-  card.style.display = 'block';
-  card.innerHTML =
-    '<div class="flex items-center gap-2 mb-2"><span class="text-base">&#x1F501;</span>' +
-      '<p class="text-sm font-bold text-gray-700">定期便×会員ランク</p></div>' +
-    '<p class="text-sm text-gray-700 leading-relaxed mb-2">定期便のお申し込み時にランクコードをご入力いただくと、お申し込み時点のランクの割引率 <b style="color:#0f766e">' + pct + '% OFF</b> が毎回のお届けに自動で適用され続けます。</p>' +
-    '<p class="text-sm text-gray-700 leading-relaxed mb-3">割引率はお申し込み時点のランクで固定されます。その後ランクが変わっても、すでにご契約中の定期便には反映されません。</p>' +
-    '<div class="flex items-center gap-3 p-3 rounded-xl" style="background:linear-gradient(135deg,#f0fdfa,#faf5ff);border:1px solid #e2e8f0">' +
-      '<div class="flex-1 min-w-0">' +
-        '<p class="text-[11px] text-gray-500">定期便チェックアウトのクーポン欄に入力</p>' +
-        '<p class="text-[13px] font-bold mt-0.5 font-mono truncate" style="color:#0f766e">' + esc(sr.code) + '</p>' +
-      '</div>' +
-      '<button type="button" data-code="' + esc(sr.code) + '" class="subrank-copy tap shrink-0 text-xs font-bold text-white px-3 py-2 rounded-lg shadow" style="background:#0f766e">コピー</button>' +
-    '</div>';
-  var btns = card.querySelectorAll('.subrank-copy');
-  for (var i=0;i<btns.length;i++){
-    btns[i].addEventListener('click', function(){ copyCode(this.getAttribute('data-code')); });
-  }
 }
 
 function renderCoupons(d){
@@ -643,9 +635,10 @@ function renderAbout(d){
     '</button>' +
     '<div id="about-body" class="acc-body">' +
       '<div class="pb-2" style="border-top:1px solid #f1f5f9">'+rows+'</div>' +
-      // ⚠️「サブスク割引と重ねて」の復活は「定期便×会員ランク」カード (renderSubRank) が担う
-      //   (PR-D 2026-08-15 実装済み・gate RANK_SUBSCRIPTION_APPEAL_ENABLED 配下)。
-      //   実店舗検証ゲート 7 項目の通過前に gate を開けないこと (景表法: 実装→検証→表記)。
+      // ⚠️「サブスク割引と重ねて」系の定期便訴求は B案 (2026-08-15 Katsu 決定) で
+      //   Huckleberry ネイティブ会員ランクが担うことになった。B案 検証ゲート
+      //   (plan ファイル冒頭の改訂節) 通過後に「定期便は累計でランクが育つ」文言の
+      //   カードを別 PR で載せる。それまで定期便×ランクの訴求をこのページに書かないこと。
       '<p class="text-[11px] text-gray-400 px-5 pb-4 pt-1 leading-relaxed">過去12ヶ月のお買い上げ金額で、毎月1日に自動で判定します（降格あり）。</p>' +
     '</div>';
   var toggle = document.getElementById('about-toggle');
@@ -664,7 +657,6 @@ function renderAll(d){
   renderProgress(d);
   renderLink(d);
   renderShop(d);
-  renderSubRank(d);
   renderCoupons(d);
   renderAbout(d);
   var cta=document.getElementById('store-cta'); if(cta) cta.style.display='block';

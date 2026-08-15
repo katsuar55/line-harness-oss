@@ -209,16 +209,16 @@ describe('issueRankDiscountForFriend', () => {
       code: string;
       usageLimit: number | null;
       appliesOncePerCustomer: boolean;
-      recurringCycleLimit: number;
+      recurringCycleLimit?: number;
       minimumRequirement: { subtotal: { greaterThanOrEqualToSubtotal: string } };
       customerSelection: Record<string, unknown>;
     };
     expect(input.customerGets.value.percentage).toBeCloseTo(0.06);
     expect(input.customerGets.items.all).toBe(true);
-    // PR-D: 定期便対応 (appliesOnSubscription は customerGets の中) + cycle 0 = 契約に無期限固着
-    expect(input.customerGets.appliesOnSubscription).toBe(true);
+    // B案 (2026-08-15): NLR- は単発専用固定 — true に変わると HB ランク%との二重取りが成立
+    expect(input.customerGets.appliesOnSubscription).toBe(false);
     expect(input.customerGets.appliesOnOneTimePurchase).toBe(true);
-    expect(input.recurringCycleLimit).toBe(0); // 🚨 固定額券の 1 と逆 — ランク%は毎サイクル継続が仕様
+    expect(input.recurringCycleLimit).toBeUndefined(); // A案 cycle:0 は破棄 (付けない)
     expect(input.minimumRequirement.subtotal.greaterThanOrEqualToSubtotal).toBe('2000');
     // 未連携 friend (fake db は friends を返さない) → 従来どおり all
     expect(input.customerSelection).toEqual({ all: true });
