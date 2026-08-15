@@ -110,6 +110,15 @@ name: Admin Ops
 #   enable-coupon-sweep:
 #     COUPON_SWEEP_ENABLED=true。日次 JST 03:40 の期限 sweep + queue T2 活性化を開放。
 #     前提: migration 079 適用済み (機械チェックする)。
+#   apply-migration-080:
+#     migration 080 (loyalty_rank_discounts.shopify_deactivated_at = supersede 済みランクコードの
+#     Shopify 側無効化マーカー)。ALTER ADD COLUMN + INDEX = additive・live-safe。
+#     ALTER は再適用で duplicate column エラーになるため、列存在を pragma で確認して skip する (冪等)。
+#     未適用でも worker は列不在エラーを捕捉して sweep ④ を静かに skip する設計 (安全) だが、
+#     supersede 済み旧コードの Shopify 側 kill はこの列が無いと前進しない。deploy 後すみやかに適用する。
+#     ⚠️ 再試行 sweep ④ 自体は COUPON_SWEEP_ENABLED (別 gate・未投入) の内側 — 080 適用だけでは
+#     再試行は走らない。issuer inline の deactivate 失敗分の回収は enable-coupon-sweep の投入が前提
+#     (sweep ③ は待機紹介クーポンの活性化 + LINE push を含むため、投入タイミングは実機確認後 = 従来方針どおり)。
 #   enable-link-reward / enable-subscription-menu / enable-subscription-reminder:
 #     Sprint A の gate 開放 3 手 (2026-08-11 Katsu 承認済み)。**この順序で実行すること**。
 #     各 op は前提を機械チェックしてから secret を投入する
@@ -120,6 +129,12 @@ name: Admin Ops
 #     read-only。定期便系 FAQ (auto_replies=チャット自動応答 / faq_items=LIFF FAQ タブ) の
 #     有効行を件数+既知文言の指紋で監査する (実態 = 定期便の操作はマイページのみ)。
 #     あわせて AI 応答モデルの実測分布 (conversation_logs) を出す。本文・PII は出さない。
+#   audit-stale-coupon-copy:
+#     read-only。DB 管理の顧客向け文面 (auto_replies / automations / faq_items) に旧額
+#     「500円」が残っていないか監査する (welcome は #255 で ¥300 化・連携は #249 で ¥300 化)。
+#     ⚠️ 紹介クーポン (referrer ¥500 / 被紹介 格上げ ¥500) の「500円」は**正**なので、
+#     ヒット = 即誤りではない。出力は source/id/is_active のみ (本文は公開ログに出さない)。
+#     ヒットした行の本文確認と修正は管理画面から人間が行う。
 #   cron-failure-diagnose:
 #     read-only。ダッシュボード system.failingJobs に出た cron の一次切り分け。
 #     ① 直近7日の job×status 件数 ② ai-models-catalog-sync の error_summary/metrics 実物
@@ -179,11 +194,13 @@ on:
           - faq-subscription-audit
           - apply-migration-078
           - apply-migration-079
+          - apply-migration-080
           - enable-coupon-sweep
           - enable-link-reward
           - enable-subscription-menu
           - enable-subscription-reminder
           - cron-failure-diagnose
+          - audit-stale-coupon-copy
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
         required: false
@@ -647,6 +664,63 @@ jobs:
           # 冪等キー reward_id の UNIQUE が立っていること (二重 enqueue 防止の根幹)
           npx wrangler d1 execute naturism-line-crm --remote --json \
             --command "SELECT name, \"unique\" FROM pragma_index_list('line_referral_coupon_queue')" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # ランクコードの Shopify 側無効化マーカー (migration 080)。ALTER = 列存在チェックで冪等化。
+      - name: Apply migration 080 (loyalty_rank_discounts.shopify_deactivated_at)
+        if: inputs.op == 'apply-migration-080'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # ALTER ADD COLUMN は再適用で duplicate column になるため、列が既に在れば skip (冪等)
+          COL=$(npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name FROM pragma_table_info('loyalty_rank_discounts') WHERE name='shopify_deactivated_at'")
+          if echo "$COL" | grep -q 'shopify_deactivated_at'; then
+            echo 'ℹ️ shopify_deactivated_at は既に存在 — ALTER を skip (INDEX は IF NOT EXISTS で冪等)' | tee -a "$GITHUB_STEP_SUMMARY"
+            npx wrangler d1 execute naturism-line-crm --remote \
+              --command "CREATE INDEX IF NOT EXISTS idx_loyalty_rank_discounts_pending_deactivation ON loyalty_rank_discounts(status, shopify_deactivated_at) WHERE shopify_deactivated_at IS NULL"
+          else
+            npx wrangler d1 execute naturism-line-crm --remote \
+              --file ../../packages/db/migrations/080_loyalty_rank_shopify_deactivated.sql
+          fi
+          echo '### Verification (列 + index)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name FROM pragma_table_info('loyalty_rank_discounts') WHERE name='shopify_deactivated_at'" | tee -a "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json \
+            --command "SELECT name FROM pragma_index_list('loyalty_rank_discounts') WHERE name='idx_loyalty_rank_discounts_pending_deactivation'" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # DB 管理文面の旧額「500円」残存監査 (read-only・PUBLIC ログには source/id/件数のみ)。
+      - name: Audit stale coupon copy (500円 in DB-managed texts)
+        if: inputs.op == 'audit-stale-coupon-copy'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          echo '### 「500円」を含む DB 管理文面 (source / id / is_active のみ)' >> "$GITHUB_STEP_SUMMARY"
+          echo '紹介クーポン (referrer ¥500 / 被紹介 ¥500) の言及は正。welcome/連携の ¥500 は旧額 = 要修正。' >> "$GITHUB_STEP_SUMMARY"
+          # 2 段構え: ①broad = 「500円」を含む全行 (偽陰性ゼロ・人間が本文を管理画面で確認)
+          #           ②narrowed = 「,500円」(送料 5,500円/1,500円 等の桁区切り部分一致) を除いた行。
+          # ⚠️ narrowed の除外は**行単位**なので、送料表記とクーポン旧額が同一文面に共存する行は
+          # narrowed から消える — 判定は必ず broad を正とし、narrowed は当たりを付ける補助に使う。
+          echo '#### ① broad (全ヒット — これが正)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "\
+            SELECT 'auto_replies' AS src, id, is_active FROM auto_replies WHERE response_content LIKE '%500円%' \
+            UNION ALL SELECT 'automations', id, is_active FROM automations WHERE actions LIKE '%500円%' \
+            UNION ALL SELECT 'faq_items', id, is_active FROM faq_items WHERE answer LIKE '%500円%'" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '#### ② narrowed (桁区切り価格の偽陽性を除いた当たり付け — 共存行は消えるので broad と突合)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "\
+            SELECT 'auto_replies' AS src, id, is_active FROM auto_replies WHERE response_content LIKE '%500円%' AND response_content NOT LIKE '%,500円%' \
+            UNION ALL SELECT 'automations', id, is_active FROM automations WHERE actions LIKE '%500円%' AND actions NOT LIKE '%,500円%' \
+            UNION ALL SELECT 'faq_items', id, is_active FROM faq_items WHERE answer LIKE '%500円%' AND answer NOT LIKE '%,500円%'" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '### 参考: 「300円」を含む行数 (新額の浸透度)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "\
+            SELECT 'auto_replies' AS src, COUNT(*) AS n FROM auto_replies WHERE response_content LIKE '%300円%' \
+            UNION ALL SELECT 'automations', COUNT(*) FROM automations WHERE actions LIKE '%300円%' \
+            UNION ALL SELECT 'faq_items', COUNT(*) FROM faq_items WHERE answer LIKE '%300円%'" | tee -a "$GITHUB_STEP_SUMMARY"
 
       # クーポン期限 sweep + queue T2 活性化の開放 (日次 JST 03:40)。
       - name: Enable coupon sweep (COUPON_SWEEP_ENABLED=true)

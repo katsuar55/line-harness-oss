@@ -8,6 +8,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../services/referral-reward.js', () => ({
   activateAndNotifyNextReferralCoupon: vi.fn(async () => ({ activated: true, pushed: true })),
 }));
+// ④ ランクコード deactivate (PR-D): Shopify 呼出は mock、DB 遷移は実 SQLite で検証
+vi.mock('../services/shopify-discount-admin.js', () => ({
+  deactivateDiscountCode: vi.fn(async () => ({ ok: true })),
+}));
+vi.mock('../services/shopify-token.js', () => ({
+  getShopifyAccessToken: vi.fn(async () => 'shpat_test'),
+}));
 
 import {
   processCouponExpirySweep,
@@ -15,12 +22,14 @@ import {
   type CouponSweepEnv,
 } from '../services/coupon-expiry-sweep.js';
 import { activateAndNotifyNextReferralCoupon } from '../services/referral-reward.js';
+import { deactivateDiscountCode } from '../services/shopify-discount-admin.js';
 import { enqueueReferralCoupon, findQueueRowByRewardId } from '@line-crm/db';
 import { createSchemaDb, asD1, insertFriend, insertReferralLedgerRow } from './helpers/sqlite-d1.js';
 import type { SqliteDatabase } from './helpers/sqlite-d1.js';
 import type { LineClient } from '@line-crm/line-sdk';
 
 const mockActivate = activateAndNotifyNextReferralCoupon as ReturnType<typeof vi.fn>;
+const mockDeactivate = deactivateDiscountCode as ReturnType<typeof vi.fn>;
 
 // JST 03:42 = UTC 前日 18:42
 const IN_WINDOW = new Date('2026-08-12T18:42:00.000Z');
@@ -116,6 +125,97 @@ describe('失効確定 + stuck 復旧 + T2 (実 SQLite)', () => {
     const r = await processCouponExpirySweep(makeEnv(), { now: IN_WINDOW, lineClient: fakeLineClient });
     expect(r.activated).toBe(0);
     expect(mockActivate).not.toHaveBeenCalled();
+  });
+
+  it('④ superseded ランクコード: 生きた行は deactivate + マーク / 期限切れ・node無しはマークのみ (PR-D)', async () => {
+    const seed = (id: string, code: string, nodeId: string | null, expiresAt: string | null) =>
+      raw.prepare(
+        `INSERT INTO loyalty_rank_discounts
+           (id, friend_id, rank_id, code, shopify_discount_node_id, discount_percent, status, issued_at, expires_at, superseded_at)
+         VALUES (?, 'F1', 'silver', ?, ?, 4, 'superseded', '2026-07-01T00:00:00.000Z', ?, '2026-08-01T00:00:00.000Z')`,
+      ).run(id, code, nodeId, expiresAt);
+    seed('rd_live', 'NLR-S-LIVE', 'gid://d/1', '2026-09-30T00:00:00.000Z'); // 生きてる → API + マーク
+    seed('rd_dead', 'NLR-S-DEAD', 'gid://d/2', '2026-08-01T00:00:00.000Z'); // 期限切れ → マークのみ
+    seed('rd_null', 'NLR-S-NULL', null, '2026-09-30T00:00:00.000Z');        // node 無し → マークのみ
+    // active 行は対象外であることも同時に固定
+    raw.prepare(
+      `INSERT INTO loyalty_rank_discounts (id, friend_id, rank_id, code, shopify_discount_node_id, discount_percent, status, issued_at, expires_at)
+       VALUES ('rd_act', 'F1', 'gold', 'NLR-G-ACT', 'gid://d/9', 6, 'active', '2026-08-10T00:00:00.000Z', '2026-09-30T00:00:00.000Z')`,
+    ).run();
+
+    const env = makeEnv({ SHOPIFY_STORE_DOMAIN: 'x.myshopify.com', SHOPIFY_CLIENT_ID: 'i', SHOPIFY_CLIENT_SECRET: 's' });
+    const r = await processCouponExpirySweep(env, { now: IN_WINDOW, lineClient: fakeLineClient });
+
+    expect(r.rankDeactivated).toBe(3);
+    expect(mockDeactivate).toHaveBeenCalledTimes(1); // API は生きた行の 1 回だけ
+    expect(mockDeactivate.mock.calls[0][2]).toBe('gid://d/1');
+    const marks = raw.prepare(
+      `SELECT id, shopify_deactivated_at FROM loyalty_rank_discounts ORDER BY id`,
+    ).all() as Array<{ id: string; shopify_deactivated_at: string | null }>;
+    const byId = Object.fromEntries(marks.map((m) => [m.id, m.shopify_deactivated_at]));
+    expect(byId.rd_live).not.toBeNull();
+    expect(byId.rd_dead).not.toBeNull();
+    expect(byId.rd_null).not.toBeNull();
+    expect(byId.rd_act).toBeNull(); // active は触らない
+  });
+
+  it('④ deactivate 失敗 → マーカー NULL 温存 (次回 sweep が再試行) + errors/partial', async () => {
+    raw.prepare(
+      `INSERT INTO loyalty_rank_discounts (id, friend_id, rank_id, code, shopify_discount_node_id, discount_percent, status, issued_at, expires_at, superseded_at)
+       VALUES ('rd_f', 'F1', 'silver', 'NLR-S-F', 'gid://d/1', 4, 'superseded', '2026-07-01T00:00:00.000Z', '2026-09-30T00:00:00.000Z', '2026-08-01T00:00:00.000Z')`,
+    ).run();
+    mockDeactivate.mockResolvedValueOnce({ ok: false, error: 'HTTP 500' });
+
+    const env = makeEnv({ SHOPIFY_STORE_DOMAIN: 'x.myshopify.com', SHOPIFY_CLIENT_ID: 'i', SHOPIFY_CLIENT_SECRET: 's' });
+    const r = await processCouponExpirySweep(env, { now: IN_WINDOW, lineClient: fakeLineClient });
+
+    expect(r.rankDeactivated).toBe(0);
+    expect(r.errors).toBe(1);
+    const row = raw.prepare(`SELECT shopify_deactivated_at FROM loyalty_rank_discounts WHERE id='rd_f'`).get() as { shopify_deactivated_at: string | null };
+    expect(row.shopify_deactivated_at).toBeNull();
+    const log = raw.prepare(`SELECT status FROM cron_run_logs ORDER BY rowid DESC LIMIT 1`).get() as { status: string };
+    expect(log.status).toBe('partial');
+  });
+
+  it('④ Shopify creds 無し env → 走査ごと skip (API も マークも呼ばない)', async () => {
+    raw.prepare(
+      `INSERT INTO loyalty_rank_discounts (id, friend_id, rank_id, code, shopify_discount_node_id, discount_percent, status, issued_at, expires_at, superseded_at)
+       VALUES ('rd_s', 'F1', 'silver', 'NLR-S-S', 'gid://d/1', 4, 'superseded', '2026-07-01T00:00:00.000Z', '2026-09-30T00:00:00.000Z', '2026-08-01T00:00:00.000Z')`,
+    ).run();
+    const r = await processCouponExpirySweep(makeEnv(), { now: IN_WINDOW, lineClient: fakeLineClient });
+    expect(r.rankDeactivated).toBe(0);
+    expect(mockDeactivate).not.toHaveBeenCalled();
+    const row = raw.prepare(`SELECT shopify_deactivated_at FROM loyalty_rank_discounts WHERE id='rd_s'`).get() as { shopify_deactivated_at: string | null };
+    expect(row.shopify_deactivated_at).toBeNull();
+  });
+
+  it('④ 冪等: マーク済み行は再実行で再走査されない (API 追撃なし)', async () => {
+    raw.prepare(
+      `INSERT INTO loyalty_rank_discounts (id, friend_id, rank_id, code, shopify_discount_node_id, discount_percent, status, issued_at, expires_at, superseded_at)
+       VALUES ('rd_i', 'F1', 'silver', 'NLR-S-I', 'gid://d/1', 4, 'superseded', '2026-07-01T00:00:00.000Z', '2026-09-30T00:00:00.000Z', '2026-08-01T00:00:00.000Z')`,
+    ).run();
+    const env = makeEnv({ SHOPIFY_STORE_DOMAIN: 'x.myshopify.com', SHOPIFY_CLIENT_ID: 'i', SHOPIFY_CLIENT_SECRET: 's' });
+    const r1 = await processCouponExpirySweep(env, { now: IN_WINDOW, lineClient: fakeLineClient });
+    expect(r1.rankDeactivated).toBe(1);
+    const r2 = await processCouponExpirySweep(env, { now: IN_WINDOW, lineClient: fakeLineClient });
+    expect(r2.rankDeactivated).toBe(0);
+    expect(mockDeactivate).toHaveBeenCalledTimes(1); // 2 run 通算で 1 回だけ
+  });
+
+  it('④ rankDeactivationCap で 1 run の処理数を制限 (残りは次回)', async () => {
+    for (const [id, code] of [['rd_1', 'NLR-S-1'], ['rd_2', 'NLR-S-2']]) {
+      raw.prepare(
+        `INSERT INTO loyalty_rank_discounts (id, friend_id, rank_id, code, shopify_discount_node_id, discount_percent, status, issued_at, expires_at, superseded_at)
+         VALUES (?, 'F1', 'silver', ?, NULL, 4, 'superseded', '2026-07-01T00:00:00.000Z', NULL, '2026-08-01T00:00:00.000Z')`,
+      ).run(id, code);
+    }
+    const env = makeEnv({ SHOPIFY_STORE_DOMAIN: 'x.myshopify.com', SHOPIFY_CLIENT_ID: 'i', SHOPIFY_CLIENT_SECRET: 's' });
+    const r = await processCouponExpirySweep(env, { now: IN_WINDOW, lineClient: fakeLineClient, rankDeactivationCap: 1 });
+    expect(r.rankDeactivated).toBe(1);
+    const remaining = raw.prepare(
+      `SELECT COUNT(*) AS n FROM loyalty_rank_discounts WHERE status='superseded' AND shopify_deactivated_at IS NULL`,
+    ).get() as { n: number };
+    expect(remaining.n).toBe(1);
   });
 
   it('活性化の個別失敗は errors に数え、他 friend を止めない (status=partial)', async () => {
