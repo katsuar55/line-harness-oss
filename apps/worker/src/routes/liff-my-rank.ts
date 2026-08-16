@@ -9,7 +9,9 @@ import {
   getActiveRankDiscountCode,
   getShopifyProducts,
   getFriendById,
+  getShopifyCustomerByShopifyId,
 } from '@line-crm/db';
+import { parseSubscriptionRankFromTags } from '../services/subscription-rank.js';
 import { buildCartPermalink, buildDiscountApplyUrl } from '../services/cart-permalink.js';
 import { issueRankDiscountForFriend } from '../services/rank-discount-issuer.js';
 import { MIN_SUBTOTAL_JPY } from '../services/shopify-coupon-issuer.js';
@@ -51,6 +53,18 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
   const friend = await getFriendById(c.env.DB, liffUser.friendId).catch(() => null);
   const linked = !!friend?.shopify_customer_id;
   const accountLinkEnabled = c.env.ACCOUNT_LINK_ENABLED === 'true';
+
+  // ─── 定期便ランク (B案 2026-08-16): HB ネイティブ会員ランクのタグを読む ───
+  //   HB がランク付与時に顧客タグ subscription-rank:ランク名 を書き、customers/update webhook が
+  //   shopify_customers.tags へ取り込み済み。追加の外部 fetch なし・失敗しても会員証本体は表示。
+  let subscriptionRank: ReturnType<typeof parseSubscriptionRankFromTags> = null;
+  if (friend?.shopify_customer_id) {
+    const customer = await getShopifyCustomerByShopifyId(
+      c.env.DB,
+      String(friend.shopify_customer_id),
+    ).catch(() => null);
+    subscriptionRank = parseSubscriptionRankFromTags(customer?.tags ?? null);
+  }
   // 保有クーポン (= 未使用のみ)。失敗しても会員証本体は表示するため握りつぶす。
   let coupons: Array<Record<string, unknown>> = [];
   try {
@@ -191,9 +205,9 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
       // 3タップ購入 (= PR5-5b)。 code 自体は URL に内包 (= 認証済本人のみ取得)。
       rankDiscount: rankDiscount ? { discountPercent: rankDiscount.discountPercent } : null,
       discountApplyUrl,
-      // B案 (2026-08-15 Katsu 決定): 定期便×ランク% は Huckleberry ネイティブ会員ランクが担う。
-      //   A案の「定期便×会員ランク」カード (契約時点固定の訴求) はここに載っていたが破棄した。
-      //   B案 検証ゲート通過後、「定期便は累計でランクが育つ」文言の別カードを新 PR で載せる。
+      // B案 (2026-08-15 Katsu 決定 → 2026-08-16 検証ゲート通過・HB ランク公開済み):
+      //   定期便×ランク% は Huckleberry ネイティブ会員ランクが担う。タグが無い顧客は null = カード非表示。
+      subscriptionRank,
       quickBuy,
       // 自前アカウント連携 (Phase 2、 gated)
       linked,
@@ -287,6 +301,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
     </section>
     <section id="rank-card" style="display:none;"></section>
     <section id="progress-card" style="display:none;"></section>
+    <section id="subrank-card" style="display:none;"></section>
     <section id="link-card" style="display:none;"></section>
     <section id="shop-card" style="display:none;"></section>
     <section id="coupons-card" style="display:none;"></section>
@@ -334,6 +349,9 @@ var DEMO_DATA = {
     { id: 'platinum', name: 'プラチナ', discountPercent: 8, minTrailing12moJpy: 45000 }
   ],
   rankDiscount: { discountPercent: 4 },
+  // demo は全カードを一画面で確認する目的のため subscriptionRank と linked:false を意図的に併存させる
+  // (実 API では連携済み顧客にしか subscriptionRank は付かない = 連携カードと同時には出ない)
+  subscriptionRank: { name: 'シルバー', discountPercent: 4 },
   discountApplyUrl: 'https://naturism-diet.com/discount/NLR-SILVER-DEMO2345',
   // ¥2,000 未満の商品はコード無し URL + discounted:false (= min ¥2,000 の実挙動を demo でも忠実に)
   quickBuy: [
@@ -398,7 +416,7 @@ function renderRank(d){
         '<p class="text-3xl font-extrabold mt-0.5" style="color:#1f2937">'+esc(rank.name)+'会員</p>' +
         '<p class="en text-xs tracking-[0.22em] font-semibold text-gray-500 mt-0.5">'+esc(enName(rank.id))+'</p>' +
         (pct > 0
-          ? '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-sm font-bold shadow" style="background:linear-gradient(135deg,'+color+','+color+'cc);color:'+txt+'">'+pct+'% OFF 常時割引</div>'
+          ? '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-sm font-bold shadow" style="background:linear-gradient(135deg,'+color+','+color+'cc);color:'+txt+'">通常購入 '+pct+'% OFFクーポン</div>'
           : '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-gray-600 text-sm font-bold" style="background:#f1f5f9">まずは1回のお買い物でブロンズ会員に</div>') +
       '</div>' +
       '<p class="text-xs text-gray-400 text-center pb-5 pt-3">直近12ヶ月のお買い上げ <span class="font-bold text-gray-600">'+esc(yen(d.trailing12moJpy))+'</span></p>' +
@@ -426,7 +444,7 @@ function renderProgress(d){
   var pctW = Math.round(ratio * 100);
   card.innerHTML =
     '<div class="flex items-end justify-between mb-2">' +
-      '<p class="text-xs text-gray-500">次のランク</p>' +
+      '<p class="text-xs text-gray-500">次のランク（会員ランク）</p>' +
       '<p class="text-sm font-bold text-gray-800"><span class="en">'+esc(enName(d.next.id))+'</span> <span class="text-xs text-gray-400">'+esc(d.next.name)+'</span></p>' +
     '</div>' +
     '<div class="w-full h-3 rounded-full overflow-hidden" style="background:#e2e8f0">' +
@@ -437,6 +455,29 @@ function renderProgress(d){
       : '<p class="text-xs text-gray-500 mt-2 text-center">あと <span class="font-bold" style="color:#0f766e">'+esc(yen(d.next.remainingJpy))+'</span> で '+esc(d.next.name)+'にランクアップ</p>') +
     evalLine;
   setTimeout(function(){ var b=document.getElementById('bar'); if(b) b.style.width = pctW + '%'; }, 80);
+}
+
+// ─── 定期便ランク (= Huckleberry ネイティブ会員ランク連動, B案 2026-08-16) ───
+//   タグ subscription-rank: を持つ連携済み顧客にだけ出す。未知ランク名は % を断定しない (fail-honest)。
+function renderSubRank(d){
+  var card = document.getElementById('subrank-card');
+  if(!card) return;
+  var sr = d.subscriptionRank;
+  if(!sr || !sr.name){ card.style.display='none'; return; }
+  card.className = 'card p-5 rise';
+  card.style.display = 'block';
+  var pct = Number.isFinite(sr.discountPercent) ? Math.floor(sr.discountPercent) : 0;
+  card.innerHTML =
+    '<div class="flex items-center justify-between mb-1.5">' +
+      '<p class="text-sm font-bold text-gray-700">&#x1F4E6; 定期便ランク</p>' +
+      (pct > 0 ? '<span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:#eef7f7;color:#0f766e">毎回 '+pct+'% OFF</span>' : '') +
+    '</div>' +
+    '<p class="text-xl font-extrabold" style="color:#0f766e">'+esc(sr.name)+'</p>' +
+    (pct > 0
+      ? '<p class="text-xs text-gray-500 mt-1 leading-relaxed">定期便のお支払いごとに、'+pct+'% の割引が自動で適用されます。</p>'
+      : '<p class="text-xs text-gray-500 mt-1 leading-relaxed">特典の内容は公式ストアのマイページでご確認ください。</p>') +
+    '<p class="text-[11px] text-gray-400 mt-2 leading-relaxed">定期便のお支払い累計で決まるランクです。この割引は定期便のお支払いにだけ自動で適用されます。上の会員ランクは、定期便を含むすべてのお買い物の合計金額でランクを判定するもので、その割引は通常購入（単発のお買い物）用のクーポンとしてご利用いただけます。</p>' +
+    '<p class="text-[11px] text-gray-400 mt-1 leading-relaxed">※ランクの集計は 2026年8月 に始まりました。それより前のご利用分は集計に含まれていない場合があります。</p>';
 }
 
 // ─── 自前アカウント連携 (= Phase 2: email OTP で Shopify customer を紐付け、 gated) ───
@@ -635,11 +676,13 @@ function renderAbout(d){
     '</button>' +
     '<div id="about-body" class="acc-body">' +
       '<div class="pb-2" style="border-top:1px solid #f1f5f9">'+rows+'</div>' +
-      // ⚠️「サブスク割引と重ねて」系の定期便訴求は B案 (2026-08-15 Katsu 決定) で
-      //   Huckleberry ネイティブ会員ランクが担うことになった。B案 検証ゲート
-      //   (plan ファイル冒頭の改訂節) 通過後に「定期便は累計でランクが育つ」文言の
-      //   カードを別 PR で載せる。それまで定期便×ランクの訴求をこのページに書かないこと。
-      '<p class="text-[11px] text-gray-400 px-5 pb-4 pt-1 leading-relaxed">過去12ヶ月のお買い上げ金額で、毎月1日に自動で判定します（降格あり）。</p>' +
+      // 定期便×ランクの表示は renderSubRank (定期便ランクカード) が担当 (B案 検証ゲート通過
+      //   2026-08-16 で解禁済み)。この accordion は会員ランク (全購入 12ヶ月) の説明に限定し、
+      //   重複訴求を書かない。定期便ランク保有者にだけ両者の区別の 1 行を出す。
+      '<p class="text-[11px] text-gray-400 px-5 pb-1 pt-1 leading-relaxed">過去12ヶ月のお買い上げ金額で、毎月1日に自動で判定します（降格あり）。</p>' +
+      ((d.subscriptionRank && d.subscriptionRank.name)
+        ? '<p class="text-[11px] text-gray-400 px-5 pb-4 leading-relaxed">定期便をご利用の方には、この会員ランクとは別に、定期便のお支払い累計で決まる「定期便ランク」があります（上のカード）。</p>'
+        : '<span class="block pb-3"></span>') +
     '</div>';
   var toggle = document.getElementById('about-toggle');
   var body = document.getElementById('about-body');
@@ -655,6 +698,7 @@ function renderAll(d){
   document.getElementById('card-skeleton').style.display='none';
   renderRank(d);
   renderProgress(d);
+  renderSubRank(d);
   renderLink(d);
   renderShop(d);
   renderCoupons(d);

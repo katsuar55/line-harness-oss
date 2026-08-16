@@ -145,8 +145,9 @@ describe('my-rank LIFF — lazy rank discount issuance', () => {
 });
 
 describe('my-rank LIFF — quickBuy の min¥2,000 誠実化 (PR-D)', () => {
-  // B案 (2026-08-15): 定期便×ランク訴求 (subscriptionRank) は API から**返さない**。
-  //   ランクコードは単発専用・quickBuy は ¥2,000 以上の商品にだけコードを付ける。
+  // B案 検証ゲート通過 (2026-08-16) で subscriptionRank は API から返す (出し分けの検証は
+  //   liff-my-rank-subscription-rank.test.ts)。ランクコード (NLR-) は単発専用のまま・
+  //   quickBuy は ¥2,000 以上の商品にだけコードを付ける。
   const active: RankDiscountRowLike = {
     id: 'd1', friend_id: 'f1', rank_id: 'silver', code: 'NLR-SILVER-QB1',
     shopify_discount_node_id: 'gid', discount_percent: 4, status: 'active',
@@ -197,8 +198,10 @@ describe('my-rank LIFF — quickBuy の min¥2,000 誠実化 (PR-D)', () => {
     expect(qb.every((q) => !q.url.includes('discount='))).toBe(true);
   });
 
-  it('API 応答に subscriptionRank を含めない (B案: 定期便訴求は HB ランク側の別 PR)', async () => {
+  it('API 応答に subscriptionRank フィールドがある (B案 検証ゲート通過 2026-08-16 で解禁)', async () => {
+    // 旧ガード「含めない」はゲート通過前の凍結。通過 + HB ランク公開済みで反転した。
+    // 値の出し分けの検証は liff-my-rank-subscription-rank.test.ts が担う。
     const { body } = await callApi(makeDb(15000, active, products));
-    expect('subscriptionRank' in body.data).toBe(false);
+    expect('subscriptionRank' in body.data).toBe(true);
   });
 });
