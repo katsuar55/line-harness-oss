@@ -549,7 +549,15 @@ async function handleEvent(
     // gate 判定・IDOR・§3-3 サイクル突合・reply までハンドラ内で完結する
     if (action === 'sub_intent') {
       await handleSubIntentPostback({
-        env: env as unknown as { DB: D1Database; SUB_INTENT_ENABLED?: string; LIFF_URL?: string },
+        // DISCORD_WEBHOOK_URL / ACCOUNT_NAME も渡す: 受理成立をスタッフへ即通知するため
+        // (無いと最初の通知が「約束期限超過 = 顧客へ謝罪 push 済み」になる。2026-08-17 採点 HIGH)
+        env: env as unknown as {
+          DB: D1Database;
+          SUB_INTENT_ENABLED?: string;
+          LIFF_URL?: string;
+          DISCORD_WEBHOOK_URL?: string;
+          ACCOUNT_NAME?: string;
+        },
         lineClient,
         replyToken: event.replyToken,
         lineUserId: userId,

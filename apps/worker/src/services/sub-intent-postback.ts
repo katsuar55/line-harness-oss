@@ -24,6 +24,7 @@ import {
   formatPromisedBy,
   requestedDateFromPayload,
   SUB_INTENT_OP_LABELS,
+  sendSubIntentAlert,
   type SubIntentGateEnv,
 } from './sub-intents.js';
 import {
@@ -51,6 +52,9 @@ function todayJst(nowMs?: number): string {
 export interface SubIntentPostbackEnv extends SubIntentGateEnv {
   DB: D1Database;
   LIFF_URL?: string;
+  // 受理の瞬間にスタッフへ知らせるための Discord (best-effort)。未設定なら通知しない。
+  DISCORD_WEBHOOK_URL?: string;
+  ACCOUNT_NAME?: string;
 }
 
 export interface SubIntentPostbackInput {
@@ -116,6 +120,10 @@ export async function handleSubIntentPostback(input: SubIntentPostbackInput): Pr
   const op = params.get('op') ?? '';
   let outcome = 'unknown';
   let messages: ReadonlyArray<Message>;
+  // 新規受理が成立したときだけ入る (スタッフ通知用)。duplicate/拒否系では undefined のまま。
+  let accepted:
+    | { op: SubIntentRow['op']; contractKey: string; promisedBy: string | null; executor: string }
+    | undefined;
   try {
     if (op === 'dismiss') {
       messages = [
@@ -125,7 +133,7 @@ export async function handleSubIntentPostback(input: SubIntentPostbackInput): Pr
     } else if (op === 'undo') {
       ({ messages, outcome } = await handleUndo(db, friend.id, params, input.nowMs));
     } else if (op === 'cancel_pause' || ACCEPT_OPS.has(op)) {
-      ({ messages, outcome } = await handleContractOp(input, conciergeFriend, op));
+      ({ messages, outcome, accepted } = await handleContractOp(input, conciergeFriend, op));
     } else {
       messages = await buildSubscriptionMenuMessages(db, conciergeFriend, env.LIFF_URL, {
         subIntent: true,
@@ -181,6 +189,23 @@ export async function handleSubIntentPostback(input: SubIntentPostbackInput): Pr
     // PII なし: op と結果のみ (§1-4)
     metadata: { op, outcome },
   });
+
+  // 🚨 受理の瞬間にスタッフへ知らせる (2026-08-17 採点ループ HIGH)。
+  //   これが無いと、システムが自動で出す最初の通知が §4-2 の「約束期限を超過」=
+  //   **顧客へ謝罪 push を送った後**になる。つまり誰も /admin/ops を開かなければ
+  //   全依頼が既定で謝罪に落ちる構造だった。push は回復不能なので、無送信側でなく
+  //   「先に気付ける」側に倒す。
+  //   ・reply と audit の**後**に置く = Discord の失敗や遅延が顧客体験に一切触れない
+  //     (LINE の 1 秒応答制限にも影響しない)
+  //   ・PII は載せない (§1-4) — op / 契約キー / 約束期限のみ
+  if (accepted) {
+    await sendSubIntentAlert(env, [
+      `🆕 「${SUB_INTENT_OP_LABELS[accepted.op] ?? accepted.op}」(契約 ${accepted.contractKey}) を承りました。` +
+        (accepted.promisedBy
+          ? `約束期限 ${String(accepted.promisedBy).slice(0, 16).replace('T', ' ')} — /admin/ops で対応してください`
+          : '約束期限なし (推定日が出せない契約) — /admin/ops で対応してください'),
+    ]);
+  }
 }
 
 // ============================================================
@@ -256,7 +281,17 @@ async function handleContractOp(
   input: SubIntentPostbackInput,
   conciergeFriend: { id: string; display_name: string | null; shopify_customer_id: string | null },
   op: string,
-): Promise<{ messages: ReadonlyArray<Message>; outcome: string }> {
+): Promise<{
+  messages: ReadonlyArray<Message>;
+  outcome: string;
+  /** 新規受理が成立したときだけ載る (スタッフ通知用)。duplicate では載せない。 */
+  accepted?: {
+    op: SubIntentRow['op'];
+    contractKey: string;
+    promisedBy: string | null;
+    executor: string;
+  };
+}> {
   const { env, params } = input;
   const db = env.DB;
   const cid = params.get('cid') ?? '';
@@ -384,6 +419,18 @@ async function handleContractOp(
     return {
       messages: [{ type: 'text', text: head }, buildUndoBubble(intent)],
       outcome: result.status,
+      // 🚨 duplicate では載せない。顧客の再タップのたびに Discord が鳴ると、
+      // 本当に新規の受理が埋もれる (= 通知を入れた意味が消える)。
+      ...(result.status === 'accepted'
+        ? {
+            accepted: {
+              op: intent.op,
+              contractKey: intent.contract_key,
+              promisedBy: intent.promised_by,
+              executor: intent.executor,
+            },
+          }
+        : {}),
     };
   }
 
