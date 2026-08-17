@@ -589,8 +589,13 @@ function portalPage(
         </div>
       </div>
       <!-- Log Button -->
-      <button onclick="logIntake()" id="intake-btn" class="btn-primary w-full py-4 rounded-2xl text-base font-bold shadow-lg" style="letter-spacing:.05em">
-        ✨ 服用を記録する
+      <!-- beta バッジ: 服用記録はまだ充実途上のため期待値を正直に示す (2026-08-17 Katsu 指示)。
+           ⚠️ ラベルは #intake-btn-label に分離してある。logIntake() が送信中に文言を差し替えるが、
+           ボタン全体の textContent を触るとバッジ要素ごと消える (初回タップで永久消滅する) ため、
+           必ずこの span だけを書き換えること。 -->
+      <button onclick="logIntake()" id="intake-btn" class="btn-primary w-full py-4 rounded-2xl text-base font-bold shadow-lg flex items-center justify-center gap-2" style="letter-spacing:.05em">
+        <span id="intake-btn-label">✨ 服用を記録する</span>
+        <span style="background:#fff;color:#0f766e;font-size:10px;line-height:1;padding:3px 6px;border-radius:999px;font-weight:800;letter-spacing:.06em">beta</span>
       </button>
       <!-- Calendar View -->
       <div class="card p-4">
@@ -2491,9 +2496,12 @@ function showConfetti() {
 async function logIntake() {
   if (isDemo) { showToast('DEMO: 記録しました! (連続6日)'); showConfetti(); return; }
   var btn = document.getElementById('intake-btn');
+  // ラベル span だけを差し替える。btn.textContent を触ると beta バッジ要素ごと消え、
+  // 復元時にラベルとバッジが連結した素テキストになる (初回タップで永久に壊れる)。
+  var label = document.getElementById('intake-btn-label') || btn;
   btn.disabled = true;
-  var origLabel = btn.textContent;
-  btn.textContent = '記録中...';
+  var origLabel = label.textContent;
+  label.textContent = '記録中...';
   try {
     var res = await api('/api/liff/intake', { productName: 'naturism ' + selectedProduct });
     if (apiFailed(res)) {
@@ -2509,7 +2517,7 @@ async function logIntake() {
     }
   } catch { showToast('記録に失敗しました'); }
   btn.disabled = false;
-  btn.textContent = origLabel;
+  label.textContent = origLabel;
 }
 
 // Phase 1: 能動pull 型の朝/昼/夜 ボタン処理
