@@ -64,7 +64,14 @@ jobs:
           # 100KB 未満は異常 (テーブル消失やエラー応答) と見なす
           if [ "${SIZE}" -lt 102400 ]; then
             echo "::error::Backup is too small (${SIZE} bytes < 100KB), aborting upload"
-            head -c 500 "${{ steps.filename.outputs.file }}"
+            # 🚨 中身を絶対にログへ出さないこと。このリポジトリは PUBLIC で、Actions のログは
+            # 誰でも閲覧できる。以前は `head -c 500` で先頭を出力していたが、異常系の中身は
+            # 顧客 PII を含む SQL 断片でありうる (= R2 公開漏洩と同種の経路が CI ログに残る)。
+            # 診断に必要なのは「中身の形」であって中身そのものではないので、構造だけを出す。
+            echo "--- 診断情報 (内容は出力しない) ---"
+            echo "行数: $(wc -l < "${{ steps.filename.outputs.file }}")"
+            echo "先頭が PRAGMA で始まるか: $(head -c 32 "${{ steps.filename.outputs.file }}" | grep -c '^PRAGMA' || true)"
+            echo "出現するテーブル数: $(grep -c '^CREATE TABLE' "${{ steps.filename.outputs.file }}" || true)"
             exit 1
           fi
 
