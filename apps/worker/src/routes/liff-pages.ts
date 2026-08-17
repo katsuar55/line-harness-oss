@@ -2498,10 +2498,14 @@ async function logIntake() {
   var btn = document.getElementById('intake-btn');
   // ラベル span だけを差し替える。btn.textContent を触ると beta バッジ要素ごと消え、
   // 復元時にラベルとバッジが連結した素テキストになる (初回タップで永久に壊れる)。
-  var label = document.getElementById('intake-btn-label') || btn;
+  // ⚠️ 「|| btn」のフォールバックを置かないこと — span が失われた場合に btn へ代入が戻り、
+  // まさに上記のバグを無言で再導入する (レビュー指摘)。span が無いときは文言を変えない
+  // (disabled だけで送信中は伝わる)。表示が少し寂しくなるだけで、壊れはしない。
+  // ※ このファイルの JS は TS の template literal 内にあるためバックティック禁止 (打ち切る)。
+  var label = document.getElementById('intake-btn-label');
   btn.disabled = true;
-  var origLabel = label.textContent;
-  label.textContent = '記録中...';
+  var origLabel = label ? label.textContent : null;
+  if (label) label.textContent = '記録中...';
   try {
     var res = await api('/api/liff/intake', { productName: 'naturism ' + selectedProduct });
     if (apiFailed(res)) {
@@ -2517,7 +2521,7 @@ async function logIntake() {
     }
   } catch { showToast('記録に失敗しました'); }
   btn.disabled = false;
-  label.textContent = origLabel;
+  if (label) label.textContent = origLabel;
 }
 
 // Phase 1: 能動pull 型の朝/昼/夜 ボタン処理

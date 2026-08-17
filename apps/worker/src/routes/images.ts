@@ -31,7 +31,9 @@ const PUBLIC_KEY_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const PUBLIC_KEY_PREFIXES = ['food/'] as const;
 
 export function isPubliclyServableImageKey(key: string): boolean {
-  // `..` はセグメント正規表現でも到達不能だが、意図を明示するため独立に弾く。
+  // ⚠️ この行は冗長ではない。プレフィックス付きキーはセグメント正規表現が `/` を
+  // 許さないので traversal できないが、**フラットキーでは `.` が許可文字**なので
+  // `a..b.png` は正規表現を通過する (レビューで実測確認)。消さないこと。
   if (key.includes('..')) return false;
   const prefix = PUBLIC_KEY_PREFIXES.find((p) => key.startsWith(p));
   const segment = prefix === undefined ? key : key.slice(prefix.length);

@@ -75,6 +75,19 @@ describe('服用記録ボタンの beta バッジ', () => {
     expect(fn).toMatch(/label\.textContent\s*=\s*'記録中\.\.\.'/);
     expect(fn).toMatch(/label\.textContent\s*=\s*origLabel/);
     // 退避元も label (btn から取ると子要素のテキストまで拾って復元時に連結する)
-    expect(fn).toMatch(/origLabel\s*=\s*label\.textContent/);
+    expect(fn).toMatch(/origLabel\s*=\s*label\s*\?\s*label\.textContent/);
+  });
+
+  /**
+   * レビュー指摘 (2026-08-17): `getElementById(...) || btn` のフォールバックがあると、
+   * span が失われた場合に代入先が btn へ戻り、**バッジ消滅バグを無言で再導入**する。
+   * 「btn.textContent への代入が無い」だけでは、この復活経路を検出できない
+   * (`label` という変数名のまま中身が btn になるため) ので、フォールバック自体を禁じる。
+   */
+  it('ラベル取得に btn へのフォールバックを置いていない (バグの無言再導入経路)', () => {
+    const fn = /async function logIntake\(\)[\s\S]*?\n\}/.exec(SOURCE)![0];
+    expect(fn).not.toMatch(/getElementById\(\s*'intake-btn-label'\s*\)\s*\|\|/);
+    // span 不在時は文言を触らない (存在チェックつきで代入している)
+    expect(fn).toMatch(/if\s*\(label\)\s*label\.textContent/);
   });
 });
