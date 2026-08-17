@@ -78,4 +78,34 @@ describe('再購入リマインダー — 稼働契約者の除外 (実 SQLite �
 
     expect(metrics.sentCount).toBe(2);
   });
+
+  // ─── レビュー指摘 (MEDIUM): 設計根拠に挙げた端点を回帰テストとして固定する ───
+
+  it('Shopify 未連携 (shopify_customer_id が NULL) の友だちには従来どおり送る', async () => {
+    const raw = createSchemaDb();
+    // F1 は連携なし (NULL のまま)。join が NULL=NULL で不成立 → NOT EXISTS は真。
+    raw.exec(`INSERT INTO friends (id, line_user_id, display_name, is_following, created_at, updated_at)
+              VALUES ('F1', 'U_UNLINKED', 'Unlinked', 1, '${PAST}', '${PAST}')`);
+    raw.exec(`INSERT INTO subscription_reminders
+                (id, friend_id, product_title, interval_days, next_reminder_at, is_active, created_at, updated_at)
+              VALUES ('R-F1', 'F1', 'naturism Pink', 30, '${PAST}', 1, '${PAST}', '${PAST}')`);
+
+    const metrics = await processSubscriptionReminders(asD1(raw), lineClient, 'https://liff.line.me/test');
+
+    expect(metrics.sentCount).toBe(1);
+    expect(pushMessage.mock.calls[0]?.[0]).toBe('U_UNLINKED');
+  });
+
+  it('稼働 1 + 解約 1 の複数契約でも除外される (EXISTS は 1 行あれば足りる)', async () => {
+    const raw = createSchemaDb();
+    seed(raw, { contractState: 'active' });
+    // 同じ顧客に cancelled をもう 1 本足す — 「cancelled がある」ことで除外が緩んではいけない
+    raw.exec(`INSERT INTO subscription_contracts (contract_id, shopify_customer_id, cancelled_at, created_at, updated_at)
+              VALUES ('C2', 'SC1', '${PAST}', '${PAST}', '${PAST}')`);
+
+    const metrics = await processSubscriptionReminders(asD1(raw), lineClient, 'https://liff.line.me/test');
+
+    expect(metrics.sentCount).toBe(1);
+    expect(pushMessage.mock.calls.map((c) => c[0])).toEqual(['U_ONESHOT']);
+  });
 });
