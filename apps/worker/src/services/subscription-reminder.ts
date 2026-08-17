@@ -154,7 +154,7 @@ export async function processSubscriptionReminders(
            SELECT 1 FROM friends f
              JOIN subscription_contracts c ON c.shopify_customer_id = f.shopify_customer_id
             WHERE f.id = sr.friend_id
-              AND c.cancelled_at IS NULL AND c.paused_at IS NULL
+              AND c.cancelled_at IS NULL
          )
        LIMIT 50`,
     )

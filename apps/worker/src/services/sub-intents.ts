@@ -869,7 +869,10 @@ export async function sweepSubIntents(
       discordLines.push(
         `🚨【最優先】解約 (${intent.contract_key}) ${situation}` +
           `${intent.state === 'executing' ? ` (担当: ${intent.actor_staff_id ?? '不明'} が対応中のまま)` : ''}。` +
-          `Huckleberry 管理画面で実行してください。間に合わなかった場合は当該サイクルの注文をキャンセルまたは返金で救済します (§4-4)`,
+          // 採点 ①-5: claim を経ずに HB 直実行を指示すると、顧客が [取り消す] 済みの解約を
+          // 実行しうる。claim の CAS (409 = 取り下げ/他者対応済み) を防壁として機能させる
+          // 操作順序を文言で固定する。
+          `/admin/ops で claim してから Huckleberry 管理画面で実行してください (claim が 409 なら取り下げ済み — 実行しないこと)。間に合わなかった場合は当該サイクルの注文をキャンセルまたは返金で救済します (§4-4)`,
       );
       await auditSweep(db, 'sub_intent.predeadline_escalated', intent, {
         deadlineAt: intent.deadline_at,
@@ -895,7 +898,7 @@ export async function sweepSubIntents(
         db,
         deps.lineClient,
         intent,
-        buildPromiseBrokenMessage(intent.op),
+        buildPromiseBrokenMessage(intent.op, intent.deadline_at),
         `sub-intent-promise-broken:${intent.id}`,
       );
       if (outcome === 'notified') result.promiseNotified += 1;
@@ -1122,7 +1125,7 @@ async function notifyExpiredHonestly(
  *   - skip/date は締切超過で expired になりうる → 「必ず完了」は嘘になる
  *     (この通知の直後に expire の「完了できませんでした」が届く経路が同居している)
  */
-export function buildPromiseBrokenMessage(op: SubIntentOp): string {
+export function buildPromiseBrokenMessage(op: SubIntentOp, deadlineAt?: string | null): string {
   const label = SUB_INTENT_OP_LABELS[op];
   const head =
     `【お手続きの進捗のご連絡】\n` +
@@ -1131,6 +1134,14 @@ export function buildPromiseBrokenMessage(op: SubIntentOp): string {
     return (
       head +
       `お手続きは必ず完了し、完了しましたらあらためてご連絡いたします。お急ぎの場合は、このトークルームでご連絡ください。`
+    );
+  }
+  // 採点 ①-6: 締切が無い intent (推定日が出せない契約 = deadline_at NULL) に
+  // 「受付期限までに」と書くと、顧客が一度も見ていない実在しない期限を語ることになる。
+  if (deadlineAt === null) {
+    return (
+      head +
+      `引き続き対応を進めています。完了しましたら必ずご連絡いたします。お急ぎの場合は、このトークルームでご連絡ください。`
     );
   }
   return (

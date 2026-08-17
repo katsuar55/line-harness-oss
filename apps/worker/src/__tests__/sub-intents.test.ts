@@ -3596,3 +3596,123 @@ describe('受理成立の即時通知', () => {
     expect(order).toEqual(['reply', 'discord']);
   });
 });
+
+// ============================================================
+// 採点ループ 2026-08-18 の反映 (①-2 undo 通知 / ①-3 reply 失敗時通知 / ①-6 期限なし文言)
+// ============================================================
+
+describe('undo 受理と reply 失敗の即時通知 (採点 ①-2/①-3)', () => {
+  const DISCORD2 = { ...GATE_ON, DISCORD_WEBHOOK_URL: 'https://discord.test/hook' };
+
+  function spy() {
+    return vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 204 }));
+  }
+
+  async function fire(
+    db: D1Database,
+    lc: ReturnType<typeof makeLineClient>,
+    op: string,
+    fetchSpy: ReturnType<typeof spy>,
+    over: Record<string, string> = {},
+  ): Promise<void> {
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      await handleSubIntentPostback({
+        env: { DB: db, ...DISCORD2 } as never,
+        lineClient: lc as never,
+        replyToken: 'rt',
+        lineUserId: 'U1',
+        lineAccountId: null,
+        params: subPostbackParams(op, over),
+        postbackParams: null,
+        nowMs: NOW_MS,
+      });
+    } finally {
+      globalThis.fetch = prev;
+    }
+  }
+
+  it('①-2: スタッフ着手後の undo 受理 (= 新規のスタッフ作業) は Discord に通知する', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const acceptSpy = spy();
+    await fire(db, lc, 'skip', acceptSpy); // 受理 (1 通目)
+    const id = [...store.intents.values()][0].id;
+    await claimSubIntent(db, id, STAFF, NOW_MS);
+
+    const undoSpy = spy();
+    await fire(db, lc, 'undo', undoSpy, { id });
+
+    expect(undoSpy).toHaveBeenCalledTimes(1);
+    const body = String(undoSpy.mock.calls[0]?.[1]?.body ?? '');
+    expect(body).toContain('取り消し');
+    expect(body).toContain('C1');
+    expect(body).toContain('/admin/ops');
+  });
+
+  it('①-2 対称: 着手前の undo (= 作業が消えるだけ) は通知しない', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    await fire(db, lc, 'skip', spy());
+    const id = [...store.intents.values()][0].id;
+
+    const undoSpy = spy();
+    await fire(db, lc, 'undo', undoSpy, { id });
+
+    const reply = JSON.stringify(lc.replyMessage.mock.calls.at(-1)?.[1] ?? []);
+    expect(reply).toContain('取り消しました');
+    expect(undoSpy).not.toHaveBeenCalled();
+  });
+
+  it('①-4: undo 受理の顧客文言に約束期限を開示する', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    await fire(db, lc, 'skip', spy());
+    const id = [...store.intents.values()][0].id;
+    await claimSubIntent(db, id, STAFF, NOW_MS);
+
+    await fire(db, lc, 'undo', spy(), { id });
+
+    const reply = JSON.stringify(lc.replyMessage.mock.calls.at(-1)?.[1] ?? []);
+    expect(reply).toContain('取り消しのご依頼を承りました');
+    // 「M月D日 HH:MM までに」の形式で期限が入っている (開示なき約束を作らない)
+    expect(reply).toMatch(/\d+月\d+日 \d{2}:\d{2} までに/);
+  });
+
+  it('①-3: reply が失敗しても受理は成立しており、Discord へ「未達」付きで通知する', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    lc.replyMessage.mockImplementation(async (_rt: string, _m: unknown[]) => {
+      throw new Error('reply token expired');
+    });
+    const fetchSpy = spy();
+
+    await fire(db, lc, 'skip', fetchSpy);
+
+    expect(store.intents.size).toBe(1); // 受理は巻き戻らない
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const body = String(fetchSpy.mock.calls[0]?.[1]?.body ?? '');
+    expect(body).toContain('届いていません');
+    expect(body).toContain('C1');
+  });
+});
+
+describe('約束破り文言 — 期限なし intent (採点 ①-6)', () => {
+  it('deadline_at NULL の skip/date には実在しない「受付期限」を語らない', () => {
+    for (const op of ['skip', 'date'] as const) {
+      const text = buildPromiseBrokenMessage(op, null);
+      expect(text).not.toContain('受付期限');
+      expect(text).toContain('完了しましたら必ずご連絡いたします');
+    }
+  });
+
+  it('deadline_at がある skip/date は従来どおり期限に言及する', () => {
+    expect(buildPromiseBrokenMessage('skip', '2026-09-07T23:59:59')).toContain('受付期限');
+  });
+
+  it('pause/cancel は期限有無に関わらず「必ず完了」(expire しない op の規律)', () => {
+    expect(buildPromiseBrokenMessage('cancel', null)).toContain('お手続きは必ず完了し');
+    expect(buildPromiseBrokenMessage('pause', '2026-09-07T23:59:59')).toContain('お手続きは必ず完了し');
+  });
+});

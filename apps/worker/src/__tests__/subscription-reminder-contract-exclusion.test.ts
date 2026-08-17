@@ -20,7 +20,10 @@ const lineClient = { pushMessage } as never;
 
 const PAST = '2026-08-01T00:00:00.000Z';
 
-function seed(db: SqliteDatabase, opts: { contractState: 'active' | 'cancelled' | 'none' }): void {
+function seed(
+  db: SqliteDatabase,
+  opts: { contractState: 'active' | 'cancelled' | 'paused' | 'none' },
+): void {
   db.exec(`INSERT INTO friends (id, line_user_id, display_name, is_following, created_at, updated_at)
            VALUES ('F1', 'U_SUB', 'Subscriber', 1, '${PAST}', '${PAST}')`);
   db.exec(`INSERT INTO friends (id, line_user_id, display_name, is_following, created_at, updated_at)
@@ -36,8 +39,9 @@ function seed(db: SqliteDatabase, opts: { contractState: 'active' | 'cancelled' 
 
   if (opts.contractState !== 'none') {
     const cancelled = opts.contractState === 'cancelled' ? `'${PAST}'` : 'NULL';
-    db.exec(`INSERT INTO subscription_contracts (contract_id, shopify_customer_id, cancelled_at, created_at, updated_at)
-             VALUES ('C1', 'SC1', ${cancelled}, '${PAST}', '${PAST}')`);
+    const paused = opts.contractState === 'paused' ? `'${PAST}'` : 'NULL';
+    db.exec(`INSERT INTO subscription_contracts (contract_id, shopify_customer_id, cancelled_at, paused_at, created_at, updated_at)
+             VALUES ('C1', 'SC1', ${cancelled}, ${paused}, '${PAST}', '${PAST}')`);
   }
 }
 
@@ -53,6 +57,21 @@ describe('再購入リマインダー — 稼働契約者の除外 (実 SQLite �
     const metrics = await processSubscriptionReminders(asD1(raw), lineClient, 'https://liff.line.me/test');
 
     // F1 (稼働契約あり) は due にすら含まれない = LINE push は F2 の 1 通のみ
+    expect(metrics.sentCount).toBe(1);
+    const sentTo = pushMessage.mock.calls.map((c) => c[0]);
+    expect(sentTo).toEqual(['U_ONESHOT']);
+    expect(sentTo).not.toContain('U_SUB');
+  });
+
+  it('🚨 一時停止中 (paused_at のみ) の契約者にも送らない — 決済失敗層は二重購入が最も起きやすい', async () => {
+    // 採点ループ ①-1: 当初の SQL は cancelled/paused とも NULL を「稼働」と定義していたため、
+    // paused のみの契約が副問合せに一致せず NOT EXISTS が真 = **送信されていた**。
+    // コメントの宣言 (「停止中も除外したまま」) と実装が逆だった。
+    const raw = createSchemaDb();
+    seed(raw, { contractState: 'paused' });
+
+    const metrics = await processSubscriptionReminders(asD1(raw), lineClient, 'https://liff.line.me/test');
+
     expect(metrics.sentCount).toBe(1);
     const sentTo = pushMessage.mock.calls.map((c) => c[0]);
     expect(sentTo).toEqual(['U_ONESHOT']);
