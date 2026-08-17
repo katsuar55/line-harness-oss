@@ -27,8 +27,9 @@
 | Worker 名 | `naturism-line-crm` |
 | D1 database 名 | `naturism-line-crm` |
 | D1 database ID | `f736c7fa-1c19-4279-b03d-3af3a71b7fca` |
-| R2 bucket | `naturism-line-crm-images` (バックアップは `backups/` プレフィックス) |
-| バックアップ保存先 | `naturism-line-crm-images/backups/YYYY-MM-DD/naturism-d1-backup-YYYY-MM-DD.sql` |
+| R2 bucket (画像・公開配信あり) | `naturism-line-crm-images` |
+| R2 bucket (バックアップ・**非公開/Worker binding なし**) | `naturism-line-crm-backups` |
+| バックアップ保存先 | `naturism-line-crm-backups/YYYY-MM-DD/naturism-d1-backup-YYYY-MM-DD.sql` |
 | ローカルバックアップ | `C:\Users\user\Desktop\line-harness-oss\backups\naturism-d1-backup-*.sql` |
 
 ---
@@ -87,7 +88,10 @@ cd C:\Users\user\Desktop\line-harness-oss\apps\worker
 
 # 1. R2 から日付指定でダウンロード (例: 2026-04-24)
 $DATE = "2026-04-24"
-npx wrangler r2 object get naturism-line-crm-images/backups/$DATE/naturism-d1-backup-$DATE.sql --file=restore.sql --remote
+npx wrangler r2 object get naturism-line-crm-backups/$DATE/naturism-d1-backup-$DATE.sql --file=restore.sql --remote
+
+# ※ 2026-08-17 より前のバックアップは旧バケットにある (30 日 retention で順次消滅):
+#    npx wrangler r2 object get naturism-line-crm-images/backups/$DATE/naturism-d1-backup-$DATE.sql --file=restore.sql --remote
 
 # 2. 内容サニティチェック
 Get-Content restore.sql -Head 5
@@ -128,8 +132,12 @@ R2 バケット自体が消えた場合:
 
 ```powershell
 cd C:\Users\user\Desktop\line-harness-oss\apps\worker
-# 1. バケット再作成
+# 1. バケット再作成 (画像用 = Worker が binding 経由で読む)
 npx wrangler r2 bucket create naturism-line-crm-images
+
+# 1b. バックアップ用バケット (Worker binding は張らない。retention も再設定)
+npx wrangler r2 bucket create naturism-line-crm-backups --location apac
+npx wrangler r2 bucket lifecycle add naturism-line-crm-backups backup-30day-retention --expire-days 30 --force
 
 # 2. wrangler.toml の binding 確認 → 変更不要 (バケット名は同じ)
 
@@ -223,10 +231,15 @@ npx vite build; npx wrangler deploy
 
 | ストレージ | 保持期間 | 用途 |
 |---|---|---|
-| R2 `naturism-line-crm-images/backups/` | 30日 (※) | 日次復旧用 |
+| R2 `naturism-line-crm-backups/` | 30日 (lifecycle `backup-30day-retention` 設定済) | 日次復旧用 |
+| R2 `naturism-line-crm-images/backups/` (**旧・2026-08-17 で使用終了**) | 30日 (設定済) | 2026-09-14 頃までに自然消滅 |
 | ローカル `backups/*.sql` | 無期限 | 長期アーカイブ |
 
-(※) R2 ライフサイクルルールを設定することを推奨。現状は手動管理。
+🚨 **バックアップを画像バケットへ戻さないこと。** 2026-08-16 に、画像を配信する公開ルート
+`GET /images/:key` が同じバインディングを引いていたため、顧客 PII を含む D1 全体が
+無認証でダウンロード可能だった (本番実測)。詳細は CLAUDE.md「公開ルート × オブジェクト
+ストレージのルール」。バックアップ用バケットには **Worker binding を張っていない** —
+binding が無ければ到達しうるコード経路が存在しない、というのが分離の要です。
 
 ---
 
