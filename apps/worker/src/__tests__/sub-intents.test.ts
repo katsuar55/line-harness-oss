@@ -3716,3 +3716,121 @@ describe('約束破り文言 — 期限なし intent (採点 ①-6)', () => {
     expect(buildPromiseBrokenMessage('pause', '2026-09-07T23:59:59')).toContain('お手続きは必ず完了し');
   });
 });
+
+// ============================================================
+// スタッフメール通知 (2026-08-18 Katsu 指示: info@ にも顧客リクエストを届ける)
+// ============================================================
+
+describe('受理のスタッフメール通知 (info@)', () => {
+  const FULL_NOTIFY = {
+    ...GATE_ON,
+    DISCORD_WEBHOOK_URL: 'https://discord.test/hook',
+    RESEND_API_KEY: 're_test_key',
+    EMAIL_FROM: 'naturism <noreply@mail.naturism-diet.com>',
+  };
+
+  function spyFetch() {
+    return vi.fn(async (_url: string, _init?: RequestInit) => new Response('{"id":"em_1"}', { status: 200 }));
+  }
+
+  async function fireFull(
+    db: D1Database,
+    lc: ReturnType<typeof makeLineClient>,
+    op: string,
+    fetchSpy: ReturnType<typeof spyFetch>,
+    envOverride: Record<string, string | undefined> = {},
+  ): Promise<void> {
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      await handleSubIntentPostback({
+        env: { DB: db, ...FULL_NOTIFY, ...envOverride } as never,
+        lineClient: lc as never,
+        replyToken: 'rt',
+        lineUserId: 'U1',
+        lineAccountId: null,
+        params: subPostbackParams(op),
+        postbackParams: null,
+        nowMs: NOW_MS,
+      });
+    } finally {
+      globalThis.fetch = prev;
+    }
+  }
+
+  it('受理成立で Discord と info@ メールの両方へ 1 通ずつ送る', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const fetchSpy = spyFetch();
+
+    await fireFull(db, lc, 'skip', fetchSpy);
+
+    expect(store.intents.size).toBe(1);
+    const urls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(urls.filter((u) => u.includes('discord.test'))).toHaveLength(1);
+    expect(urls.filter((u) => u.includes('api.resend.com'))).toHaveLength(1);
+
+    const resendCall = fetchSpy.mock.calls.find((c) => String(c[0]).includes('api.resend.com'));
+    const body = JSON.parse(String((resendCall?.[1] as { body?: string })?.body ?? '{}')) as {
+      to?: string | string[];
+      subject?: string;
+      text?: string;
+    };
+    expect(String(body.to)).toContain('info@naturism-diet.com');
+    expect(body.subject).toContain('新しいご依頼');
+    expect(String(body.text)).toContain('C1');
+    expect(String(body.text)).toContain('/admin/ops');
+    // PII (LINE ユーザーID) を載せない
+    expect(String(body.text)).not.toContain('U1');
+  });
+
+  it('STAFF_NOTIFY_EMAIL で宛先を上書きできる', async () => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const fetchSpy = spyFetch();
+
+    await fireFull(db, lc, 'skip', fetchSpy, { STAFF_NOTIFY_EMAIL: 'ops@example.com' });
+
+    const resendCall = fetchSpy.mock.calls.find((c) => String(c[0]).includes('api.resend.com'));
+    const body = JSON.parse(String((resendCall?.[1] as { body?: string })?.body ?? '{}')) as { to?: string | string[] };
+    expect(String(body.to)).toContain('ops@example.com');
+  });
+
+  it('RESEND_API_KEY が無ければメールは送らず、Discord だけ送る (段階 gate)', async () => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const fetchSpy = spyFetch();
+
+    await fireFull(db, lc, 'skip', fetchSpy, { RESEND_API_KEY: undefined });
+
+    const urls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(urls.filter((u) => u.includes('discord.test'))).toHaveLength(1);
+    expect(urls.filter((u) => u.includes('api.resend.com'))).toHaveLength(0);
+  });
+
+  it('メール送信が失敗しても受理と顧客への reply は成立する', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const fetchSpy = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).includes('api.resend.com')) throw new Error('resend down');
+      return new Response(null, { status: 204 });
+    });
+
+    await fireFull(db, lc, 'skip', fetchSpy as ReturnType<typeof spyFetch>);
+
+    expect(store.intents.size).toBe(1);
+    const reply = JSON.stringify(lc.replyMessage.mock.calls.at(-1)?.[1] ?? []);
+    expect(reply).toContain('承りました');
+  });
+
+  it('duplicate (再タップ) ではメールも送らない (受信箱を溢れさせない)', async () => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    await fireFull(db, lc, 'skip', spyFetch());
+
+    const second = spyFetch();
+    await fireFull(db, lc, 'skip', second);
+
+    expect(second.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('api.resend.com'))).toHaveLength(0);
+  });
+});

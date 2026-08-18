@@ -25,6 +25,7 @@ import {
   requestedDateFromPayload,
   SUB_INTENT_OP_LABELS,
   sendSubIntentAlert,
+  sendSubIntentStaffEmail,
   type SubIntentGateEnv,
 } from './sub-intents.js';
 import {
@@ -55,6 +56,11 @@ export interface SubIntentPostbackEnv extends SubIntentGateEnv {
   // 受理の瞬間にスタッフへ知らせるための Discord (best-effort)。未設定なら通知しない。
   DISCORD_WEBHOOK_URL?: string;
   ACCOUNT_NAME?: string;
+  // 同じ受理をスタッフメール (info@) にも届ける (2026-08-18 Katsu 指示)。未設定なら skip。
+  RESEND_API_KEY?: string;
+  EMAIL_FROM?: string;
+  EMAIL_REPLY_TO?: string;
+  STAFF_NOTIFY_EMAIL?: string;
 }
 
 export interface SubIntentPostbackInput {
@@ -180,9 +186,9 @@ export async function handleSubIntentPostback(input: SubIntentPostbackInput): Pr
     //   この経路こそ通知の必要性が最も高い — 顧客は受理文言を一度も見ておらず、
     //   スタッフだけが約束を知っている状態になるため (採点 ①-3)。
     if (accepted) {
-      await sendSubIntentAlert(env, [
-        `${buildAcceptedAlertLine(accepted)}\n⚠️ 顧客への受理文言は届いていません (reply 失敗) — 最優先で対応し、必要なら手動でご連絡ください`,
-      ]);
+      const line = `${buildAcceptedAlertLine(accepted)}\n⚠️ 顧客への受理文言は届いていません (reply 失敗) — 最優先で対応し、必要なら手動でご連絡ください`;
+      await sendSubIntentAlert(env, [line]);
+      await sendSubIntentStaffEmail(env, `新しいご依頼: ${accepted.label} (要・最優先対応)`, [line]);
     }
     return;
   }
@@ -206,7 +212,10 @@ export async function handleSubIntentPostback(input: SubIntentPostbackInput): Pr
   //     (LINE の 1 秒応答制限にも影響しない)
   //   ・PII は載せない (§1-4) — op / 契約キー / 約束期限のみ
   if (accepted) {
-    await sendSubIntentAlert(env, [buildAcceptedAlertLine(accepted)]);
+    const line = buildAcceptedAlertLine(accepted);
+    await sendSubIntentAlert(env, [line]);
+    // 2026-08-18 Katsu 指示: Discord を見ないスタッフも受信箱で気付けるよう info@ へも送る
+    await sendSubIntentStaffEmail(env, `新しいご依頼: ${accepted.label}`, [line]);
   }
 }
 

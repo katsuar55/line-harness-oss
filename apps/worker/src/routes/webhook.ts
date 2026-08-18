@@ -551,12 +551,17 @@ async function handleEvent(
       await handleSubIntentPostback({
         // DISCORD_WEBHOOK_URL / ACCOUNT_NAME も渡す: 受理成立をスタッフへ即通知するため
         // (無いと最初の通知が「約束期限超過 = 顧客へ謝罪 push 済み」になる。2026-08-17 採点 HIGH)
+        // RESEND_API_KEY / EMAIL_FROM / STAFF_NOTIFY_EMAIL: 同じ受理を info@ へも (2026-08-18)
         env: env as unknown as {
           DB: D1Database;
           SUB_INTENT_ENABLED?: string;
           LIFF_URL?: string;
           DISCORD_WEBHOOK_URL?: string;
           ACCOUNT_NAME?: string;
+          RESEND_API_KEY?: string;
+          EMAIL_FROM?: string;
+          EMAIL_REPLY_TO?: string;
+          STAFF_NOTIFY_EMAIL?: string;
         },
         lineClient,
         replyToken: event.replyToken,

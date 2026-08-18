@@ -30,6 +30,7 @@
  */
 
 import type { LineClient } from '@line-crm/line-sdk';
+import { ResendClient } from '@line-crm/email-sdk';
 import {
   insertSubIntent,
   getSubIntent,
@@ -978,6 +979,61 @@ export async function sendSubIntentAlert(
     });
   } catch (err) {
     console.error(`[${SUB_INTENT_SWEEP_JOB_NAME}] discord notify failed:`, err);
+  }
+}
+
+/** スタッフ通知メールの既定宛先。STAFF_NOTIFY_EMAIL で上書き可 (2026-08-18 Katsu 指示)。 */
+const DEFAULT_STAFF_NOTIFY_EMAIL = 'info@naturism-diet.com';
+
+/**
+ * スタッフへの best-effort メール通知 (2026-08-18 Katsu 指示: Discord を見ない
+ * スタッフも毎日 info@ の受信箱で顧客のご依頼に気付けるように)。
+ *
+ * - 宛先は自社スタッフ = marketing ではなく transactional。opt-out 機構は不要。
+ * - RESEND_API_KEY / EMAIL_FROM が未設定なら黙って skip (Discord と同じ gate 思想)。
+ * - 失敗しても業務を止めない (顧客への reply には一切影響しない位置から呼ばれる)。
+ * - 本文は Discord と同じ行 = PII 最小 (§1-4)。詳細は /admin/ops で見る。
+ */
+export async function sendSubIntentStaffEmail(
+  env: {
+    RESEND_API_KEY?: string;
+    EMAIL_FROM?: string;
+    EMAIL_REPLY_TO?: string;
+    STAFF_NOTIFY_EMAIL?: string;
+    ACCOUNT_NAME?: string;
+  },
+  subject: string,
+  lines: string[],
+  fetchImpl?: typeof fetch,
+): Promise<void> {
+  if (lines.length === 0 || !env.RESEND_API_KEY || !env.EMAIL_FROM) return;
+  try {
+    const client = new ResendClient({ apiKey: env.RESEND_API_KEY, fetchImpl });
+    const brand = env.ACCOUNT_NAME ?? 'naturism';
+    const opsUrl = 'https://naturism-line-crm.katsu-7d5.workers.dev/admin/ops';
+    const text =
+      `${lines.join('\n')}\n\n` +
+      `対応は管理画面から: ${opsUrl}\n` +
+      `(この通知は LINE 定期便コンシェルジュからの自動送信です)`;
+    const escapeHtml = (s: string): string =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    await client.send({
+      to: env.STAFF_NOTIFY_EMAIL ?? DEFAULT_STAFF_NOTIFY_EMAIL,
+      from: env.EMAIL_FROM,
+      replyTo: env.EMAIL_REPLY_TO,
+      subject: `【${brand} 定期便】${subject}`,
+      text,
+      html:
+        `<div style="font-family:sans-serif;font-size:14px;line-height:1.7">` +
+        `<p>${lines.map(escapeHtml).join('<br>')}</p>` +
+        `<p><a href="${opsUrl}">対応する (/admin/ops)</a></p>` +
+        `<p style="color:#888;font-size:12px">この通知は LINE 定期便コンシェルジュからの自動送信です</p>` +
+        `</div>`,
+      category: 'transactional',
+      sourceKind: 'transactional',
+    });
+  } catch (err) {
+    console.error(`[${SUB_INTENT_SWEEP_JOB_NAME}] staff email notify failed:`, err);
   }
 }
 
