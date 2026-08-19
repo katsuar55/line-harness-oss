@@ -1,14 +1,26 @@
 import { Hono } from 'hono';
 import { getShopifyAccessToken } from '../services/shopify-token.js';
-import { getFriendCouponConfig } from '../services/friend-coupon-config.js';
-import { buildDiscountApplyUrl } from '../services/cart-permalink.js';
-import { getActiveWelcomeCoupon, formatCouponCountdown } from '../services/welcome-coupon.js';
-import { getActiveReferralCoupons } from '../services/referral-coupon-issuer.js';
-import { activateAndNotifyNextReferralCoupon } from '../services/referral-reward.js';
 import { upgradeWelcomeCouponForReferred } from '../services/welcome-upgrade.js';
 import { LineClient } from '@line-crm/line-sdk';
-import { getActiveLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
 import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
+// read 系 handler 14 本の本体は services/portal-read.ts へ抽出済み (Ultraplan PR-2)。
+// /api/liff/portal-bootstrap (routes/liff-portal-bootstrap.ts) が同じ関数群を並列実行する。
+import {
+  readRank,
+  readCoupons,
+  readFriendCoupon,
+  readWelcomeCoupon,
+  readReferralCoupon,
+  readLinkCoupon,
+  readReferralStats,
+  readReferralRanking,
+  readAmbassadorStatus,
+  readTipToday,
+  readProfile,
+  readIntakeToday,
+  readBadges,
+  readLanguage,
+} from '../services/portal-read.js';
 import { generateAiResponse } from '../services/ai-response.js';
 import { check } from '../middleware/rate-limit.js';
 import {
@@ -21,9 +33,6 @@ import {
 } from '../services/liff-ai-ask.js';
 import {
   getFriendById,
-  getFriendRank,
-  getMemberRanks,
-  getCouponAssignmentsByFriend,
   getShopifyOrders,
   getShopifyProducts,
   getShopifyOrderById,
@@ -39,7 +48,6 @@ import {
   createReferralLink,
   getReferralLink,
   getReferralLinkByRefCode,
-  getReferralStats,
   createReferralReward,
   createRecommendationResult,
   upsertHealthLog,
@@ -53,8 +61,6 @@ import {
   getPendingSurveys,
   getSurveyById,
   submitSurveyResponse,
-  getTodayTip,
-  getFriendLanguage,
   setFriendLanguage,
   getTipTranslation,
   insertFoodLog,
@@ -68,7 +74,6 @@ import {
   getLatestActiveRecommendation,
   markRecommendationStatus,
   jstNow,
-  countWaitingReferralCoupons,
 } from '@line-crm/db';
 import type {
   NutritionDeficit,
@@ -110,92 +115,15 @@ function getLiffUser(c: { get: (key: string) => unknown }) {
 
 /**
  * POST /api/liff/rank — ランク＋進捗バー＋特典
+ * (本体 = services/portal-read.ts readRank。 linked は liffUser.shopifyCustomerId 由来)
  */
 liffPortal.post('/api/liff/rank', async (c) => {
   try {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    const friendRank = await getFriendRank(c.env.DB, user.friendId);
-    const allRanks = await getMemberRanks(c.env.DB);
-    // linked = Shopify customer と紐付け済か。 ポータルのマイアカウントが
-    // 「オンラインストアと連携」カードを畳む判定に使う (= 連携済みの人に押させない)。
-    // 命名は /api/liff/my-rank の同名フィールドに合わせる。
-    // 値は liffAuthMiddleware が既に読んだ friend 行から来るので、 D1 read は増えない
-    // (この endpoint はポータル初期化の直列パスに居るため、 1 本の追加も全ユーザーに載る)。
-    const linked = !!user.shopifyCustomerId;
-
-    if (!friendRank) {
-      return c.json({
-        success: true,
-        data: {
-          linked,
-          currentRank: null,
-          totalSpent: 0,
-          ordersCount: 0,
-          nextRank: allRanks[0] ?? null,
-          progressPercent: 0,
-          benefits: null,
-          allRanks: allRanks.map((r) => ({
-            name: r.name,
-            color: r.color,
-            icon: r.icon,
-            minTotalSpent: r.min_total_spent,
-          })),
-        },
-      });
-    }
-
-    const currentRankDetail = allRanks.find(
-      (r) => r.id === (friendRank as Record<string, unknown>).rank_id,
-    );
-    const currentIdx = allRanks.findIndex(
-      (r) => r.id === (friendRank as Record<string, unknown>).rank_id,
-    );
-    const nextRank = currentIdx < allRanks.length - 1 ? allRanks[currentIdx + 1] : null;
-
-    const totalSpent = Number((friendRank as Record<string, unknown>).total_spent) || 0;
-    let progressPercent = 100;
-    if (nextRank) {
-      const currentMin = Number(currentRankDetail?.min_total_spent) || 0;
-      const nextMin = Number(nextRank.min_total_spent) || 0;
-      const range = nextMin - currentMin;
-      progressPercent = range > 0 ? Math.min(100, Math.round(((totalSpent - currentMin) / range) * 100)) : 100;
-    }
-
-    return c.json({
-      success: true,
-      data: {
-        linked,
-        currentRank: currentRankDetail
-          ? {
-              name: currentRankDetail.name,
-              color: currentRankDetail.color,
-              icon: currentRankDetail.icon,
-              benefits: currentRankDetail.benefits_json
-                ? JSON.parse(currentRankDetail.benefits_json as string)
-                : null,
-            }
-          : null,
-        totalSpent,
-        ordersCount: (friendRank as Record<string, unknown>).orders_count ?? 0,
-        nextRank: nextRank
-          ? {
-              name: nextRank.name,
-              color: nextRank.color,
-              minTotalSpent: nextRank.min_total_spent,
-              remaining: Math.max(0, Number(nextRank.min_total_spent ?? 0) - totalSpent),
-            }
-          : null,
-        progressPercent,
-        allRanks: allRanks.map((r) => ({
-          name: r.name,
-          color: r.color,
-          icon: r.icon,
-          minTotalSpent: r.min_total_spent,
-        })),
-      },
-    });
+    const data = await readRank({ db: c.env.DB }, user);
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('POST /api/liff/rank error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -204,64 +132,34 @@ liffPortal.post('/api/liff/rank', async (c) => {
 
 /**
  * POST /api/liff/coupons — 未使用クーポン一覧
+ * (本体 = services/portal-read.ts readCoupons)
  */
 liffPortal.post('/api/liff/coupons', async (c) => {
   try {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    const assignments = await getCouponAssignmentsByFriend(c.env.DB, user.friendId, true);
-
-    return c.json({
-      success: true,
-      data: {
-        coupons: assignments.map((a: Record<string, unknown>) => ({
-          id: a.coupon_id,
-          code: a.code,
-          title: a.title,
-          description: a.description,
-          discountType: a.discount_type,
-          discountValue: a.discount_value,
-          minimumOrderAmount: a.minimum_order_amount,
-          expiresAt: a.expires_at,
-          assignedAt: a.assigned_at,
-        })),
-      },
-    });
+    const data = await readCoupons({ db: c.env.DB }, user);
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('POST /api/liff/coupons error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 
-// 顧客向けストアフロント (= 公式ドメイン)。割引適用リンクに使う。
-const FRIEND_COUPON_STORE_DOMAIN = 'naturism-diet.com';
-
 /**
  * GET /api/liff/friend-coupon — LINE友だち限定クーポン (ランク不問の一律 % OFF)。
  * 管理トグルが ON かつコード設定済みのときだけ code/applyUrl を返す。
  * idToken 認証必須 (= LINE 友だちにのみコードを見せる「友だち限定」)。
+ * (本体 = services/portal-read.ts readFriendCoupon — getFriendCouponConfig で設定を読む)
  */
 liffPortal.get('/api/liff/friend-coupon', async (c) => {
   try {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    const cfg = await getFriendCouponConfig(c.env.DB);
-    if (!cfg.enabled || !cfg.code) {
-      return c.json({ success: true, data: { enabled: false } });
-    }
-    return c.json({
-      success: true,
-      data: {
-        enabled: true,
-        code: cfg.code,
-        percent: cfg.percent,
-        label: cfg.label,
-        note: cfg.note,
-        applyUrl: buildDiscountApplyUrl(FRIEND_COUPON_STORE_DOMAIN, cfg.code),
-      },
-    });
+    const data = await readFriendCoupon({ db: c.env.DB }, user);
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('GET /api/liff/friend-coupon error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -278,22 +176,9 @@ liffPortal.get('/api/liff/welcome-coupon', async (c) => {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    const coupon = await getActiveWelcomeCoupon(c.env.DB, user.friendId);
-    if (!coupon) return c.json({ success: true, data: { coupon: null } });
-
-    return c.json({
-      success: true,
-      data: {
-        coupon: {
-          code: coupon.code,
-          discountValue: coupon.discountValue,
-          currency: coupon.discountCurrency,
-          expiresAt: coupon.expiresAt,
-          remainingText: formatCouponCountdown(coupon.expiresAt, Date.now()),
-          applyUrl: buildDiscountApplyUrl(FRIEND_COUPON_STORE_DOMAIN, coupon.code),
-        },
-      },
-    });
+    // 本体 = services/portal-read.ts readWelcomeCoupon (getActiveWelcomeCoupon + countdown)
+    const data = await readWelcomeCoupon({ db: c.env.DB }, user);
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('GET /api/liff/welcome-coupon error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -312,41 +197,19 @@ liffPortal.get('/api/liff/referral-coupon', async (c) => {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    // 未有効化なら DB を触らず空 (= テーブル未存在の pre-migration でも安全)
-    if (c.env.REFERRAL_REWARD_ENABLED !== 'true') {
-      return c.json({ success: true, data: { coupons: [], count: 0, queuedCount: 0 } });
-    }
-
-    const active = await getActiveReferralCoupons(c.env.DB, user.friendId);
-    const coupons = active.map((cp) => ({
-      code: cp.code,
-      discountValue: cp.discountValue,
-      role: cp.role,
-      expiresAt: cp.expiresAt,
-      remainingText: formatCouponCountdown(cp.expiresAt, Date.now()),
-      applyUrl: buildDiscountApplyUrl(FRIEND_COUPON_STORE_DOMAIN, cp.code),
-    }));
-
-    // 順次活性化 (R1): 待機枚数 (queue waiting)。fail-safe 0 (= migration 079 未適用でも安全)。
-    const queuedCount = await countWaitingReferralCoupons(c.env.DB, user.friendId);
-
-    // T3 pull 検算: 使える 1 枚が無いのに待機がある = T1 (webhook) の取りこぼし or 失効による解放。
-    //   顧客が見に来た瞬間に自己修復する (sweep gate 未開放でも queue がデッドロックしない第三経路)。
-    //   応答は待たせない (waitUntil) — 次回 fetch (カード側の遅延再取得) で反映される。
-    if (coupons.length === 0 && queuedCount > 0) {
-      // static import (dynamic import は vi.mock 干渉トラップ — CLAUDE.md テストルール)
-      const work = activateAndNotifyNextReferralCoupon(
-        c.env.DB,
-        c.env,
-        new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN),
-        { friendId: user.friendId },
-      ).catch((err) => {
-        console.error('[liff-portal] T3 referral activation failed:', err instanceof Error ? err.name : 'unknown');
-      });
-      try { c.executionCtx.waitUntil(work); } catch { /* no exec ctx in tests */ }
-    }
-
-    return c.json({ success: true, data: { coupons, count: coupons.length, queuedCount } });
+    // 本体 = services/portal-read.ts readReferralCoupon (gate off なら DB 不触の空 +
+    // T3 pull 検算の fire-and-forget は waitUntil 経由で従来どおり)
+    const data = await readReferralCoupon(
+      {
+        db: c.env.DB,
+        env: c.env,
+        waitUntil: (work) => {
+          try { c.executionCtx.waitUntil(work); } catch { /* no exec ctx in tests */ }
+        },
+      },
+      user,
+    );
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('GET /api/liff/referral-coupon error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -364,29 +227,10 @@ liffPortal.get('/api/liff/link-coupon', async (c) => {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    // 未有効化なら DB を触らず空 (= テーブル未存在の pre-migration でも安全)
-    if (c.env.LINK_REWARD_ENABLED !== 'true') {
-      return c.json({ success: true, data: { coupon: null } });
-    }
-
-    const coupon = await getActiveLinkRewardCoupon(c.env.DB, user.friendId);
-    if (!coupon) return c.json({ success: true, data: { coupon: null } });
-
-    return c.json({
-      success: true,
-      data: {
-        coupon: {
-          code: coupon.code,
-          // 🚨 定数 (DEFAULT_DISCOUNT_VALUE_JPY) を書かないこと。**台帳の値が唯一の正**で、
-          //    既発行の ¥500 券をここで ¥300 と言うと顧客の実額と食い違う。
-          //    liff-portal.test.ts は定数と異なる値 (450) で経路を測っている。
-          discountValue: coupon.discountValue,
-          expiresAt: coupon.expiresAt,
-          remainingText: formatCouponCountdown(coupon.expiresAt, Date.now()),
-          applyUrl: buildDiscountApplyUrl(FRIEND_COUPON_STORE_DOMAIN, coupon.code),
-        },
-      },
-    });
+    // 本体 = services/portal-read.ts readLinkCoupon (gate off なら DB 不触の coupon:null、
+    // 表示額は台帳 line_link_coupons.discount_value の実値のまま)
+    const data = await readLinkCoupon({ db: c.env.DB, env: c.env }, user);
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('GET /api/liff/link-coupon error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -909,25 +753,9 @@ liffPortal.get('/api/liff/badges', async (c) => {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    const { getAllBadges, getFriendBadges, calculateLevel, pointsToNextLevel } = await import('@line-crm/db');
-
-    const [allBadges, earned, scoreRow] = await Promise.all([
-      getAllBadges(c.env.DB),
-      getFriendBadges(c.env.DB, user.friendId),
-      c.env.DB.prepare(`SELECT score FROM friends WHERE id = ?`).bind(user.friendId).first<{ score: number }>(),
-    ]);
-
-    const score = scoreRow?.score ?? 0;
-    return c.json({
-      success: true,
-      data: {
-        allBadges,
-        earnedBadges: earned.map((b) => ({ code: b.badge_code, earnedAt: b.earned_at })),
-        level: calculateLevel(score),
-        score,
-        pointsToNext: pointsToNextLevel(score),
-      },
-    });
+    // 本体 = services/portal-read.ts readBadges
+    const data = await readBadges({ db: c.env.DB }, user);
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('GET /api/liff/badges error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -945,30 +773,9 @@ liffPortal.get('/api/liff/intake/today', async (c) => {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    const today = new Date().toISOString().slice(0, 10); // 簡易: JST と1日ズレる可能性あり、UI 側で許容
-    const { results } = await c.env.DB
-      .prepare(
-        `SELECT meal_type, logged_at FROM intake_logs
-         WHERE friend_id = ? AND substr(logged_at, 1, 10) = ? AND meal_type IS NOT NULL
-         ORDER BY logged_at DESC`,
-      )
-      .bind(user.friendId, today)
-      .all<{ meal_type: string; logged_at: string }>();
-
-    const recorded = {
-      breakfast: false,
-      lunch: false,
-      dinner: false,
-      snack: false,
-    };
-    for (const row of results) {
-      if (row.meal_type === 'breakfast') recorded.breakfast = true;
-      else if (row.meal_type === 'lunch') recorded.lunch = true;
-      else if (row.meal_type === 'dinner') recorded.dinner = true;
-      else if (row.meal_type === 'snack') recorded.snack = true;
-    }
-
-    return c.json({ success: true, data: { date: today, recorded } });
+    // 本体 = services/portal-read.ts readIntakeToday
+    const data = await readIntakeToday({ db: c.env.DB }, user);
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('GET /api/liff/intake/today error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -1434,17 +1241,9 @@ liffPortal.post('/api/liff/referral/stats', async (c) => {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    const stats = await getReferralStats(c.env.DB, user.friendId);
-    const link = await getReferralLink(c.env.DB, user.friendId);
-
-    return c.json({
-      success: true,
-      data: {
-        ...stats,
-        refCode: link?.ref_code ?? null,
-        hasLink: !!link,
-      },
-    });
+    // 本体 = services/portal-read.ts readReferralStats
+    const data = await readReferralStats({ db: c.env.DB }, user);
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('POST /api/liff/referral/stats error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -1567,21 +1366,9 @@ liffPortal.post('/api/liff/ambassador/status', async (c) => {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    const ambassador = await getAmbassador(c.env.DB, user.friendId);
-
-    return c.json({
-      success: true,
-      data: ambassador
-        ? {
-            status: ambassador.status,
-            tier: ambassador.tier,
-            enrolledAt: ambassador.enrolled_at,
-            surveysCompleted: ambassador.total_surveys_completed,
-            productTests: ambassador.total_product_tests,
-            preferences: JSON.parse(ambassador.preferences),
-          }
-        : null,
-    });
+    // 本体 = services/portal-read.ts readAmbassadorStatus (未登録なら data:null)
+    const data = await readAmbassadorStatus({ db: c.env.DB }, user);
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('POST /api/liff/ambassador/status error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -1749,7 +1536,8 @@ liffPortal.post('/api/liff/ambassador/survey/respond', async (c) => {
  */
 liffPortal.get('/api/liff/tips/today', async (c) => {
   try {
-    const tip = await getTodayTip(c.env.DB);
+    // 本体 = services/portal-read.ts readTipToday (公開 endpoint なので liffUser 不要)
+    const tip = await readTipToday({ db: c.env.DB });
 
     if (!tip) {
       return c.json({
@@ -1777,8 +1565,9 @@ liffPortal.post('/api/liff/language', async (c) => {
   try {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
-    const lang = await getFriendLanguage(c.env.DB, user.friendId);
-    return c.json({ success: true, data: { lang } });
+    // 本体 = services/portal-read.ts readLanguage
+    const data = await readLanguage({ db: c.env.DB }, user);
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('POST /api/liff/language error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -1847,40 +1636,16 @@ liffPortal.post('/api/liff/translate', async (c) => {
 // ── 紹介ランキング ──
 
 /**
- * マスク処理: 「田中太郎」→「田○太○」（1文字おき伏字）
+ * GET /api/liff/referral/ranking — 紹介ランキング (display_name はマスク済み)。
+ * 本体 = services/portal-read.ts readReferralRanking。 SQL は実在カラムで結合する
+ * (JOIN friends f ON f.id = rr.referrer_friend_id — referral_rewards の実カラム名)。
  */
-function maskDisplayName(name: string | null): string {
-  if (!name) return '匿名';
-  const chars = [...name]; // Unicode-safe split
-  return chars.map((ch, i) => (i % 2 === 1 ? '○' : ch)).join('');
-}
-
 liffPortal.get('/api/liff/referral/ranking', async (c) => {
   try {
     const limit = Math.min(Math.max(1, Number(c.req.query('limit')) || 10), 50);
 
-    const { results } = await c.env.DB
-      .prepare(
-        `SELECT
-           rr.referrer_friend_id,
-           f.display_name,
-           COUNT(*) as referral_count
-         FROM referral_rewards rr
-         JOIN friends f ON f.id = rr.referrer_friend_id
-         GROUP BY rr.referrer_friend_id
-         ORDER BY referral_count DESC
-         LIMIT ?`,
-      )
-      .bind(limit)
-      .all<{ referrer_friend_id: string; display_name: string | null; referral_count: number }>();
-
-    const ranking = results.map((r, i) => ({
-      rank: i + 1,
-      displayName: maskDisplayName(r.display_name),
-      referralCount: r.referral_count,
-    }));
-
-    return c.json({ success: true, data: ranking });
+    const data = await readReferralRanking({ db: c.env.DB }, limit);
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('GET /api/liff/referral/ranking error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -1942,12 +1707,9 @@ liffPortal.get('/api/liff/profile', async (c) => {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    const friend = await c.env.DB
-      .prepare('SELECT display_name, gender, birthday FROM friends WHERE id = ?')
-      .bind(user.friendId)
-      .first<{ display_name: string | null; gender: string | null; birthday: string | null }>();
-
-    return c.json({ success: true, data: friend || {} });
+    // 本体 = services/portal-read.ts readProfile (行なしは {} — 既存挙動のまま)
+    const data = await readProfile({ db: c.env.DB }, user);
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('GET /api/liff/profile error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
