@@ -858,7 +858,7 @@ function postbackData(op: GuideOp, contractId: string): string {
  * 推定できない/過去日は一般則のみ。締切自体が過ぎている窓 (推定が今日〜2日後) では
  * 過去の締切日を出さず「締め切られている可能性」の注意に切り替える (採点R3)。
  */
-function deadlineText(contract: SubscriptionContractRow): string | null {
+export function deadlineText(contract: SubscriptionContractRow): string | null {
   if (contract.cancelled_at || contract.paused_at) return null;
   const estimate = contract.next_billing_estimate;
   if (estimate && !isStaleEstimate(estimate)) {

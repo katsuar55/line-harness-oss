@@ -702,6 +702,39 @@ export async function listStaleClaims(
   return res.results ?? [];
 }
 
+/**
+ * LIFF 契約画面用: friend の open intent (received|executing|deferred) を全部引く。
+ * state の列挙は SUB_INTENT_OPEN_STATES (= migration 076 の partial UNIQUE) と一致させること。
+ * 並びは listSubIntentsForOps の規則を流用 (executing → received → deferred、
+ * executing は claimed_at 昇順・received は締切昇順・同順位は新しい順)。
+ * friend_id が NULL の行 (未連携時に受理されたもの) は WHERE friend_id = ? に当たらない = 出ない。
+ */
+export async function listOpenSubIntentsByFriend(
+  db: D1Database,
+  friendId: string,
+  limit = 50,
+): Promise<SubIntentRow[]> {
+  const res = await db
+    .prepare(
+      `SELECT * FROM sub_intents
+        WHERE friend_id = ? AND state IN ('received','executing','deferred')
+        ORDER BY
+          CASE state
+            WHEN 'executing' THEN 0
+            WHEN 'received' THEN 1
+            WHEN 'deferred' THEN 2
+            ELSE 3
+          END,
+          CASE WHEN state = 'executing' THEN claimed_at ELSE NULL END ASC,
+          CASE WHEN state = 'received' THEN COALESCE(deadline_at, '9999') ELSE NULL END ASC,
+          created_at DESC
+        LIMIT ?`,
+    )
+    .bind(friendId, limit)
+    .all<SubIntentRow>();
+  return res.results ?? [];
+}
+
 /** /admin/ops 一覧: open (received|executing|deferred) + 直近の terminal。 */
 export async function listSubIntentsForOps(
   db: D1Database,
