@@ -210,3 +210,45 @@ naturism-line-crm 側で先回り収集する仕組み。
 - DR 手順: `docs/DR.md`
 - セッション履歴: `backups/sessions/SESSION_HANDOFF_v*.md`
 - CICD 詳細: `~/.claude/projects/.../memory/project_cicd_complete.md`
+
+---
+
+## 🎨 ミニアプリ刷新 Ultraplan — 完遂 (2026-08-20)
+
+8 PR 系列 (プラン: push-ticklish-salamander) を完走。各 PR は gate 既定 off (dark) で出荷 →
+採点ループ (多観点レビュー → 敵対的検証、confirmed のみ反映 + mutation ドリルで測定器を検証) →
+deploy → GitHub Actions op で flip、という一貫の型で本番反映した。
+
+### 出荷一覧 (すべて branch `claude/jolly-hofstadter-e8ce79` = 本番先端)
+
+| PR | 内容 | gate | 状態 |
+|---|---|---|---|
+| PR-1 `1bdb3fb` | 測定器の先行増強 (render-portal ハーネス / PORTAL_GATE_MATRIX) | — | ✅ |
+| PR-2 `e17f4d2` | read 系 14 handler を services/portal-read.ts へ抽出 + bootstrap API | — | ✅ |
+| PR-3 #258 | ポータル初期化を bootstrap 1 往復に (15-16 fetch → 2-3) | `PORTAL_BOOTSTRAP_ENABLED` | ✅ **本番 ON** |
+| PR-4 `0209517` | サブスク LIFF API 3 本 (一覧 / 受理 / undo) | API 側 gate | ✅ |
+| PR-5 #261 | shop タブ「定期便のお手続き」カード (§1/§2/§3-2/§4-1 準拠) | `LIFF_SUB_CARD_ENABLED` | ✅ **本番 ON** |
+| PR-6a #263 | 静的ガード 3 件の読み先を portal-read.ts へ + deep-link 台帳固定 | — | ✅ |
+| PR-6b #264 | home IA 再編: rank-hero + coupon-hub (CSS order 方式・DOM/JS 不変) | `LIFF_HOME_IA_ENABLED` | ✅ **本番 ON** |
+| PR-7/8 #265 | 視覚刷新 v2: 主役カードの計器レール天冠 (新色ゼロ) | `LIFF_VISUAL_V2_ENABLED` | ✅ **本番 ON** |
+
+補助 PR: #259/#260/#262 (gate 開閉 op 群)。
+
+### 運用 (rollback は全て redeploy 不要・GitHub Actions [Admin Ops] からワンクリック)
+
+- `disable-portal-bootstrap` / `disable-sub-card` / `disable-home-ia` / `disable-visual-v2`
+- enable 系 op は 前提 gate 機械チェック → secret 投入 → gate-on HTML 伝播実測 → 本番 liff-health まで自動検証
+- gate 確認 grep は「要素マーカー `id="..."` + 正マーカー AND」規約 (CSS セレクタ文字列は他 gate と衝突する — Codex P1 の教訓)
+
+### 採点ループ実績 (このセッション)
+
+- PR-3: confirmed 2 (deep-link 早期 reveal の窓 / gate 配線が無測定 — `if(true)` mutation が 4,867 テスト素通り)
+- PR-5: confirmed 8 (§3-2 推定表記 / §3 skip 結果行 / §1 undo gate / 順序不変条件 / 測定器 3 穴 ほか)
+- PR-6b: confirmed 5 (SR heading 誤誘導 / C3 前提ファースト / 測定器 3 穴)
+- 全 confirmed は反映後に **mutation 再注入でテストが実際に落ちることを確認** してから出荷 (計 20+ ドリル)
+
+### 学び (CLAUDE.md 追記候補)
+
+- pipefail 下の `curl | grep -q` は match 成功時でも curl exit 23 で pipeline 失敗になる → 一時ファイル経由で分離 (#260)
+- gate 確認のマーカーは要素 (`id="..."`) で。CSS セレクタ文字列は別 gate の CSS からも emit され衝突する (#265 Codex P1)
+- CSS `order` は a11y tree / Tab 順を並べ替えない — order 方式の IA 変更に heading を新設すると SR 導線が壊れる (PR-6b)
