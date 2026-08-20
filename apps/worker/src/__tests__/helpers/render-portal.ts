@@ -27,6 +27,7 @@ export const PORTAL_GATE_MATRIX: ReadonlyArray<readonly [string, Record<string, 
   ],
   ['REFERRAL_REWARD_ENABLED=true', { REFERRAL_REWARD_ENABLED: 'true' }],
   ['PORTAL_BOOTSTRAP_ENABLED=true (Ultraplan PR-3)', { PORTAL_BOOTSTRAP_ENABLED: 'true' }],
+  ['LIFF_SUB_CARD_ENABLED=true (Ultraplan PR-5)', { LIFF_SUB_CARD_ENABLED: 'true' }],
   [
     '全 gate on (現在の本番)',
     {
@@ -34,6 +35,7 @@ export const PORTAL_GATE_MATRIX: ReadonlyArray<readonly [string, Record<string, 
       SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
       REFERRAL_REWARD_ENABLED: 'true',
       PORTAL_BOOTSTRAP_ENABLED: 'true',
+      LIFF_SUB_CARD_ENABLED: 'true',
     },
   ],
 ];

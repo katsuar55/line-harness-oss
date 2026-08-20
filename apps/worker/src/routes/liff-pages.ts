@@ -3,7 +3,8 @@ import { translations as i18nData } from '@line-crm/shared';
 import type { Env } from '../index.js';
 import { BRAND_LOGO_PNG_BASE64 } from './brand-logo.js';
 import { liffWatchdogScriptTag } from '../utils/liff-watchdog.js';
-import { jsonForScript } from '../utils/inline-script.js';
+import { jsonForScript, inlineScriptBody } from '../utils/inline-script.js';
+import { subCardHtml, subCardCss, subCardJs } from './liff-portal-fragments/sub-card.js';
 
 const liffPages = new Hono<Env>();
 
@@ -45,7 +46,10 @@ const portalHandler = (c: { env: Env['Bindings']; html: (html: string) => Respon
   // ポータル初期化の一括 read gate (Ultraplan PR-3): on のとき client が
   // GET /api/liff/portal-bootstrap 1 往復へ初期 fetch 群を束ねる。既定 off = 従来経路のまま。
   const portalBootstrapOn = c.env.PORTAL_BOOTSTRAP_ENABLED === 'true';
-  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl, portalBootstrapOn));
+  // 定期便カード gate (Ultraplan PR-5): on のとき shop タブに契約カード (fragment) を emit。
+  // 既定 off = fragment を 1 byte も出さない (dark)。
+  const subCardOn = c.env.LIFF_SUB_CARD_ENABLED === 'true';
+  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl, portalBootstrapOn, subCardOn));
 };
 liffPages.get('/liff/portal', portalHandler as never);
 liffPages.get('/liff/portal/', portalHandler as never);
@@ -56,6 +60,7 @@ function portalPage(
   referralRewardOn = false,
   shopifyLinkUrl: string | null = null,
   portalBootstrapOn = false,
+  subCardOn = false,
 ): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -343,6 +348,7 @@ function portalPage(
     .active\\:scale-\\[0\\.98\\]:active{transform:translateY(1.5px) scale(.96) !important}
     @media(prefers-reduced-motion:reduce){.skeleton,.streak-fire,.ambassador-badge,.sparkle-dot,.rank-ambassador::before,.section,#quiz-result{animation:none !important}.btn-primary:active,.btn-coral:active,.meal-btn:active,.mood-btn:active,.skin-btn:active,.bowel-btn:active,button:active,.tap:active,label:active,a[onclick]:active{transform:none !important}.sr{opacity:1 !important;transform:none !important}.sr-in{transition:none !important}#scroll-progress,#scroll-leaf{display:none}}
   </style>
+  ${subCardOn ? '<style>\n    ' + subCardCss() + '\n  </style>' : ''}
 </head>
 <body class="min-h-screen pb-20">
 
@@ -856,6 +862,7 @@ function portalPage(
 
     <!-- ===== SHOP Section ===== -->
     <div id="section-shop" class="section space-y-4">
+      ${subCardOn ? subCardHtml() : ''}
       <!-- Products -->
       <div id="products-card" class="card p-4">
         <div class="skeleton h-48 rounded-lg"></div>
@@ -1445,6 +1452,7 @@ async function initLiff() {
       if (earlyDest === 'delivery' || earlyDest === 'reorder' || earlyDest === 'shop' || earlyDest === 'store') {
         window.__shopPrefetched = true;
         loadShopData(); loadSubscriptionsOnce();
+        ${subCardOn ? 'loadSubContractsOnce();' : ''}
       }
     } catch (e) { /* prefetch は最適化 — 失敗しても通常経路で読む */ }
     // Ultraplan PR-3: gate on なら初期化 fetch 群を portal-bootstrap 1 往復に束ねる。
@@ -1815,6 +1823,7 @@ function switchTab(name) {
     if (window.__shopPrefetched) { window.__shopPrefetched = false; }
     else { loadShopData(); }
     loadSubscriptionsOnce();
+    ${subCardOn ? 'loadSubContractsOnce(); // 定期便カード (PR-5, gate on のときだけ emit)' : ''}
   }
   if (name === 'account') loadAccountData();
   if (name === 'quiz') playQuizHeroVideo();
@@ -5058,6 +5067,8 @@ function finishQuiz() {
 }
 
 // ─── Init ───
+${subCardOn ? inlineScriptBody(subCardJs()) : ''}
+
 document.addEventListener('DOMContentLoaded', initLiff);
 
 // 「読み込み中...」永久固着の watchdog: liff.init や API が resolve も reject もしないまま
