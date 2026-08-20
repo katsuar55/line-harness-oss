@@ -29,6 +29,7 @@ export const PORTAL_GATE_MATRIX: ReadonlyArray<readonly [string, Record<string, 
   ['PORTAL_BOOTSTRAP_ENABLED=true (Ultraplan PR-3)', { PORTAL_BOOTSTRAP_ENABLED: 'true' }],
   ['LIFF_SUB_CARD_ENABLED=true (Ultraplan PR-5)', { LIFF_SUB_CARD_ENABLED: 'true' }],
   ['LIFF_HOME_IA_ENABLED=true (Ultraplan PR-6b)', { LIFF_HOME_IA_ENABLED: 'true' }],
+  ['LIFF_VISUAL_V2_ENABLED=true (Ultraplan PR-7/8)', { LIFF_VISUAL_V2_ENABLED: 'true' }],
   [
     '全 gate on (現在の本番)',
     {
@@ -38,6 +39,7 @@ export const PORTAL_GATE_MATRIX: ReadonlyArray<readonly [string, Record<string, 
       PORTAL_BOOTSTRAP_ENABLED: 'true',
       LIFF_SUB_CARD_ENABLED: 'true',
       LIFF_HOME_IA_ENABLED: 'true',
+      LIFF_VISUAL_V2_ENABLED: 'true',
     },
   ],
 ];

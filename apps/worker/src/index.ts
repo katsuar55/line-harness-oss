@@ -257,6 +257,9 @@ export type Env = {
     // home タブ IA 再編 (Ultraplan PR-6b, 2026-08-20): 'true' で rank-hero + coupon-hub の
     //   視覚順に切替 (CSS order のみ・DOM/JS 不変)。既定 (未設定) = off — 従来の並びのまま。
     LIFF_HOME_IA_ENABLED?: string;
+    // 視覚刷新 v2 (Ultraplan PR-7/8, 2026-08-20): 'true' で主役カード (ランク/定期便) に
+    //   計器レール天冠 + 浮き shadow (装飾 CSS のみ・新色ゼロ)。既定 (未設定) = off。
+    LIFF_VISUAL_V2_ENABLED?: string;
     // サブスク決済7日前リマインド + 決済失敗リカバリ通知 gate (WI-2 2026-07-14):
     //   'true' で teiki-billing-reminder cron と pause 遷移時の LINE push が有効。
     //   SUBSCRIPTION_MENU_ENABLED=true (read-model 稼働) が前提。
