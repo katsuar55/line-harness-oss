@@ -131,12 +131,31 @@ export async function processSubscriptionReminders(
   const metrics: SubscriptionReminderResult = { dueCount: 0, sentCount: 0, errorCount: 0 };
 
   // 1. Get due reminders
+  //
+  // 🚨 稼働中の定期便契約を持つ友だちには送らない (2026-08-18)。
+  //   この cron は「単発購入者への再購入促し」であり、既に定期便が動いている顧客へ
+  //   「ワンタッチで再注文」を push すると**定期便と二重の単発注文**を促してしまう。
+  //   実際に 30 日周期のリマインダーが 100 日周期の稼働契約者へ届いた (本番実測・
+  //   届いたのはテスト行を持つ owner 1 名のみで実顧客への誤送信はゼロ)。
+  //   行を消すのではなく送信側で除外する: 契約が**解約** (cancelled_at) されたら
+  //   リマインダーは自動で復活する = 単発購入者に戻った顧客への促しは温存される。
+  //   **一時停止 (paused_at) 中も除外したまま** — 停止は「単発購入者に戻った」では
+  //   ないので復活させない (復活は解約 or 停止解除のみ)。
+  //   ⚠️ own-billing (Phase 3 卒業・own_sub_contracts) を実顧客に開くときは、
+  //   この NOT EXISTS に own_sub_contracts (status='active'|'paused') も足すこと。
+  //   足さないと own-billing のみの契約者に同じ二重注文促しが再発する (レビュー指摘)。
   const { results: dueReminders } = await db
     .prepare(
       `SELECT sr.id, sr.friend_id, sr.product_title, sr.interval_days,
               sr.next_reminder_at, sr.shopify_product_id
        FROM subscription_reminders sr
        WHERE sr.is_active = 1 AND sr.next_reminder_at <= ?
+         AND NOT EXISTS (
+           SELECT 1 FROM friends f
+             JOIN subscription_contracts c ON c.shopify_customer_id = f.shopify_customer_id
+            WHERE f.id = sr.friend_id
+              AND c.cancelled_at IS NULL
+         )
        LIMIT 50`,
     )
     .bind(now)

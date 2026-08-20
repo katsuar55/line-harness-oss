@@ -38,8 +38,12 @@ describe('LIFF data-load 取り違え回帰ガード (監査 PR-A)', () => {
   });
 
   it('紹介ランキング SQL は実在カラム referrer_friend_id を使う (referrer_id / reward_type は referral_rewards に無く 500)', () => {
-    expect(portal).toContain('JOIN friends f ON f.id = rr.referrer_friend_id');
-    expect(portal).not.toContain('rr.referrer_id');
-    expect(portal).not.toMatch(/rr\.reward_type/);
+    // SQL 実体は services/portal-read.ts readReferralRanking (PR-2 抽出) — ガードは実体を読む
+    const portalRead = readFileSync(join(routes, '..', 'services', 'portal-read.ts'), 'utf8');
+    expect(portalRead).toContain('JOIN friends f ON f.id = rr.referrer_friend_id');
+    expect(portalRead).not.toContain('rr.referrer_id');
+    expect(portalRead).not.toMatch(/rr\.reward_type/);
+    // handler 側にも SQL の断片が復活していないこと (二重管理の drift 防止)
+    expect(portal).not.toContain('rr.referrer_friend_id');
   });
 });

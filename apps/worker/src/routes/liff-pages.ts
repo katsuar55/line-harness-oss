@@ -3,7 +3,10 @@ import { translations as i18nData } from '@line-crm/shared';
 import type { Env } from '../index.js';
 import { BRAND_LOGO_PNG_BASE64 } from './brand-logo.js';
 import { liffWatchdogScriptTag } from '../utils/liff-watchdog.js';
-import { jsonForScript } from '../utils/inline-script.js';
+import { jsonForScript, inlineScriptBody } from '../utils/inline-script.js';
+import { subCardHtml, subCardCss, subCardJs } from './liff-portal-fragments/sub-card.js';
+import { homeIaCss, homeIaHubHeadHtml } from './liff-portal-fragments/home-ia.js';
+import { visualV2Css } from './liff-portal-fragments/visual-v2.js';
 
 const liffPages = new Hono<Env>();
 
@@ -42,7 +45,18 @@ const portalHandler = (c: { env: Env['Bindings']; html: (html: string) => Respon
     c.env.APP_PROXY_LINK_ENABLED === 'true' && /^https:\/\/[A-Za-z0-9.-]+$/.test(storefrontRaw)
       ? storefrontRaw
       : null;
-  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl));
+  // ポータル初期化の一括 read gate (Ultraplan PR-3): on のとき client が
+  // GET /api/liff/portal-bootstrap 1 往復へ初期 fetch 群を束ねる。既定 off = 従来経路のまま。
+  const portalBootstrapOn = c.env.PORTAL_BOOTSTRAP_ENABLED === 'true';
+  // 定期便カード gate (Ultraplan PR-5): on のとき shop タブに契約カード (fragment) を emit。
+  // 既定 off = fragment を 1 byte も出さない (dark)。
+  const subCardOn = c.env.LIFF_SUB_CARD_ENABLED === 'true';
+  // home IA 再編 gate (Ultraplan PR-6b): on のとき home タブの視覚順を rank-hero + coupon-hub 化。
+  // CSS order のみ (DOM/JS 不変)。既定 off = 1 byte も emit しない (dark)。
+  const homeIaOn = c.env.LIFF_HOME_IA_ENABLED === 'true';
+  // 視覚刷新 v2 gate (Ultraplan PR-7/8): 主役カードの計器アクセント (装飾 CSS のみ・新色ゼロ)。
+  const visualV2On = c.env.LIFF_VISUAL_V2_ENABLED === 'true';
+  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl, portalBootstrapOn, subCardOn, homeIaOn, visualV2On));
 };
 liffPages.get('/liff/portal', portalHandler as never);
 liffPages.get('/liff/portal/', portalHandler as never);
@@ -52,6 +66,10 @@ function portalPage(
   apiBase: string,
   referralRewardOn = false,
   shopifyLinkUrl: string | null = null,
+  portalBootstrapOn = false,
+  subCardOn = false,
+  homeIaOn = false,
+  visualV2On = false,
 ): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -339,6 +357,9 @@ function portalPage(
     .active\\:scale-\\[0\\.98\\]:active{transform:translateY(1.5px) scale(.96) !important}
     @media(prefers-reduced-motion:reduce){.skeleton,.streak-fire,.ambassador-badge,.sparkle-dot,.rank-ambassador::before,.section,#quiz-result{animation:none !important}.btn-primary:active,.btn-coral:active,.meal-btn:active,.mood-btn:active,.skin-btn:active,.bowel-btn:active,button:active,.tap:active,label:active,a[onclick]:active{transform:none !important}.sr{opacity:1 !important;transform:none !important}.sr-in{transition:none !important}#scroll-progress,#scroll-leaf{display:none}}
   </style>
+  ${subCardOn ? '<style>\n    ' + subCardCss() + '\n  </style>' : ''}
+  ${homeIaOn ? '<style>\n    ' + homeIaCss() + '\n  </style>' : ''}
+  ${visualV2On ? '<style>\n    ' + visualV2Css() + '\n  </style>' : ''}
 </head>
 <body class="min-h-screen pb-20">
 
@@ -410,6 +431,7 @@ function portalPage(
           </button>
         </div>
       </div>
+      ${homeIaOn ? homeIaHubHeadHtml() : ''}
       <!-- 友だち追加 welcome クーポン (発行済みのときのみ表示・期限カウントダウン付き) -->
       <div id="welcome-coupon-card" class="card p-4" style="display:none"></div>
       <!-- 紹介特典クーポン (referred=紹介された/referrer=紹介した の実クーポン、発行済みのときのみ表示) -->
@@ -589,8 +611,13 @@ function portalPage(
         </div>
       </div>
       <!-- Log Button -->
-      <button onclick="logIntake()" id="intake-btn" class="btn-primary w-full py-4 rounded-2xl text-base font-bold shadow-lg" style="letter-spacing:.05em">
-        ✨ 服用を記録する
+      <!-- beta バッジ: 服用記録はまだ充実途上のため期待値を正直に示す (2026-08-17 Katsu 指示)。
+           ⚠️ ラベルは #intake-btn-label に分離してある。logIntake() が送信中に文言を差し替えるが、
+           ボタン全体の textContent を触るとバッジ要素ごと消える (初回タップで永久消滅する) ため、
+           必ずこの span だけを書き換えること。 -->
+      <button onclick="logIntake()" id="intake-btn" class="btn-primary w-full py-4 rounded-2xl text-base font-bold shadow-lg flex items-center justify-center gap-2" style="letter-spacing:.05em">
+        <span id="intake-btn-label">✨ 服用を記録する</span>
+        <span style="background:#fff;color:#0f766e;font-size:10px;line-height:1;padding:3px 6px;border-radius:999px;font-weight:800;letter-spacing:.06em">beta</span>
       </button>
       <!-- Calendar View -->
       <div class="card p-4">
@@ -847,6 +874,7 @@ function portalPage(
 
     <!-- ===== SHOP Section ===== -->
     <div id="section-shop" class="section space-y-4">
+      ${subCardOn ? subCardHtml() : ''}
       <!-- Products -->
       <div id="products-card" class="card p-4">
         <div class="skeleton h-48 rounded-lg"></div>
@@ -1112,6 +1140,7 @@ function portalPage(
 const LIFF_ID = '${escapeHtml(liffId)}';
 const API_BASE = '${escapeHtml(apiBase)}';
 const REFERRAL_REWARD_ON = ${referralRewardOn ? 'true' : 'false'};
+const PORTAL_BOOTSTRAP_ON = ${portalBootstrapOn ? 'true' : 'false'};
 let idToken = null;
 let selectedCondition = null;
 
@@ -1363,9 +1392,9 @@ function finishTour() {
 var I18N = ${JSON.stringify(i18nData)};
 var currentLang = 'ja';
 function i18n(key) { return (I18N[currentLang] && I18N[currentLang][key]) || (I18N.ja && I18N.ja[key]) || key; }
-async function loadLanguage() {
+async function loadLanguage(preRes) {
   try {
-    const { data } = await api('/api/liff/language');
+    const { data } = preRes || await api('/api/liff/language');
     if (data && data.lang) { currentLang = data.lang; }
   } catch { /* default ja */ }
   updateI18nUI();
@@ -1435,12 +1464,25 @@ async function initLiff() {
       if (earlyDest === 'delivery' || earlyDest === 'reorder' || earlyDest === 'shop' || earlyDest === 'store') {
         window.__shopPrefetched = true;
         loadShopData(); loadSubscriptionsOnce();
+        ${subCardOn ? 'loadSubContractsOnce();' : ''}
       }
     } catch (e) { /* prefetch は最適化 — 失敗しても通常経路で読む */ }
-    await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadWelcomeCoupon(), loadReferralCoupon(), loadLinkCoupon(), loadFriendCoupon(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake(), loadBadges()]);
-    initOptInCard();
-    initAccountHint();
-    await loadRank();
+    // Ultraplan PR-3: gate on なら初期化 fetch 群を portal-bootstrap 1 往復に束ねる。
+    // bootstrap 呼び出し自体の失敗は false が返り、下の旧経路へ**丸ごと**フォールバックする
+    // (= gate off と同一の動き)。section 単位の失敗は bootstrapPortal 内で該当 loader だけが
+    // 既存の個別 fetch に落ちる。
+    var bootstrapped = false;
+    if (PORTAL_BOOTSTRAP_ON) { bootstrapped = await bootstrapPortal(); }
+    if (!bootstrapped) {
+      await Promise.all([loadLanguage(), loadAmbassador(), loadTip(), loadWelcomeCoupon(), loadReferralCoupon(), loadLinkCoupon(), loadFriendCoupon(), loadCoupons(), loadReferralCard(), loadRanking(), loadProfile(), loadTodayIntake(), loadBadges()]);
+      initOptInCard();
+      initAccountHint();
+      await loadRank();
+    } else {
+      // bootstrap 経路は loadRank まで描画済み — 旧経路と同じ後処理だけ行う
+      initOptInCard();
+      initAccountHint();
+    }
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
     // ハッシュベースのディープリンク（リッチメニューから特定タブへ遷移）
@@ -1449,9 +1491,8 @@ async function initLiff() {
     initTabSwipe();
     initTourSwipe();
     if (window.__fatalShown) return; // 401 検知で全画面エラー表示中 — loading 消しでエラーを隠さない
-    document.getElementById('loading').style.display = 'none';
-    // 没入スクロール起動 (loading 非表示後 = overlay 下で cascade が空撃ちされないように)
-    initScrollReveal();
+    // bootstrap 経路では rank 初回描画時に解除済み (revealLoading は 1 回だけ効く)
+    revealLoading();
     // 第2波-⑥: 初回オンボーディング (loading を消してから = ツアーが loading の上に出ないように)
     initOnboarding();
   } catch (err) {
@@ -1678,16 +1719,90 @@ function loadErrorToast(res, msg) {
   showToast(msg);
 }
 
+// ─── Portal bootstrap (Ultraplan PR-3): 初期化 fetch 群を 1 往復に束ねる ───
+// gate PORTAL_BOOTSTRAP_ENABLED (server env) が PORTAL_BOOTSTRAP_ON として注入される。
+// 各 loader は preRes (個別 endpoint と同 shape の応答) を受け取れる fetch/render 分離形 —
+// preRes があれば fetch せず render のみ、無ければ従来どおり自分で fetch する。
+
+// #loading の解除は 1 回だけ (bootstrap 経路は rank 初回描画直後、旧経路は init 完走時)。
+// __fatalShown 中は解除しない — エラー全画面を隠さない (既存挙動と同じ向き)。
+function revealLoading() {
+  if (window.__fatalShown) return;
+  if (window.__loadingRevealed) return;
+  window.__loadingRevealed = true;
+  document.getElementById('loading').style.display = 'none';
+  // 没入スクロール起動 (loading 非表示後 = overlay 下で cascade が空撃ちされないように)
+  initScrollReveal();
+}
+
+// bootstrap 応答の 1 section を「個別 endpoint の応答と同じ形」に包んで返す。
+// section が無い / ok:false なら undefined = 呼ばれた loader が自分で fetch する
+// (= そのカードだけ既存の個別経路・既存のエラー表示へ落ちる。他カードへは伝播しない)。
+function bootstrapSection(sections, key) {
+  var s = sections ? sections[key] : null;
+  if (!s || !s.ok) return undefined;
+  return { success: true, status: 200, data: s.data };
+}
+
+// 戻り値 true = bootstrap 応答で描画済み / false = 呼び出し側が旧経路へ丸ごとフォールバック。
+async function bootstrapPortal() {
+  try {
+    var res = await apiGet('/api/liff/portal-bootstrap');
+    if (apiFailed(res) || !res.data) return false;
+    var s = res.data;
+    // ambassadorData は rank カードの装飾判定 (isAmb) に使うため rank より先に確定させる
+    // (旧経路でも loadAmbassador → loadRank の順が成立している)。
+    await loadAmbassador(bootstrapSection(s, 'ambassador'));
+    await loadRank(bootstrapSection(s, 'rank'));
+    // 全画面 #loading は rank 初回描画で解除 (PR-3 契約)。ただし deep-link (#delivery 等、
+    // home 以外へのタブ切替) 入場では見送り、旧経路と同じ init 完走時 (= handleDeepLink で
+    // タブ切替を済ませた後) に解除する — 早期 reveal だと「home が見えて操作を始めた頃に
+    // 画面が突然別タブへ飛ぶ」窓が streak fetch 1 往復ぶん開く (採点ループ R1 confirmed)。
+    var dest = deepLinkDest();
+    if (!dest || dest === 'home') { revealLoading(); }
+    await Promise.all([
+      loadLanguage(bootstrapSection(s, 'language')),
+      loadTip(bootstrapSection(s, 'tip')),
+      loadWelcomeCoupon(bootstrapSection(s, 'welcomeCoupon')),
+      loadReferralCoupon(bootstrapSection(s, 'referralCoupon')),
+      loadLinkCoupon(bootstrapSection(s, 'linkCoupon')),
+      loadFriendCoupon(bootstrapSection(s, 'friendCoupon')),
+      loadCoupons(bootstrapSection(s, 'coupons')),
+      loadReferralCard(bootstrapSection(s, 'referral')),
+      loadRanking(bootstrapSection(s, 'ranking')),
+      loadProfile(bootstrapSection(s, 'profile')),
+      loadTodayIntake(bootstrapSection(s, 'intakeToday')),
+      loadBadges(bootstrapSection(s, 'badges')),
+    ]);
+    return true;
+  } catch (e) {
+    // ここまでに一部描画済みでも、旧経路の再 fetch + 再描画は冪等 (上書きされるだけ)
+    return false;
+  }
+}
+
 // ─── Deep Link (hash-based tab navigation from rich menu) ───
+// 写像はこの 1 表が単一の正 (PR-6 で台帳化予定)。handleDeepLink と bootstrapPortal の
+// 早期 reveal 判定 (deepLinkDest) の両方が参照する — 複製すると片方だけ更新されて drift する。
+var DEEP_LINK_TAB_MAP = { shop: 'shop', store: 'shop', home: 'home', mypage: 'home', rank: 'home', referral: 'home', quiz: 'quiz', intake: 'intake', health: 'intake', delivery: 'shop', reorder: 'shop', more: 'account', account: 'account', settings: 'account' };
+
+// 現在 URL の deep-link 先タブ (無ければ null)。handleDeepLink と同じ解決規則。
+function deepLinkDest() {
+  try {
+    var hash = window.location.hash.replace('#', '');
+    if (!hash) { hash = new URLSearchParams(window.location.search).get('page') || ''; }
+    return DEEP_LINK_TAB_MAP[hash] || null;
+  } catch (e) { return null; }
+}
+
 function handleDeepLink() {
   var hash = window.location.hash.replace('#', '');
-  var tabMap = { shop: 'shop', store: 'shop', home: 'home', mypage: 'home', rank: 'home', referral: 'home', quiz: 'quiz', intake: 'intake', health: 'intake', delivery: 'shop', reorder: 'shop', more: 'account', account: 'account', settings: 'account' };
   // URLSearchParams もチェック（openLiffPage 互換）
   if (!hash) {
     var params = new URLSearchParams(window.location.search);
     hash = params.get('page') || '';
   }
-  var target = tabMap[hash];
+  var target = DEEP_LINK_TAB_MAP[hash];
   if (target && target !== 'home') {
     switchTab(target);
   }
@@ -1720,6 +1835,7 @@ function switchTab(name) {
     if (window.__shopPrefetched) { window.__shopPrefetched = false; }
     else { loadShopData(); }
     loadSubscriptionsOnce();
+    ${subCardOn ? 'loadSubContractsOnce(); // 定期便カード (PR-5, gate on のときだけ emit)' : ''}
   }
   if (name === 'account') loadAccountData();
   if (name === 'quiz') playQuizHeroVideo();
@@ -1891,10 +2007,10 @@ function showToast(msg) {
 }
 
 // ─── HOME: Rank ───
-async function loadRank() {
+async function loadRank(preRes) {
   const el = document.getElementById('rank-card');
   try {
-    const res = await api('/api/liff/rank');
+    const res = preRes || await api('/api/liff/rank');
     if (apiFailed(res)) { cardError(el, res, 'loadRank'); return; }
     const data = res.data;
     if (!data) return;
@@ -1953,10 +2069,10 @@ async function loadRank() {
 }
 
 // ─── HOME: Today's Tip ───
-async function loadTip() {
+async function loadTip(preRes) {
   const el = document.getElementById('tip-card');
   try {
-    const res = await apiGet('/api/liff/tips/today');
+    const res = preRes || await apiGet('/api/liff/tips/today');
     if (apiFailed(res)) { cardError(el, res, 'loadTip'); return; }
     const data = res.data;
     if (data) {
@@ -2097,11 +2213,11 @@ function couponExpiryPhrase(remainingText) {
 }
 
 // LINE友だち限定クーポン (ランク不問の一律 % OFF)。管理トグル ON 時のみ表示。
-async function loadFriendCoupon() {
+async function loadFriendCoupon(preRes) {
   var el = document.getElementById('friend-coupon-card');
   if (!el) return;
   try {
-    const res = await apiGet('/api/liff/friend-coupon');
+    const res = preRes || await apiGet('/api/liff/friend-coupon');
     // 「機能OFF/クーポンなし (200)」は非表示、「取得失敗」はエラーカード — 失敗を非表示に化けさせない
     if (apiFailed(res)) { cardError(el, res, 'loadFriendCoupon'); return; }
     const data = res.data;
@@ -2139,11 +2255,11 @@ function copyFriendCoupon() {
 }
 
 // 友だち追加 welcome クーポン (¥500 OFF・あなた専用)。発行済みのときだけ期限カウントダウン付きで表示。
-async function loadWelcomeCoupon() {
+async function loadWelcomeCoupon(preRes) {
   var el = document.getElementById('welcome-coupon-card');
   if (!el) return;
   try {
-    const res = await apiGet('/api/liff/welcome-coupon');
+    const res = preRes || await apiGet('/api/liff/welcome-coupon');
     if (apiFailed(res)) { cardError(el, res, 'loadWelcomeCoupon'); return; }
     var cp = res.data && res.data.coupon;
     if (!cp || !cp.code) { el.style.display = 'none'; vsSetCoupons('welcome', 0); return; }
@@ -2192,11 +2308,11 @@ function referralWaitingBlock(queued) {
     '<p class="text-xs text-gray-500">1枚お使いいただくごとに、次の1枚が自動でひらきます(ご注文の確認後、通常数分以内)。使えるようになってから60日間有効です。</p>' +
     '</div>';
 }
-async function loadReferralCoupon() {
+async function loadReferralCoupon(preRes) {
   var el = document.getElementById('referral-coupon-card');
   if (!el) return;
   try {
-    const res = await apiGet('/api/liff/referral-coupon');
+    const res = preRes || await apiGet('/api/liff/referral-coupon');
     if (apiFailed(res)) { cardError(el, res, 'loadReferralCoupon'); return; }
     var list = (res.data && res.data.coupons) || [];
     var queued = Number(res.data && res.data.queuedCount) || 0;
@@ -2257,13 +2373,13 @@ function linkCouponDaysLeft(expiresAt) {
   if (remMs <= 0) return 0;
   return Math.floor(Math.floor(remMs / 3600000) / 24);
 }
-async function loadLinkCoupon() {
+async function loadLinkCoupon(preRes) {
   var el = document.getElementById('link-coupon-card');
   if (!el) return;
   // 失敗・非表示の経路では通常カードの見た目に戻す (エラー文言が金の額装で出ないように)
   el.className = 'card p-4';
   try {
-    const res = await apiGet('/api/liff/link-coupon');
+    const res = preRes || await apiGet('/api/liff/link-coupon');
     if (apiFailed(res)) { cardError(el, res, 'loadLinkCoupon'); return; }
     var cp = res.data && res.data.coupon;
     if (!cp) { el.style.display = 'none'; vsSetCoupons('link', 0); return; }
@@ -2363,10 +2479,10 @@ function copyRefCode(btn) {
   } catch (e) { showToast('コピーできませんでした。コードを長押ししてください'); }
 }
 
-async function loadCoupons() {
+async function loadCoupons(preRes) {
   const el = document.getElementById('coupons-card');
   try {
-    const res = await api('/api/liff/coupons');
+    const res = preRes || await api('/api/liff/coupons');
     if (apiFailed(res)) { cardError(el, res, 'loadCoupons'); return; }
     const data = res.data;
     if (data && data.coupons && data.coupons.length > 0) {
@@ -2491,9 +2607,16 @@ function showConfetti() {
 async function logIntake() {
   if (isDemo) { showToast('DEMO: 記録しました! (連続6日)'); showConfetti(); return; }
   var btn = document.getElementById('intake-btn');
+  // ラベル span だけを差し替える。btn.textContent を触ると beta バッジ要素ごと消え、
+  // 復元時にラベルとバッジが連結した素テキストになる (初回タップで永久に壊れる)。
+  // ⚠️ 「|| btn」のフォールバックを置かないこと — span が失われた場合に btn へ代入が戻り、
+  // まさに上記のバグを無言で再導入する (レビュー指摘)。span が無いときは文言を変えない
+  // (disabled だけで送信中は伝わる)。表示が少し寂しくなるだけで、壊れはしない。
+  // ※ このファイルの JS は TS の template literal 内にあるためバックティック禁止 (打ち切る)。
+  var label = document.getElementById('intake-btn-label');
   btn.disabled = true;
-  var origLabel = btn.textContent;
-  btn.textContent = '記録中...';
+  var origLabel = label ? label.textContent : null;
+  if (label) label.textContent = '記録中...';
   try {
     var res = await api('/api/liff/intake', { productName: 'naturism ' + selectedProduct });
     if (apiFailed(res)) {
@@ -2509,7 +2632,7 @@ async function logIntake() {
     }
   } catch { showToast('記録に失敗しました'); }
   btn.disabled = false;
-  btn.textContent = origLabel;
+  if (label) label.textContent = origLabel;
 }
 
 // Phase 1: 能動pull 型の朝/昼/夜 ボタン処理
@@ -2566,7 +2689,7 @@ function markMealDone(mealType) {
 }
 
 // Phase 2: バッジ + レベルロード
-async function loadBadges() {
+async function loadBadges(preRes) {
   if (isDemo) {
     // demo data
     var demoLevel = 3;
@@ -2584,7 +2707,7 @@ async function loadBadges() {
     return;
   }
   try {
-    const json = await apiGet('/api/liff/badges');
+    const json = preRes || await apiGet('/api/liff/badges');
     if (apiFailed(json)) { cardError(document.getElementById('badge-grid'), json, 'loadBadges'); return; }
     if (!json || !json.data) return;
 
@@ -2616,14 +2739,15 @@ async function loadBadges() {
   } catch { cardError(document.getElementById('badge-grid'), null, 'loadBadges'); }
 }
 
-async function loadTodayIntake() {
+async function loadTodayIntake(preRes) {
   if (isDemo) {
     var num = document.getElementById('intake-streak-num');
     if (num) num.textContent = '6';
     return;
   }
   try {
-    const json = await apiGet('/api/liff/intake/today');
+    // preRes は intake/today ぶんのみ。streak は別 endpoint のため従来どおり fetch する
+    const json = preRes || await apiGet('/api/liff/intake/today');
     // 失敗は「0日」に化けさせない (401 は apiGet 中央検知が全画面誘導)
     if (apiFailed(json)) {
       var errNum = document.getElementById('intake-streak-num');
@@ -2978,16 +3102,25 @@ function renderHealthStats(trends, days) {
 }
 
 // ─── REFERRAL + Sharing ───
-async function loadReferralCard() {
+async function loadReferralCard(preRes) {
   var el = document.getElementById('referral-card');
   try {
-    const [genRes, statsRes] = await Promise.all([
-      api('/api/liff/referral/generate'),
-      api('/api/liff/referral/stats'),
-    ]);
-    if (apiFailed(genRes)) { cardError(el, genRes, 'loadReferralCard'); return; }
-    var refCode = genRes.data ? genRes.data.refCode : null;
-    var stats = (statsRes && statsRes.data) || {};
+    var refCode = null;
+    var stats = {};
+    if (preRes && preRes.data && preRes.data.refCode) {
+      // bootstrap の referral section (= stats + refCode/hasLink)。リンク発行済みなら
+      // generate を撃たずに描画できる。未発行 (refCode null) は生成が必要なので下の旧経路へ。
+      stats = preRes.data;
+      refCode = stats.refCode;
+    } else {
+      const [genRes, statsRes] = await Promise.all([
+        api('/api/liff/referral/generate'),
+        api('/api/liff/referral/stats'),
+      ]);
+      if (apiFailed(genRes)) { cardError(el, genRes, 'loadReferralCard'); return; }
+      refCode = genRes.data ? genRes.data.refCode : null;
+      stats = (statsRes && statsRes.data) || {};
+    }
     if (!refCode) {
       el.innerHTML = '<p class="text-xs text-gray-400">紹介リンクを取得できませんでした</p>';
       return;
@@ -3062,9 +3195,9 @@ function shareRefLine() {
 }
 
 // ─── Ranking ───
-async function loadRanking() {
+async function loadRanking(preRes) {
   try {
-    const res = await apiGet('/api/liff/referral/ranking');
+    const res = preRes || await apiGet('/api/liff/referral/ranking');
     // 任意カード: 非 auth エラーは非表示のまま (401 は apiGet 中央検知が全画面誘導)
     if (apiFailed(res)) return;
     const data = res.data;
@@ -3087,9 +3220,9 @@ async function loadRanking() {
 var ambassadorData = null;
 var fbRating = 0;
 
-async function loadAmbassador() {
+async function loadAmbassador(preRes) {
   try {
-    const res = await api('/api/liff/ambassador/status');
+    const res = preRes || await api('/api/liff/ambassador/status');
     // 任意セクション: 非 auth エラーは非表示のまま (401 は api 中央検知が全画面誘導)
     if (apiFailed(res)) return;
     const data = res.data;
@@ -3309,9 +3442,9 @@ function setGender(g) {
   });
 }
 
-async function loadProfile() {
+async function loadProfile(preRes) {
   try {
-    const res = await apiGet('/api/liff/profile');
+    const res = preRes || await apiGet('/api/liff/profile');
     if (apiFailed(res)) { loadErrorToast(res, 'プロフィールを読み込めませんでした'); return; }
     const data = res.data;
     if (!data) return;
@@ -4946,6 +5079,8 @@ function finishQuiz() {
 }
 
 // ─── Init ───
+${subCardOn ? inlineScriptBody(subCardJs()) : ''}
+
 document.addEventListener('DOMContentLoaded', initLiff);
 
 // 「読み込み中...」永久固着の watchdog: liff.init や API が resolve も reject もしないまま

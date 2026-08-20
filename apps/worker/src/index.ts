@@ -56,6 +56,7 @@ import { abTests } from './routes/ab-tests.js';
 import { shopifyProducts } from './routes/shopify-products.js';
 import { analyticsRoutes } from './routes/analytics.js';
 import { liffPortal } from './routes/liff-portal.js';
+import { liffPortalBootstrap } from './routes/liff-portal-bootstrap.js';
 import { friendCoupon } from './routes/friend-coupon.js';
 import { adminOps } from './routes/admin-ops.js';
 import { faqAdmin } from './routes/faq-admin.js';
@@ -67,6 +68,7 @@ import { liffFoodPage } from './routes/liff-food-page.js';
 import { liffCoachPage } from './routes/liff-coach-page.js';
 import { liffReorderPage } from './routes/liff-reorder-page.js';
 import { liffMyRank } from './routes/liff-my-rank.js';
+import { liffSubContracts } from './routes/liff-sub-contracts.js';
 import { tips } from './routes/tips.js';
 import { ambassadors } from './routes/ambassadors.js';
 import { csvExport } from './routes/csv-export.js';
@@ -241,6 +243,23 @@ export type Env = {
     //   MENU=true は収集も含む (OR) ので、既存の単一 gate 運用と後方互換。
     //   TEIKI_FLOW の実測値を貯めてから可視面を開ける、が正しい順序: docs/TEIKI_FLOW_SETUP.md
     SUBSCRIPTION_INGEST_ENABLED?: string;
+    // ポータル初期化の一括 read (Ultraplan PR-3, 2026-08-20): 'true' で /liff/portal の
+    //   client が GET /api/liff/portal-bootstrap 1 往復に初期 fetch 群を束ねる。
+    //   既定 (未設定) = off — client は従来どおり個別 13 fetch + loadRank (完全に不変)。
+    //   bootstrap 呼び出しが失敗した場合も client 側で旧経路へ丸ごとフォールバックする。
+    PORTAL_BOOTSTRAP_ENABLED?: string;
+    // ポータル shop タブの定期便カード (Ultraplan PR-5, 2026-08-20): 'true' で
+    //   routes/liff-portal-fragments/sub-card.ts の HTML/CSS/JS を emit し、PR-4 の
+    //   /api/liff/sub-contracts 3 endpoint を呼ぶ UI が現れる。既定 (未設定) = off —
+    //   fragment は 1 byte も emit されない (dark)。表示には SUBSCRIPTION_MENU_ENABLED、
+    //   受理ボタンにはさらに SUB_INTENT_ENABLED が API 側で必要 (二重 gate)。
+    LIFF_SUB_CARD_ENABLED?: string;
+    // home タブ IA 再編 (Ultraplan PR-6b, 2026-08-20): 'true' で rank-hero + coupon-hub の
+    //   視覚順に切替 (CSS order のみ・DOM/JS 不変)。既定 (未設定) = off — 従来の並びのまま。
+    LIFF_HOME_IA_ENABLED?: string;
+    // 視覚刷新 v2 (Ultraplan PR-7/8, 2026-08-20): 'true' で主役カード (ランク/定期便) に
+    //   計器レール天冠 + 浮き shadow (装飾 CSS のみ・新色ゼロ)。既定 (未設定) = off。
+    LIFF_VISUAL_V2_ENABLED?: string;
     // サブスク決済7日前リマインド + 決済失敗リカバリ通知 gate (WI-2 2026-07-14):
     //   'true' で teiki-billing-reminder cron と pause 遷移時の LINE push が有効。
     //   SUBSCRIPTION_MENU_ENABLED=true (read-model 稼働) が前提。
@@ -373,12 +392,14 @@ app.route('/', abTests);
 app.route('/', shopifyProducts);
 app.route('/api/analytics', analyticsRoutes);
 app.route('/', liffPortal);
+app.route('/', liffPortalBootstrap);
 app.route('/', liffPages);
 app.route('/', liffFoodGraph);
 app.route('/', liffFoodPage);
 app.route('/', liffCoachPage);
 app.route('/', liffReorderPage);
 app.route('/', liffMyRank);
+app.route('/', liffSubContracts);
 app.route('/', tips);
 app.route('/', ambassadors);
 app.route('/', csvExport);

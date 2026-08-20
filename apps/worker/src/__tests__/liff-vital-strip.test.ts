@@ -298,7 +298,7 @@ describe('VITAL STRIP — 既存 loader への配線', () => {
   });
 
   it('loadRank がランクと連携の両方を strip へ流す', () => {
-    const fn = pages.match(/async function loadRank\(\) \{[\s\S]*?\n\}/);
+    const fn = pages.match(/async function loadRank\(preRes\) \{[\s\S]*?\n\}/);
     expect(fn).toBeTruthy();
     expect(fn![0]).toContain('vsSetRank(');
     expect(fn![0]).toContain('vsSetLinked(');
@@ -311,7 +311,7 @@ describe('VITAL STRIP — 既存 loader への配線', () => {
   });
 
   it('連携の向きは単調 (loadRank が遅れて false を運んでも on を落とさない)', () => {
-    const fn = pages.match(/async function loadRank\(\) \{[\s\S]*?\n\}/);
+    const fn = pages.match(/async function loadRank\(preRes\) \{[\s\S]*?\n\}/);
     expect(fn![0]).toContain('window.__shopifyLinked === true || !!data.linked');
   });
 });

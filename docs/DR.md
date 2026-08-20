@@ -27,9 +27,10 @@
 | Worker 名 | `naturism-line-crm` |
 | D1 database 名 | `naturism-line-crm` |
 | D1 database ID | `f736c7fa-1c19-4279-b03d-3af3a71b7fca` |
-| R2 bucket | `naturism-line-crm-images` (バックアップは `backups/` プレフィックス) |
-| バックアップ保存先 | `naturism-line-crm-images/backups/YYYY-MM-DD/naturism-d1-backup-YYYY-MM-DD.sql` |
-| ローカルバックアップ | `C:\Users\user\Desktop\line-harness-oss\backups\naturism-d1-backup-*.sql` |
+| R2 bucket (画像・公開配信あり) | `naturism-line-crm-images` |
+| R2 bucket (バックアップ・**非公開/Worker binding なし**) | `naturism-line-crm-backups` |
+| バックアップ保存先 | `naturism-line-crm-backups/YYYY-MM-DD/naturism-d1-backup-YYYY-MM-DD.sql` |
+| ローカルバックアップ | `C:\dev\line-harness-oss\backups\naturism-d1-backup-*.sql` |
 
 ---
 
@@ -43,7 +44,7 @@
 または PowerShell から:
 
 ```powershell
-cd C:\Users\user\Desktop\line-harness-oss\apps\worker
+cd C:\dev\line-harness-oss\apps\worker
 npx wrangler deployments list
 # 一覧から Version ID をコピー
 npx wrangler rollback <version-id>
@@ -62,12 +63,25 @@ npx wrangler deployments list | head -3
 
 ## 4. D1 復元 (バックアップからの完全復旧)
 
-### 手順 A: ローカルバックアップから
+### 手順 A: ローカルバックアップから — 🚨 **最後の手段。現状ほぼ使えない**
 
-前日の R2 バックアップが使えない場合、ローカルの最新 `backups/naturism-d1-backup-YYYY-MM-DD.sql` から。
+前日の R2 バックアップが使えない場合の代替。ただし **2026-08-17 実測で以下が判明している**:
+
+| | テーブル数 |
+|---|---|
+| ローカル退避の最新 `backups/naturism-d1-backup-2026-05-16.sql` | **106** |
+| 本番 | **135** |
+
+= **29 テーブル欠落**。2026-05 以降に追加されたロイヤリティ / 定期便 (`subscription_contracts`)
+/ 受理台帳 (`sub_intents`) / クーポン各台帳が丸ごと入っていない。これで復元すると
+**それらの機能が消えたうえ、顧客の受理済み依頼も失われる**。
+
+→ 実質の復旧経路は **手順 B (R2) 一択**。手順 A を使うのは「R2 も失った」場合に限り、
+その場合も復元後に migration を再適用して欠落テーブルを作り直すこと。
+ローカル退避を復旧経路として維持するなら、新鮮なダンプを取り直す運用が要る (未整備)。
 
 ```powershell
-cd C:\Users\user\Desktop\line-harness-oss\apps\worker
+cd C:\dev\line-harness-oss\apps\worker
 
 # 1. 既存テーブル全削除 (慎重に実行。別DBでテストしてからが安全)
 # wrangler d1 execute naturism-line-crm --remote --command="SELECT 'DROP TABLE IF EXISTS ' || name || ';' FROM sqlite_master WHERE type='table'"
@@ -83,11 +97,14 @@ npx wrangler d1 execute naturism-line-crm --remote --command="SELECT COUNT(*) FR
 ### 手順 B: R2 バックアップから
 
 ```powershell
-cd C:\Users\user\Desktop\line-harness-oss\apps\worker
+cd C:\dev\line-harness-oss\apps\worker
 
 # 1. R2 から日付指定でダウンロード (例: 2026-04-24)
 $DATE = "2026-04-24"
-npx wrangler r2 object get naturism-line-crm-images/backups/$DATE/naturism-d1-backup-$DATE.sql --file=restore.sql --remote
+npx wrangler r2 object get naturism-line-crm-backups/$DATE/naturism-d1-backup-$DATE.sql --file=restore.sql --remote
+
+# ※ 2026-08-17 より前のバックアップは旧バケットにある (30 日 retention で順次消滅):
+#    npx wrangler r2 object get naturism-line-crm-images/backups/$DATE/naturism-d1-backup-$DATE.sql --file=restore.sql --remote
 
 # 2. 内容サニティチェック
 Get-Content restore.sql -Head 5
@@ -100,7 +117,7 @@ npx wrangler d1 execute naturism-line-crm --remote --file=restore.sql
 ### 手順 C: スキーマだけ再構築 (データ不要の場合)
 
 ```powershell
-cd C:\Users\user\Desktop\line-harness-oss\apps\worker
+cd C:\dev\line-harness-oss\apps\worker
 npx wrangler d1 execute naturism-line-crm --remote --file=../../packages/db/schema.sql
 ```
 
@@ -127,9 +144,13 @@ npx wrangler d1 execute naturism-line-crm --remote --command="SELECT COUNT(*) FR
 R2 バケット自体が消えた場合:
 
 ```powershell
-cd C:\Users\user\Desktop\line-harness-oss\apps\worker
-# 1. バケット再作成
+cd C:\dev\line-harness-oss\apps\worker
+# 1. バケット再作成 (画像用 = Worker が binding 経由で読む)
 npx wrangler r2 bucket create naturism-line-crm-images
+
+# 1b. バックアップ用バケット (Worker binding は張らない。retention も再設定)
+npx wrangler r2 bucket create naturism-line-crm-backups --location apac
+npx wrangler r2 bucket lifecycle add naturism-line-crm-backups backup-30day-retention --expire-days 30 --force
 
 # 2. wrangler.toml の binding 確認 → 変更不要 (バケット名は同じ)
 
@@ -223,10 +244,15 @@ npx vite build; npx wrangler deploy
 
 | ストレージ | 保持期間 | 用途 |
 |---|---|---|
-| R2 `naturism-line-crm-images/backups/` | 30日 (※) | 日次復旧用 |
-| ローカル `backups/*.sql` | 無期限 | 長期アーカイブ |
+| R2 `naturism-line-crm-backups/` | 30日 (lifecycle `backup-30day-retention` 設定済) | 日次復旧用 |
+| R2 `naturism-line-crm-images/backups/` (**旧・2026-08-17 で使用終了**) | 30日 (設定済) | 2026-09-14 頃までに自然消滅 |
+| ローカル `backups/*.sql` | 無期限 | ⚠️ **最新 2026-05-16 / 106 テーブル (本番 135)。復旧経路として数えないこと** — §4 手順 A 参照 |
 
-(※) R2 ライフサイクルルールを設定することを推奨。現状は手動管理。
+🚨 **バックアップを画像バケットへ戻さないこと。** 2026-08-16 に、画像を配信する公開ルート
+`GET /images/:key` が同じバインディングを引いていたため、顧客 PII を含む D1 全体が
+無認証でダウンロード可能だった (本番実測)。詳細は CLAUDE.md「公開ルート × オブジェクト
+ストレージのルール」。バックアップ用バケットには **Worker binding を張っていない** —
+binding が無ければ到達しうるコード経路が存在しない、というのが分離の要です。
 
 ---
 
@@ -240,4 +266,7 @@ npx vite build; npx wrangler deploy
 
 ---
 
-**Last updated: 2026-04-24 (v1)**
+**Last updated: 2026-08-17 (v2)** — バックアップを専用非公開バケット
+`naturism-line-crm-backups` へ分離 / 手順のパスを `C:\dev\line-harness-oss` へ修正
+(旧 `Desktop\...` は存在せず、復旧手順の 1 行目で失敗する状態だった) /
+ローカル退避が本番と 29 テーブル乖離している事実を明記

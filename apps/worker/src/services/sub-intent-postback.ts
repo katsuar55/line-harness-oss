@@ -24,6 +24,8 @@ import {
   formatPromisedBy,
   requestedDateFromPayload,
   SUB_INTENT_OP_LABELS,
+  sendSubIntentAlert,
+  sendSubIntentStaffEmail,
   type SubIntentGateEnv,
 } from './sub-intents.js';
 import {
@@ -51,6 +53,14 @@ function todayJst(nowMs?: number): string {
 export interface SubIntentPostbackEnv extends SubIntentGateEnv {
   DB: D1Database;
   LIFF_URL?: string;
+  // 受理の瞬間にスタッフへ知らせるための Discord (best-effort)。未設定なら通知しない。
+  DISCORD_WEBHOOK_URL?: string;
+  ACCOUNT_NAME?: string;
+  // 同じ受理をスタッフメール (info@) にも届ける (2026-08-18 Katsu 指示)。未設定なら skip。
+  RESEND_API_KEY?: string;
+  EMAIL_FROM?: string;
+  EMAIL_REPLY_TO?: string;
+  STAFF_NOTIFY_EMAIL?: string;
 }
 
 export interface SubIntentPostbackInput {
@@ -116,6 +126,9 @@ export async function handleSubIntentPostback(input: SubIntentPostbackInput): Pr
   const op = params.get('op') ?? '';
   let outcome = 'unknown';
   let messages: ReadonlyArray<Message>;
+  // 新規受理が成立したときだけ入る (スタッフ通知用)。duplicate/拒否系では undefined のまま。
+  // label は表示用 (受理 = op ラベル / undo 受理 = 「◯◯ の取り消し」)。
+  let accepted: { label: string; contractKey: string; promisedBy: string | null } | undefined;
   try {
     if (op === 'dismiss') {
       messages = [
@@ -123,9 +136,9 @@ export async function handleSubIntentPostback(input: SubIntentPostbackInput): Pr
       ];
       outcome = 'dismissed';
     } else if (op === 'undo') {
-      ({ messages, outcome } = await handleUndo(db, friend.id, params, input.nowMs));
+      ({ messages, outcome, accepted } = await handleUndo(db, friend.id, params, input.nowMs));
     } else if (op === 'cancel_pause' || ACCEPT_OPS.has(op)) {
-      ({ messages, outcome } = await handleContractOp(input, conciergeFriend, op));
+      ({ messages, outcome, accepted } = await handleContractOp(input, conciergeFriend, op));
     } else {
       messages = await buildSubscriptionMenuMessages(db, conciergeFriend, env.LIFF_URL, {
         subIntent: true,
@@ -169,6 +182,14 @@ export async function handleSubIntentPostback(input: SubIntentPostbackInput): Pr
       errorMessage: err instanceof Error ? err.message.slice(0, 500) : 'unknown',
       metadata: { op, outcome },
     });
+    // 🚨 reply が失敗しても、受理 (INSERT) は既に成立している (§10-5: 巻き戻さない)。
+    //   この経路こそ通知の必要性が最も高い — 顧客は受理文言を一度も見ておらず、
+    //   スタッフだけが約束を知っている状態になるため (採点 ①-3)。
+    if (accepted) {
+      const line = `${buildAcceptedAlertLine(accepted)}\n⚠️ 顧客への受理文言は届いていません (reply 失敗) — 最優先で対応し、必要なら手動でご連絡ください`;
+      await sendSubIntentAlert(env, [line]);
+      await sendSubIntentStaffEmail(env, `新しいご依頼: ${accepted.label} (要・最優先対応)`, [line]);
+    }
     return;
   }
   await auditSystem(db, {
@@ -181,6 +202,35 @@ export async function handleSubIntentPostback(input: SubIntentPostbackInput): Pr
     // PII なし: op と結果のみ (§1-4)
     metadata: { op, outcome },
   });
+
+  // 🚨 受理の瞬間にスタッフへ知らせる (2026-08-17 採点ループ HIGH)。
+  //   これが無いと、システムが自動で出す最初の通知が §4-2 の「約束期限を超過」=
+  //   **顧客へ謝罪 push を送った後**になる。つまり誰も /admin/ops を開かなければ
+  //   全依頼が既定で謝罪に落ちる構造だった。push は回復不能なので、無送信側でなく
+  //   「先に気付ける」側に倒す。
+  //   ・reply と audit の**後**に置く = Discord の失敗や遅延が顧客体験に一切触れない
+  //     (LINE の 1 秒応答制限にも影響しない)
+  //   ・PII は載せない (§1-4) — op / 契約キー / 約束期限のみ
+  if (accepted) {
+    const line = buildAcceptedAlertLine(accepted);
+    await sendSubIntentAlert(env, [line]);
+    // 2026-08-18 Katsu 指示: Discord を見ないスタッフも受信箱で気付けるよう info@ へも送る
+    await sendSubIntentStaffEmail(env, `新しいご依頼: ${accepted.label}`, [line]);
+  }
+}
+
+/** 受理成立のスタッフ通知 1 行 (PII なし §1-4)。reply 成否の但し書きは呼び出し側で付ける。 */
+function buildAcceptedAlertLine(accepted: {
+  label: string;
+  contractKey: string;
+  promisedBy: string | null;
+}): string {
+  return (
+    `🆕 「${accepted.label}」(契約 ${accepted.contractKey}) を承りました。` +
+    (accepted.promisedBy
+      ? `約束期限 ${String(accepted.promisedBy).slice(0, 16).replace('T', ' ')} — /admin/ops で対応してください`
+      : '約束期限なし (推定日が出せない契約) — /admin/ops で対応してください')
+  );
 }
 
 // ============================================================
@@ -192,7 +242,12 @@ async function handleUndo(
   friendId: string,
   params: URLSearchParams,
   nowMs?: number,
-): Promise<{ messages: ReadonlyArray<Message>; outcome: string }> {
+): Promise<{
+  messages: ReadonlyArray<Message>;
+  outcome: string;
+  /** undo_accepted (= スタッフの新規作業が生まれた) ときだけ載る。undo_cancelled は作業が消えるだけなので載せない。 */
+  accepted?: { label: string; contractKey: string; promisedBy: string | null };
+}> {
   const id = params.get('id') ?? '';
   const intent = id ? await getSubIntent(db, id) : null;
   // IDOR: intent は自分のもの (friend_id 一致) だけ触れる。他人の id は存在を漏らさない
@@ -215,15 +270,27 @@ async function handleUndo(
     };
   }
   if (result.status === 'undo_accepted') {
-    // §1-3: 実行に踏み込んだ意思の取り消しは「承りました」止まり (取り消せたとは言わない)
+    // §1-3: 実行に踏み込んだ意思の取り消しは「承りました」止まり (取り消せたとは言わない)。
+    // §4-1: 約束期限 (promised_by) を開示する — 開示していない約束を §4-2 の督促が
+    // 「お約束したお時間」と語ると、顧客が一度も見ていない期限で謝罪する矛盾になる (採点 ①-4)。
+    const promisedBy = result.undoIntent.promised_by;
     return {
       messages: [
         {
           type: 'text',
-          text: `「${label}」の取り消しのご依頼を承りました。\nスタッフが対応状況を確認し、結果を必ずご連絡いたします。`,
+          text:
+            `「${label}」の取り消しのご依頼を承りました。\n` +
+            (promisedBy
+              ? `${formatPromisedBy(promisedBy)} までにスタッフが対応状況を確認し、結果を必ずご連絡いたします。`
+              : `スタッフが対応状況を確認し、結果を必ずご連絡いたします。`),
         },
       ],
       outcome: 'undo_accepted',
+      accepted: {
+        label: `${label} の取り消し`,
+        contractKey: intent.contract_key,
+        promisedBy,
+      },
     };
   }
   // not_undoable / not_found: **実際の state** を正直に伝える (推測の羅列で濁さない §10-5 監査 LOW)
@@ -256,7 +323,12 @@ async function handleContractOp(
   input: SubIntentPostbackInput,
   conciergeFriend: { id: string; display_name: string | null; shopify_customer_id: string | null },
   op: string,
-): Promise<{ messages: ReadonlyArray<Message>; outcome: string }> {
+): Promise<{
+  messages: ReadonlyArray<Message>;
+  outcome: string;
+  /** 新規受理が成立したときだけ載る (スタッフ通知用)。duplicate では載せない。 */
+  accepted?: { label: string; contractKey: string; promisedBy: string | null };
+}> {
   const { env, params } = input;
   const db = env.DB;
   const cid = params.get('cid') ?? '';
@@ -384,6 +456,17 @@ async function handleContractOp(
     return {
       messages: [{ type: 'text', text: head }, buildUndoBubble(intent)],
       outcome: result.status,
+      // 🚨 duplicate では載せない。顧客の再タップのたびに Discord が鳴ると、
+      // 本当に新規の受理が埋もれる (= 通知を入れた意味が消える)。
+      ...(result.status === 'accepted'
+        ? {
+            accepted: {
+              label: SUB_INTENT_OP_LABELS[intent.op] ?? intent.op,
+              contractKey: intent.contract_key,
+              promisedBy: intent.promised_by,
+            },
+          }
+        : {}),
     };
   }
 

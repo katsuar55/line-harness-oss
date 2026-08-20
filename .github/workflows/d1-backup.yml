@@ -1,13 +1,21 @@
 name: D1 Daily Backup
 
 # 毎日 JST 03:00 (UTC 18:00) に D1 をエクスポートし、
-# 既存 R2 バケット naturism-line-crm-images の backups/ プレフィックスへ保存する。
+# 専用の非公開 R2 バケット naturism-line-crm-backups へ保存する。
+#
+# 🚨 このバケットは画像用 (naturism-line-crm-images) と必ず分けること。
+# 2026-08-16 まではバックアップを画像バケットの backups/ プレフィックスに置いていたが、
+# 画像を配信する公開ルート GET /images/:key が同じバインディングを引いていたため、
+# 顧客 PII を含む D1 全体が無認証でダウンロード可能だった (本番実測)。
+# 分離がコード 1 箇所のガードだけに依存する構成にしないこと。
+#
+# Worker には **意図的にバインディングを張っていない**。Worker はバックアップを
+# 読む必要がなく、binding が無ければ到達しうるコード経路が存在しない (最も強い保証)。
+# 復旧は wrangler / ダッシュボードから直接行う (docs/DR.md 参照)。
 #
 # 必要な GitHub secrets:
 #   CLOUDFLARE_API_TOKEN    — wrangler d1 export + r2 object put 権限
 #   CLOUDFLARE_ACCOUNT_ID
-#
-# 復旧手順は docs/DR.md 参照。
 
 on:
   workflow_dispatch:
@@ -37,7 +45,7 @@ jobs:
         run: |
           DATE=$(date -u +%Y-%m-%d)
           echo "file=naturism-d1-backup-${DATE}.sql" >> $GITHUB_OUTPUT
-          echo "key=backups/${DATE}/naturism-d1-backup-${DATE}.sql" >> $GITHUB_OUTPUT
+          echo "key=${DATE}/naturism-d1-backup-${DATE}.sql" >> $GITHUB_OUTPUT
 
       - name: Export D1 remote
         working-directory: apps/worker
@@ -56,7 +64,14 @@ jobs:
           # 100KB 未満は異常 (テーブル消失やエラー応答) と見なす
           if [ "${SIZE}" -lt 102400 ]; then
             echo "::error::Backup is too small (${SIZE} bytes < 100KB), aborting upload"
-            head -c 500 "${{ steps.filename.outputs.file }}"
+            # 🚨 中身を絶対にログへ出さないこと。このリポジトリは PUBLIC で、Actions のログは
+            # 誰でも閲覧できる。以前は `head -c 500` で先頭を出力していたが、異常系の中身は
+            # 顧客 PII を含む SQL 断片でありうる (= R2 公開漏洩と同種の経路が CI ログに残る)。
+            # 診断に必要なのは「中身の形」であって中身そのものではないので、構造だけを出す。
+            echo "--- 診断情報 (内容は出力しない) ---"
+            echo "行数: $(wc -l < "${{ steps.filename.outputs.file }}")"
+            echo "先頭が PRAGMA で始まるか: $(head -c 32 "${{ steps.filename.outputs.file }}" | grep -c '^PRAGMA' || true)"
+            echo "出現するテーブル数: $(grep -c '^CREATE TABLE' "${{ steps.filename.outputs.file }}" || true)"
             exit 1
           fi
 
@@ -67,7 +82,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           npx wrangler r2 object put \
-            naturism-line-crm-images/${{ steps.filename.outputs.key }} \
+            naturism-line-crm-backups/${{ steps.filename.outputs.key }} \
             --file=../../${{ steps.filename.outputs.file }} \
             --remote
 

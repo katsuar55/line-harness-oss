@@ -60,7 +60,7 @@ describe('紹介リンク URL', () => {
   });
 
   it('LIFF_ID 未設定時のみ従来 URL に fallback', () => {
-    const m = pages.match(/async function loadReferralCard\(\) \{[\s\S]*?\n\}/);
+    const m = pages.match(/async function loadReferralCard\(preRes\) \{[\s\S]*?\n\}/);
     expect(m).not.toBeNull();
     expect(m![0]).toMatch(/LIFF_ID \?/);
   });

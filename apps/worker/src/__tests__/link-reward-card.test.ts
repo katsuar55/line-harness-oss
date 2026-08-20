@@ -30,7 +30,7 @@ const escSrc = pages.match(/^function esc\(s\) \{.*$/m);
 // 連携特典ブロックの**外**にある。実装を再実装せず、ソースから抜いて注入する。
 const phraseSrc = pages.match(/function couponExpiryPhrase\(remainingText\) \{[\s\S]*?\n\}/);
 const block = pages.match(
-  /function linkCouponDaysLeft\(expiresAt\) \{[\s\S]*?\nasync function loadLinkCoupon\(\) \{[\s\S]*?\n\}\n(?=\/\/ 🚨 連携特典クーポンは redeem)/,
+  /function linkCouponDaysLeft\(expiresAt\) \{[\s\S]*?\nasync function loadLinkCoupon\(preRes\) \{[\s\S]*?\n\}\n(?=\/\/ 🚨 連携特典クーポンは redeem)/,
 );
 
 interface FakeEl {

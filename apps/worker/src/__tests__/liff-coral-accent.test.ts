@@ -60,7 +60,7 @@ describe('適用箇所 (quiz + home + intake の3タブ、三層規律)', () => 
   });
 
   it('welcome クーポン: 大数字は艶コーラル text-coral-lg、バッジは chip-coral (白文字塗り廃止)', () => {
-    const m = pages.match(/async function loadWelcomeCoupon\(\) \{[\s\S]*?\n\}/);
+    const m = pages.match(/async function loadWelcomeCoupon\(preRes\) \{[\s\S]*?\n\}/);
     expect(m).not.toBeNull();
     expect(m![0]).not.toMatch(/orange-\d00/);
     expect(m![0]).toContain('text-coral-lg'); // OFF 大数字 (24px)

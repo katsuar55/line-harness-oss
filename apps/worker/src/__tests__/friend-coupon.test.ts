@@ -102,9 +102,10 @@ describe('friend coupon 統合', () => {
     expect(pages).toMatch(/Promise\.all\(\[[^\]]*loadFriendCoupon\(\)/);
   });
 
-  it('LIFF endpoint GET /api/liff/friend-coupon が存在 (idToken 認証)', () => {
+  it('LIFF endpoint GET /api/liff/friend-coupon が存在 (idToken 認証) + 実装が config を読む', () => {
     expect(portal).toContain("liffPortal.get('/api/liff/friend-coupon'");
-    expect(portal).toContain('getFriendCouponConfig');
+    // 実装本体は services/portal-read.ts (PR-2 抽出) — ガードは実体を読む (PR-6 follow-up)
+    expect(readSrc('services/portal-read.ts')).toContain('getFriendCouponConfig');
   });
 
   it('admin route に GET/PUT API + 管理 HTML ページ', () => {

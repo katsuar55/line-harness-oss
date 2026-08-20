@@ -108,11 +108,14 @@ const readSrc = (rel: string): string => readFileSync(join(root, '..', rel), 'ut
 
 describe('welcome-coupon 統合 (endpoint + LIFF card 配線)', () => {
   const portal = readSrc('routes/liff-portal.ts');
+  // 実装本体は PR-2 (#e17f4d2) で services/portal-read.ts へ抽出 — ガードの読み先も実体へ
+  // (handler の doc コメントで満たせる形にしない。Ultraplan PR-6 follow-up)
+  const portalRead = readSrc('services/portal-read.ts');
   const pages = readSrc('routes/liff-pages.ts');
 
-  it('endpoint /api/liff/welcome-coupon が idToken 保護 + getActiveWelcomeCoupon を使う', () => {
+  it('endpoint /api/liff/welcome-coupon が idToken 保護 + 実装が getActiveWelcomeCoupon を使う', () => {
     expect(portal).toContain("'/api/liff/welcome-coupon'");
-    expect(portal).toContain('getActiveWelcomeCoupon');
+    expect(portalRead).toContain('getActiveWelcomeCoupon');
     expect(portal).toMatch(/getLiffUser\(c\)[\s\S]{0,120}Unauthorized/);
   });
 

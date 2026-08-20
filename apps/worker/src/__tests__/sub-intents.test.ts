@@ -3457,3 +3457,380 @@ describe('§10-5 sub_intent postback ハンドラ', () => {
     expect(store.intents.size).toBe(0);
   });
 });
+
+// ============================================================
+// 受理成立の即時通知 (2026-08-17 採点ループ HIGH)
+//
+// 背景: 顧客がカードのボタンを押して受理が成立しても、スタッフへ届く通知が
+//   1 つも無かった。sendSubIntentAlert の呼び出し元は /admin/ops (スタッフ操作の結果) と
+//   sweep だけで、sweep が出すのは「締切超過」「約束期限超過」= **顧客へ謝罪 push を
+//   送った後**の通知。つまり誰も /admin/ops を開かなければ、全依頼が既定で謝罪に落ちた。
+//   push は回復不能なので、先に気付ける側へ倒す。
+//
+// 観測点は「fetch を呼んだ/呼んでいない」。文言だけを見ると、受理していないのに
+// 通知だけ飛ぶ変異 (duplicate や拒否系での誤発火) を検出できない。
+// ============================================================
+
+describe('受理成立の即時通知', () => {
+  const DISCORD = {
+    ...GATE_ON,
+    DISCORD_WEBHOOK_URL: 'https://discord.test/hook',
+  };
+
+  // 引数の型を明示する。省略すると mock.calls が 0 長タプルと推論され、
+  // vitest は通るのに typecheck だけ TS2493 で落ちる ([[feedback_local_typecheck_stale_cache]])。
+  function makeFetchSpy(impl?: (url: string, init?: RequestInit) => Promise<Response>) {
+    return vi.fn(
+      impl ?? (async (_url: string, _init?: RequestInit) => new Response(null, { status: 204 })),
+    );
+  }
+
+  function fireWithDiscord(
+    db: D1Database,
+    lc: ReturnType<typeof makeLineClient>,
+    op: string,
+    fetchSpy: ReturnType<typeof vi.fn>,
+    opts: { over?: Record<string, string>; nowMs?: number; noWebhook?: boolean } = {},
+  ): Promise<void> {
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    return handleSubIntentPostback({
+      env: { DB: db, ...(opts.noWebhook ? GATE_ON : DISCORD) } as never,
+      lineClient: lc as never,
+      replyToken: 'rt',
+      lineUserId: 'U1',
+      lineAccountId: null,
+      params: subPostbackParams(op, opts.over ?? {}),
+      postbackParams: null,
+      nowMs: opts.nowMs ?? NOW_MS,
+    }).finally(() => {
+      globalThis.fetch = prev;
+    });
+  }
+
+  it('新規受理で 1 通だけ通知し、契約キーと約束期限を載せる (PII は載せない)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const fetchSpy = makeFetchSpy();
+
+    await fireWithDiscord(db, lc, 'skip', fetchSpy);
+
+    expect(store.intents.size).toBe(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const body = String(fetchSpy.mock.calls[0]?.[1]?.body ?? '');
+    expect(body).toContain('C1');
+    expect(body).toContain('/admin/ops');
+    // PII (LINE ユーザーID) を載せない
+    expect(body).not.toContain('U1');
+  });
+
+  it('🚨 duplicate (再タップ) では通知しない — 本当の新規受理が埋もれる', async () => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const first = makeFetchSpy();
+    await fireWithDiscord(db, lc, 'skip', first);
+    expect(first).toHaveBeenCalledTimes(1);
+
+    const second = makeFetchSpy();
+    await fireWithDiscord(db, lc, 'skip', second);
+    const reply = JSON.stringify(lc.replyMessage.mock.calls.at(-1)?.[1] ?? []);
+    expect(reply).toContain('既に承っております');
+    expect(second).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['締切超過の skip', 'skip', { nowMs: AFTER_DEADLINE_MS }],
+    ['cycle_drift の細工 postback', 'skip', { over: { d0: '2026-09-03' } }],
+    ['所有者でない契約 (IDOR)', 'skip', { over: { cid: 'OTHER' } }],
+    ['dismiss (受理しない)', 'dismiss', {}],
+  ])('受理が成立しない経路では通知しない: %s', async (_label, op, opts) => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const fetchSpy = makeFetchSpy();
+
+    await fireWithDiscord(db, lc, op, fetchSpy, opts as { over?: Record<string, string>; nowMs?: number });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('DISCORD_WEBHOOK_URL 未設定なら fetch を呼ばない (無言の no-op を許容する側)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const fetchSpy = makeFetchSpy();
+
+    await fireWithDiscord(db, lc, 'skip', fetchSpy, { noWebhook: true });
+
+    expect(store.intents.size).toBe(1); // 受理自体は成立する
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('Discord が失敗しても顧客への reply と受理は成立する (顧客側を巻き込まない)', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const fetchSpy = makeFetchSpy(async () => {
+      throw new Error('discord down');
+    });
+
+    await fireWithDiscord(db, lc, 'skip', fetchSpy);
+
+    expect(store.intents.size).toBe(1);
+    const reply = JSON.stringify(lc.replyMessage.mock.calls.at(-1)?.[1] ?? []);
+    expect(reply).toContain('承りました');
+  });
+
+  it('通知は顧客への reply より後に行う (顧客の待ち時間に Discord を挟まない)', async () => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const order: string[] = [];
+    const lc = makeLineClient();
+    lc.replyMessage.mockImplementation(async (_replyToken: string, _messages: unknown[]) => {
+      order.push('reply');
+      return {};
+    });
+    const fetchSpy = makeFetchSpy(async () => {
+      order.push('discord');
+      return new Response(null, { status: 204 });
+    });
+
+    await fireWithDiscord(db, lc, 'skip', fetchSpy);
+
+    expect(order).toEqual(['reply', 'discord']);
+  });
+});
+
+// ============================================================
+// 採点ループ 2026-08-18 の反映 (①-2 undo 通知 / ①-3 reply 失敗時通知 / ①-6 期限なし文言)
+// ============================================================
+
+describe('undo 受理と reply 失敗の即時通知 (採点 ①-2/①-3)', () => {
+  const DISCORD2 = { ...GATE_ON, DISCORD_WEBHOOK_URL: 'https://discord.test/hook' };
+
+  function spy() {
+    return vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 204 }));
+  }
+
+  async function fire(
+    db: D1Database,
+    lc: ReturnType<typeof makeLineClient>,
+    op: string,
+    fetchSpy: ReturnType<typeof spy>,
+    over: Record<string, string> = {},
+  ): Promise<void> {
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      await handleSubIntentPostback({
+        env: { DB: db, ...DISCORD2 } as never,
+        lineClient: lc as never,
+        replyToken: 'rt',
+        lineUserId: 'U1',
+        lineAccountId: null,
+        params: subPostbackParams(op, over),
+        postbackParams: null,
+        nowMs: NOW_MS,
+      });
+    } finally {
+      globalThis.fetch = prev;
+    }
+  }
+
+  it('①-2: スタッフ着手後の undo 受理 (= 新規のスタッフ作業) は Discord に通知する', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const acceptSpy = spy();
+    await fire(db, lc, 'skip', acceptSpy); // 受理 (1 通目)
+    const id = [...store.intents.values()][0].id;
+    await claimSubIntent(db, id, STAFF, NOW_MS);
+
+    const undoSpy = spy();
+    await fire(db, lc, 'undo', undoSpy, { id });
+
+    expect(undoSpy).toHaveBeenCalledTimes(1);
+    const body = String(undoSpy.mock.calls[0]?.[1]?.body ?? '');
+    expect(body).toContain('取り消し');
+    expect(body).toContain('C1');
+    expect(body).toContain('/admin/ops');
+  });
+
+  it('①-2 対称: 着手前の undo (= 作業が消えるだけ) は通知しない', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    await fire(db, lc, 'skip', spy());
+    const id = [...store.intents.values()][0].id;
+
+    const undoSpy = spy();
+    await fire(db, lc, 'undo', undoSpy, { id });
+
+    const reply = JSON.stringify(lc.replyMessage.mock.calls.at(-1)?.[1] ?? []);
+    expect(reply).toContain('取り消しました');
+    expect(undoSpy).not.toHaveBeenCalled();
+  });
+
+  it('①-4: undo 受理の顧客文言に約束期限を開示する', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    await fire(db, lc, 'skip', spy());
+    const id = [...store.intents.values()][0].id;
+    await claimSubIntent(db, id, STAFF, NOW_MS);
+
+    await fire(db, lc, 'undo', spy(), { id });
+
+    const reply = JSON.stringify(lc.replyMessage.mock.calls.at(-1)?.[1] ?? []);
+    expect(reply).toContain('取り消しのご依頼を承りました');
+    // 「M月D日 HH:MM までに」の形式で期限が入っている (開示なき約束を作らない)
+    expect(reply).toMatch(/\d+月\d+日 \d{2}:\d{2} までに/);
+  });
+
+  it('①-3: reply が失敗しても受理は成立しており、Discord へ「未達」付きで通知する', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    lc.replyMessage.mockImplementation(async (_rt: string, _m: unknown[]) => {
+      throw new Error('reply token expired');
+    });
+    const fetchSpy = spy();
+
+    await fire(db, lc, 'skip', fetchSpy);
+
+    expect(store.intents.size).toBe(1); // 受理は巻き戻らない
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const body = String(fetchSpy.mock.calls[0]?.[1]?.body ?? '');
+    expect(body).toContain('届いていません');
+    expect(body).toContain('C1');
+  });
+});
+
+describe('約束破り文言 — 期限なし intent (採点 ①-6)', () => {
+  it('deadline_at NULL の skip/date には実在しない「受付期限」を語らない', () => {
+    for (const op of ['skip', 'date'] as const) {
+      const text = buildPromiseBrokenMessage(op, null);
+      expect(text).not.toContain('受付期限');
+      expect(text).toContain('完了しましたら必ずご連絡いたします');
+    }
+  });
+
+  it('deadline_at がある skip/date は従来どおり期限に言及する', () => {
+    expect(buildPromiseBrokenMessage('skip', '2026-09-07T23:59:59')).toContain('受付期限');
+  });
+
+  it('pause/cancel は期限有無に関わらず「必ず完了」(expire しない op の規律)', () => {
+    expect(buildPromiseBrokenMessage('cancel', null)).toContain('お手続きは必ず完了し');
+    expect(buildPromiseBrokenMessage('pause', '2026-09-07T23:59:59')).toContain('お手続きは必ず完了し');
+  });
+});
+
+// ============================================================
+// スタッフメール通知 (2026-08-18 Katsu 指示: info@ にも顧客リクエストを届ける)
+// ============================================================
+
+describe('受理のスタッフメール通知 (info@)', () => {
+  const FULL_NOTIFY = {
+    ...GATE_ON,
+    DISCORD_WEBHOOK_URL: 'https://discord.test/hook',
+    RESEND_API_KEY: 're_test_key',
+    EMAIL_FROM: 'naturism <noreply@mail.naturism-diet.com>',
+  };
+
+  function spyFetch() {
+    return vi.fn(async (_url: string, _init?: RequestInit) => new Response('{"id":"em_1"}', { status: 200 }));
+  }
+
+  async function fireFull(
+    db: D1Database,
+    lc: ReturnType<typeof makeLineClient>,
+    op: string,
+    fetchSpy: ReturnType<typeof spyFetch>,
+    envOverride: Record<string, string | undefined> = {},
+  ): Promise<void> {
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      await handleSubIntentPostback({
+        env: { DB: db, ...FULL_NOTIFY, ...envOverride } as never,
+        lineClient: lc as never,
+        replyToken: 'rt',
+        lineUserId: 'U1',
+        lineAccountId: null,
+        params: subPostbackParams(op),
+        postbackParams: null,
+        nowMs: NOW_MS,
+      });
+    } finally {
+      globalThis.fetch = prev;
+    }
+  }
+
+  it('受理成立で Discord と info@ メールの両方へ 1 通ずつ送る', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const fetchSpy = spyFetch();
+
+    await fireFull(db, lc, 'skip', fetchSpy);
+
+    expect(store.intents.size).toBe(1);
+    const urls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(urls.filter((u) => u.includes('discord.test'))).toHaveLength(1);
+    expect(urls.filter((u) => u.includes('api.resend.com'))).toHaveLength(1);
+
+    const resendCall = fetchSpy.mock.calls.find((c) => String(c[0]).includes('api.resend.com'));
+    const body = JSON.parse(String((resendCall?.[1] as { body?: string })?.body ?? '{}')) as {
+      to?: string | string[];
+      subject?: string;
+      text?: string;
+    };
+    expect(String(body.to)).toContain('info@naturism-diet.com');
+    expect(body.subject).toContain('新しいご依頼');
+    expect(String(body.text)).toContain('C1');
+    expect(String(body.text)).toContain('/admin/ops');
+    // PII (LINE ユーザーID) を載せない
+    expect(String(body.text)).not.toContain('U1');
+  });
+
+  it('STAFF_NOTIFY_EMAIL で宛先を上書きできる', async () => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const fetchSpy = spyFetch();
+
+    await fireFull(db, lc, 'skip', fetchSpy, { STAFF_NOTIFY_EMAIL: 'ops@example.com' });
+
+    const resendCall = fetchSpy.mock.calls.find((c) => String(c[0]).includes('api.resend.com'));
+    const body = JSON.parse(String((resendCall?.[1] as { body?: string })?.body ?? '{}')) as { to?: string | string[] };
+    expect(String(body.to)).toContain('ops@example.com');
+  });
+
+  it('RESEND_API_KEY が無ければメールは送らず、Discord だけ送る (段階 gate)', async () => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const fetchSpy = spyFetch();
+
+    await fireFull(db, lc, 'skip', fetchSpy, { RESEND_API_KEY: undefined });
+
+    const urls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(urls.filter((u) => u.includes('discord.test'))).toHaveLength(1);
+    expect(urls.filter((u) => u.includes('api.resend.com'))).toHaveLength(0);
+  });
+
+  it('メール送信が失敗しても受理と顧客への reply は成立する', async () => {
+    const { db, store } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    const fetchSpy = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).includes('api.resend.com')) throw new Error('resend down');
+      return new Response(null, { status: 204 });
+    });
+
+    await fireFull(db, lc, 'skip', fetchSpy as ReturnType<typeof spyFetch>);
+
+    expect(store.intents.size).toBe(1);
+    const reply = JSON.stringify(lc.replyMessage.mock.calls.at(-1)?.[1] ?? []);
+    expect(reply).toContain('承りました');
+  });
+
+  it('duplicate (再タップ) ではメールも送らない (受信箱を溢れさせない)', async () => {
+    const { db } = createDb({ contracts: [CONTRACT], friends: [FRIEND] });
+    const lc = makeLineClient();
+    await fireFull(db, lc, 'skip', spyFetch());
+
+    const second = spyFetch();
+    await fireFull(db, lc, 'skip', second);
+
+    expect(second.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('api.resend.com'))).toHaveLength(0);
+  });
+});

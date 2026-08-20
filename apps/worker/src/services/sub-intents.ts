@@ -30,6 +30,7 @@
  */
 
 import type { LineClient } from '@line-crm/line-sdk';
+import { ResendClient } from '@line-crm/email-sdk';
 import {
   insertSubIntent,
   getSubIntent,
@@ -869,7 +870,10 @@ export async function sweepSubIntents(
       discordLines.push(
         `🚨【最優先】解約 (${intent.contract_key}) ${situation}` +
           `${intent.state === 'executing' ? ` (担当: ${intent.actor_staff_id ?? '不明'} が対応中のまま)` : ''}。` +
-          `Huckleberry 管理画面で実行してください。間に合わなかった場合は当該サイクルの注文をキャンセルまたは返金で救済します (§4-4)`,
+          // 採点 ①-5: claim を経ずに HB 直実行を指示すると、顧客が [取り消す] 済みの解約を
+          // 実行しうる。claim の CAS (409 = 取り下げ/他者対応済み) を防壁として機能させる
+          // 操作順序を文言で固定する。
+          `/admin/ops で claim してから Huckleberry 管理画面で実行してください (claim が 409 なら取り下げ済み — 実行しないこと)。間に合わなかった場合は当該サイクルの注文をキャンセルまたは返金で救済します (§4-4)`,
       );
       await auditSweep(db, 'sub_intent.predeadline_escalated', intent, {
         deadlineAt: intent.deadline_at,
@@ -895,7 +899,7 @@ export async function sweepSubIntents(
         db,
         deps.lineClient,
         intent,
-        buildPromiseBrokenMessage(intent.op),
+        buildPromiseBrokenMessage(intent.op, intent.deadline_at),
         `sub-intent-promise-broken:${intent.id}`,
       );
       if (outcome === 'notified') result.promiseNotified += 1;
@@ -975,6 +979,61 @@ export async function sendSubIntentAlert(
     });
   } catch (err) {
     console.error(`[${SUB_INTENT_SWEEP_JOB_NAME}] discord notify failed:`, err);
+  }
+}
+
+/** スタッフ通知メールの既定宛先。STAFF_NOTIFY_EMAIL で上書き可 (2026-08-18 Katsu 指示)。 */
+const DEFAULT_STAFF_NOTIFY_EMAIL = 'info@naturism-diet.com';
+
+/**
+ * スタッフへの best-effort メール通知 (2026-08-18 Katsu 指示: Discord を見ない
+ * スタッフも毎日 info@ の受信箱で顧客のご依頼に気付けるように)。
+ *
+ * - 宛先は自社スタッフ = marketing ではなく transactional。opt-out 機構は不要。
+ * - RESEND_API_KEY / EMAIL_FROM が未設定なら黙って skip (Discord と同じ gate 思想)。
+ * - 失敗しても業務を止めない (顧客への reply には一切影響しない位置から呼ばれる)。
+ * - 本文は Discord と同じ行 = PII 最小 (§1-4)。詳細は /admin/ops で見る。
+ */
+export async function sendSubIntentStaffEmail(
+  env: {
+    RESEND_API_KEY?: string;
+    EMAIL_FROM?: string;
+    EMAIL_REPLY_TO?: string;
+    STAFF_NOTIFY_EMAIL?: string;
+    ACCOUNT_NAME?: string;
+  },
+  subject: string,
+  lines: string[],
+  fetchImpl?: typeof fetch,
+): Promise<void> {
+  if (lines.length === 0 || !env.RESEND_API_KEY || !env.EMAIL_FROM) return;
+  try {
+    const client = new ResendClient({ apiKey: env.RESEND_API_KEY, fetchImpl });
+    const brand = env.ACCOUNT_NAME ?? 'naturism';
+    const opsUrl = 'https://naturism-line-crm.katsu-7d5.workers.dev/admin/ops';
+    const text =
+      `${lines.join('\n')}\n\n` +
+      `対応は管理画面から: ${opsUrl}\n` +
+      `(この通知は LINE 定期便コンシェルジュからの自動送信です)`;
+    const escapeHtml = (s: string): string =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    await client.send({
+      to: env.STAFF_NOTIFY_EMAIL ?? DEFAULT_STAFF_NOTIFY_EMAIL,
+      from: env.EMAIL_FROM,
+      replyTo: env.EMAIL_REPLY_TO,
+      subject: `【${brand} 定期便】${subject}`,
+      text,
+      html:
+        `<div style="font-family:sans-serif;font-size:14px;line-height:1.7">` +
+        `<p>${lines.map(escapeHtml).join('<br>')}</p>` +
+        `<p><a href="${opsUrl}">対応する (/admin/ops)</a></p>` +
+        `<p style="color:#888;font-size:12px">この通知は LINE 定期便コンシェルジュからの自動送信です</p>` +
+        `</div>`,
+      category: 'transactional',
+      sourceKind: 'transactional',
+    });
+  } catch (err) {
+    console.error(`[${SUB_INTENT_SWEEP_JOB_NAME}] staff email notify failed:`, err);
   }
 }
 
@@ -1122,7 +1181,7 @@ async function notifyExpiredHonestly(
  *   - skip/date は締切超過で expired になりうる → 「必ず完了」は嘘になる
  *     (この通知の直後に expire の「完了できませんでした」が届く経路が同居している)
  */
-export function buildPromiseBrokenMessage(op: SubIntentOp): string {
+export function buildPromiseBrokenMessage(op: SubIntentOp, deadlineAt?: string | null): string {
   const label = SUB_INTENT_OP_LABELS[op];
   const head =
     `【お手続きの進捗のご連絡】\n` +
@@ -1131,6 +1190,14 @@ export function buildPromiseBrokenMessage(op: SubIntentOp): string {
     return (
       head +
       `お手続きは必ず完了し、完了しましたらあらためてご連絡いたします。お急ぎの場合は、このトークルームでご連絡ください。`
+    );
+  }
+  // 採点 ①-6: 締切が無い intent (推定日が出せない契約 = deadline_at NULL) に
+  // 「受付期限までに」と書くと、顧客が一度も見ていない実在しない期限を語ることになる。
+  if (deadlineAt === null) {
+    return (
+      head +
+      `引き続き対応を進めています。完了しましたら必ずご連絡いたします。お急ぎの場合は、このトークルームでご連絡ください。`
     );
   }
   return (
