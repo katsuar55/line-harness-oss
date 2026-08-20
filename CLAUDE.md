@@ -291,6 +291,46 @@ WORKER_URL: string
 新パターンでハングした場合、本ファイルの「禁止パターン」表に該当パターンを追記してから次の作業に移る。
 追記なき再発は同じ穴を踏み続けるため、必ずルール側にフィードバックする。
 
+## 本番 gate の ops workflow ルール (絶対遵守 — 再発防止)
+
+2026-08-20 のミニアプリ刷新 Ultraplan (#258〜#266) で、gate flip 用 op (`.github/workflows/admin-ops.yml`)
+の**検証コードそのもの**に穴が 2 件出た。どちらも「本番は正常なのに op が嘘をつく」型で、
+① は成功しているのに ❌、② は壊れていても ✅ になる。op が嘘をつくと flip の判断材料が消えるので、
+本番コードと同じ厳しさで書く。
+
+### 禁止パターン
+
+| パターン | 理由 |
+|---|---|
+| `set -euo pipefail` の下で `curl ... \| grep -q PATTERN` と書く | `grep -q` は match した瞬間に pipe を閉じるため curl が **exit 23 (write failure)** で終わる。つまり **match が成功したときだけ** pipeline が失敗するという逆転が起きる。2026-08-20 の portal-bootstrap flip 初回 run で実発生 (#260) |
+| gate の ON/OFF を **CSS セレクタ文字列**の grep で判定する | その CSS は**別 gate** が emit することがある。`visualV2Css()` は自 gate が on の間 `#coupon-hub-head::after` / `#sub-contracts-card{...}` を常時 emit するため home-ia / sub-card の marker と衝突し、**enable の偽 ✅ と disable の恒久 ❌** を生む (#265 Codex P1) |
+| gate-off の確認を「marker が無いこと」だけで判定する | 5xx も空応答も「無い」を満たすため、**落ちている本番を ✅ と報告する**。正マーカー (そのページの HTML であること) との AND が必須 |
+| secret 投入直後の 1 回の fetch で伝播を判定する | 数十秒は旧 HTML が配られる。1 回で見ると「投入は成功したのに ❌」になる |
+
+### 推奨パターン
+
+| やりたいこと | 正しい方法 |
+|---|---|
+| pipefail 下で本番 HTML を検査する | 一時ファイルへ落として分離する。`curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" \|\| true` の後に `grep -q PATTERN "$HTML"` |
+| gate の ON/OFF を判定する | gate が実際に emit する**要素マーカー** (`id="..."`) で照合する。CSS セレクタ文字列は使わない |
+| gate-off を確認する | `grep -q 'id="section-home"' "$HTML" && ! grep -q '<gate の要素マーカー>' "$HTML"` のように**正マーカーとの AND** |
+| 伝播を待つ | `5s × 12` のリトライで**実測**し、時間内に確認できなければ exit 1 (post-deploy-check と同じ流儀) |
+| enable op の前提確認 | 依存する前段 gate / deploy 済みかを**機械チェック**してから投入する (例: PR-3 未 deploy なら本番 HTML に `bootstrapPortal` が無い) |
+| rollback | 対になる disable op を**同時に**足す。redeploy 不要のワンクリック kill switch にしておく |
+
+### 自己点検チェックリスト (admin-ops.yml に gate op を足す前)
+
+- [ ] `curl` の出力を pipe で `grep` に渡していないか? (一時ファイル経由になっているか)
+- [ ] 照合対象は要素マーカー `id="..."` か? CSS セレクタ文字列になっていないか?
+- [ ] そのマーカーは**他の gate の出力に含まれない**か? (他 gate の fragment を実際に grep して確認したか)
+- [ ] gate-off 判定に正マーカーとの AND があるか?
+- [ ] 伝播待ちのリトライと、時間切れ時の exit 1 があるか?
+- [ ] 対になる disable op を同時に足したか?
+
+### 違反時の必須アクション
+
+新パターンで op が誤判定した場合、本ファイルの「禁止パターン」表に該当パターンを追記してから次の作業に移る。
+
 ## LIFF inline JS コーディングルール (絶対遵守 — 再発防止)
 
 2026-07-10 に #192 デプロイ後、ポータルが「読み込み中」スピナーのまま**全ユーザーで全損**する本番障害が発生 (#193 で hotfix)。原因は inline onclick 属性内の JS に `\'` エスケープを書いたこと。同じ穴を踏まないために以下を守る。
@@ -328,6 +368,43 @@ WORKER_URL: string
 ### 違反時の必須アクション
 
 新パターンで inline script が壊れた場合、本ファイルの「禁止パターン」表に該当パターンを追記してから次の作業に移る。
+
+## LIFF の視覚順 (CSS order) 変更ルール (絶対遵守 — 再発防止)
+
+2026-08-20 の home タブ IA 再編 (Ultraplan PR-6b / #264) で、DOM を動かさず CSS `order` だけで
+視覚順を差し替える方式を採った (5,000 行の template literal 内で大ブロックを二重管理すると
+loader の `getElementById` 契約・scroll 導線・静的ガードを全て巻き込むため)。
+DOM 順が不変なので配線は 1 本も壊れないが、この方式には固有の穴が 4 つある。
+
+### 禁止パターン
+
+| パターン | 理由 |
+|---|---|
+| CSS `order` で視覚順を変えた面に、**新しい見出し** (`role="heading"` / `<h*>`) を足す | `order` が変えるのは**視覚順だけ**で、a11y tree と Tab 順は **DOM 順のまま**。スクリーンリーダーは見出しの直後に「DOM 上の次の要素」を読むため、「クーポン」見出しの下で連携 CTA や rank を読み上げる誤誘導が起きる (PR-6b 採点ループ confirmed)。role を付けない装飾テキスト + 絵文字 `aria-hidden` なら SR 体験は旧 IA と完全一致する |
+| flex 化を `.active` を外した素のセレクタ (`#section-home`) に書く | `.section.active{display:block}` を `display:flex` が上書きし、**非表示タブが常時表示**になる。スコープは必ず `#section-home.active` |
+| 並び順の台帳に**行を足さずに**カードを追加する | 台帳に無い要素は `order:0` = **先頭に紛れ込む**。`HOME_IA_ORDER` (`routes/liff-portal-fragments/home-ia.ts`) が単一の正 |
+| `space-y-*` を残したまま order で並べ替える | margin は DOM 順基準に付くため視覚順と食い違う。`gap` へ置換して margin を殺す |
+
+### 推奨パターン
+
+| やりたいこと | 正しい方法 |
+|---|---|
+| 大きな面の並び替え | DOM を動かさず CSS `order` + 台帳 (id → order)。DOM 順不変 = 既存の配線・テストが壊れない |
+| 見出しを足したい | 装飾テキストとして足す (role なし・絵文字は `aria-hidden`)。本当に見出し要素が要るなら **DOM 順ごと動かす** |
+| gate 付きで出す | off の間は **1 byte も emit しない** (dark)。fragment を `routes/liff-portal-fragments/` に切り出し、seam は interpolation 数箇所に抑える |
+| 検証 | ①gate off で 1 byte も出ないこと ②`.active` スコープが剥がれていないこと ③台帳が対象セクション直下の全 id を網羅していること ④order が一意であること — をテストで固定する (PR-6b は 8 件 + mutation 3 種) |
+
+### 自己点検チェックリスト (CSS order で視覚順を変える前)
+
+- [ ] 視覚順を変えた面に、role を持つ見出しを新設していないか?
+- [ ] flex 化のセレクタに `.active` が入っているか?
+- [ ] 台帳に新しいカードの行を足したか?
+- [ ] `space-y-*` の margin が残っていないか?
+- [ ] mutation (スコープ剥がし・台帳行削除・gate 無視) で**テストが実際に落ちる**ことを確認したか?
+
+### 違反時の必須アクション
+
+新パターンで視覚順・SR 導線が壊れた場合、本ファイルの「禁止パターン」表に該当パターンを追記してから次の作業に移る。
 
 ## テストコーディングルール (絶対遵守 — 再発防止)
 
