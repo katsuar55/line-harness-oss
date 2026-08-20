@@ -2017,7 +2017,9 @@ jobs:
           FOUND=0
           for i in $(seq 1 12); do
             curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
-            if grep -q 'coupon-hub-head' "$HTML" 2>/dev/null; then
+            # 要素マーカーで照合 — CSS セレクタ文字列 (visual-v2 の #coupon-hub-head::after 等) は
+            # 別 gate からも emit されるため、素の部分文字列 grep は誤判定する (Codex P1)
+            if grep -q 'id="coupon-hub-head"' "$HTML" 2>/dev/null; then
               echo "✅ gate-on HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
               FOUND=1
               break
@@ -2050,7 +2052,7 @@ jobs:
           for i in $(seq 1 12); do
             curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
             # 正のマーカー (ポータル HTML であること) との AND — 5xx エラーページの空振りを ✅ にしない
-            if grep -q 'id="section-home"' "$HTML" 2>/dev/null && ! grep -q 'coupon-hub-head' "$HTML" 2>/dev/null; then
+            if grep -q 'id="section-home"' "$HTML" 2>/dev/null && ! grep -q 'id="coupon-hub-head"' "$HTML" 2>/dev/null; then
               echo "✅ gate-off HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
               FOUND=1
               break
@@ -2095,7 +2097,8 @@ jobs:
           FOUND=0
           for i in $(seq 1 12); do
             curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
-            if grep -q 'sub-contracts-card' "$HTML" 2>/dev/null; then
+            # 同上: visual-v2 の CSS が #sub-contracts-card{...} を常時 emit するため要素マーカーで照合
+            if grep -q 'id="sub-contracts-card"' "$HTML" 2>/dev/null; then
               echo "✅ gate-on HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
               FOUND=1
               break
@@ -2128,7 +2131,7 @@ jobs:
           for i in $(seq 1 12); do
             curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
             # 正のマーカー (ポータル HTML であること) との AND — 5xx エラーページの空振りを ✅ にしない
-            if grep -q 'id="section-home"' "$HTML" 2>/dev/null && ! grep -q 'sub-contracts-card' "$HTML" 2>/dev/null; then
+            if grep -q 'id="section-home"' "$HTML" 2>/dev/null && ! grep -q 'id="sub-contracts-card"' "$HTML" 2>/dev/null; then
               echo "✅ gate-off HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
               FOUND=1
               break
