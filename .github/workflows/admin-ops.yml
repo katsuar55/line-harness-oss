@@ -1877,7 +1877,12 @@ jobs:
         run: |
           set -euo pipefail
           URL='https://naturism-line-crm.katsu-7d5.workers.dev'
-          if ! curl -sS --max-time 20 "$URL/liff/portal" | grep -q 'bootstrapPortal'; then
+          # ⚠️ pipefail 下で `curl | grep -q` を書かないこと: grep -q は match した瞬間に
+          # pipe を閉じ、curl が exit 23 (write failure) になり **match していても** pipeline が
+          # 失敗する (2026-08-20 の初回 flip run 実発生)。一時ファイル経由で分離する。
+          HTML="$RUNNER_TEMP/portal.html"
+          curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
+          if ! grep -q 'bootstrapPortal' "$HTML" 2>/dev/null; then
             echo '❌ 本番 /liff/portal に bootstrapPortal がありません — PR-3 (#258) を先に deploy してください' | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -1891,7 +1896,8 @@ jobs:
           # 実際に配られるまで 5s × 12 リトライで実測する (post-deploy-check と同じ流儀)。
           FOUND=0
           for i in $(seq 1 12); do
-            if curl -sS --max-time 20 "$URL/liff/portal" | grep -q 'PORTAL_BOOTSTRAP_ON = true'; then
+            curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
+            if grep -q 'PORTAL_BOOTSTRAP_ON = true' "$HTML" 2>/dev/null; then
               echo "✅ gate-on HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
               FOUND=1
               break
@@ -1920,9 +1926,12 @@ jobs:
           npx wrangler secret bulk "$TMP"
           rm -f "$TMP"
           URL='https://naturism-line-crm.katsu-7d5.workers.dev'
+          # pipefail 下の `curl | grep -q` 禁止 (enable 側のコメント参照)
+          HTML="$RUNNER_TEMP/portal.html"
           FOUND=0
           for i in $(seq 1 12); do
-            if curl -sS --max-time 20 "$URL/liff/portal" | grep -q 'PORTAL_BOOTSTRAP_ON = false'; then
+            curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
+            if grep -q 'PORTAL_BOOTSTRAP_ON = false' "$HTML" 2>/dev/null; then
               echo "✅ gate-off HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
               FOUND=1
               break
