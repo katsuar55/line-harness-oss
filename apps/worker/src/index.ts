@@ -243,6 +243,11 @@ export type Env = {
     //   MENU=true は収集も含む (OR) ので、既存の単一 gate 運用と後方互換。
     //   TEIKI_FLOW の実測値を貯めてから可視面を開ける、が正しい順序: docs/TEIKI_FLOW_SETUP.md
     SUBSCRIPTION_INGEST_ENABLED?: string;
+    // ポータル初期化の一括 read (Ultraplan PR-3, 2026-08-20): 'true' で /liff/portal の
+    //   client が GET /api/liff/portal-bootstrap 1 往復に初期 fetch 群を束ねる。
+    //   既定 (未設定) = off — client は従来どおり個別 13 fetch + loadRank (完全に不変)。
+    //   bootstrap 呼び出しが失敗した場合も client 側で旧経路へ丸ごとフォールバックする。
+    PORTAL_BOOTSTRAP_ENABLED?: string;
     // サブスク決済7日前リマインド + 決済失敗リカバリ通知 gate (WI-2 2026-07-14):
     //   'true' で teiki-billing-reminder cron と pause 遷移時の LINE push が有効。
     //   SUBSCRIPTION_MENU_ENABLED=true (read-model 稼働) が前提。
