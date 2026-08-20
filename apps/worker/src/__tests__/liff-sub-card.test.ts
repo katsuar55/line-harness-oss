@@ -94,6 +94,27 @@ interface Sandbox {
 
 function loadSandbox(script: string): Sandbox {
   const byId = new Map<string, FakeEl>(IDS.map((id) => [id, el(id)]));
+  // 実ブラウザ準拠: list.innerHTML の再設定は配下の sc-item/panel/msg/date を丸ごと破棄して
+  // 空で作り直す。これが無いと「メッセージを書いてから再描画する」順序バグが構造的に
+  // 観測不能になる (採点ループ R1 で order-swap mutation が素通りした実測に基づく)。
+  const list = byId.get('sub-contracts-list')!;
+  const plainSet = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(list), 'innerHTML') ??
+    Object.getOwnPropertyDescriptor(list, 'innerHTML')!;
+  Object.defineProperty(list, 'innerHTML', {
+    get() {
+      return list._html;
+    },
+    set(html: string) {
+      for (const [id, node] of byId) {
+        if (/^sc-(item|panel|msg|date)-/.test(id)) {
+          node._html = '';
+          node.value = '';
+        }
+      }
+      void plainSet;
+      list._html = html;
+    },
+  });
   const calls: FetchCall[] = [];
   const toasts: string[] = [];
   const respond: Sandbox['respond'] = new Map();
@@ -146,7 +167,10 @@ function loadSandbox(script: string): Sandbox {
     'scAckResend',
     'scUndo',
     'scShowDatePanel',
+    'scShowCancelPanel',
+    'scClearPanel',
     'scJpDate',
+    'scAddDays',
   ];
   const factory = new Function(
     'window',
@@ -241,8 +265,10 @@ describe('gate LIFF_SUB_CARD_ENABLED (既定 off = fragment を 1 byte も出さ
     expect(htmlOn).toContain('id="sub-contracts-card"');
     expect(htmlOn).toContain('function loadSubContracts');
     expect(htmlOn).toContain('.sc-btn{min-height:48px');
-    // shop タブ lazy-load + deep-link 先行フェッチの両方に配線される
-    expect((scriptOn.match(/loadSubContractsOnce\(\);/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    // shop タブ lazy-load + deep-link 先行フェッチの**分岐内**に配線される
+    // (出現回数だけの assert は「if (name === 'account') 側へ移動」の mutation を素通りする)
+    expect(scriptOn).toMatch(/if \(name === 'shop'\) \{[\s\S]{0,300}?loadSubContractsOnce\(\);/);
+    expect(scriptOn).toMatch(/earlyDest === 'delivery'[\s\S]{0,300}?loadSubContractsOnce\(\);/);
   });
 });
 
@@ -257,8 +283,13 @@ describe('loadSubContracts — 描画', () => {
     const list = sb.byId.get('sub-contracts-list')!;
     expect(card.style.display).toBe('block');
     expect(list.innerHTML).toContain('ブルー30日分');
-    expect(list.innerHTML).toContain('9月5日');
+    // §3-2: derived 推定は断定しない — 「決済予定」ラベル + 「ごろ」必須
+    expect(list.innerHTML).toContain('次回の決済予定');
+    expect(list.innerHTML).toContain('9月5日ごろ');
+    expect(list.innerHTML).not.toContain('お届け予定</p>'); // 決済日をお届け日と誤表記しない
     expect(list.innerHTML).toContain('変更のご依頼は 9月2日 まで承れます');
+    // §3: skip 1 タップは「押す前に結果日付が読める」が成立条件 (9/5 + 30日 = 10/5)
+    expect(list.innerHTML).toContain('押すと 次回は 10月5日ごろ になるお申し込みになります');
     const buttons = (list.innerHTML.match(/<button/g) ?? []).length;
     expect(buttons, 'ボタンは skip/date/pause の 3 個まで (§7)').toBe(3);
     expect(list.innerHTML).toContain('解約のお手続きはこちら'); // 解約はテキストリンク
@@ -415,6 +446,114 @@ describe('受理 POST — cycleKey 同梱・§1/§2/§4-1', () => {
     });
     await (sb.fn.scAct as unknown as (b: unknown) => Promise<void>)(fakeBtn({ 'data-op': 'skip', 'data-idx': '0' }));
     expect(sb.byId.get('sc-msg-0')!.innerHTML).toContain('承ることができませんでした');
+  });
+});
+
+// ───────────────────────── onclick 配線 (採点ループ R1: scActTypo mutation が素通りした穴) ─────────────────────────
+
+describe('onclick 配線 — 描画 HTML の handler 名が実在する関数を指す', () => {
+  it('契約カード + 各パネルの onclick="fn(this)" は全て sandbox に定義済みの関数', async () => {
+    const sb = loadSandbox(scriptOn);
+    sb.respond.set('GET /api/liff/sub-contracts', {
+      status: 200,
+      json: listJson({}, {
+        openIntents: [
+          { id: 'si_1', op: 'skip', opLabel: '今回スキップ', state: 'received', promisedBy: null, requestedDate: null },
+        ],
+      }),
+    });
+    await (sb.fn.loadSubContracts as unknown as () => Promise<void>)();
+    let html = sb.byId.get('sub-contracts-list')!.innerHTML;
+    // アクションパネルも展開して handler を収集 (active 契約で再描画)
+    sb.respond.set('GET /api/liff/sub-contracts', { status: 200, json: listJson() });
+    await (sb.fn.loadSubContracts as unknown as () => Promise<void>)();
+    html += sb.byId.get('sub-contracts-list')!.innerHTML;
+    (sb.fn.scShowDatePanel as unknown as (i: string) => void)('0');
+    html += sb.byId.get('sc-panel-0')!.innerHTML;
+    (sb.fn.scShowCancelPanel as unknown as (i: string) => void)('0');
+    html += sb.byId.get('sc-panel-0')!.innerHTML;
+    const names = [...html.matchAll(/onclick="(\w+)\(this\)"/g)].map((m) => m[1]);
+    expect(names.length).toBeGreaterThanOrEqual(6);
+    for (const name of new Set(names)) {
+      expect(typeof (sb.fn as Record<string, unknown>)[name], name + ' が未定義 (typo 配線)').toBe('function');
+    }
+  });
+
+  it('undo ボタンの data-intent はサーバの intent id をそのまま運ぶ', async () => {
+    const sb = loadSandbox(scriptOn);
+    sb.respond.set('GET /api/liff/sub-contracts', {
+      status: 200,
+      json: listJson({}, {
+        openIntents: [
+          { id: 'si_1', op: 'skip', opLabel: '今回スキップ', state: 'received', promisedBy: null, requestedDate: null },
+        ],
+      }),
+    });
+    await (sb.fn.loadSubContracts as unknown as () => Promise<void>)();
+    expect(sb.byId.get('sub-contracts-list')!.innerHTML).toContain('data-intent="si_1"');
+  });
+});
+
+// ───────────────────────── 受理レイヤー閉鎖時の undo (採点ループ R1 confirmed) ─────────────────────────
+
+describe('SUB_INTENT_ENABLED off — 必ず失敗するボタンを出さない (§1)', () => {
+  it('subIntentEnabled:false × open intent あり → 取り消すボタンを出さず相談導線', async () => {
+    const sb = loadSandbox(scriptOn);
+    sb.respond.set('GET /api/liff/sub-contracts', {
+      status: 200,
+      json: listJson({ subIntentEnabled: false }, {
+        openIntents: [
+          { id: 'si_1', op: 'skip', opLabel: '今回スキップ', state: 'received', promisedBy: '2026-09-02T12:00:00+09:00', requestedDate: null },
+        ],
+      }),
+    });
+    await (sb.fn.loadSubContracts as unknown as () => Promise<void>)();
+    const html = sb.byId.get('sub-contracts-list')!.innerHTML;
+    expect(html).toContain('承りました'); // 状況表示は維持
+    expect(html).not.toContain('scUndo'); // タップしても 409 gate_off にしかならないボタンを出さない
+    expect(html).toContain('トークルーム');
+  });
+
+  it('undo が 409 gate_off を返したらサーバの message (マイページ誘導) を toast する', async () => {
+    const sb = loadSandbox(scriptOn);
+    sb.respond.set('GET /api/liff/sub-contracts', { status: 200, json: listJson() });
+    sb.respond.set('POST /api/liff/sub-intents/si_1/undo', {
+      status: 409,
+      json: { success: false, error: 'gate_off', message: 'この機能は現在ご利用いただけません。お手続きはマイページをご利用ください。' },
+    });
+    await (sb.fn.scUndo as unknown as (b: unknown) => Promise<void>)(fakeBtn({ 'data-intent': 'si_1' }));
+    expect(sb.toasts.join(' ')).toContain('マイページをご利用ください');
+    expect(sb.toasts.join(' ')).not.toContain('時間をおいて'); // 絶対に成功しない操作への誤誘導をしない
+  });
+});
+
+// ───────────────────────── 受理後の再取得失敗 (採点ループ R1 confirmed) ─────────────────────────
+
+describe('accepted 後の GET 失敗 — 受理フィードバックを全損させない', () => {
+  it('POST accepted → 再取得 500 → 「承りました」は toast へフォールバック', async () => {
+    const sb = loadSandbox(scriptOn);
+    sb.respond.set('GET /api/liff/sub-contracts', { status: 200, json: listJson() });
+    await (sb.fn.loadSubContracts as unknown as () => Promise<void>)();
+    sb.respond.set('POST /api/liff/sub-contracts/gid', {
+      status: 200,
+      json: { success: true, data: { status: 'accepted', message: '解約のご依頼を承りました。救済手順つき。' } },
+    });
+    sb.respond.set('GET /api/liff/sub-contracts', { status: 500, json: { success: false, error: 'boom' } });
+    await (sb.fn.scAct as unknown as (b: unknown) => Promise<void>)(fakeBtn({ 'data-op': 'skip', 'data-idx': '0' }));
+    expect(sb.byId.get('sub-contracts-card')!.style.display).toBe('none');
+    expect(sb.toasts.join(' ')).toContain('解約のご依頼を承りました。救済手順つき。');
+  });
+
+  it('skip の結果日付が計算できない契約 (intervalDays 欠損) は日付を捏造せず fallback 文言', async () => {
+    const sb = loadSandbox(scriptOn);
+    sb.respond.set('GET /api/liff/sub-contracts', {
+      status: 200,
+      json: listJson({}, { intervalDays: null }),
+    });
+    await (sb.fn.loadSubContracts as unknown as () => Promise<void>)();
+    const html = sb.byId.get('sub-contracts-list')!.innerHTML;
+    expect(html).toContain('次回分をお休みするお申し込みになります');
+    expect(html).not.toContain('押すと 次回は '); // 捏造した日付を出さない
   });
 });
 
