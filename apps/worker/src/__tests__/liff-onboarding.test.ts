@@ -66,9 +66,12 @@ describe('LIFF 初回オンボーディング (第2波-⑥) — 静的構造', (
 
   it('initOnboarding は loading を消してから呼ばれる (ツアーが loading の上に出ない)', () => {
     expect(pages).toContain('function initOnboarding');
-    // loading 非表示 → (没入スクロール起動を挟んで) → initOnboarding の順序 (2026-07-07 initScrollReveal 追加に追随)
+    // loading 非表示は revealLoading に一本化 (Ultraplan PR-3)。順序契約は 2 段で固定する:
+    // ① init 完走時に revealLoading → initOnboarding の順で呼ぶ
+    expect(pages).toMatch(/revealLoading\(\);\s*(?:\/\/[^\r\n]*\s*)*initOnboarding\(\);/);
+    // ② revealLoading 本体が display='none' → initScrollReveal の順で行う (旧 tail と同義)
     expect(pages).toMatch(
-      /getElementById\('loading'\)\.style\.display = 'none';\s*(?:(?:\/\/[^\r\n]*|initScrollReveal\(\);)\s*)*initOnboarding\(\);/,
+      /function revealLoading\(\) \{[\s\S]*?getElementById\('loading'\)\.style\.display = 'none';[\s\S]*?initScrollReveal\(\);[\s\S]*?\n\}/,
     );
   });
 

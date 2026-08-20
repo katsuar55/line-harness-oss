@@ -26,12 +26,14 @@ export const PORTAL_GATE_MATRIX: ReadonlyArray<readonly [string, Record<string, 
     { APP_PROXY_LINK_ENABLED: 'true', SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com' },
   ],
   ['REFERRAL_REWARD_ENABLED=true', { REFERRAL_REWARD_ENABLED: 'true' }],
+  ['PORTAL_BOOTSTRAP_ENABLED=true (Ultraplan PR-3)', { PORTAL_BOOTSTRAP_ENABLED: 'true' }],
   [
     '全 gate on (現在の本番)',
     {
       APP_PROXY_LINK_ENABLED: 'true',
       SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
       REFERRAL_REWARD_ENABLED: 'true',
+      PORTAL_BOOTSTRAP_ENABLED: 'true',
     },
   ],
 ];

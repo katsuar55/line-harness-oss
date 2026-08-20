@@ -26,10 +26,10 @@ const phraseSrc = pages.match(/function couponExpiryPhrase\(remainingText\) \{[\
 
 /** カードごとの loader をソースから抜き出す (test 側で再実装しない) */
 const LOADERS = {
-  welcome: /async function loadWelcomeCoupon\(\) \{[\s\S]*?\n\}/,
+  welcome: /async function loadWelcomeCoupon\(preRes\) \{[\s\S]*?\n\}/,
   // 順次活性化 (2026-08-13): loader が参照する待機スタック helper ごと抜き出す
-  referral: /var refCouponRefetched = false;[\s\S]*?async function loadReferralCoupon\(\) \{[\s\S]*?\n\}/,
-  link: /function linkCouponDaysLeft\(expiresAt\) \{[\s\S]*?\nasync function loadLinkCoupon\(\) \{[\s\S]*?\n\}/,
+  referral: /var refCouponRefetched = false;[\s\S]*?async function loadReferralCoupon\(preRes\) \{[\s\S]*?\n\}/,
+  link: /function linkCouponDaysLeft\(expiresAt\) \{[\s\S]*?\nasync function loadLinkCoupon\(preRes\) \{[\s\S]*?\n\}/,
 } as const;
 
 type CardKey = keyof typeof LOADERS;
