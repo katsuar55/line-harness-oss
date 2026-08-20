@@ -247,8 +247,12 @@ deploy → GitHub Actions op で flip、という一貫の型で本番反映し�
 - PR-6b: confirmed 5 (SR heading 誤誘導 / C3 前提ファースト / 測定器 3 穴)
 - 全 confirmed は反映後に **mutation 再注入でテストが実際に落ちることを確認** してから出荷 (計 20+ ドリル)
 
-### 学び (CLAUDE.md 追記候補)
+### 学び (2026-08-21 に CLAUDE.md へ反映済み)
 
 - pipefail 下の `curl | grep -q` は match 成功時でも curl exit 23 で pipeline 失敗になる → 一時ファイル経由で分離 (#260)
 - gate 確認のマーカーは要素 (`id="..."`) で。CSS セレクタ文字列は別 gate の CSS からも emit され衝突する (#265 Codex P1)
 - CSS `order` は a11y tree / Tab 順を並べ替えない — order 方式の IA 変更に heading を新設すると SR 導線が壊れる (PR-6b)
+
+反映先: CLAUDE.md「本番 gate の ops workflow ルール」(上 2 件) と
+「LIFF の視覚順 (CSS order) 変更ルール」(3 件目)。いずれも禁止/推奨パターン表 +
+自己点検チェックリスト + 違反時の必須アクションの形式に揃えてある。
