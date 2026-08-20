@@ -151,7 +151,7 @@ liffPortal.post('/api/liff/coupons', async (c) => {
  * GET /api/liff/friend-coupon — LINE友だち限定クーポン (ランク不問の一律 % OFF)。
  * 管理トグルが ON かつコード設定済みのときだけ code/applyUrl を返す。
  * idToken 認証必須 (= LINE 友だちにのみコードを見せる「友だち限定」)。
- * (本体 = services/portal-read.ts readFriendCoupon — getFriendCouponConfig で設定を読む)
+ * (本体 = services/portal-read.ts readFriendCoupon)
  */
 liffPortal.get('/api/liff/friend-coupon', async (c) => {
   try {
@@ -176,7 +176,7 @@ liffPortal.get('/api/liff/welcome-coupon', async (c) => {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    // 本体 = services/portal-read.ts readWelcomeCoupon (getActiveWelcomeCoupon + countdown)
+    // 本体 = services/portal-read.ts readWelcomeCoupon
     const data = await readWelcomeCoupon({ db: c.env.DB }, user);
     return c.json({ success: true, data });
   } catch (err) {
@@ -1637,8 +1637,7 @@ liffPortal.post('/api/liff/translate', async (c) => {
 
 /**
  * GET /api/liff/referral/ranking — 紹介ランキング (display_name はマスク済み)。
- * 本体 = services/portal-read.ts readReferralRanking。 SQL は実在カラムで結合する
- * (JOIN friends f ON f.id = rr.referrer_friend_id — referral_rewards の実カラム名)。
+ * 本体 = services/portal-read.ts readReferralRanking (SQL の実カラム名はそちらの静的ガードが固定)。
  */
 liffPortal.get('/api/liff/referral/ranking', async (c) => {
   try {
