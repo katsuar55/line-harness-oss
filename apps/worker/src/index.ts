@@ -248,6 +248,12 @@ export type Env = {
     //   既定 (未設定) = off — client は従来どおり個別 13 fetch + loadRank (完全に不変)。
     //   bootstrap 呼び出しが失敗した場合も client 側で旧経路へ丸ごとフォールバックする。
     PORTAL_BOOTSTRAP_ENABLED?: string;
+    // ポータル shop タブの定期便カード (Ultraplan PR-5, 2026-08-20): 'true' で
+    //   routes/liff-portal-fragments/sub-card.ts の HTML/CSS/JS を emit し、PR-4 の
+    //   /api/liff/sub-contracts 3 endpoint を呼ぶ UI が現れる。既定 (未設定) = off —
+    //   fragment は 1 byte も emit されない (dark)。表示には SUBSCRIPTION_MENU_ENABLED、
+    //   受理ボタンにはさらに SUB_INTENT_ENABLED が API 側で必要 (二重 gate)。
+    LIFF_SUB_CARD_ENABLED?: string;
     // サブスク決済7日前リマインド + 決済失敗リカバリ通知 gate (WI-2 2026-07-14):
     //   'true' で teiki-billing-reminder cron と pause 遷移時の LINE push が有効。
     //   SUBSCRIPTION_MENU_ENABLED=true (read-model 稼働) が前提。

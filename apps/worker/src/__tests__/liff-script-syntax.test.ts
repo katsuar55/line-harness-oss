@@ -36,6 +36,7 @@ interface MinimalEnv {
   REFERRAL_REWARD_ENABLED?: string;
   APP_PROXY_LINK_ENABLED?: string;
   PORTAL_BOOTSTRAP_ENABLED?: string;
+  LIFF_SUB_CARD_ENABLED?: string;
   SHOPIFY_STOREFRONT_URL?: string;
 }
 
@@ -184,11 +185,13 @@ describe('LIFF 全ページの inline script が打ち切られていない', ()
     }],
     ['REFERRAL_REWARD_ENABLED=true', { REFERRAL_REWARD_ENABLED: 'true' }],
     ['PORTAL_BOOTSTRAP_ENABLED=true (Ultraplan PR-3)', { PORTAL_BOOTSTRAP_ENABLED: 'true' }],
+    ['LIFF_SUB_CARD_ENABLED=true (Ultraplan PR-5)', { LIFF_SUB_CARD_ENABLED: 'true' }],
     ['全 gate on', {
       APP_PROXY_LINK_ENABLED: 'true',
       SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
       REFERRAL_REWARD_ENABLED: 'true',
       PORTAL_BOOTSTRAP_ENABLED: 'true',
+      LIFF_SUB_CARD_ENABLED: 'true',
     }],
   ])('/liff/portal — %s でも打ち切られていない', async (_label, extra) => {
     const env = { ...baseEnv, ...(extra as Record<string, string>) };
