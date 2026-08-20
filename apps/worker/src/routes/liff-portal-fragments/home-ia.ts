@@ -12,8 +12,9 @@
  * ## 新しい視覚順 (gate on)
  *   1. VITAL STRIP (計器)
  *   2. 次の一手 (next-move)
- *   3. 会員ランク (rank-hero — 4 枚の発行済みクーポンカードの下に埋まっていたのを昇格)
- *   4. ストア連携 CTA (未連携時のみ)
+ *   3. ストア連携 CTA (未連携時のみ — C3「連携は全ての前提なので上部」の決定を維持し、
+ *      前提未充足の rank ティーザーより上に置く)
+ *   4. 会員ランク (rank-hero — 4 枚の発行済みクーポンカードの下に埋まっていたのを昇格)
  *   5. 🎟 クーポン・お得 (coupon-hub 見出し) + クーポン 5 面を**連続配置**
  *      (従来は発行済み 4 面が最上部・一覧が rank の下に分断されていた)
  *   6. 紹介ヒーロー → ランキング → バッジ → 服用 → Tip → アンバサダー (従来順)
@@ -31,8 +32,8 @@
 export const HOME_IA_ORDER: ReadonlyArray<readonly [string, number]> = [
   ['vital-strip', 0],
   ['next-move-card', 1],
-  ['rank-card', 2],
-  ['shopify-link-home-card', 3],
+  ['shopify-link-home-card', 2],
+  ['rank-card', 3],
   ['coupon-hub-head', 4],
   ['coupons-card', 5],
   ['welcome-coupon-card', 6],
@@ -51,8 +52,11 @@ export const HOME_IA_ORDER: ReadonlyArray<readonly [string, number]> = [
 export function homeIaHubHeadHtml(): string {
   return [
     '<!-- coupon-hub 見出し (Ultraplan PR-6b, gate LIFF_HOME_IA_ENABLED) -->',
-    '<div id="coupon-hub-head" role="heading" aria-level="2">',
-    '  <span style="font-size:18px">🎟</span>',
+    // role="heading" は付けない: CSS order は a11y tree を並べ替えないため、DOM 上この
+    // 見出しの直後は (未発行時) 連携 CTA や rank になり、SR の見出しナビを誤誘導する
+    // (採点ループ confirmed)。装飾テキスト扱い = SR 体験は旧 IA と完全一致。
+    '<div id="coupon-hub-head">',
+    '  <span style="font-size:18px" aria-hidden="true">🎟</span>',
     '  <p>クーポン・おトク</p>',
     '</div>',
   ].join('\n      ');

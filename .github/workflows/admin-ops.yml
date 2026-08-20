@@ -1978,7 +1978,8 @@ jobs:
           FOUND=0
           for i in $(seq 1 12); do
             curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
-            if [ -s "$HTML" ] && ! grep -q 'coupon-hub-head' "$HTML" 2>/dev/null; then
+            # 正のマーカー (ポータル HTML であること) との AND — 5xx エラーページの空振りを ✅ にしない
+            if grep -q 'id="section-home"' "$HTML" 2>/dev/null && ! grep -q 'coupon-hub-head' "$HTML" 2>/dev/null; then
               echo "✅ gate-off HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
               FOUND=1
               break
@@ -2055,7 +2056,8 @@ jobs:
           FOUND=0
           for i in $(seq 1 12); do
             curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
-            if [ -s "$HTML" ] && ! grep -q 'sub-contracts-card' "$HTML" 2>/dev/null; then
+            # 正のマーカー (ポータル HTML であること) との AND — 5xx エラーページの空振りを ✅ にしない
+            if grep -q 'id="section-home"' "$HTML" 2>/dev/null && ! grep -q 'sub-contracts-card' "$HTML" 2>/dev/null; then
               echo "✅ gate-off HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
               FOUND=1
               break

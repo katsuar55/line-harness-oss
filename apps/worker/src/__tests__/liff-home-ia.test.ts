@@ -30,19 +30,24 @@ function homeTopLevelIds(html: string): string[] {
   // intake/quiz セクションまで飲み込み、他セクションの id を home 直下と誤認する
   const m = /<div id="section-home"[^>]*>([\s\S]*?)\n    <!-- ===== [A-Z]/.exec(html);
   expect(m, 'section-home の切り出しに失敗').toBeTruthy();
-  const body = m![1];
+  // コメントを除去してから数える (コメント内の開始タグで depth が恒久ズレする穴の封鎖) —
+  // かつ div 限定にしない (section/button 等の未台帳要素が order:0 で先頭混入しても
+  // 検出できなくなる。採点ループ confirmed・mutation 実測)
+  const body = m![1].replace(/<!--[\s\S]*?-->/g, '');
+  const VOID = new Set(['br', 'img', 'input', 'hr', 'meta', 'link', 'source']);
   const ids: string[] = [];
   let depth = 0;
-  for (const tag of body.matchAll(/<(\/?)div\b([^>]*)>/g)) {
+  for (const tag of body.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*?)(\/?)>/g)) {
+    const name = tag[2].toLowerCase();
     if (tag[1] === '/') {
       depth--;
       continue;
     }
     if (depth === 0) {
-      const id = /id="([^"]+)"/.exec(tag[2]);
+      const id = /id="([^"]+)"/.exec(tag[3]);
       if (id) ids.push(id[1]);
     }
-    depth++;
+    if (!VOID.has(name) && tag[4] !== '/') depth++;
   }
   return ids;
 }
@@ -61,8 +66,9 @@ describe('gate LIFF_HOME_IA_ENABLED (既定 off = 1 byte も出さない)', () =
     expect(htmlOff).not.toMatch(/#rank-card\{order:/);
   });
 
-  it('on: order CSS + hub 見出しが emit される', () => {
+  it('on: order CSS + hub 見出しが emit される (SR を誤誘導する heading role は付けない)', () => {
     expect(htmlOn).toContain('id="coupon-hub-head"');
+    expect(htmlOn).not.toMatch(/coupon-hub-head" role="heading"/);
     expect(htmlOn).toContain('#section-home.active{display:flex;flex-direction:column;gap:1rem}');
   });
 });
@@ -81,6 +87,9 @@ describe('IA 再編の安全条件', () => {
   it('台帳 HOME_IA_ORDER が home 直下の実在要素を網羅する (行漏れ = order:0 で先頭に紛れ込む)', () => {
     const ids = homeTopLevelIds(htmlOn);
     expect(ids.length).toBeGreaterThanOrEqual(14);
+    // 逆方向も固定: gate が足す唯一の新要素は #section-home 直下に実在すること
+    // (seam がセクション外へ脱走すると全タブで常時表示になる — 採点ループ confirmed・mutation 実測)
+    expect(ids).toContain('coupon-hub-head');
     const ledger = new Map(HOME_IA_ORDER);
     for (const id of ids) {
       expect(ledger.has(id), 'home 直下の #' + id + ' が HOME_IA_ORDER 台帳に無い').toBe(true);
@@ -101,6 +110,9 @@ describe('IA 再編の安全条件', () => {
     expect(order.get('rank-card')!).toBeLessThan(order.get('coupon-hub-head')!);
     expect(order.get('rank-card')!).toBeLessThan(order.get('coupons-card')!);
     expect(order.get('rank-card')!).toBeGreaterThan(order.get('vital-strip')!);
+    // C3 決定 (liff-pages.ts): 連携は配送/再注文/ランク全ての前提 — CTA は前提未充足の
+    // rank ティーザーより上に置く (未連携ユーザーにしか表示されないので rank-hero とは両立)
+    expect(order.get('shopify-link-home-card')!).toBeLessThan(order.get('rank-card')!);
   });
 
   it('coupon-hub: 見出し + クーポン 5 面が連続 order (分断されない)', () => {
