@@ -142,6 +142,12 @@ name: Admin Ops
 #     ③ が 200 なら endpoint/account は健全 = 原因は worker 側 (token 権限 or 実装) に絞れる。
 #     error_summary は本 job では実装が生成する内部文字列のみ (PII なし) なので出力してよい。
 #     他 job は件数のみ (未知の文字列を公開ログに出さないため)。
+#   enable-portal-bootstrap / disable-portal-bootstrap:
+#     ポータル初期化の一括 read (Ultraplan PR-3, #258) の gate 開閉。enable は
+#     ① PR-3 コードが本番に deploy 済みかを本番 HTML で機械チェック →
+#     ② PORTAL_BOOTSTRAP_ENABLED=true 投入 → ③ gate-on HTML の伝播を実測 (5s×12) →
+#     ④ liff-health (打ち切り/parse/watchdog) まで通す。disable は即時 kill switch
+#     (redeploy 不要 — client は従来の個別 fetch 経路へ戻る)。
 #
 # ⚠️ repo は PUBLIC = workflow ログ/サマリは公開される。secret の値・顧客データ (PII) を
 #    echo/サマリ出力する op を追加してはならない (名前・件数のみ可)。
@@ -201,6 +207,8 @@ on:
           - enable-subscription-reminder
           - cron-failure-diagnose
           - audit-stale-coupon-copy
+          - enable-portal-bootstrap
+          - disable-portal-bootstrap
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
         required: false
@@ -1854,3 +1862,74 @@ jobs:
             echo '- 2 が `Illegal invocation...` → 実装バグ (global fetch を object property 経由で呼んでいる)'
             echo '- 3 が 200 かつ result_len > 0 なのに 2 が error → 原因は worker 側に確定'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # ポータル bootstrap 一括 read (Ultraplan PR-3, #258) の gate 開放。
+      # 前提: PR-3 のコード (bootstrapPortal) が本番に deploy 済みであること。未 deploy のまま
+      # ON にしても旧 HTML には配線が無く無害だが「flip したのに変わらない」誤診を生むので、
+      # 本番 HTML を機械チェックしてから投入する。投入後は gate-on HTML の伝播を実測し、
+      # liff-health (打ち切り/parse/watchdog) まで通してから成功にする。
+      - name: Enable portal bootstrap (PORTAL_BOOTSTRAP_ENABLED=true)
+        if: inputs.op == 'enable-portal-bootstrap'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          URL='https://naturism-line-crm.katsu-7d5.workers.dev'
+          if ! curl -sS --max-time 20 "$URL/liff/portal" | grep -q 'bootstrapPortal'; then
+            echo '❌ 本番 /liff/portal に bootstrapPortal がありません — PR-3 (#258) を先に deploy してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          TMP="$RUNNER_TEMP/secrets.portal-bootstrap.json"
+          printf '{"PORTAL_BOOTSTRAP_ENABLED":"true"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+          # 伝播待ち: secret 投入は新 version を作る。gate-on HTML (PORTAL_BOOTSTRAP_ON = true) が
+          # 実際に配られるまで 5s × 12 リトライで実測する (post-deploy-check と同じ流儀)。
+          FOUND=0
+          for i in $(seq 1 12); do
+            if curl -sS --max-time 20 "$URL/liff/portal" | grep -q 'PORTAL_BOOTSTRAP_ON = true'; then
+              echo "✅ gate-on HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
+              FOUND=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$FOUND" != "1" ]; then
+            echo '❌ 60s 待っても gate-on HTML が配られていません — 伝播遅延か投入失敗。secret-list で確認のうえ再実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # gate-on の本番 HTML を liff-health (打ち切り / parse / watchdog 配置) まで検証
+          node ../../scripts/liff-health-check.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '⚠️ これ以降、ポータル初期化は bootstrap 1 往復で走ります。実機でリクエスト数 2-3 本 (portal-bootstrap + intake/streak ± referral/generate) を確認してください。異常時は disable-portal-bootstrap で即時 OFF (redeploy 不要)。' >> "$GITHUB_STEP_SUMMARY"
+
+      # 上記 gate の即時 kill switch (redeploy 不要)。OFF = client は従来の個別 fetch 経路へ戻る。
+      - name: Disable portal bootstrap (PORTAL_BOOTSTRAP_ENABLED=false)
+        if: inputs.op == 'disable-portal-bootstrap'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          TMP="$RUNNER_TEMP/secrets.portal-bootstrap.json"
+          printf '{"PORTAL_BOOTSTRAP_ENABLED":"false"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          URL='https://naturism-line-crm.katsu-7d5.workers.dev'
+          FOUND=0
+          for i in $(seq 1 12); do
+            if curl -sS --max-time 20 "$URL/liff/portal" | grep -q 'PORTAL_BOOTSTRAP_ON = false'; then
+              echo "✅ gate-off HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
+              FOUND=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$FOUND" != "1" ]; then
+            echo '❌ 60s 待っても gate-off HTML が配られていません — 伝播遅延か投入失敗。secret-list で確認のうえ再実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
