@@ -142,6 +142,10 @@ name: Admin Ops
 #     ③ が 200 なら endpoint/account は健全 = 原因は worker 側 (token 権限 or 実装) に絞れる。
 #     error_summary は本 job では実装が生成する内部文字列のみ (PII なし) なので出力してよい。
 #     他 job は件数のみ (未知の文字列を公開ログに出さないため)。
+#   enable-home-ia / disable-home-ia:
+#     home タブ IA 再編 (Ultraplan PR-6b) の gate 開閉。CSS order のみの視覚順切替
+#     (rank-hero + coupon-hub)。enable は投入 → gate-on HTML の伝播実測 → liff-health。
+#     disable は即時 kill switch (redeploy 不要)。前提 gate なし。
 #   enable-sub-card / disable-sub-card:
 #     ポータル shop タブ「定期便のお手続き」カード (Ultraplan PR-5, #261) の gate 開閉。
 #     enable は ① 前提 gate (SUBSCRIPTION_MENU_ENABLED — 無ければカードは出ない) を
@@ -217,6 +221,8 @@ on:
           - disable-portal-bootstrap
           - enable-sub-card
           - disable-sub-card
+          - enable-home-ia
+          - disable-home-ia
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
         required: false
@@ -1920,6 +1926,71 @@ jobs:
           node ../../scripts/liff-health-check.mjs | tee -a "$GITHUB_STEP_SUMMARY"
           echo '⚠️ これ以降、ポータル初期化は bootstrap 1 往復で走ります。実機でリクエスト数 2-3 本 (portal-bootstrap + intake/streak ± referral/generate) を確認してください。異常時は disable-portal-bootstrap で即時 OFF (redeploy 不要)。' >> "$GITHUB_STEP_SUMMARY"
 
+      # home タブ IA 再編 (Ultraplan PR-6b) の gate 開放。CSS order のみ (DOM/JS 不変)。
+      - name: Enable home IA (LIFF_HOME_IA_ENABLED=true)
+        if: inputs.op == 'enable-home-ia'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          TMP="$RUNNER_TEMP/secrets.home-ia.json"
+          printf '{"LIFF_HOME_IA_ENABLED":"true"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+          URL='https://naturism-line-crm.katsu-7d5.workers.dev'
+          HTML="$RUNNER_TEMP/portal.html"
+          FOUND=0
+          for i in $(seq 1 12); do
+            curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
+            if grep -q 'coupon-hub-head' "$HTML" 2>/dev/null; then
+              echo "✅ gate-on HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
+              FOUND=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$FOUND" != "1" ]; then
+            echo '❌ 60s 待っても gate-on HTML が配られていません — 伝播遅延か投入失敗。secret-list で確認のうえ再実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          node ../../scripts/liff-health-check.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '⚠️ これ以降、ホームの並びが rank-hero + coupon-hub になります。実機でホームの見た目を確認してください。異常時は disable-home-ia で即時 OFF (redeploy 不要)。' >> "$GITHUB_STEP_SUMMARY"
+
+      # 上記 gate の即時 kill switch (redeploy 不要)。OFF = 従来の並びへ戻る。
+      - name: Disable home IA (LIFF_HOME_IA_ENABLED=false)
+        if: inputs.op == 'disable-home-ia'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          TMP="$RUNNER_TEMP/secrets.home-ia.json"
+          printf '{"LIFF_HOME_IA_ENABLED":"false"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          URL='https://naturism-line-crm.katsu-7d5.workers.dev'
+          HTML="$RUNNER_TEMP/portal.html"
+          FOUND=0
+          for i in $(seq 1 12); do
+            curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
+            # 正のマーカー (ポータル HTML であること) との AND — 5xx エラーページの空振りを ✅ にしない
+            if grep -q 'id="section-home"' "$HTML" 2>/dev/null && ! grep -q 'coupon-hub-head' "$HTML" 2>/dev/null; then
+              echo "✅ gate-off HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
+              FOUND=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$FOUND" != "1" ]; then
+            echo '❌ 60s 待っても gate-off HTML が配られていません — 伝播遅延か投入失敗。secret-list で確認のうえ再実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
       # ポータル shop タブ「定期便のお手続き」カード (Ultraplan PR-5, #261) の gate 開放。
       # off = fragment を 1 byte も emit しない dark なので、開放前の本番 HTML では存在確認が
       # できない — 前提チェックは secret 一覧 (SUBSCRIPTION_MENU_ENABLED) で行う。
@@ -1985,7 +2056,8 @@ jobs:
           FOUND=0
           for i in $(seq 1 12); do
             curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
-            if [ -s "$HTML" ] && ! grep -q 'sub-contracts-card' "$HTML" 2>/dev/null; then
+            # 正のマーカー (ポータル HTML であること) との AND — 5xx エラーページの空振りを ✅ にしない
+            if grep -q 'id="section-home"' "$HTML" 2>/dev/null && ! grep -q 'sub-contracts-card' "$HTML" 2>/dev/null; then
               echo "✅ gate-off HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
               FOUND=1
               break

@@ -254,6 +254,9 @@ export type Env = {
     //   fragment は 1 byte も emit されない (dark)。表示には SUBSCRIPTION_MENU_ENABLED、
     //   受理ボタンにはさらに SUB_INTENT_ENABLED が API 側で必要 (二重 gate)。
     LIFF_SUB_CARD_ENABLED?: string;
+    // home タブ IA 再編 (Ultraplan PR-6b, 2026-08-20): 'true' で rank-hero + coupon-hub の
+    //   視覚順に切替 (CSS order のみ・DOM/JS 不変)。既定 (未設定) = off — 従来の並びのまま。
+    LIFF_HOME_IA_ENABLED?: string;
     // サブスク決済7日前リマインド + 決済失敗リカバリ通知 gate (WI-2 2026-07-14):
     //   'true' で teiki-billing-reminder cron と pause 遷移時の LINE push が有効。
     //   SUBSCRIPTION_MENU_ENABLED=true (read-model 稼働) が前提。

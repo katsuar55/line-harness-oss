@@ -5,6 +5,7 @@ import { BRAND_LOGO_PNG_BASE64 } from './brand-logo.js';
 import { liffWatchdogScriptTag } from '../utils/liff-watchdog.js';
 import { jsonForScript, inlineScriptBody } from '../utils/inline-script.js';
 import { subCardHtml, subCardCss, subCardJs } from './liff-portal-fragments/sub-card.js';
+import { homeIaCss, homeIaHubHeadHtml } from './liff-portal-fragments/home-ia.js';
 
 const liffPages = new Hono<Env>();
 
@@ -49,7 +50,10 @@ const portalHandler = (c: { env: Env['Bindings']; html: (html: string) => Respon
   // 定期便カード gate (Ultraplan PR-5): on のとき shop タブに契約カード (fragment) を emit。
   // 既定 off = fragment を 1 byte も出さない (dark)。
   const subCardOn = c.env.LIFF_SUB_CARD_ENABLED === 'true';
-  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl, portalBootstrapOn, subCardOn));
+  // home IA 再編 gate (Ultraplan PR-6b): on のとき home タブの視覚順を rank-hero + coupon-hub 化。
+  // CSS order のみ (DOM/JS 不変)。既定 off = 1 byte も emit しない (dark)。
+  const homeIaOn = c.env.LIFF_HOME_IA_ENABLED === 'true';
+  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl, portalBootstrapOn, subCardOn, homeIaOn));
 };
 liffPages.get('/liff/portal', portalHandler as never);
 liffPages.get('/liff/portal/', portalHandler as never);
@@ -61,6 +65,7 @@ function portalPage(
   shopifyLinkUrl: string | null = null,
   portalBootstrapOn = false,
   subCardOn = false,
+  homeIaOn = false,
 ): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -349,6 +354,7 @@ function portalPage(
     @media(prefers-reduced-motion:reduce){.skeleton,.streak-fire,.ambassador-badge,.sparkle-dot,.rank-ambassador::before,.section,#quiz-result{animation:none !important}.btn-primary:active,.btn-coral:active,.meal-btn:active,.mood-btn:active,.skin-btn:active,.bowel-btn:active,button:active,.tap:active,label:active,a[onclick]:active{transform:none !important}.sr{opacity:1 !important;transform:none !important}.sr-in{transition:none !important}#scroll-progress,#scroll-leaf{display:none}}
   </style>
   ${subCardOn ? '<style>\n    ' + subCardCss() + '\n  </style>' : ''}
+  ${homeIaOn ? '<style>\n    ' + homeIaCss() + '\n  </style>' : ''}
 </head>
 <body class="min-h-screen pb-20">
 
@@ -420,6 +426,7 @@ function portalPage(
           </button>
         </div>
       </div>
+      ${homeIaOn ? homeIaHubHeadHtml() : ''}
       <!-- 友だち追加 welcome クーポン (発行済みのときのみ表示・期限カウントダウン付き) -->
       <div id="welcome-coupon-card" class="card p-4" style="display:none"></div>
       <!-- 紹介特典クーポン (referred=紹介された/referrer=紹介した の実クーポン、発行済みのときのみ表示) -->
