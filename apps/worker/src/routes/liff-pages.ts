@@ -6,6 +6,7 @@ import { liffWatchdogScriptTag } from '../utils/liff-watchdog.js';
 import { jsonForScript, inlineScriptBody } from '../utils/inline-script.js';
 import { subCardHtml, subCardCss, subCardJs } from './liff-portal-fragments/sub-card.js';
 import { homeIaCss, homeIaHubHeadHtml } from './liff-portal-fragments/home-ia.js';
+import { visualV2Css } from './liff-portal-fragments/visual-v2.js';
 
 const liffPages = new Hono<Env>();
 
@@ -53,7 +54,9 @@ const portalHandler = (c: { env: Env['Bindings']; html: (html: string) => Respon
   // home IA 再編 gate (Ultraplan PR-6b): on のとき home タブの視覚順を rank-hero + coupon-hub 化。
   // CSS order のみ (DOM/JS 不変)。既定 off = 1 byte も emit しない (dark)。
   const homeIaOn = c.env.LIFF_HOME_IA_ENABLED === 'true';
-  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl, portalBootstrapOn, subCardOn, homeIaOn));
+  // 視覚刷新 v2 gate (Ultraplan PR-7/8): 主役カードの計器アクセント (装飾 CSS のみ・新色ゼロ)。
+  const visualV2On = c.env.LIFF_VISUAL_V2_ENABLED === 'true';
+  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl, portalBootstrapOn, subCardOn, homeIaOn, visualV2On));
 };
 liffPages.get('/liff/portal', portalHandler as never);
 liffPages.get('/liff/portal/', portalHandler as never);
@@ -66,6 +69,7 @@ function portalPage(
   portalBootstrapOn = false,
   subCardOn = false,
   homeIaOn = false,
+  visualV2On = false,
 ): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -355,6 +359,7 @@ function portalPage(
   </style>
   ${subCardOn ? '<style>\n    ' + subCardCss() + '\n  </style>' : ''}
   ${homeIaOn ? '<style>\n    ' + homeIaCss() + '\n  </style>' : ''}
+  ${visualV2On ? '<style>\n    ' + visualV2Css() + '\n  </style>' : ''}
 </head>
 <body class="min-h-screen pb-20">
 
