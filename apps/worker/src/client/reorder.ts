@@ -847,7 +847,7 @@ async function fetchReorderData(): Promise<void> {
   render();
 }
 
-async function submitReorder(): Promise<void> {
+async function submitReorder(ackSubscriptionDuplicate = false): Promise<void> {
   if (state.submitting || !state.selectedOrderId) return;
   state.submitting = true;
   state.view = 'creating';
@@ -856,19 +856,36 @@ async function submitReorder(): Promise<void> {
   try {
     const res = await apiCall('/api/liff/reorder/create', {
       method: 'POST',
-      body: JSON.stringify({ orderId: state.selectedOrderId }),
+      body: JSON.stringify({
+        orderId: state.selectedOrderId,
+        // 二重購入ガード (採点②-1): confirm 済みのときだけ ack を送る (サーバ側 fail-closed)
+        ...(ackSubscriptionDuplicate ? { acknowledgeSubscriptionDuplicate: true } : {}),
+      }),
     });
 
     const json = await res.json() as {
       success: boolean;
       data?: { invoiceUrl: string; totalPrice: number };
       error?: string;
+      code?: string;
     };
 
     if (json.success && json.data) {
       state.invoiceUrl = json.data.invoiceUrl;
       state.totalPrice = json.data.totalPrice;
       state.view = 'success';
+    } else if (json.code === 'subscription_duplicate') {
+      // 定期便のお届け分 × 稼働契約者 → 確認ステップ (Katsu 決定: 拒否ではなく確認)。
+      // この旧画面は確認シートを持たないため native confirm で代替する
+      // (これが無いと 409 → error 表示のループで正当な追加購入が恒久的に完了不能になる)
+      state.submitting = false;
+      state.view = 'order-detail';
+      render();
+      const proceed = window.confirm(
+        'この注文は定期便でお届けした分です。\n定期便とは別に、単発でもう1回分を購入しますか？',
+      );
+      if (proceed) await submitReorder(true);
+      return;
     } else {
       state.error = json.error || '注文の作成に失敗しました';
       state.view = 'order-detail';
