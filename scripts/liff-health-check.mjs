@@ -137,6 +137,20 @@ export function findParseProblems(html) {
  * 1 ページ分の健全性判定。問題ゼロなら空配列。
  * page = HEALTH_PAGES の 1 要素 ({ path, sentinel, watchdog })。
  */
+/**
+ * Cache-Control に **ディレクティブとしての** no-store があるか (Codex P2)。
+ * 部分一致 (/no-store/) だと `x-no-store` や `no-store-disabled` のような
+ * 「キャッシュには no-store と解釈されない別のトークン」で偽 healthy になる。
+ * RFC 9111 のとおりカンマ区切りで分解し、`=` 前のディレクティブ名を厳密照合する。
+ */
+export function hasNoStoreDirective(cacheControl) {
+  if (typeof cacheControl !== 'string') return false;
+  return cacheControl
+    .split(',')
+    .map((part) => part.trim().split('=')[0].trim().toLowerCase())
+    .includes('no-store');
+}
+
 export function checkPageHealth(html, page, headers = undefined) {
   if (typeof html !== 'string' || html.length === 0) {
     return ['HTML が空'];
@@ -154,7 +168,7 @@ export function checkPageHealth(html, page, headers = undefined) {
       problems.push('Cache-Control を検証できなかった (レスポンスヘッダ未取得) — 鮮度ガードが無効化されている');
     } else {
       const cc = typeof headers.get === 'function' ? headers.get('cache-control') : headers['cache-control'];
-      if (!cc || !/no-store/i.test(cc)) {
+      if (!cc || !hasNoStoreDirective(cc)) {
         problems.push(
           `Cache-Control に no-store が無い (実測: ${cc ?? 'ヘッダ自体が無い'}) — deploy が実機に届かない状態`,
         );

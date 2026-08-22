@@ -19,6 +19,7 @@ import {
   findParseProblems,
   checkPageHealth,
   runLiffHealth,
+  hasNoStoreDirective,
   healthExitCode,
 } from './liff-health-check.mjs';
 
@@ -444,4 +445,34 @@ test('requireNoStore を持たないページ定義はヘッダを要求しな�
 test('本番台帳 HEALTH_PAGES の全ページが requireNoStore を持つ (付け忘れ検出)', () => {
   const missing = HEALTH_PAGES.filter((p) => p.requireNoStore !== true).map((p) => p.path);
   assert.deepEqual(missing, [], '鮮度ガードが外れているページ: ' + missing.join(', '));
+});
+
+test('🚨 no-store は「ディレクティブ」として照合する — 部分一致で偽 healthy にしない (Codex P2)', () => {
+  // 本物
+  assert.equal(hasNoStoreDirective('no-store'), true);
+  assert.equal(hasNoStoreDirective('no-store, no-cache, must-revalidate'), true);
+  assert.equal(hasNoStoreDirective('NO-STORE'), true);
+  assert.equal(hasNoStoreDirective('private,  no-store  , max-age=0'), true);
+  // 偽物 — キャッシュは no-store と解釈しないので healthy にしてはいけない
+  assert.equal(hasNoStoreDirective('x-no-store'), false);
+  assert.equal(hasNoStoreDirective('no-store-disabled'), false);
+  assert.equal(hasNoStoreDirective('foo=no-store'), false);
+  assert.equal(hasNoStoreDirective('public, max-age=3600'), false);
+  assert.equal(hasNoStoreDirective(''), false);
+  assert.equal(hasNoStoreDirective(undefined), false);
+});
+
+test('🚨 x-no-store を返す本番は unhealthy として実測する (偽 healthy の回帰)', async () => {
+  const health = await runLiffHealth({
+    workerUrl: 'https://w.example',
+    pages: [FRESH_PAGE_DEF],
+    fetchHtml: async () => ({
+      html: buildPage(),
+      headers: new Headers({ 'cache-control': 'x-no-store, max-age=600' }),
+    }),
+    maxAttemptsPerPage: 1,
+    retryDelayMs: 0,
+  });
+  assert.equal(health.ok, false);
+  assert.match(health.results[0].problems.join(' | '), /no-store/);
 });
