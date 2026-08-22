@@ -123,6 +123,14 @@ beforeEach(() => {
 // Tests
 // ============================================================
 
+/**
+ * due の fixture。**固定日付にしない** (2026-08-23):
+ * 送信直前の再導出ガード (STALE_DUE_THRESHOLD_MS = 3 日) が入ったため、
+ * 固定日付は書いた瞬間から古くなり、3 日後にはテストが『先送り』側に落ちて壊れる。
+ * 本番の due は cron 周期 (5 分) の範囲で来るので、相対日付の方が実態にも忠実。
+ */
+const DUE_JUST_NOW = new Date(Date.now() - 60_000).toISOString();
+
 describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () => {
   it('due 0 件でも cron_run_logs に heartbeat を残す', async () => {
     const { processSubscriptionReminders } = await import(
@@ -163,7 +171,7 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
           friend_id: 'friend-1',
           product_title: 'プロテイン',
           interval_days: 30,
-          next_reminder_at: '2026-01-01',
+          next_reminder_at: DUE_JUST_NOW,
           shopify_product_id: null,
         },
       ],
@@ -200,7 +208,7 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
           friend_id: 'friend-1',
           product_title: 'A',
           interval_days: 30,
-          next_reminder_at: '2026-01-01',
+          next_reminder_at: DUE_JUST_NOW,
           shopify_product_id: null,
         },
       ],
@@ -232,7 +240,7 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
           friend_id: 'friend-1',
           product_title: 'A',
           interval_days: 30,
-          next_reminder_at: '2026-01-01',
+          next_reminder_at: DUE_JUST_NOW,
           shopify_product_id: null,
         },
       ],
@@ -264,7 +272,7 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
           friend_id: 'friend-1',
           product_title: 'A',
           interval_days: 30,
-          next_reminder_at: '2026-01-01',
+          next_reminder_at: DUE_JUST_NOW,
           shopify_product_id: null,
         },
       ],

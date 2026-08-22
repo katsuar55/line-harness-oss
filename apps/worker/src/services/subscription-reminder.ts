@@ -120,7 +120,30 @@ export interface SubscriptionReminderResult {
   sentCount: number;
   /** push 中に発生した例外件数 */
   errorCount: number;
+  /** 異常に古い due を送らず先送りした件数 (解約直後の再購入 push の防止) */
+  staleReanchoredCount: number;
+  /** next_reminder_at がパース不能で無送信側へ倒した件数 */
+  staleSkippedCount: number;
 }
+
+/**
+ * 「異常に古い due」の閾値 (2026-08-23)。これより古い期日の行は**送らず**先送りする。
+ *
+ * 🚨 なぜ必要か: 稼働契約を持つ友だちは SELECT の NOT EXISTS で除外され続けるため、
+ *   その行の next_reminder_at は古いまま凍結する。解約された瞬間に除外が外れ、
+ *   「何ヶ月も前が期日」の行が即 due になって解約直後の顧客へ再購入 push が飛ぶ。
+ *   除外ガード自体が時限爆弾を仕込む形になっていた (採点② 2)。
+ *
+ * 3 日にした理由:
+ *   - 正常運用の遅れは cron 周期の 5 分以内、送信前 claim の lease は 10 分。
+ *     閾値がそれらに近いと**正常な lease 行まで巻き込んで送信不能**になる
+ *   - cron 停止の遅れも heartbeat 監視がある以上せいぜい数時間
+ *   - 凍結解除ケースは数週間〜数ヶ月 = 3 日は両者を確実に分離できる
+ */
+export const STALE_DUE_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** interval_days が壊れている行の既定サイクル (即時再送・無限ループを作らない)。 */
+const FALLBACK_INTERVAL_DAYS = 30;
 
 export async function processSubscriptionReminders(
   db: D1Database,
@@ -128,7 +151,13 @@ export async function processSubscriptionReminders(
   liffUrl: string,
 ): Promise<SubscriptionReminderResult> {
   const now = new Date().toISOString();
-  const metrics: SubscriptionReminderResult = { dueCount: 0, sentCount: 0, errorCount: 0 };
+  const metrics: SubscriptionReminderResult = {
+    dueCount: 0,
+    sentCount: 0,
+    errorCount: 0,
+    staleReanchoredCount: 0,
+    staleSkippedCount: 0,
+  };
 
   // 1. Get due reminders
   //
@@ -156,6 +185,9 @@ export async function processSubscriptionReminders(
             WHERE f.id = sr.friend_id
               AND c.cancelled_at IS NULL
          )
+       -- 古い順 (2026-08-23): prefs OFF 等で恒久 due になった行が LIMIT 50 を占有して
+       -- 他の行が永久に処理されない starvation を防ぐ
+       ORDER BY sr.next_reminder_at ASC
        LIMIT 50`,
     )
     .bind(now)
@@ -171,6 +203,32 @@ export async function processSubscriptionReminders(
 
   for (const reminder of dueReminders) {
     try {
+      // 0. 送信直前の再導出 (2026-08-23 採点② 2 — 発生源ごとでなく 1 箇所で判定する)。
+      //    friend/prefs/claim より**前**に置く: 古い due はそもそも claim もしない。
+      const dueAtMs = Date.parse(reminder.next_reminder_at);
+      if (!Number.isFinite(dueAtMs)) {
+        // パース不能は無送信側へ倒す (誤送信は回復不能・無送信は回復可能)
+        metrics.staleSkippedCount++;
+        continue;
+      }
+      if (Date.now() - dueAtMs > STALE_DUE_THRESHOLD_MS) {
+        // 凍結解除された行。今回は送らず次サイクルへ **前進のみ** CAS で先送りする。
+        // (元の next_reminder_at を述語に含めるので、別実行と競合しても二重に進まない)
+        const intervalDays =
+          Number.isFinite(Number(reminder.interval_days)) && Number(reminder.interval_days) > 0
+            ? Number(reminder.interval_days)
+            : FALLBACK_INTERVAL_DAYS;
+        const reanchored = new Date(Date.now() + intervalDays * 86400_000).toISOString();
+        const res = await db
+          .prepare(
+            'UPDATE subscription_reminders SET next_reminder_at = ?, updated_at = ? WHERE id = ? AND next_reminder_at = ? AND is_active = 1',
+          )
+          .bind(reanchored, new Date().toISOString(), reminder.id, reminder.next_reminder_at)
+          .run();
+        if ((res.meta?.changes ?? 0) === 1) metrics.staleReanchoredCount++;
+        continue;
+      }
+
       // 1. Friend lookup + 2. prefs を claim より前に判定し、 skip 対象は claim しない
       //    (= 不要な lease を残して 10 分毎 churn させないため)。
       const friend = await db

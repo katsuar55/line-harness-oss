@@ -20,6 +20,14 @@ const lineClient = { pushMessage } as never;
 
 const PAST = '2026-08-01T00:00:00.000Z';
 
+/**
+ * due の期日は **固定日付にしない** (2026-08-23):
+ * 送信直前の再導出ガード (STALE_DUE_THRESHOLD_MS = 3 日) が入ったため、固定日付は
+ * 書いた瞬間から古くなり、やがて『先送り』側に落ちてこのテストの検証軸 (NOT EXISTS の述語)
+ * が測れなくなる。本番の due は cron 周期 (5 分) の範囲で来るので相対日付が実態にも忠実。
+ */
+const DUE_JUST_NOW = new Date(Date.now() - 60_000).toISOString();
+
 function seed(
   db: SqliteDatabase,
   opts: { contractState: 'active' | 'cancelled' | 'paused' | 'none' },
@@ -34,7 +42,7 @@ function seed(
   for (const f of ['F1', 'F2']) {
     db.exec(`INSERT INTO subscription_reminders
                (id, friend_id, product_title, interval_days, next_reminder_at, is_active, created_at, updated_at)
-             VALUES ('R-${f}', '${f}', 'naturism Pink', 30, '${PAST}', 1, '${PAST}', '${PAST}')`);
+             VALUES ('R-${f}', '${f}', 'naturism Pink', 30, '${DUE_JUST_NOW}', 1, '${PAST}', '${PAST}')`);
   }
 
   if (opts.contractState !== 'none') {
@@ -107,7 +115,7 @@ describe('再購入リマインダー — 稼働契約者の除外 (実 SQLite �
               VALUES ('F1', 'U_UNLINKED', 'Unlinked', 1, '${PAST}', '${PAST}')`);
     raw.exec(`INSERT INTO subscription_reminders
                 (id, friend_id, product_title, interval_days, next_reminder_at, is_active, created_at, updated_at)
-              VALUES ('R-F1', 'F1', 'naturism Pink', 30, '${PAST}', 1, '${PAST}', '${PAST}')`);
+              VALUES ('R-F1', 'F1', 'naturism Pink', 30, '${DUE_JUST_NOW}', 1, '${PAST}', '${PAST}')`);
 
     const metrics = await processSubscriptionReminders(asD1(raw), lineClient, 'https://liff.line.me/test');
 
