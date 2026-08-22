@@ -30,7 +30,7 @@ const DUE_JUST_NOW = new Date(Date.now() - 60_000).toISOString();
 
 function seed(
   db: SqliteDatabase,
-  opts: { contractState: 'active' | 'cancelled' | 'paused' | 'none' },
+  opts: { contractState: 'active' | 'cancelled' | 'paused' | 'none'; cancelledAt?: string },
 ): void {
   db.exec(`INSERT INTO friends (id, line_user_id, display_name, is_following, created_at, updated_at)
            VALUES ('F1', 'U_SUB', 'Subscriber', 1, '${PAST}', '${PAST}')`);
@@ -46,7 +46,8 @@ function seed(
   }
 
   if (opts.contractState !== 'none') {
-    const cancelled = opts.contractState === 'cancelled' ? `'${PAST}'` : 'NULL';
+    const cancelled =
+      opts.contractState === 'cancelled' ? `'${opts.cancelledAt ?? PAST}'` : 'NULL';
     const paused = opts.contractState === 'paused' ? `'${PAST}'` : 'NULL';
     db.exec(`INSERT INTO subscription_contracts (contract_id, shopify_customer_id, cancelled_at, paused_at, created_at, updated_at)
              VALUES ('C1', 'SC1', ${cancelled}, ${paused}, '${PAST}', '${PAST}')`);
@@ -86,13 +87,28 @@ describe('再購入リマインダー — 稼働契約者の除外 (実 SQLite �
     expect(sentTo).not.toContain('U_SUB');
   });
 
-  it('契約が解約されたらリマインダーは自動で復活する (行を消さない設計の意図)', async () => {
+  it('解約直後はまだ復活しない (2026-08-23): 除外は外れるが「解約日 + interval」まで沈黙する', async () => {
+    // 8/18 の設計「解約したら自動で復活する」は維持しつつ、**復活の瞬間**を後ろへ倒した。
+    // 凍結された期日は「初回注文 + interval」= 解約が集中する日そのものなので、
+    // 除外が外れた瞬間に送ると解約したばかりの顧客へ再購入 push が飛ぶ (採点② 2)。
     const raw = createSchemaDb();
-    seed(raw, { contractState: 'cancelled' });
+    seed(raw, { contractState: 'cancelled' }); // cancelled_at は 22 日前 (interval 30 の内側)
 
     const metrics = await processSubscriptionReminders(asD1(raw), lineClient, 'https://liff.line.me/test');
 
-    // cancelled_at が立った契約は「稼働」でない = F1 にも届く (単発購入者に戻った扱い)
+    // F1 (解約したて) には届かず、契約を持たない F2 だけに届く
+    expect(metrics.sentCount).toBe(1);
+    expect(pushMessage.mock.calls.map((c) => c[0])).toEqual(['U_ONESHOT']);
+    expect(metrics.cancelReanchoredCount).toBe(1);
+  });
+
+  it('解約から interval を超えれば復活する (行を消さない設計の意図は生きている)', async () => {
+    const raw = createSchemaDb();
+    seed(raw, { contractState: 'cancelled', cancelledAt: new Date(Date.now() - 40 * 86400_000).toISOString() });
+
+    const metrics = await processSubscriptionReminders(asD1(raw), lineClient, 'https://liff.line.me/test');
+
+    // 解約 40 日前 > interval 30 日 = 単発購入者に戻った扱いで両方に届く
     expect(metrics.sentCount).toBe(2);
     expect(pushMessage.mock.calls.map((c) => c[0]).sort()).toEqual(['U_ONESHOT', 'U_SUB']);
   });

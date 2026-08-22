@@ -120,30 +120,76 @@ export interface SubscriptionReminderResult {
   sentCount: number;
   /** push 中に発生した例外件数 */
   errorCount: number;
-  /** 異常に古い due を送らず先送りした件数 (解約直後の再購入 push の防止) */
-  staleReanchoredCount: number;
+  /** 解約直後のため送らず先送りした件数 (解約日 + interval まで沈黙する) */
+  cancelReanchoredCount: number;
   /** next_reminder_at がパース不能で無送信側へ倒した件数 */
   staleSkippedCount: number;
 }
 
 /**
- * 「異常に古い due」の閾値 (2026-08-23)。これより古い期日の行は**送らず**先送りする。
+ * 解約直後の再購入 push を止めるガード (2026-08-23, 採点② 2 → 採点ループ R1 で設計変更)。
  *
- * 🚨 なぜ必要か: 稼働契約を持つ友だちは SELECT の NOT EXISTS で除外され続けるため、
- *   その行の next_reminder_at は古いまま凍結する。解約された瞬間に除外が外れ、
- *   「何ヶ月も前が期日」の行が即 due になって解約直後の顧客へ再購入 push が飛ぶ。
- *   除外ガード自体が時限爆弾を仕込む形になっていた (採点② 2)。
+ * 🚨 機構: 稼働契約を持つ友だちは SELECT の NOT EXISTS で除外され続けるため next_reminder_at が
+ *   古いまま凍結する。解約された瞬間に除外が外れ、凍結済みの行が即 due になって
+ *   解約直後の顧客へ再購入 push が飛ぶ。除外ガード自体が時限爆弾を仕込む形だった。
  *
- * 3 日にした理由:
- *   - 正常運用の遅れは cron 周期の 5 分以内、送信前 claim の lease は 10 分。
- *     閾値がそれらに近いと**正常な lease 行まで巻き込んで送信不能**になる
- *   - cron 停止の遅れも heartbeat 監視がある以上せいぜい数時間
- *   - 凍結解除ケースは数週間〜数ヶ月 = 3 日は両者を確実に分離できる
+ * ⚠️ 当初は「3 日以上古い due は送らない」という **古さの代理指標** で実装したが、
+ *   採点ループが実測で反証した: 凍結される期日は「初回注文 + interval_days (実質 30 日)」で
+ *   固定され、**解約はまさにその期日の近傍に集中する** (本番契約は全員初回サイクル)。
+ *   「期日 2 日前 × 解約 1 分前」は 3 日窓の内側なので素通りし、push が飛んでいた。
+ *   代理指標をやめ、**cancelled_at を直接見て「解約日 + interval_days」まで送らない**。
+ *   これは凍結解除の全母集団を正確に覆い、かつ cron 長期停止で正常な push を
+ *   巻き添えにしない (古さベースの閾値はそこを潰していた)。
  */
-export const STALE_DUE_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
-
 /** interval_days が壊れている行の既定サイクル (即時再送・無限ループを作らない)。 */
 const FALLBACK_INTERVAL_DAYS = 30;
+
+/** 行の interval_days を正規化する (0 / 負 / 非数値 は既定値へ)。 */
+function normalizeIntervalDays(raw: unknown): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : FALLBACK_INTERVAL_DAYS;
+}
+
+/** now から days 日後の ISO 文字列。 */
+function addDaysIso(days: number): string {
+  return new Date(Date.now() + days * 86400_000).toISOString();
+}
+
+/**
+ * この friend の契約のうち **最も新しい cancelled_at**。契約が 1 つでも稼働中なら
+ * そもそも SELECT の NOT EXISTS で除外されるので、ここに来る時点で全契約が解約済み。
+ * 契約が無い (純粋な単発購入者) なら null。
+ */
+async function getLatestCancelledAt(db: D1Database, friendId: string): Promise<string | null> {
+  const row = await db
+    .prepare(
+      `SELECT MAX(c.cancelled_at) AS cancelled_at
+         FROM friends f
+         JOIN subscription_contracts c ON c.shopify_customer_id = f.shopify_customer_id
+        WHERE f.id = ? AND c.cancelled_at IS NOT NULL`,
+    )
+    .bind(friendId)
+    .first<{ cancelled_at: string | null }>();
+  return row?.cancelled_at ?? null;
+}
+
+/**
+ * next_reminder_at を CAS で **前進のみ** 更新する。元の値を述語に含めるので、
+ * 別実行と競合しても二重に進まない。
+ */
+async function reanchorReminder(
+  db: D1Database,
+  reminder: ReminderRow,
+  nextAt: string,
+): Promise<boolean> {
+  const res = await db
+    .prepare(
+      'UPDATE subscription_reminders SET next_reminder_at = ?, updated_at = ? WHERE id = ? AND next_reminder_at = ? AND is_active = 1',
+    )
+    .bind(nextAt, new Date().toISOString(), reminder.id, reminder.next_reminder_at)
+    .run();
+  return (res.meta?.changes ?? 0) === 1;
+}
 
 export async function processSubscriptionReminders(
   db: D1Database,
@@ -155,7 +201,7 @@ export async function processSubscriptionReminders(
     dueCount: 0,
     sentCount: 0,
     errorCount: 0,
-    staleReanchoredCount: 0,
+    cancelReanchoredCount: 0,
     staleSkippedCount: 0,
   };
 
@@ -203,30 +249,41 @@ export async function processSubscriptionReminders(
 
   for (const reminder of dueReminders) {
     try {
-      // 0. 送信直前の再導出 (2026-08-23 採点② 2 — 発生源ごとでなく 1 箇所で判定する)。
-      //    friend/prefs/claim より**前**に置く: 古い due はそもそも claim もしない。
+      // 0. 送信直前の再導出 (2026-08-23 採点② 2 — 発生源ごとでなく届く瞬間の 1 箇所で判定する)。
+      //    friend/prefs/claim より**前**に置く: 送らないと決めた行はそもそも claim もしない。
+      const intervalDays = normalizeIntervalDays(reminder.interval_days);
       const dueAtMs = Date.parse(reminder.next_reminder_at);
+
       if (!Number.isFinite(dueAtMs)) {
-        // パース不能は無送信側へ倒す (誤送信は回復不能・無送信は回復可能)
-        metrics.staleSkippedCount++;
+        // パース不能は無送信側へ倒す (誤送信は回復不能・無送信は回復可能 = S11)。
+        // ただし**必ず前進させる**: 据え置くと 5 分毎に同じ行を拾い続け、
+        // ORDER BY (文字列順) の先頭を恒久占有して他の行を飢えさせる (採点ループ R1)。
+        // CAS が当たったときだけ数える (「やったつもり」を数えない — 別実行が先に
+        // 進めていた場合は 0 行更新なので、その回は自分の仕事ではない)
+        if (await reanchorReminder(db, reminder, addDaysIso(intervalDays))) {
+          metrics.staleSkippedCount++;
+        }
         continue;
       }
-      if (Date.now() - dueAtMs > STALE_DUE_THRESHOLD_MS) {
-        // 凍結解除された行。今回は送らず次サイクルへ **前進のみ** CAS で先送りする。
-        // (元の next_reminder_at を述語に含めるので、別実行と競合しても二重に進まない)
-        const intervalDays =
-          Number.isFinite(Number(reminder.interval_days)) && Number(reminder.interval_days) > 0
-            ? Number(reminder.interval_days)
-            : FALLBACK_INTERVAL_DAYS;
-        const reanchored = new Date(Date.now() + intervalDays * 86400_000).toISOString();
-        const res = await db
-          .prepare(
-            'UPDATE subscription_reminders SET next_reminder_at = ?, updated_at = ? WHERE id = ? AND next_reminder_at = ? AND is_active = 1',
-          )
-          .bind(reanchored, new Date().toISOString(), reminder.id, reminder.next_reminder_at)
-          .run();
-        if ((res.meta?.changes ?? 0) === 1) metrics.staleReanchoredCount++;
-        continue;
+
+      // 解約直後ガード: 契約が解約されて初めてこの行は SELECT に入る (NOT EXISTS が反転する)。
+      // 「解約日 + interval_days」が来るまでは沈黙する — 解約したばかりの顧客に
+      // 「そろそろ買い足しませんか」を送らない。解約から interval 以上経っていれば
+      // その人は単発購入者に戻ったと見なし、従来どおり促す (行を消さない設計の意図)。
+      const cancelledAt = await getLatestCancelledAt(db, reminder.friend_id);
+      if (cancelledAt !== null) {
+        const cancelledMs = Date.parse(cancelledAt);
+        // cancelled_at は Shopify タグ由来の生値なのでパースできないことがある。
+        // その場合も**無送信側**へ倒す (解約済みかどうか判断できないまま送らない)。
+        const resumeAtMs = Number.isFinite(cancelledMs)
+          ? cancelledMs + intervalDays * 86400_000
+          : Date.now() + intervalDays * 86400_000;
+        if (Date.now() < resumeAtMs) {
+          if (await reanchorReminder(db, reminder, new Date(resumeAtMs).toISOString())) {
+            metrics.cancelReanchoredCount++;
+          }
+          continue;
+        }
       }
 
       // 1. Friend lookup + 2. prefs を claim より前に判定し、 skip 対象は claim しない
@@ -399,6 +456,10 @@ async function recordCronHeartbeat(
         due: metrics.dueCount,
         sent: metrics.sentCount,
         errors: metrics.errorCount,
+        // 送信直前ガードのヒット数 (2026-08-23)。戻り値だけだと呼び出し側が捨てるため
+        // 本番では完全に不可視になる — cron_run_logs.metrics_json に残す
+        cancelReanchored: metrics.cancelReanchoredCount,
+        staleSkipped: metrics.staleSkippedCount,
       },
     });
   } catch (err) {

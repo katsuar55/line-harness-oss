@@ -157,7 +157,11 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
     expect(mockHeartbeats.length).toBe(1);
     expect(mockHeartbeats[0].jobName).toBe('subscription-reminder');
     expect(mockHeartbeats[0].status).toBe('success');
-    expect(mockHeartbeats[0].metrics).toEqual({ due: 0, sent: 0, errors: 0 });
+    // 送信直前ガードのヒット数も heartbeat に載る (2026-08-23): 戻り値だけだと
+    // 呼び出し側が捨てるため本番で完全に不可視になる。完全一致で pin し、落ちたら気付く
+    expect(mockHeartbeats[0].metrics).toEqual({
+      due: 0, sent: 0, errors: 0, cancelReanchored: 0, staleSkipped: 0,
+    });
   });
 
   it('reminders 送信成功時に metrics を heartbeat に含める', async () => {
@@ -194,7 +198,9 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
     expect(result.errorCount).toBe(0);
     expect(mockPushMessage).toHaveBeenCalledTimes(1);
     expect(mockHeartbeats.length).toBe(1);
-    expect(mockHeartbeats[0].metrics).toEqual({ due: 1, sent: 1, errors: 0 });
+    expect(mockHeartbeats[0].metrics).toEqual({
+      due: 1, sent: 1, errors: 0, cancelReanchored: 0, staleSkipped: 0,
+    });
   });
 
   it('Round 4 PR-3: is_following=0 → dispatcher が skip し sentCount=0 / errorCount=0 (旧 behavior は errorCount++ だった)', async () => {
