@@ -28,6 +28,7 @@ import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runLiffHealth, printHealthResults, healthExitCode } from './liff-health-check.mjs';
+import { execSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -255,6 +256,54 @@ function printResult(result, workerUrl) {
   console.log('');
 }
 
+/**
+ * 本番 HTML の版マーカー (`<meta name="x-build">`) と ローカル HEAD の照合 (2026-08-23)。
+ *
+ * bundle 照合は**管理画面 SPA の asset** を見ており、Hono がレンダリングする LIFF の HTML が
+ * 新しいかは 1 度も見ていなかった。#270 で『deploy 済みなのに実機が古い』の切り分けに
+ * 丸 1 日かかった主因がこれ。ここで LIFF 本体の版を直接照合する。
+ *
+ * fail-closed ではなく **警告のみ** (exit code に混ぜない): git が無い CI や
+ * BUILD_SHA を渡さない手動 deploy でも deploy 自体は通したい。値が食い違ったときに
+ * 「実機が古いのは配信が古いから」と即断できることが目的。
+ */
+export async function checkBuildMarker(workerUrl, fetchImpl = fetch) {
+  let local = process.env.BUILD_SHA?.trim() || null;
+  if (!local) {
+    try {
+      local = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
+    } catch {
+      local = null;
+    }
+  }
+  let prod = null;
+  try {
+    const res = await fetchImpl(`${workerUrl}/liff/portal`, { cache: 'no-store' });
+    if (res.ok) {
+      const html = await res.text();
+      prod = html.match(/<meta name="x-build" content="([^"]*)">/)?.[1] ?? null;
+    }
+  } catch {
+    prod = null;
+  }
+  return { local, prod, match: local != null && prod != null && local === prod };
+}
+
+function printBuildMarker(marker) {
+  console.log('');
+  console.log('━━━ LIFF build marker ━━━');
+  console.log(`  Local HEAD : ${marker.local ?? '(unknown)'}`);
+  console.log(`  Prod meta  : ${marker.prod ?? '(not found)'}`);
+  if (marker.match) {
+    console.log('✓ LIFF HTML は今の HEAD を配っています。');
+  } else if (marker.local && marker.prod) {
+    console.warn('⚠ LIFF HTML の版が HEAD と違います — 配信が古い可能性 (実機が古いのはこれが原因)。');
+  } else {
+    console.warn('⚠ 版マーカーを照合できませんでした (git 不在 / meta 未検出)。');
+  }
+  console.log('');
+}
+
 async function main() {
   const workerUrl = process.env.WORKER_URL || DEFAULT_WORKER_URL;
   const result = await runCheck({
@@ -282,6 +331,11 @@ async function main() {
   } else {
     console.error('✗ LIFF health check skipped: WORKER_URL not allowed by host pattern.');
   }
+  // LIFF 本体の版照合 (警告のみ — exit code には混ぜない)
+  if (isAllowedWorkerUrl(workerUrl)) {
+    printBuildMarker(await checkBuildMarker(workerUrl));
+  }
+
   return combineExitCodes([result.exitCode, healthExit]);
 }
 
