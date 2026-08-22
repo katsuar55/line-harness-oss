@@ -8,6 +8,7 @@ import { subCardHtml, subCardCss, subCardJs } from './liff-portal-fragments/sub-
 import { homeIaCss, homeIaHubHeadHtml } from './liff-portal-fragments/home-ia.js';
 import { visualV2Css } from './liff-portal-fragments/visual-v2.js';
 import { reorderGuardHtml, reorderGuardCss, reorderGuardJs } from './liff-portal-fragments/reorder-guard.js';
+import { BUILD_SHA, buildMetaTag } from '../utils/build-info.js';
 
 const liffPages = new Hono<Env>();
 
@@ -78,6 +79,9 @@ function portalPage(
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#2fa8ad">
+  <!-- 版マーカー (2026-08-23): 実機がどの版を見ているかを 1 手で確定させる。
+       post-deploy-check.mjs が本番 HTML のこの値とローカル HEAD を照合する -->
+  ${buildMetaTag()}
   <title>naturism 公式ポータル</title>
   <!-- 描画ブロッキングな外部 CDN への接続を前倒し (FCP 短縮) -->
   <link rel="preconnect" href="https://static.line-scdn.net" crossorigin>
@@ -1071,6 +1075,9 @@ function portalPage(
       <div class="text-center py-4">
         <p class="text-xs text-gray-400">naturism LINE CRM</p>
         <p class="text-xs text-gray-300">Powered by LINE Harness OSS</p>
+        <!-- 版表示 (2026-08-23): 実機で「今この画面はどの版か」を見る唯一の手段。
+             スマホでは HTML ソースを見られないため画面上に出しておく -->
+        <p class="text-xs text-gray-300 mt-1" id="app-build">ver ${BUILD_SHA}</p>
       </div>
     </div>
 
