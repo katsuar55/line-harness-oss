@@ -19,6 +19,7 @@ import {
   findParseProblems,
   checkPageHealth,
   runLiffHealth,
+  hasNoStoreDirective,
   healthExitCode,
 } from './liff-health-check.mjs';
 
@@ -366,4 +367,112 @@ test('WATCHDOG_MARKER / 本体シグネチャが liff-watchdog.ts と一致し�
     src.includes(WATCHDOG_BODY_SIGNATURE),
     `liff-watchdog.ts に本体シグネチャ「${WATCHDOG_BODY_SIGNATURE}」が無い — 除外フィルタが効かなくなる drift`,
   );
+});
+
+// ─── 配信物の鮮度ガード (2026-08-23) ───────────────────────────────────
+// #271 で LIFF HTML に no-store を付けたが、コード側テストは「これから出荷する形」しか守らない。
+// 本番が今この瞬間に何を返しているかは、この health check だけが見ている。
+const FRESH_PAGE_DEF = { path: '/liff/portal', sentinel: 'liff.init', watchdog: true, requireNoStore: true };
+
+test('Cache-Control: no-store があれば healthy', async () => {
+  const health = await runLiffHealth({
+    workerUrl: 'https://w.example',
+    pages: [FRESH_PAGE_DEF],
+    fetchHtml: async () => ({
+      html: buildPage(),
+      headers: new Headers({ 'cache-control': 'no-store, no-cache, must-revalidate' }),
+    }),
+    maxAttemptsPerPage: 1,
+    retryDelayMs: 0,
+  });
+  assert.equal(health.ok, true, JSON.stringify(health.results));
+});
+
+test('🚨 Cache-Control が無い本番を unhealthy として実測する (#271 の事故そのもの)', async () => {
+  const health = await runLiffHealth({
+    workerUrl: 'https://w.example',
+    pages: [FRESH_PAGE_DEF],
+    fetchHtml: async () => ({ html: buildPage(), headers: new Headers() }),
+    maxAttemptsPerPage: 1,
+    retryDelayMs: 0,
+  });
+  assert.equal(health.ok, false);
+  assert.match(health.results[0].problems.join(' | '), /no-store/);
+  // 「ページ自体は落ちていないが実機に届かない」= rollback 検討対象の実測 (exit 1)
+  assert.equal(healthExitCode(health), 1);
+});
+
+test('no-store 以外のキャッシュ指定 (max-age 等) も unhealthy', async () => {
+  const health = await runLiffHealth({
+    workerUrl: 'https://w.example',
+    pages: [FRESH_PAGE_DEF],
+    fetchHtml: async () => ({
+      html: buildPage(),
+      headers: new Headers({ 'cache-control': 'public, max-age=3600' }),
+    }),
+    maxAttemptsPerPage: 1,
+    retryDelayMs: 0,
+  });
+  assert.equal(health.ok, false);
+  assert.match(health.results[0].problems.join(' | '), /no-store/);
+});
+
+test('🚨 fail-closed: ヘッダを取得できない fetch 実装は「検証不能」として unhealthy', async () => {
+  // 「string を返す旧実装」= ヘッダを落とした形。ここを静かに成功にすると
+  // 鮮度ガードが恒久的に発火不能になる (73 日障害と同じ壊れ方)
+  const health = await runLiffHealth({
+    workerUrl: 'https://w.example',
+    pages: [FRESH_PAGE_DEF],
+    fetchHtml: async () => buildPage(),
+    maxAttemptsPerPage: 1,
+    retryDelayMs: 0,
+  });
+  assert.equal(health.ok, false);
+  assert.match(health.results[0].problems.join(' | '), /検証できなかった/);
+});
+
+test('requireNoStore を持たないページ定義はヘッダを要求しない (段階導入の余地)', async () => {
+  const health = await runLiffHealth({
+    workerUrl: 'https://w.example',
+    pages: [{ path: '/x', sentinel: null, watchdog: false }],
+    fetchHtml: async () => buildPage(),
+    maxAttemptsPerPage: 1,
+    retryDelayMs: 0,
+  });
+  assert.equal(health.ok, true, JSON.stringify(health.results));
+});
+
+test('本番台帳 HEALTH_PAGES の全ページが requireNoStore を持つ (付け忘れ検出)', () => {
+  const missing = HEALTH_PAGES.filter((p) => p.requireNoStore !== true).map((p) => p.path);
+  assert.deepEqual(missing, [], '鮮度ガードが外れているページ: ' + missing.join(', '));
+});
+
+test('🚨 no-store は「ディレクティブ」として照合する — 部分一致で偽 healthy にしない (Codex P2)', () => {
+  // 本物
+  assert.equal(hasNoStoreDirective('no-store'), true);
+  assert.equal(hasNoStoreDirective('no-store, no-cache, must-revalidate'), true);
+  assert.equal(hasNoStoreDirective('NO-STORE'), true);
+  assert.equal(hasNoStoreDirective('private,  no-store  , max-age=0'), true);
+  // 偽物 — キャッシュは no-store と解釈しないので healthy にしてはいけない
+  assert.equal(hasNoStoreDirective('x-no-store'), false);
+  assert.equal(hasNoStoreDirective('no-store-disabled'), false);
+  assert.equal(hasNoStoreDirective('foo=no-store'), false);
+  assert.equal(hasNoStoreDirective('public, max-age=3600'), false);
+  assert.equal(hasNoStoreDirective(''), false);
+  assert.equal(hasNoStoreDirective(undefined), false);
+});
+
+test('🚨 x-no-store を返す本番は unhealthy として実測する (偽 healthy の回帰)', async () => {
+  const health = await runLiffHealth({
+    workerUrl: 'https://w.example',
+    pages: [FRESH_PAGE_DEF],
+    fetchHtml: async () => ({
+      html: buildPage(),
+      headers: new Headers({ 'cache-control': 'x-no-store, max-age=600' }),
+    }),
+    maxAttemptsPerPage: 1,
+    retryDelayMs: 0,
+  });
+  assert.equal(health.ok, false);
+  assert.match(health.results[0].problems.join(' | '), /no-store/);
 });
