@@ -30,25 +30,25 @@
  * watchdog: 外部 watchdog の配置を要求するか (顧客向け LIFF ページのみ)。
  */
 export const HEALTH_PAGES = [
-  { path: '/liff/portal', sentinel: 'liff.init', watchdog: true },
-  { path: '/liff/opt-in', sentinel: 'liff.init', watchdog: true },
-  { path: '/liff/my-rank', sentinel: 'liff.init', watchdog: true },
-  { path: '/liff/coach', sentinel: 'liff.init', watchdog: true },
-  { path: '/liff/food', sentinel: 'liff.init', watchdog: true },
-  { path: '/liff/food/graph', sentinel: 'liff.init', watchdog: true },
-  { path: '/liff/reorder', sentinel: 'liff.init', watchdog: true },
-  { path: '/admin', sentinel: null, watchdog: false },
-  { path: '/admin/staff', sentinel: null, watchdog: false },
-  { path: '/admin/logs', sentinel: null, watchdog: false },
-  { path: '/admin/faq', sentinel: null, watchdog: false },
-  { path: '/admin/friend-coupon', sentinel: null, watchdog: false },
+  { path: '/liff/portal', sentinel: 'liff.init', watchdog: true, requireNoStore: true },
+  { path: '/liff/opt-in', sentinel: 'liff.init', watchdog: true, requireNoStore: true },
+  { path: '/liff/my-rank', sentinel: 'liff.init', watchdog: true, requireNoStore: true },
+  { path: '/liff/coach', sentinel: 'liff.init', watchdog: true, requireNoStore: true },
+  { path: '/liff/food', sentinel: 'liff.init', watchdog: true, requireNoStore: true },
+  { path: '/liff/food/graph', sentinel: 'liff.init', watchdog: true, requireNoStore: true },
+  { path: '/liff/reorder', sentinel: 'liff.init', watchdog: true, requireNoStore: true },
+  { path: '/admin', sentinel: null, watchdog: false, requireNoStore: true },
+  { path: '/admin/staff', sentinel: null, watchdog: false, requireNoStore: true },
+  { path: '/admin/logs', sentinel: null, watchdog: false, requireNoStore: true },
+  { path: '/admin/faq', sentinel: null, watchdog: false, requireNoStore: true },
+  { path: '/admin/friend-coupon', sentinel: null, watchdog: false, requireNoStore: true },
   // /admin/ops = §10-3 サブスク受理台帳 (公開 shell + inline script)。#238
-  { path: '/admin/ops', sentinel: null, watchdog: false },
+  { path: '/admin/ops', sentinel: null, watchdog: false, requireNoStore: true },
   // /contact/email = mailto ブリッジ (#191)。公開固定パスで inline script を持つため対象 (採点 R1)。
   // /auth/line は素の GET だと script 0 本の HTML を返すため対象外 (query 依存の springboard)。
-  { path: '/contact/email', sentinel: null, watchdog: false },
+  { path: '/contact/email', sentinel: null, watchdog: false, requireNoStore: true },
   // /docs = Swagger UI (openapi.ts)。公開固定パスで inline init script を持つ (採点 R2)。
-  { path: '/docs', sentinel: null, watchdog: false },
+  { path: '/docs', sentinel: null, watchdog: false, requireNoStore: true },
 ];
 
 /** liff-watchdog.ts の LIFF_WATCHDOG_ATTR と一致させること (worker 側 import は不可)。 */
@@ -137,11 +137,30 @@ export function findParseProblems(html) {
  * 1 ページ分の健全性判定。問題ゼロなら空配列。
  * page = HEALTH_PAGES の 1 要素 ({ path, sentinel, watchdog })。
  */
-export function checkPageHealth(html, page) {
+export function checkPageHealth(html, page, headers = undefined) {
   if (typeof html !== 'string' || html.length === 0) {
     return ['HTML が空'];
   }
   const problems = [...findTruncationProblems(html), ...findParseProblems(html)];
+
+  // 配信物の鮮度 (2026-08-23): 顧客が見る HTML に Cache-Control: no-store が付いているか。
+  // 付いていない HTML は LINE の in-app WebView がキャッシュ挙動を実装任せにするため、
+  // deploy しても実機に届かない (#270 → #271 で実発生。curl でマーカーは出るのに実機は旧画面)。
+  // **fail-closed**: ヘッダを取得できなかった場合も problem にする。
+  // 「検証できなかった」を静かに成功扱いにすると、fetch 実装がヘッダを落とした瞬間に
+  // このガードが恒久的に発火不能になる (73 日障害と同じ壊れ方)。
+  if (page.requireNoStore) {
+    if (headers == null) {
+      problems.push('Cache-Control を検証できなかった (レスポンスヘッダ未取得) — 鮮度ガードが無効化されている');
+    } else {
+      const cc = typeof headers.get === 'function' ? headers.get('cache-control') : headers['cache-control'];
+      if (!cc || !/no-store/i.test(cc)) {
+        problems.push(
+          `Cache-Control に no-store が無い (実測: ${cc ?? 'ヘッダ自体が無い'}) — deploy が実機に届かない状態`,
+        );
+      }
+    }
+  }
 
   if (page.sentinel) {
     // watchdog を除外して測る。含めると watchdog 自身 (~1,900 文字) が常に閾値を超え、
@@ -196,7 +215,9 @@ async function defaultFetchHtml(url, signal) {
     // 文言を変える時は分類側も必ず同時に変える (ズレると実測の障害が「確認不能」へ静かに降格する)
     throw new Error(`HTTP ${res.status}`);
   }
-  return await res.text();
+  // html だけでなく headers も返す (鮮度ガードが Cache-Control を見るため)。
+  // 後方互換: runLiffHealth は string 戻り値も受け付ける (既存の注入テスト用)。
+  return { html: await res.text(), headers: res.headers };
 }
 
 /**
@@ -224,8 +245,11 @@ export async function runLiffHealth({
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), fetchTimeoutMs);
       try {
-        const html = await fetchHtml(workerUrl + page.path, ac.signal);
-        problems = checkPageHealth(html, page);
+        const fetched = await fetchHtml(workerUrl + page.path, ac.signal);
+        // fetchHtml は { html, headers } を返す (既存の注入テストとの互換で string も許容)。
+        const html = typeof fetched === 'string' ? fetched : fetched?.html;
+        const headers = typeof fetched === 'string' ? undefined : fetched?.headers;
+        problems = checkPageHealth(html, page, headers);
         lastError = null;
         if (problems.length === 0) break; // healthy — 不健全なら残り試行でリトライ
       } catch (err) {
