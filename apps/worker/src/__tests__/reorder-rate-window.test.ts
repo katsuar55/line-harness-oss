@@ -129,14 +129,14 @@ function seedFriend(raw: SqliteDatabase, opts?: { activeContract?: boolean }): v
 
 function seedDraft(
   raw: SqliteDatabase,
-  opts: { msAgo: number; sourceOrderId: string | null; invoiceUrl?: string | null },
+  opts: { msAgo: number; sourceOrderId: string | null; invoiceUrl?: string | null; status?: string },
 ): void {
   const inv = opts.invoiceUrl === null ? 'NULL' : `'${opts.invoiceUrl ?? 'https://naturism-diet.com/checkout/draft/prev'}'`;
   const src = opts.sourceOrderId === null ? 'NULL' : `'${opts.sourceOrderId}'`;
   const ts = jstIso(opts.msAgo);
   raw.exec(`INSERT INTO shopify_draft_orders
               (id, friend_id, shopify_draft_order_id, invoice_url, status, total_price, currency, line_items, source_order_id, created_at, updated_at)
-            VALUES ('d-prev', 'friend-1', '999', ${inv}, 'open', 6415, 'JPY', '[]', ${src}, '${ts}', '${ts}')`);
+            VALUES ('d-prev', 'friend-1', '999', ${inv}, '${opts.status ?? 'open'}', 6415, 'JPY', '[]', ${src}, '${ts}', '${ts}')`);
 }
 
 function mkEnv(raw: SqliteDatabase) {
@@ -228,6 +228,17 @@ describe('再注文レート制限 A案 — 同一注文はさきほどのご注
     seedDraft(raw, { msAgo: 2 * 60_000, sourceOrderId: 'o1', invoiceUrl: null });
     const res = await post(app, mkEnv(raw), { lineUserId: 'U_EXISTING', orderId: 'o1' });
     expect(res.status).toBe(429);
+    expect(draftOrderCreateCalls()).toBe(0);
+  });
+
+  it('完了/キャンセル済み draft は reuse しない → 429 (Codex P2: 死んだ invoice URL を開かせない)', async () => {
+    for (const status of ['completed', 'cancelled']) {
+      const raw = createSchemaDb();
+      seedFriend(raw);
+      seedDraft(raw, { msAgo: 2 * 60_000, sourceOrderId: 'o1', status });
+      const res = await post(app, mkEnv(raw), { lineUserId: 'U_EXISTING', orderId: 'o1' });
+      expect(res.status, `status=${status}`).toBe(429);
+    }
     expect(draftOrderCreateCalls()).toBe(0);
   });
 

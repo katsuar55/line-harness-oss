@@ -380,11 +380,11 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
     //   実質「UTC 日付が変わる JST 翌朝 9 時すぎまで 1 回」に化けていた (2026-08-22 実機で発覚)。
     const latestDraft = await c.env.DB
       .prepare(
-        `SELECT invoice_url, source_order_id, created_at FROM shopify_draft_orders
+        `SELECT invoice_url, source_order_id, status, created_at FROM shopify_draft_orders
          WHERE friend_id = ? ORDER BY created_at DESC LIMIT 1`,
       )
       .bind(user.friendId)
-      .first<{ invoice_url: string | null; source_order_id: string | null; created_at: string }>();
+      .first<{ invoice_url: string | null; source_order_id: string | null; status: string | null; created_at: string }>();
     const latestDraftTs = latestDraft ? Date.parse(latestDraft.created_at) : Number.NaN;
     // parse 不能な行は「recent でない」に倒す — これは burst 対策であり、壊れた 1 行が
     // 以後の注文を永久に塞ぐ方が実害が大きい
@@ -482,8 +482,11 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
     // - 二重購入ガード (409) はこの手前で判定済み = reuse でもガードは迂回できない
     // - 別注文・items[] 直指定は従来どおり 429 — 別内容のページを「あなたのご注文です」と
     //   開かせない (誤購入の温床)。invoice_url の無い行も reuse 不可 → 429 に倒す
+    // - reuse は status='open' のみ (Codex P2): 完了/キャンセル済み draft の invoice URL は
+    //   もう受け付けないページ。現状 status を更新する同期は無い (常に 'open') が、
+    //   将来 status 同期が入った瞬間に死んだページを開かせないよう先に塞ぐ
     if (hasRecentDraft) {
-      if (orderId && latestDraft!.source_order_id === orderId && latestDraft!.invoice_url) {
+      if (orderId && latestDraft!.source_order_id === orderId && latestDraft!.invoice_url && latestDraft!.status === 'open') {
         return c.json({ success: true, data: { invoiceUrl: latestDraft!.invoice_url, reused: true } });
       }
       return c.json(
