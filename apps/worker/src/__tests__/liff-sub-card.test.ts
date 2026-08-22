@@ -254,7 +254,11 @@ beforeAll(async () => {
 
 describe('gate LIFF_SUB_CARD_ENABLED (既定 off = fragment を 1 byte も出さない)', () => {
   it('off: カード HTML / JS / CSS のいずれも emit されない', () => {
-    expect(htmlOff).not.toContain('sub-contracts-card');
+    // カード本体は id 属性で観測する。裸の 'sub-contracts-card' だと、常時 ON の
+    // 二重購入ガード (reorder-guard.ts の subDupGoSubCard) が getElementById で
+    // カードを**参照**するだけの正当なコードまで巻き込んで false positive になる
+    // (参照はカード不在時 null → トーク導線 fallback で安全)。
+    expect(htmlOff).not.toContain('id="sub-contracts-card"');
     expect(htmlOff).not.toContain('loadSubContracts');
     expect(htmlOff).not.toContain('.sc-btn');
     // 配線 (loadSubContractsOnce 呼び出し) ごと emit されない = 真の dark

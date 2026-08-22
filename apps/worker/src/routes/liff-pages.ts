@@ -7,6 +7,7 @@ import { jsonForScript, inlineScriptBody } from '../utils/inline-script.js';
 import { subCardHtml, subCardCss, subCardJs } from './liff-portal-fragments/sub-card.js';
 import { homeIaCss, homeIaHubHeadHtml } from './liff-portal-fragments/home-ia.js';
 import { visualV2Css } from './liff-portal-fragments/visual-v2.js';
+import { reorderGuardHtml, reorderGuardCss, reorderGuardJs } from './liff-portal-fragments/reorder-guard.js';
 
 const liffPages = new Hono<Env>();
 
@@ -183,7 +184,9 @@ function portalPage(
     /* ===== 再注文シート (2026-07-30) — ティファニーブルー系 =====
        ブランドのティファニーブルー原色は白文字 2.5:1 で §7-1 AA 不足のため、
        ディープティファニー #0d827d (白 4.66:1 ✓) へ写像 (btn-primary #0f766e と同系の解決) */
-    #reorder-sheet .ros-panel{position:absolute;left:0;right:0;bottom:0;background:#fff;border-radius:24px 24px 0 0;padding:18px 18px calc(18px + env(safe-area-inset-bottom));box-shadow:0 -8px 32px rgba(0,0,0,.16);animation:rosUp .3s cubic-bezier(.22,1,.36,1);max-height:86vh;overflow-y:auto}
+    /* #subdup-sheet (二重購入ガード確認シート) も同じボトムシート様式を共有する (採点R1 HIGH:
+       ID スコープのため #reorder-sheet 限定だと確認シートが無背景の素テキストで壊れる) */
+    #reorder-sheet .ros-panel,#subdup-sheet .ros-panel{position:absolute;left:0;right:0;bottom:0;background:#fff;border-radius:24px 24px 0 0;padding:18px 18px calc(18px + env(safe-area-inset-bottom));box-shadow:0 -8px 32px rgba(0,0,0,.16);animation:rosUp .3s cubic-bezier(.22,1,.36,1);max-height:86vh;overflow-y:auto}
     @keyframes rosUp{from{transform:translateY(48px);opacity:0}to{transform:none;opacity:1}}
     .ros-label{font-size:12px;font-weight:700;color:#374151;margin:12px 0 6px}
     .ros-optional{font-weight:400;color:#94a3b8;margin-left:6px;font-size:11px}
@@ -197,7 +200,7 @@ function portalPage(
     .ros-primary:disabled{opacity:.55}
     .ros-gray{border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:12px;padding:10px 4px;font-size:11px;font-weight:600;line-height:1.5}
     #ros-datetime.is-disabled{opacity:.4;pointer-events:none}
-    @media(prefers-reduced-motion:reduce){#reorder-sheet .ros-panel{animation:none}}
+    @media(prefers-reduced-motion:reduce){#reorder-sheet .ros-panel,#subdup-sheet .ros-panel{animation:none}}
     .card{background:#ffffff;border-radius:20px;border:1px solid var(--hairline);box-shadow:var(--shadow-rest),var(--edge-light)}
     /* ─ クーポン = チケット様式 (VITAL INSTRUMENT §2-E) ─
        左レール + 点線コードで金券感を出す。**ノッチ (左右の切込み円) は作らない** —
@@ -360,6 +363,9 @@ function portalPage(
   ${subCardOn ? '<style>\n    ' + subCardCss() + '\n  </style>' : ''}
   ${homeIaOn ? '<style>\n    ' + homeIaCss() + '\n  </style>' : ''}
   ${visualV2On ? '<style>\n    ' + visualV2Css() + '\n  </style>' : ''}
+  <style>
+    ${reorderGuardCss()}
+  </style>
 </head>
 <body class="min-h-screen pb-20">
 
@@ -1104,6 +1110,8 @@ function portalPage(
       </div>
     </div>
   </div>
+
+  ${reorderGuardHtml()}
 
   <!-- Loading overlay -->
   <div id="loading" class="fixed inset-0 flex items-center justify-center z-50" style="background:linear-gradient(160deg,#f2fafa 0%,#f8fafc 40%,#faf5ff 100%)">
@@ -3529,6 +3537,8 @@ async function loadShopData() {
     var data = res.data;
     // 再注文シートが参照する注文リスト (variant_id 入り lineItems を保持)
     window.__liffOrders = data.recentOrders || [];
+    // 二重購入ガード (採点②-1): 稼働契約の有無。確認シートを出すかの判断材料 (最終判定はサーバの 409)
+    window.__liffHasActiveContract = data.hasActiveSubscriptionContract === true;
     // Products
     if (data.products && data.products.length > 0) {
       pel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-3">商品ラインナップ</p>' +
@@ -3672,6 +3682,10 @@ function reorderFromOrder(btn) {
     if (String(list[i].id) === String(orderId)) { rosOrder = list[i]; break; }
   }
   if (!rosOrder) { showToast('注文情報を取得できませんでした。再読み込みしてお試しください'); return; }
+  // 二重購入ガード (採点②-1): 注文を選び直すたび ack をリセット (使い回し禁止)。
+  // 定期便のお届け分 × 稼働契約者は、再注文シートの前に確認シートを 1 枚挟む
+  rosAckSubDup = false;
+  if (subDupShouldConfirm()) { openSubDupConfirm(); return; }
   openReorderSheet();
 }
 
@@ -3753,6 +3767,8 @@ async function submitReorder(focus) {
   btn.disabled = true;
   btn.textContent = 'ご注文の準備中…';
   var payload = { orderId: rosOrder.id, shippingMethod: rosShip };
+  // 二重購入ガード (採点②-1): 確認シートで「単発で追加購入」を選んだときだけ ack を送る
+  if (rosAckSubDup === true) payload.acknowledgeSubscriptionDuplicate = true;
   if (rosShip !== 'nekopos') {
     var dt = document.getElementById('ros-date').value;
     var tm = document.getElementById('ros-time').value;
@@ -3761,7 +3777,11 @@ async function submitReorder(focus) {
   }
   try {
     var res = await api('/api/liff/reorder/create', payload);
-    if (apiFailed(res)) {
+    if (res && res.code === 'subscription_duplicate') {
+      // サーバが正: ack 無し (フラグが stale 等) の定期便注文はここへ倒れる → 確認シートを重ねる。
+      // 再注文シートは**閉じない** (選択済みの配送方法・希望日時を破棄しない。確認 z-61 > シート z-60)
+      openSubDupConfirm();
+    } else if (apiFailed(res)) {
       showToast((res && res.error) || '再注文の作成に失敗しました');
     } else if (res.data && res.data.invoiceUrl) {
       if (focus === 'address') showToast('お届け先は次の画面の「配送先」で変更できます');
@@ -5079,6 +5099,7 @@ function finishQuiz() {
 }
 
 // ─── Init ───
+${inlineScriptBody(reorderGuardJs())}
 ${subCardOn ? inlineScriptBody(subCardJs()) : ''}
 
 document.addEventListener('DOMContentLoaded', initLiff);

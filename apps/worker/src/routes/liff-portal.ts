@@ -22,6 +22,7 @@ import {
   readLanguage,
 } from '../services/portal-read.js';
 import { generateAiResponse } from '../services/ai-response.js';
+import { isSubscriptionDeliveryOrder, hasActiveSubscriptionContract } from '../services/reorder-guard.js';
 import { check } from '../middleware/rate-limit.js';
 import {
   countTodayAiAsks,
@@ -313,10 +314,14 @@ liffPortal.post('/api/liff/reorder', async (c) => {
     const recentOrders = await getShopifyOrders(c.env.DB, { friendId: user.friendId, limit: 3 });
     const products = await getShopifyProducts(c.env.DB, { status: 'active', limit: 10 });
     const storeDomain = c.env.SHOPIFY_STORE_DOMAIN || 'naturism-diet.com';
+    // 二重購入ガード (採点②-1): 一覧では拒否せずフラグだけ付ける。
+    // UI はこの 2 値の AND で確認ステップを出す (最終判定は create 側の 409 が正)
+    const hasActiveContract = await hasActiveSubscriptionContract(c.env.DB, user.friendId);
 
     return c.json({
       success: true,
       data: {
+        hasActiveSubscriptionContract: hasActiveContract,
         recentOrders: recentOrders.map((o: Record<string, unknown>) => ({
           id: o.id,
           orderNumber: o.order_number,
@@ -324,6 +329,7 @@ liffPortal.post('/api/liff/reorder', async (c) => {
           lineItems: o.line_items ? JSON.parse(o.line_items as string) : [],
           createdAt: o.created_at,
           fulfillmentStatus: o.fulfillment_status,
+          isSubscriptionOrder: isSubscriptionDeliveryOrder(o.tags as string | null | undefined),
         })),
         products: products.map((p: any) => ({
           id: p.id,
@@ -371,12 +377,13 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
       return c.json({ success: false, error: '再注文は5分に1回までです。しばらくお待ちください。' }, 429);
     }
 
-    const { orderId, items, shippingMethod, deliveryDate, deliveryTime } = await c.req.json<{
+    const { orderId, items, shippingMethod, deliveryDate, deliveryTime, acknowledgeSubscriptionDuplicate } = await c.req.json<{
       orderId?: string;
       items?: Array<{ variantId: string; quantity: number }>;
       shippingMethod?: string;
       deliveryDate?: string;
       deliveryTime?: string;
+      acknowledgeSubscriptionDuplicate?: unknown;
     }>();
 
     // ─── 配送オプション検証 (2026-07-30 再注文シート: 固定語彙のみ受理・自由入力は拒否) ───
@@ -424,6 +431,25 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
       // friend_id=NULL (未リンク注文) も `null !== friendId` で弾く。liff.ts:1144 と同パターン。
       if (!order || order.friend_id !== user.friendId) {
         return c.json({ success: false, error: 'Order not found' }, 404);
+      }
+
+      // ─── 二重購入ガード (採点②-1 HIGH, 2026-08-22 Katsu 決定 = 確認ステップ) ───
+      // 定期便のお届け分 (subscription-id: タグ) × 稼働契約者は、ack が無い限り 409 で止める。
+      // ack はサーバ側 fail-closed: boolean true のみ受理 (UI を迂回した直 POST でも 1 回は止まる)。
+      // 解約済み契約者・通常注文の再注文は従来どおり (正当な再注文を殺さない)。
+      if (
+        isSubscriptionDeliveryOrder(order.tags as string | null | undefined) &&
+        acknowledgeSubscriptionDuplicate !== true &&
+        (await hasActiveSubscriptionContract(c.env.DB, user.friendId))
+      ) {
+        return c.json(
+          {
+            success: false,
+            code: 'subscription_duplicate',
+            error: 'このご注文は定期便でお届けした分です。定期便とは別の追加購入になるため、確認が必要です',
+          },
+          409,
+        );
       }
 
       const parsed = order.line_items ? JSON.parse(order.line_items as string) : [];
