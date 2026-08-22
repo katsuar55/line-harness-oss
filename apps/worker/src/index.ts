@@ -16,6 +16,7 @@ import { checkLineQuota } from './services/line-quota-monitor.js';
 import { authMiddleware } from './middleware/auth.js';
 import { liffAuthMiddleware } from './middleware/liff-auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
+import { htmlNoStoreMiddleware } from './middleware/html-cache.js';
 import { webhook } from './routes/webhook.js';
 import { friends } from './routes/friends.js';
 import { tags } from './routes/tags.js';
@@ -334,6 +335,11 @@ app.use('*', async (c, next) => {
   if (new URL(c.req.url).pathname.startsWith('/proxy/')) return next();
   return corsMiddleware(c, next);
 });
+
+// HTML は常に最新を配る (2026-08-23): validator ゼロの HTML を LINE の WebView が
+// ヒューリスティックキャッシュし、deploy 済みの変更が実機に反映されなかった事故の恒久対策。
+// Content-Type=text/html のときだけ no-store を付ける (画像/JSON/明示指定済みは対象外)。
+app.use('*', htmlNoStoreMiddleware);
 
 // Rate limiting — runs before auth to block abuse early
 app.use('*', rateLimitMiddleware);
