@@ -45,14 +45,27 @@ describe('再注文シート — 最少タップのリピート注文', () => {
     expect(pages).toContain('ネコポスはポスト投函のため、お届け日時の指定はできません');
   });
 
-  it('主役ボタンはティファニーブルー系 (§7-1 AA 準拠の #0d827d = 白 4.66:1) / 変更系3つはグレー (ros-gray)', () => {
+  it('主役ボタンはティファニーブルー系 (§7-1 AA 準拠の #0d827d = 白 4.66:1) / 変更系3つは第3階層の淡ティールチップ (ros-sub)', () => {
     expect(pages).toMatch(/\.ros-seg-btn\.is-on\{[^}]*#0d827d/);
     expect(pages).toMatch(/\.ros-primary\{[^}]*#0d827d/);
-    const grays = pages.match(/class="ros-gray"/g) ?? [];
-    expect(grays.length).toBe(3);
+    // 2026-08-22 Katsu 指示: 主役2つ (primary / 配送方法セグメント) より静かに、
+    // 素の灰チップよりは「押せる」と分かる第3階層。輪郭 + ティール文字で観測する
+    const subs = pages.match(/class="ros-sub"/g) ?? [];
+    expect(subs.length).toBe(3);
+    expect(pages).toMatch(/\.ros-sub\{[^}]*border:1\.5px solid #bfe8e3/);
+    expect(pages).toMatch(/\.ros-sub\{[^}]*color:#0f766e/);
     expect(pages).toMatch(/送り先を<br>変更する/);
     expect(pages).toMatch(/注文内容を<br>変更する/);
     expect(pages).toMatch(/支払い方法を<br>変更する/);
+  });
+
+  it('サマリの商品名・金額は太字強調 (2026-08-22 Katsu 指示: 確認の意味も込め可読性高く)', () => {
+    const b = fnBlock('openReorderSheet');
+    expect(b).toContain("className = 'ros-sum-item'");
+    expect(b).toContain("className = 'ros-sum-price'");
+    // 金額は商品名より一回り大きい太字 + ディープティファニー (AA 準拠 #0d827d)
+    expect(pages).toMatch(/\.ros-sum-item\{[^}]*font-weight:700[^}]*font-size:14px/);
+    expect(pages).toMatch(/\.ros-sum-price\{[^}]*font-weight:800[^}]*font-size:16px[^}]*color:#0d827d/);
   });
 
   it('送り先/支払いの変更もチェックアウトへの最短経路 + 案内トースト (行き止まりを作らない)', () => {
@@ -77,10 +90,24 @@ describe('再注文シート — 最少タップのリピート注文', () => {
     expect(b).toMatch(/deliveryTime/);
   });
 
-  it('サマリ/動的値は textContent で反映 (innerHTML 不使用 = XSS ガード)', () => {
+  it('サマリ/動的値は textContent / createTextNode で反映 (HTML 系 sink 不使用 = XSS ガード)', () => {
     const b = fnBlock('openReorderSheet');
-    expect(b).toMatch(/ros-summary'\)\.textContent/);
-    expect(b).not.toContain('innerHTML');
+    expect(b).toMatch(/sum\.textContent = ''/);
+    // 🚨 採点R2 HIGH: 商品名 1 値だけの固定だと、注文番号・金額を insertAdjacentHTML へ
+    // 置き換える変異が SURVIVED した (実測)。動的値 3 つを**個別に**安全な sink へ固定する
+    expect(b).toMatch(/createTextNode\('前回のご注文 #' \+ rosOrder\.orderNumber/);
+    expect(b).toMatch(/itemEl\.textContent = label/);
+    expect(b).toMatch(/priceEl\.textContent = '¥' \+ Number\(rosOrder\.totalPrice\)/);
+    // blacklist も innerHTML 1 語では足りない — HTML 文字列を解釈する sink を面で塞ぐ
+    expect(b).not.toMatch(/innerHTML|insertAdjacentHTML|outerHTML|setHTMLUnsafe|document\.write/);
+  });
+
+  it('A案 (2026-08-22): reused 応答は専用トーストで「さきほどのページ + 内容は作成時のまま」を明示する', () => {
+    const b = fnBlock('submitReorder');
+    expect(b).toMatch(/res\.data\.reused\) showToast\('さきほど作成したご注文ページを開きます/);
+    expect(b).toContain('内容は作成時のままです');
+    // reused 判定は focus トーストより先 (「お届け先は次の画面で…」と嘘をつかない)
+    expect(b.indexOf('res.data.reused')).toBeLessThan(b.indexOf("focus === 'address'"));
   });
 
   it('二重送信ガード + ボタン状態の復帰', () => {

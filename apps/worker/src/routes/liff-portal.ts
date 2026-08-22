@@ -363,20 +363,6 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
     const user = getLiffUser(c);
     if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
 
-    // Rate limit: 同一ユーザー5分以内の連続作成を防止
-    const recentDraft = await c.env.DB
-      .prepare(
-        `SELECT created_at FROM shopify_draft_orders
-         WHERE friend_id = ? AND created_at > datetime('now', '-5 minutes')
-         ORDER BY created_at DESC LIMIT 1`,
-      )
-      .bind(user.friendId)
-      .first<{ created_at: string }>();
-
-    if (recentDraft) {
-      return c.json({ success: false, error: '再注文は5分に1回までです。しばらくお待ちください。' }, 429);
-    }
-
     const { orderId, items, shippingMethod, deliveryDate, deliveryTime, acknowledgeSubscriptionDuplicate } = await c.req.json<{
       orderId?: string;
       items?: Array<{ variantId: string; quantity: number }>;
@@ -385,6 +371,25 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
       deliveryTime?: string;
       acknowledgeSubscriptionDuplicate?: unknown;
     }>();
+
+    // Rate limit (同一ユーザー 5 分に 1 回) + A案 reuse (2026-08-22 Katsu 承認)。
+    // 5 分窓は JS の実時刻 (Date.parse) で判定する。
+    // ⚠️ 旧実装は `created_at > datetime('now','-5 minutes')` の**文字列比較**だった:
+    //   created_at は jstNow() の 'YYYY-MM-DDTHH:mm:ss.sss+09:00'、比較相手は UTC の
+    //   'YYYY-MM-DD HH:MM:SS'。日付が同じなら区切り文字 'T' > ' ' で常に「recent」となり、
+    //   実質「UTC 日付が変わる JST 翌朝 9 時すぎまで 1 回」に化けていた (2026-08-22 実機で発覚)。
+    const latestDraft = await c.env.DB
+      .prepare(
+        `SELECT invoice_url, source_order_id, status, created_at FROM shopify_draft_orders
+         WHERE friend_id = ? ORDER BY created_at DESC LIMIT 1`,
+      )
+      .bind(user.friendId)
+      .first<{ invoice_url: string | null; source_order_id: string | null; status: string | null; created_at: string }>();
+    const latestDraftTs = latestDraft ? Date.parse(latestDraft.created_at) : Number.NaN;
+    // parse 不能な行は「recent でない」に倒す — これは burst 対策であり、壊れた 1 行が
+    // 以後の注文を永久に塞ぐ方が実害が大きい
+    const hasRecentDraft =
+      latestDraft != null && Number.isFinite(latestDraftTs) && Date.now() - latestDraftTs < 5 * 60_000;
 
     // ─── 配送オプション検証 (2026-07-30 再注文シート: 固定語彙のみ受理・自由入力は拒否) ───
     const SHIPPING_METHODS: Record<string, string> = { nekopos: 'ネコポス', takkyubin: '宅配便' };
@@ -470,6 +475,24 @@ liffPortal.post('/api/liff/reorder/create', async (c) => {
 
     if (lineItems.length === 0) {
       return c.json({ success: false, error: 'No items to reorder' }, 400);
+    }
+
+    // ─── A案 (2026-08-22 Katsu 承認): 5 分以内の再タップが「同一注文」なら 429 の
+    // 行き止まりにせず、さきほど作成したご注文ページを開き直す (新しい draft は作らない)。
+    // - 二重購入ガード (409) はこの手前で判定済み = reuse でもガードは迂回できない
+    // - 別注文・items[] 直指定は従来どおり 429 — 別内容のページを「あなたのご注文です」と
+    //   開かせない (誤購入の温床)。invoice_url の無い行も reuse 不可 → 429 に倒す
+    // - reuse は status='open' のみ (Codex P2): 完了/キャンセル済み draft の invoice URL は
+    //   もう受け付けないページ。現状 status を更新する同期は無い (常に 'open') が、
+    //   将来 status 同期が入った瞬間に死んだページを開かせないよう先に塞ぐ
+    if (hasRecentDraft) {
+      if (orderId && latestDraft!.source_order_id === orderId && latestDraft!.invoice_url && latestDraft!.status === 'open') {
+        return c.json({ success: true, data: { invoiceUrl: latestDraft!.invoice_url, reused: true } });
+      }
+      return c.json(
+        { success: false, error: 'ご注文ページの作成は5分に1回までです。しばらくおいてからもう一度お試しください。' },
+        429,
+      );
     }
 
     // Get Shopify access token

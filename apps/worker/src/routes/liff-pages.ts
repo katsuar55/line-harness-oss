@@ -198,7 +198,16 @@ function portalPage(
     .ros-primary{display:block;width:100%;border:0;border-radius:999px;padding:14px;font-size:15px;font-weight:700;color:#fff;background:#0d827d;box-shadow:0 8px 22px rgba(13,130,125,.4);cursor:pointer;transition:transform .15s}
     .ros-primary:active{transform:scale(.96)}
     .ros-primary:disabled{opacity:.55}
-    .ros-gray{border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:12px;padding:10px 4px;font-size:11px;font-weight:600;line-height:1.5}
+    /* サマリの強調 (2026-08-22): 商品名 = 濃色太字 / 金額 = ディープティファニー太字で一回り大きく。
+       周囲の text-xs 灰文に対し「何を・いくらで」だけが浮く視覚階層 */
+    /* line-height は明示必須 (採点R2 MEDIUM): 親 #ros-summary の text-xs が line-height を
+       固定長 1rem=16px で継承させるため、16px 金額の行が行間ゼロで密着する */
+    .ros-sum-item{font-weight:700;font-size:14px;color:#1f2937;line-height:1.5}
+    .ros-sum-price{font-weight:800;font-size:16px;color:#0d827d;line-height:1.5}
+    /* 変更系 3 ボタン (2026-08-22 Katsu 指示「もう少しだけ目立つ第3階層に」):
+       主役 (solid teal) と配送方法セグメントよりは静かに、素の灰チップよりは
+       「押せるボタン」として認識できる淡ティール輪郭チップ。tap の押し込みは global 継承 */
+    .ros-sub{border:1.5px solid #bfe8e3;background:#f4fbfa;color:#0f766e;border-radius:12px;padding:11px 4px;font-size:12px;font-weight:700;line-height:1.5;box-shadow:0 1px 4px rgba(13,130,125,.08)}
     #ros-datetime.is-disabled{opacity:.4;pointer-events:none}
     @media(prefers-reduced-motion:reduce){#reorder-sheet .ros-panel,#subdup-sheet .ros-panel{animation:none}}
     .card{background:#ffffff;border-radius:20px;border:1px solid var(--hairline);box-shadow:var(--shadow-rest),var(--edge-light)}
@@ -1104,9 +1113,9 @@ function portalPage(
       <p class="text-xs text-gray-400 text-center mt-2 mb-3">お届け先・お支払い方法は前回と同じなら、次の画面でそのまま進むだけでOKです</p>
 
       <div class="grid grid-cols-3 gap-2">
-        <button onclick="submitReorder('address')" class="ros-gray">送り先を<br>変更する</button>
-        <button onclick="rosEditItems()" class="ros-gray">注文内容を<br>変更する</button>
-        <button onclick="submitReorder('payment')" class="ros-gray">支払い方法を<br>変更する</button>
+        <button onclick="submitReorder('address')" class="ros-sub">送り先を<br>変更する</button>
+        <button onclick="rosEditItems()" class="ros-sub">注文内容を<br>変更する</button>
+        <button onclick="submitReorder('payment')" class="ros-sub">支払い方法を<br>変更する</button>
       </div>
     </div>
   </div>
@@ -3695,9 +3704,23 @@ function openReorderSheet() {
   rosApplyShip();
   var items = rosOrder.lineItems || [];
   var label = items.length ? (items[0].name || items[0].title || '') + (items.length > 1 ? ' 他' + (items.length - 1) + '点' : '') : '';
-  document.getElementById('ros-summary').textContent =
-    '前回のご注文 #' + rosOrder.orderNumber + (label ? '（' + label + '）' : '') +
-    ' ¥' + Number(rosOrder.totalPrice).toLocaleString() + ' と同じ内容でご用意します';
+  // サマリの商品名と金額は太字で強調 (2026-08-22 Katsu 指示「確認の意味も込め可読性高く」)。
+  // XSS ガードは維持: HTML 文字列の組み立てはせず、動的値は textContent / createTextNode でのみ挿す
+  var sum = document.getElementById('ros-summary');
+  sum.textContent = '';
+  sum.appendChild(document.createTextNode('前回のご注文 #' + rosOrder.orderNumber + ' '));
+  if (label) {
+    var itemEl = document.createElement('b');
+    itemEl.className = 'ros-sum-item';
+    itemEl.textContent = label;
+    sum.appendChild(itemEl);
+    sum.appendChild(document.createTextNode(' '));
+  }
+  var priceEl = document.createElement('b');
+  priceEl.className = 'ros-sum-price';
+  priceEl.textContent = '¥' + Number(rosOrder.totalPrice).toLocaleString();
+  sum.appendChild(priceEl);
+  sum.appendChild(document.createTextNode(' と同じ内容でご用意します'));
   // お届け希望日の範囲: 3日後〜30日後 (JST)。既定は指定なし = 追加タップ0
   var jstNowMs = Date.now() + 9 * 3600 * 1000;
   function fmt(ms) { return new Date(ms).toISOString().slice(0, 10); }
@@ -3784,7 +3807,10 @@ async function submitReorder(focus) {
     } else if (apiFailed(res)) {
       showToast((res && res.error) || '再注文の作成に失敗しました');
     } else if (res.data && res.data.invoiceUrl) {
-      if (focus === 'address') showToast('お届け先は次の画面の「配送先」で変更できます');
+      // A案 (2026-08-22): 5 分以内の同一注文はさきほどのページを開き直す。
+      // 直前に選んだ配送方法・日時は反映されない (前の内容のページ) ため、その旨を明示する
+      if (res.data.reused) showToast('さきほど作成したご注文ページを開きます (内容は作成時のままです)');
+      else if (focus === 'address') showToast('お届け先は次の画面の「配送先」で変更できます');
       else if (focus === 'payment') showToast('お支払い方法は次の画面で選べます');
       else showToast('ご注文ページを開きます');
       closeReorderSheet();
