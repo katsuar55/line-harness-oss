@@ -123,6 +123,14 @@ beforeEach(() => {
 // Tests
 // ============================================================
 
+/**
+ * due の fixture。**固定日付にしない** (2026-08-23):
+ * 送信直前の再導出ガード (STALE_DUE_THRESHOLD_MS = 3 日) が入ったため、
+ * 固定日付は書いた瞬間から古くなり、3 日後にはテストが『先送り』側に落ちて壊れる。
+ * 本番の due は cron 周期 (5 分) の範囲で来るので、相対日付の方が実態にも忠実。
+ */
+const DUE_JUST_NOW = new Date(Date.now() - 60_000).toISOString();
+
 describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () => {
   it('due 0 件でも cron_run_logs に heartbeat を残す', async () => {
     const { processSubscriptionReminders } = await import(
@@ -149,7 +157,11 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
     expect(mockHeartbeats.length).toBe(1);
     expect(mockHeartbeats[0].jobName).toBe('subscription-reminder');
     expect(mockHeartbeats[0].status).toBe('success');
-    expect(mockHeartbeats[0].metrics).toEqual({ due: 0, sent: 0, errors: 0 });
+    // 送信直前ガードのヒット数も heartbeat に載る (2026-08-23): 戻り値だけだと
+    // 呼び出し側が捨てるため本番で完全に不可視になる。完全一致で pin し、落ちたら気付く
+    expect(mockHeartbeats[0].metrics).toEqual({
+      due: 0, sent: 0, errors: 0, cancelReanchored: 0, cancelUnparsed: 0, staleSkipped: 0,
+    });
   });
 
   it('reminders 送信成功時に metrics を heartbeat に含める', async () => {
@@ -163,7 +175,7 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
           friend_id: 'friend-1',
           product_title: 'プロテイン',
           interval_days: 30,
-          next_reminder_at: '2026-01-01',
+          next_reminder_at: DUE_JUST_NOW,
           shopify_product_id: null,
         },
       ],
@@ -186,7 +198,9 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
     expect(result.errorCount).toBe(0);
     expect(mockPushMessage).toHaveBeenCalledTimes(1);
     expect(mockHeartbeats.length).toBe(1);
-    expect(mockHeartbeats[0].metrics).toEqual({ due: 1, sent: 1, errors: 0 });
+    expect(mockHeartbeats[0].metrics).toEqual({
+      due: 1, sent: 1, errors: 0, cancelReanchored: 0, cancelUnparsed: 0, staleSkipped: 0,
+    });
   });
 
   it('Round 4 PR-3: is_following=0 → dispatcher が skip し sentCount=0 / errorCount=0 (旧 behavior は errorCount++ だった)', async () => {
@@ -200,7 +214,7 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
           friend_id: 'friend-1',
           product_title: 'A',
           interval_days: 30,
-          next_reminder_at: '2026-01-01',
+          next_reminder_at: DUE_JUST_NOW,
           shopify_product_id: null,
         },
       ],
@@ -232,7 +246,7 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
           friend_id: 'friend-1',
           product_title: 'A',
           interval_days: 30,
-          next_reminder_at: '2026-01-01',
+          next_reminder_at: DUE_JUST_NOW,
           shopify_product_id: null,
         },
       ],
@@ -264,7 +278,7 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
           friend_id: 'friend-1',
           product_title: 'A',
           interval_days: 30,
-          next_reminder_at: '2026-01-01',
+          next_reminder_at: DUE_JUST_NOW,
           shopify_product_id: null,
         },
       ],
