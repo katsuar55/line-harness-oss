@@ -331,6 +331,58 @@ describe('定期便バッジと ack — 「分からない」は安全側に倒�
     expect(needsSubscriptionAck(ctx, '100')).toBe(true);
   });
 
+  it('🚨 契約が 2 本あり片方しか注文を辿れないとき、辿れた側の商品でも ack を要求する', async () => {
+    // 採点ループ HIGH: 当初は productIds.size === 0 だけを「分からない」としていたため、
+    // C1 (注文あり) + C2 (お届けが 60 日窓の外で注文が無い) を持つ顧客では
+    // size > 0 になり **C2 の商品を無確認で単発購入できてしまった**。
+    // 「size > 0 なら全部わかった」は不明の代理指標で、本命の不明分布がその窓の内側にある
+    const raw = createSchemaDb();
+    seedFriend(raw, { customerId: 'SC1' });
+    seedProduct(raw, { pid: '100', title: 'A', price: '2830', variantId: '9001' });
+    seedProduct(raw, { pid: '200', title: 'B', price: '2376', variantId: '9002' });
+    for (const cid of ['C1', 'C2']) {
+      raw.exec(
+        `INSERT INTO subscription_contracts (contract_id, shopify_customer_id, created_at, updated_at)
+         VALUES ('${cid}', 'SC1', '${NOW}', '${NOW}')`,
+      );
+    }
+    // C1 のお届け注文だけがローカルにある (C2 の注文は無い)
+    seedOrder(raw, {
+      id: 'o1',
+      tags: 'subscription-id:C1',
+      lineItems: [{ product_id: 100, variant_id: 9001, selling_plan_allocation: {} }],
+    });
+
+    const ctx = await buildShopContext(asD1(raw), 'F1');
+    expect(ctx.subs.productIds.size).toBeGreaterThan(0);
+    expect(ctx.subs.allContractsResolved, 'C2 を辿れていない').toBe(false);
+
+    // 辿れた商品も、辿れていない商品も、どちらも確認を要求する
+    expect(needsSubscriptionAck(ctx, '100')).toBe(true);
+    expect(needsSubscriptionAck(ctx, '200'), 'C2 の商品を無確認で買わせない').toBe(true);
+  });
+
+  it('稼働契約を全部辿れたら、集合外の商品には ack を求めない (過剰に止めない)', async () => {
+    const raw = createSchemaDb();
+    seedFriend(raw, { customerId: 'SC1' });
+    seedProduct(raw, { pid: '100', title: 'A', price: '2830', variantId: '9001' });
+    seedProduct(raw, { pid: '200', title: 'B', price: '2376', variantId: '9002' });
+    raw.exec(
+      `INSERT INTO subscription_contracts (contract_id, shopify_customer_id, created_at, updated_at)
+       VALUES ('C1', 'SC1', '${NOW}', '${NOW}')`,
+    );
+    seedOrder(raw, {
+      id: 'o1',
+      tags: 'subscription-id:C1',
+      lineItems: [{ product_id: 100, variant_id: 9001, selling_plan_allocation: {} }],
+    });
+
+    const ctx = await buildShopContext(asD1(raw), 'F1');
+    expect(ctx.subs.allContractsResolved).toBe(true);
+    expect(needsSubscriptionAck(ctx, '100')).toBe(true);
+    expect(needsSubscriptionAck(ctx, '200')).toBe(false);
+  });
+
   it('契約が無い友だちには ack を求めない (退行なし)', async () => {
     const raw = createSchemaDb();
     seedFriend(raw, { customerId: 'SC1' });

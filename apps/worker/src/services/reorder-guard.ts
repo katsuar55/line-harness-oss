@@ -46,6 +46,12 @@ export interface ActiveSubscriptionProducts {
   productIds: Set<string>;
   /** 稼働 (非解約) の契約を 1 つ以上持つか */
   hasActiveContract: boolean;
+  /**
+   * 🚨 稼働契約の**全部**を注文まで辿れたか。false = 一部の契約の中身が分からない。
+   * productIds が空でなくても別契約の商品を取りこぼしている可能性がある
+   * (採点ループ HIGH: 「size > 0 なら全部わかった」は誤りで、複数契約の顧客で素通りする)。
+   */
+  allContractsResolved: boolean;
   /** 稼働契約がすべて一時停止中か (バッジ文言の出し分け用) */
   allPaused: boolean;
 }
@@ -70,6 +76,7 @@ export async function activeSubscriptionProductIds(
   const empty: ActiveSubscriptionProducts = {
     productIds: new Set(),
     hasActiveContract: false,
+    allContractsResolved: true,
     allPaused: false,
   };
 
@@ -106,9 +113,11 @@ export async function activeSubscriptionProductIds(
     .all<{ tags: string | null; line_items: string | null }>();
 
   const productIds = new Set<string>();
+  const resolvedContractIds = new Set<string>();
   for (const o of orders ?? []) {
     const parsed = parseOrderSubscriptionTags(o.tags);
     if (!parsed || !activeIds.has(String(parsed.contractId))) continue;
+    resolvedContractIds.add(String(parsed.contractId));
 
     let items: Array<Record<string, unknown>> = [];
     try {
@@ -126,5 +135,7 @@ export async function activeSubscriptionProductIds(
     }
   }
 
-  return { productIds, hasActiveContract: true, allPaused };
+  // 稼働契約のうち 1 本でも注文まで辿れなければ「一部は分からない」= 安全側の判断材料にする
+  const allContractsResolved = [...activeIds].every((id) => resolvedContractIds.has(id));
+  return { productIds, hasActiveContract: true, allContractsResolved, allPaused };
 }

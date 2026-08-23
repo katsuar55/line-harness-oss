@@ -235,12 +235,21 @@ export function buildShopGrid(ctx: ShopContext, limit = 12): ShopGridItem[] {
 /**
  * 購入時に確認 (ack) を求めるべきか。
  *
- * 🚨 productIds が空でも稼働契約があれば **確認を求める**。
- *   集合が空なのは「定期便で何も買っていない」ではなく **「分からない」** で、
- *   注文がローカルに無い契約者 (本番で約半数) がここに落ちる。
- *   バッジは助言、これが最終防壁 — 誤検出のコストは「1 タップ増える」= 回復可能。
+ * 🚨 「分からない」は必ず安全側 (確認を求める) に倒す。分からない形は 2 つある:
+ *   (a) 稼働契約はあるが**どの注文にも辿り着けない** (productIds が空)
+ *   (b) 稼働契約が複数あり、**一部の契約しか注文まで辿れていない** (allContractsResolved=false)
+ *
+ * 当初は (a) だけを見ていたが、採点ループが (b) を実測で突いた:
+ * 契約 C1 (注文がローカルにある) と C2 (お届けが 60 日窓の外で注文が無い) を持つ顧客では
+ * productIds={A} で size > 0 になるため、C2 の商品 B を**無確認で単発購入できてしまう**。
+ * 「size > 0 なら全部わかった」は不明の代理指標で、本命の不明分布がその窓の内側にある
+ * (memory: feedback_proxy_signal_fails_where_it_matters と同型)。
+ *
+ * バッジは助言、これが最終防壁 — 誤検出のコストは「1 タップ増える」= 回復可能。
  */
 export function needsSubscriptionAck(ctx: ShopContext, productId: string): boolean {
   if (!ctx.subs.hasActiveContract) return false;
-  return ctx.subs.productIds.has(productId) || ctx.subs.productIds.size === 0;
+  // 稼働契約の中身を全部は把握できていない → どの商品でも確認する
+  if (!ctx.subs.allContractsResolved) return true;
+  return ctx.subs.productIds.has(productId);
 }

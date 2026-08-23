@@ -177,6 +177,29 @@ describe('client の配線', () => {
     expect(b.indexOf('shopBuyAckProceed')).toBeLessThan(b.indexOf('rosAckSubDup = true'));
   });
 
+  it('🚨 保留中の購入は商品 identity に束縛する (配列 index にしない)', async () => {
+    // 採点ループ HIGH: index だとグリッド再描画で並びが変わったとき、
+    // 顧客が確認していない商品に ack=true が付く
+    const html = await renderPortal(ON);
+    expect(html).toContain('var shopPendingBuyProductId = null;');
+    expect(html).not.toContain('shopPendingBuyIdx');
+    const b = fnBlock(html, 'shopBuyAckProceed');
+    // 保存した productId が今のグリッドに無ければ**何も買わない**
+    expect(b).toContain('productId === pid');
+    expect(b).toContain('商品情報が更新されました');
+  });
+
+  it('🚨 確認シートを閉じたら保留中の購入を破棄する (次の再注文に横取りさせない)', async () => {
+    // 採点ループ HIGH の本命: 「やめる」で閉じても保留が残ると、後で別経路 (再注文) の
+    // 確認シートで「はい」を押したときにグリッド購入が横取りし、
+    // 顧客が意図した再注文は無音で消え、選んでいない商品のカートが開く
+    const html = await renderPortal(ON);
+    const close = fnBlock(html, 'closeSubDupConfirm');
+    expect(close).toContain('shopClearPendingBuy');
+    const clear = fnBlock(html, 'shopClearPendingBuy');
+    expect(clear).toContain('shopPendingBuyProductId = null');
+  });
+
   it('タイルは DOM 組み立てで作る (HTML 文字列を組まない = XSS を構造的に不能にする)', async () => {
     const html = await renderPortal(ON);
     const b = fnBlock(html, 'buildShopTile');
