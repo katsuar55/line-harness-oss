@@ -231,6 +231,43 @@ describe('client の配線', () => {
     expect(b).toContain('定期便でお届け中');
   });
 
+  it('🚨 定期便バッジは画像に重ねる (2026-08-23 Katsu 指示)', async () => {
+    const html = await renderPortal(ON);
+    const b = fnBlock(html, 'buildShopTile');
+    // 画像とバッジを同じラッパに入れ、バッジ側を絶対配置する
+    expect(b).toContain('sh-thumb-wrap');
+    expect(b).toMatch(/over\.className = "sh-over"/);
+    expect(b).toMatch(/wrap\.appendChild\(over\)/);
+    // 定期便バッジは本文側でなく画像ラッパ側へ付く
+    const overIdx = b.indexOf('sh-over');
+    const bodyIdx = b.indexOf('sh-badges');
+    expect(overIdx).toBeGreaterThan(-1);
+    expect(overIdx).toBeLessThan(bodyIdx);
+
+    const css = extractStyles(html);
+    expect(css).toMatch(/\.sh-thumb-wrap\{[^}]*position:relative/);
+    expect(css).toMatch(/\.sh-over\{[^}]*position:absolute/);
+  });
+
+  it('🚨 グリッドは購入履歴だけ — 「前回ご購入」バッジは出さない (全件に付き情報量ゼロ)', async () => {
+    const html = await renderPortal(ON);
+    const b = fnBlock(html, 'buildShopTile');
+    expect(b).not.toContain('前回ご購入');
+    expect(b).not.toContain('it.purchased');
+  });
+
+  it('空のときは断定せず、下の LINE UP へ誘導する (未連携でも嘘にならない文言)', async () => {
+    const html = await renderPortal(ON);
+    const b = fnBlock(html, 'renderShopGrid');
+    expect(b).toContain('これまでにお求めの商品がここに並びます');
+    expect(b).toContain('LINE UP');
+    // 連携 CTA は注文カード側に集約する (同じ CTA を 2 枚並べない)。
+    // 検査対象は**実際に表示される文言**に絞る (コメント文言に反応させない)
+    const shown = b.match(/empty\.textContent = "([^"]*)"/)![1];
+    expect(shown).not.toContain('連携');
+    expect(shown).not.toContain('ありません');
+  });
+
   it('価格・割引の但し書きを 1 行出す (景表法の開示)', async () => {
     const html = await renderPortal(ON);
     expect(html).toContain('ランク割引は ¥2,000 以上のご注文で適用されます');

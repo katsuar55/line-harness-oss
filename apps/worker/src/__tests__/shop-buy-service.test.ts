@@ -171,35 +171,46 @@ describe('resolveShopBuyPlan — ラベルと URL は同じ導出から出る', 
   });
 });
 
-describe('buildShopGrid — 過去購入を先頭に、足りない分は取扱商品で埋める', () => {
-  it('🚨 過去購入がゼロでもグリッドは空にならない (本番の大多数がこの状態)', async () => {
+describe('buildShopGrid — 購入履歴の商品だけを出す', () => {
+  it('🚨 購入履歴が無ければ空にする (取扱商品で埋めない)', async () => {
+    // 2026-08-23 Katsu 指示: 同じ Shop タブの下に LINE UP (全商品) があるため、
+    // 埋めると同じ商品が 2 度並びページが伸びるだけで使いにくくなる
     const raw = createSchemaDb();
     seedFriend(raw);
     seedProduct(raw, { pid: '100', title: 'A', price: '2830', variantId: '9001' });
     seedProduct(raw, { pid: '200', title: 'B', price: '2376', variantId: '9002' });
 
     const ctx = await buildShopContext(asD1(raw), 'F1');
-    const grid = buildShopGrid(ctx);
-
-    expect(grid.length).toBe(2);
-    expect(grid.every((g) => g.purchased === false)).toBe(true);
+    expect(buildShopGrid(ctx)).toEqual([]);
   });
 
-  it('過去購入商品が先頭に来て purchased=true が付く', async () => {
+  it('購入した商品だけが出る (取扱中でも買っていなければ出ない)', async () => {
     const raw = createSchemaDb();
     seedFriend(raw);
     seedProduct(raw, { pid: '100', title: 'A', price: '2830', variantId: '9001' });
     seedProduct(raw, { pid: '200', title: 'B', price: '2376', variantId: '9002' });
-    // B だけ過去に購入
     seedOrder(raw, { id: 'o1', lineItems: [{ product_id: 200, variant_id: 9002, name: 'B' }] });
 
-    const ctx = await buildShopContext(asD1(raw), 'F1');
-    const grid = buildShopGrid(ctx);
+    const grid = buildShopGrid(await buildShopContext(asD1(raw), 'F1'));
+    expect(grid.map((g) => g.productId)).toEqual(['200']);
+  });
 
-    expect(grid[0].productId).toBe('200');
-    expect(grid[0].purchased).toBe(true);
-    expect(grid[1].productId).toBe('100');
-    expect(grid[1].purchased).toBe(false);
+  it('新しい注文の商品が先に並ぶ', async () => {
+    const raw = createSchemaDb();
+    seedFriend(raw);
+    seedProduct(raw, { pid: '100', title: 'A', price: '2830', variantId: '9001' });
+    seedProduct(raw, { pid: '200', title: 'B', price: '2376', variantId: '9002' });
+    seedOrder(raw, {
+      id: 'o-old', createdAt: '2026-07-01T00:00:00.000Z',
+      lineItems: [{ product_id: 100, variant_id: 9001 }],
+    });
+    seedOrder(raw, {
+      id: 'o-new', createdAt: '2026-08-01T00:00:00.000Z',
+      lineItems: [{ product_id: 200, variant_id: 9002 }],
+    });
+
+    const grid = buildShopGrid(await buildShopContext(asD1(raw), 'F1'));
+    expect(grid.map((g) => g.productId)).toEqual(['200', '100']);
   });
 
   it('product_id が無い明細でも variant_id から解決する', async () => {
@@ -222,22 +233,14 @@ describe('buildShopGrid — 過去購入を先頭に、足りない分は取扱�
     expect(ctx.purchasedOrder).toEqual([]);
   });
 
-  it('archived / draft の商品は「取扱中」枠に出さないが、過去購入なら出す', async () => {
+  it('archived の商品でも、購入していれば出す (画像と価格が引けるので縮退させない)', async () => {
     const raw = createSchemaDb();
     seedFriend(raw);
     seedProduct(raw, { pid: '900', title: 'Old', price: '2830', variantId: '9009', status: 'archived' });
-    seedProduct(raw, { pid: '100', title: 'A', price: '2830', variantId: '9001' });
-
-    // 過去購入なし → archived は出ない
-    const ctx1 = await buildShopContext(asD1(raw), 'F1');
-    expect(buildShopGrid(ctx1).map((g) => g.productId)).toEqual(['100']);
-
-    // 過去購入あり → archived でも出る (画像と価格が引ける)
     seedOrder(raw, { id: 'o1', lineItems: [{ product_id: 900, variant_id: 9009 }] });
-    const ctx2 = await buildShopContext(asD1(raw), 'F1');
-    const grid2 = buildShopGrid(ctx2);
-    expect(grid2[0].productId).toBe('900');
-    expect(grid2[0].purchased).toBe(true);
+
+    const grid = buildShopGrid(await buildShopContext(asD1(raw), 'F1'));
+    expect(grid.map((g) => g.productId)).toEqual(['900']);
   });
 });
 
@@ -326,8 +329,9 @@ describe('定期便バッジと ack — 「分からない」は安全側に倒�
     const ctx = await buildShopContext(asD1(raw), 'F1');
     expect(ctx.subs.productIds.size).toBe(0);
     expect(ctx.subs.hasActiveContract).toBe(true);
-    // バッジは出さない (嘘にならない) が、ack は要求する (安全側)
-    expect(buildShopGrid(ctx)[0].subscriptionState).toBeNull();
+    // バッジは出さない (嘘にならない) が、ack は要求する (安全側)。
+    // グリッドは購入履歴のみなので、この顧客のタイルはそもそも出ない
+    expect(buildShopGrid(ctx)).toEqual([]);
     expect(needsSubscriptionAck(ctx, '100')).toBe(true);
   });
 
