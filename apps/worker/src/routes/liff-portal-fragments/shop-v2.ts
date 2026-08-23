@@ -1,0 +1,308 @@
+/**
+ * Shop タブ v2 — アンカーバー 3 本 + 再購入グリッド (2026-08-23, gate LIFF_SHOP_V2_ENABLED)。
+ *
+ * Katsu 指示:
+ *   - タブ上部に「サブスク」「再購入」「LINE UP」のアンカーを置き、タップで各セクションへ
+ *   - 再購入は 2 列グリッド (商品画像 + 商品名 + **いま買ったらいくら**)
+ *   - ランク割引と「定期便でお届け中」バッジも出す
+ *
+ * 設計上の要点:
+ *   - **DOM 順で先頭に挿入する** (CSS order は使わない)。order は視覚順だけを変え
+ *     a11y tree と Tab 順は DOM 順のままなので、見出しを伴う並び替えで誤誘導が起きる
+ *     (CLAUDE.md「LIFF の視覚順 (CSS order) 変更ルール」)
+ *   - `<a href="#...">` を使わない。location.hash を汚すと次回 LIFF 起動の deepLinkDest() が変わる
+ *   - 着地点は各カードの**外側直前**に置いた 0 高センチネル。カード自体を対象にすると
+ *     scroll-reveal の translateY(34px) ぶんズレる
+ *   - サブスクカードは gate / 契約状況で消えるので、**押しても無反応にしない**
+ *     (表示状態を直接見て、無ければトーストで代替導線)
+ *
+ * コーディング規律 (CLAUDE.md — LIFF inline JS):
+ *   - client JS 文字列に「バックスラッシュ+シングルクォート」を書かない
+ *   - script 終了タグを literal で書かない
+ *   - onclick は引数なしの名前付き関数のみ
+ */
+
+/** アンカーバー (section-shop の DOM 先頭に入る)。 */
+export function shopAnchorsHtml(subCardOn: boolean): string {
+  const subChip = subCardOn
+    ? '      <button type="button" id="sh-nav-sub" onclick="shopJumpSub()" style="display:none">' +
+      '<span aria-hidden="true">📦</span> サブスク</button>\n'
+    : '';
+  return [
+    '<!-- Shop v2 アンカー (2026-08-23) -->',
+    '<nav class="sh-anchors" aria-label="Shop 内の移動" data-no-tab-swipe>',
+    subChip +
+      '      <button type="button" id="sh-nav-reorder" onclick="shopJumpReorder()"><span aria-hidden="true">🔁</span> 再購入</button>',
+    '      <button type="button" id="sh-nav-lineup" onclick="shopJumpLineup()"><span aria-hidden="true">🌿</span> LINE UP</button>',
+    '    </nav>',
+  ].join('\n    ');
+}
+
+/** 着地用の 0 高センチネル (対象カードの外側直前に置く)。 */
+export function shopAnchorTarget(id: string): string {
+  return `<div class="sh-anchor-t" id="sh-anchor-${id}" tabindex="-1" aria-hidden="true"></div>`;
+}
+
+/** 再購入グリッドのカード殻 (中身は client が描く)。 */
+export function shopGridHtml(): string {
+  return [
+    '<!-- 再購入グリッド (Shop v2) -->',
+    '<div id="shop-grid-card" class="card p-4">',
+    '      <p class="text-xs text-gray-500 font-bold mb-1">🔁 再購入</p>',
+    '      <p class="text-xs text-gray-400 mb-3">これまでにお求めの商品と、いまのお値段です</p>',
+    '      <div id="shop-grid" class="sh-grid">',
+    '        <div class="skeleton h-40 rounded-xl"></div>',
+    '        <div class="skeleton h-40 rounded-xl"></div>',
+    '      </div>',
+    '      <p class="sh-fineprint">価格は税込・送料別です。ランク割引は ¥2,000 以上のご注文で適用されます。価格は変更される場合があります。</p>',
+    '    </div>',
+  ].join('\n    ');
+}
+
+/** Shop v2 の CSS。新色ゼロ (既存のティール系のみ)。 */
+export function shopV2Css(): string {
+  return [
+    '/* ─ Shop v2 アンカーバー (2026-08-23) ─ */',
+    '.sh-anchors{display:flex;gap:8px;margin-bottom:4px}',
+    /* sticky にしない: switchTabAnimated が遷移中 section に transform を当てるため壊れる */
+    '.sh-anchors button{flex:1;min-height:48px;font-size:15px;font-weight:700;border-radius:999px;background:#effaf8;border:1.5px solid #bfe8e3;color:#0f766e;transition:transform .12s cubic-bezier(.22,1,.36,1)}',
+    '.sh-anchors button:active{transform:scale(.97)}',
+    '/* 着地点: カードの外側直前に置く 0 高センチネル。カード自体だと scroll-reveal の 34px ぶんズレる */',
+    '.sh-anchor-t{height:0;margin-top:0 !important;scroll-margin-top:110px}',
+    '/* ─ 再購入グリッド ─ */',
+    '.sh-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}',
+    '.sh-tile{display:flex;flex-direction:column;border:1px solid #e6efee;border-radius:16px;overflow:hidden;background:#fff}',
+    '.sh-thumb{width:100%;aspect-ratio:1/1;object-fit:cover;background:#effaf8;display:block}',
+    '.sh-thumb-ph{width:100%;aspect-ratio:1/1;background:#effaf8;display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:#0f766e}',
+    '.sh-body{padding:10px;display:flex;flex-direction:column;gap:6px;flex:1}',
+    '.sh-name{font-size:13px;font-weight:700;color:#1f2937;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}',
+    '.sh-price{font-size:17px;font-weight:800;color:#0d827d;line-height:1.4}',
+    '.sh-price-na{font-size:13px;color:#66727d;line-height:1.4}',
+    '.sh-badges{display:flex;flex-wrap:wrap;gap:4px}',
+    '.sh-badge{font-size:10px;font-weight:700;border-radius:999px;padding:2px 8px;line-height:1.6}',
+    '.sh-badge--sub{background:#0f766e;color:#fff}',
+    '.sh-badge--paused{background:#f4fbfa;color:#0f766e;border:1px solid #bfe8e3}',
+    '.sh-badge--again{background:#fff4ed;color:#9a4a1f;border:1px solid #ffd9c2}',
+    '.sh-badge--rank{background:#effaf8;color:#0f766e;border:1px solid #bfe8e3}',
+    '.sh-buy{margin-top:auto;min-height:44px;border:none;border-radius:12px;background:#0d827d;color:#fff;font-size:14px;font-weight:700;transition:transform .12s ease-out}',
+    '.sh-buy:active{transform:scale(.97)}',
+    '.sh-sub-cta{margin-top:auto;min-height:44px;border:1.5px solid #bfe8e3;border-radius:12px;background:#f4fbfa;color:#0f766e;font-size:13px;font-weight:700;transition:transform .12s ease-out}',
+    '.sh-sub-cta:active{transform:scale(.97)}',
+    '.sh-alt{font-size:11px;color:#5b6670;text-decoration:underline;background:none;border:none;padding:4px 0}',
+    '.sh-fineprint{font-size:11px;color:#8a949d;line-height:1.6;margin-top:12px}',
+    '.sh-empty{grid-column:1 / -1;font-size:13px;color:#66727d;line-height:1.6}',
+  ].join('\n    ');
+}
+
+/** client JS。通常の文字列連結で保持する (template literal のエスケープ潰れを構造的に回避)。 */
+export function shopV2Js(): string {
+  return SHOP_V2_JS;
+}
+
+const SHOP_V2_JS: string = [
+  '// ─── Shop v2: アンカー + 再購入グリッド (2026-08-23) ───',
+  '// 対象セクションへスクロールする。センチネルの scroll-margin-top が',
+  '// sticky ヘッダ + タブバー (実測 102px) を吸収する。',
+  'function shopJumpTo(anchorId) {',
+  '  var el = document.getElementById(anchorId);',
+  '  if (!el) return false;',
+  '  var reduce = false;',
+  '  try { reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { reduce = false; }',
+  '  el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });',
+  '  try { el.focus({ preventScroll: true }); } catch (e) { /* 古い WebView */ }',
+  '  return true;',
+  '}',
+  '',
+  '// サブスクカードは gate / 契約状況で消える。**表示状態を直接見る**',
+  '// (window.__liffHasActiveContract を代理に使わない — カードの表示可否は別 API が決めるので乖離する)',
+  'function shopSubCardVisible() {',
+  '  var card = document.getElementById("sub-contracts-card");',
+  '  return !!(card && card.style.display === "block");',
+  '}',
+  '',
+  'function shopSyncSubChip() {',
+  '  var chip = document.getElementById("sh-nav-sub");',
+  '  if (!chip) return;',
+  '  chip.style.display = shopSubCardVisible() ? "" : "none";',
+  '}',
+  '',
+  'function shopJumpSub() {',
+  '  if (shopSubCardVisible() && shopJumpTo("sh-anchor-sub")) return;',
+  '  showToast("定期便のお手続きは、トークで「サブスク」とお送りいただくとご利用いただけます");',
+  '}',
+  'function shopJumpReorder() {',
+  '  if (!shopJumpTo("sh-anchor-reorder")) showToast("再購入の一覧を読み込んでいます");',
+  '}',
+  'function shopJumpLineup() {',
+  '  if (!shopJumpTo("sh-anchor-lineup")) showToast("商品ラインナップを読み込んでいます");',
+  '}',
+  '',
+  '// 再購入グリッドの描画。data は /api/liff/reorder の shopGrid',
+  'var shopGridItems = [];',
+  'function renderShopGrid(items) {',
+  '  shopGridItems = items || [];',
+  '  var box = document.getElementById("shop-grid");',
+  '  if (!box) return;',
+  '  box.innerHTML = "";',
+  '  if (shopGridItems.length === 0) {',
+  '    var empty = document.createElement("p");',
+  '    empty.className = "sh-empty";',
+  '    empty.textContent = "商品情報を準備中です。しばらくしてからお試しください。";',
+  '    box.appendChild(empty);',
+  '    return;',
+  '  }',
+  '  for (var i = 0; i < shopGridItems.length; i++) {',
+  '    box.appendChild(buildShopTile(shopGridItems[i], i));',
+  '  }',
+  '}',
+  '',
+  '// DOM 組み立てで作る (HTML 文字列を組まない = XSS を構造的に不能にする)',
+  'function buildShopTile(it, idx) {',
+  '  var tile = document.createElement("div");',
+  '  tile.className = "sh-tile";',
+  '',
+  '  if (it.imageUrl) {',
+  '    var img = document.createElement("img");',
+  '    img.className = "sh-thumb";',
+  '    img.src = it.imageUrl;',
+  '    img.alt = "";',
+  '    img.loading = "lazy";',
+  '    tile.appendChild(img);',
+  '  } else {',
+  '    var ph = document.createElement("div");',
+  '    ph.className = "sh-thumb-ph";',
+  '    ph.setAttribute("aria-hidden", "true");',
+  '    ph.textContent = (it.title || "?").slice(0, 1);',
+  '    tile.appendChild(ph);',
+  '  }',
+  '',
+  '  var body = document.createElement("div");',
+  '  body.className = "sh-body";',
+  '',
+  '  var badges = document.createElement("div");',
+  '  badges.className = "sh-badges";',
+  '  if (it.subscriptionState === "active") badges.appendChild(shopBadge("定期便でお届け中", "sh-badge--sub"));',
+  '  else if (it.subscriptionState === "paused") badges.appendChild(shopBadge("定期便お休み中", "sh-badge--paused"));',
+  '  if (it.purchased) badges.appendChild(shopBadge("前回ご購入", "sh-badge--again"));',
+  '  // 割引ラベルは**サーバが実際にコードを載せた行**にだけ出る (discounted はサーバ判定)',
+  '  if (it.discounted && it.discountPercent > 0) {',
+  '    badges.appendChild(shopBadge("ランク割引 " + it.discountPercent + "%OFF", "sh-badge--rank"));',
+  '  }',
+  '  if (badges.childNodes.length > 0) body.appendChild(badges);',
+  '',
+  '  var name = document.createElement("p");',
+  '  name.className = "sh-name";',
+  '  name.textContent = it.title || "";',
+  '  body.appendChild(name);',
+  '',
+  '  var price = document.createElement("p");',
+  '  if (typeof it.priceJpy === "number" && it.priceJpy > 0) {',
+  '    price.className = "sh-price";',
+  '    price.textContent = "¥" + Number(it.priceJpy).toLocaleString();',
+  '  } else {',
+  '    price.className = "sh-price-na";',
+  '    price.textContent = "ストアで価格をみる";',
+  '  }',
+  '  body.appendChild(price);',
+  '',
+  '  // 定期便で届いている商品は「定期便を確認する」を主にする',
+  '  // (cart permalink は selling_plan を扱えないため、購入すると必ず単発になる)',
+  '  if (it.subscriptionState) {',
+  '    var subBtn = document.createElement("button");',
+  '    subBtn.type = "button";',
+  '    subBtn.className = "sh-sub-cta";',
+  '    subBtn.textContent = "定期便を確認する";',
+  '    subBtn.setAttribute("data-shop-sub", String(idx));',
+  '    subBtn.onclick = shopJumpSub;',
+  '    body.appendChild(subBtn);',
+  '',
+  '    var alt = document.createElement("button");',
+  '    alt.type = "button";',
+  '    alt.className = "sh-alt";',
+  '    alt.textContent = "単発で追加購入する";',
+  '    alt.setAttribute("data-shop-buy", String(idx));',
+  '    alt.onclick = function () { shopBuy(idx); };',
+  '    body.appendChild(alt);',
+  '  } else {',
+  '    var buy = document.createElement("button");',
+  '    buy.type = "button";',
+  '    buy.className = "sh-buy";',
+  '    buy.textContent = "購入する";',
+  '    buy.setAttribute("data-shop-buy", String(idx));',
+  '    buy.onclick = function () { shopBuy(idx); };',
+  '    body.appendChild(buy);',
+  '',
+  '    if (it.productUrl) {',
+  '      var alt2 = document.createElement("button");',
+  '      alt2.type = "button";',
+  '      alt2.className = "sh-alt";',
+  '      alt2.textContent = "商品ページで見る";',
+  '      alt2.onclick = function () { openExternalUrl(it.productUrl); };',
+  '      body.appendChild(alt2);',
+  '    }',
+  '  }',
+  '',
+  '  tile.appendChild(body);',
+  '  return tile;',
+  '}',
+  '',
+  'function shopBadge(text, cls) {',
+  '  var b = document.createElement("span");',
+  '  b.className = "sh-badge " + cls;',
+  '  b.textContent = text;',
+  '  return b;',
+  '}',
+  '',
+  '// 購入。**サーバが判定してから URL を返す** (クライアントに permalink を持たせない)',
+  'var shopBuying = false;',
+  '// 🚨 ack は**商品 identity** に束縛する (配列 index にしない)。',
+  '//   index だとグリッド再描画で並びが変わったとき、顧客が確認していない商品に',
+  '//   ack=true が付く。さらに確認シートを閉じたら必ず捨てる — 残すと次に開いた',
+  '//   別経路 (再注文) の「はい」がこの購入を横取りし、意図した再注文が無音で消える。',
+  'var shopPendingBuyProductId = null;',
+  'async function shopBuy(idx, ack) {',
+  '  if (shopBuying) return;',
+  '  var it = shopGridItems[idx];',
+  '  if (!it) return;',
+  '  shopBuying = true;',
+  '  try {',
+  '    var payload = { productId: it.productId };',
+  '    if (ack === true) payload.acknowledgeSubscriptionDuplicate = true;',
+  '    var res = await api("/api/liff/shop/buy", payload);',
+  '    if (res && res.code === "subscription_duplicate") {',
+  '      // 既存の確認シートを再利用する (ack キーも 409 コードも #269 と同一)',
+  '      shopPendingBuyProductId = it.productId;',
+  '      openSubDupConfirm();',
+  '    } else if (apiFailed(res)) {',
+  '      showToast((res && res.error) || "ご注文ページを開けませんでした");',
+  '    } else if (res.data && res.data.url) {',
+  '      openExternalUrl(res.data.url);',
+  '    } else {',
+  '      showToast("ご注文ページを開けませんでした");',
+  '    }',
+  '  } catch (e) {',
+  '    showToast("ご注文ページを開けませんでした");',
+  '  }',
+  '  shopBuying = false;',
+  '}',
+  '',
+  '// 確認シートで「単発で追加購入する」を押されたときの続き',
+  'function shopBuyAckProceed() {',
+  '  var pid = shopPendingBuyProductId;',
+  '  shopPendingBuyProductId = null;',
+  '  if (!pid) return false;',
+  '  for (var i = 0; i < shopGridItems.length; i++) {',
+  '    if (shopGridItems[i] && shopGridItems[i].productId === pid) {',
+  '      shopBuy(i, true);',
+  '      return true;',
+  '    }',
+  '  }',
+  '  showToast("商品情報が更新されました。もう一度お選びください");',
+  '  return true;',
+  '}',
+  '',
+  '// 確認シートを閉じたら保留を破棄する (reorder-guard の closeSubDupConfirm から呼ばれる)',
+  'function shopClearPendingBuy() {',
+  '  shopPendingBuyProductId = null;',
+  '}',
+].join('\n');

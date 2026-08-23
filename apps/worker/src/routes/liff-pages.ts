@@ -8,6 +8,7 @@ import { subCardHtml, subCardCss, subCardJs } from './liff-portal-fragments/sub-
 import { homeIaCss, homeIaHubHeadHtml } from './liff-portal-fragments/home-ia.js';
 import { visualV2Css } from './liff-portal-fragments/visual-v2.js';
 import { reorderGuardHtml, reorderGuardCss, reorderGuardJs } from './liff-portal-fragments/reorder-guard.js';
+import { shopAnchorsHtml, shopAnchorTarget, shopGridHtml, shopV2Css, shopV2Js } from './liff-portal-fragments/shop-v2.js';
 import { BUILD_SHA, buildMetaTag } from '../utils/build-info.js';
 
 const liffPages = new Hono<Env>();
@@ -58,7 +59,9 @@ const portalHandler = (c: { env: Env['Bindings']; html: (html: string) => Respon
   const homeIaOn = c.env.LIFF_HOME_IA_ENABLED === 'true';
   // 視覚刷新 v2 gate (Ultraplan PR-7/8): 主役カードの計器アクセント (装飾 CSS のみ・新色ゼロ)。
   const visualV2On = c.env.LIFF_VISUAL_V2_ENABLED === 'true';
-  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl, portalBootstrapOn, subCardOn, homeIaOn, visualV2On));
+  // Shop タブ v2 gate (2026-08-23): アンカー 3 本 + 再購入グリッド。off で 1 byte も emit しない
+  const shopV2On = c.env.LIFF_SHOP_V2_ENABLED === 'true';
+  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl, portalBootstrapOn, subCardOn, homeIaOn, visualV2On, shopV2On));
 };
 liffPages.get('/liff/portal', portalHandler as never);
 liffPages.get('/liff/portal/', portalHandler as never);
@@ -72,6 +75,7 @@ function portalPage(
   subCardOn = false,
   homeIaOn = false,
   visualV2On = false,
+  shopV2On = false,
 ): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -376,6 +380,7 @@ function portalPage(
   ${subCardOn ? '<style>\n    ' + subCardCss() + '\n  </style>' : ''}
   ${homeIaOn ? '<style>\n    ' + homeIaCss() + '\n  </style>' : ''}
   ${visualV2On ? '<style>\n    ' + visualV2Css() + '\n  </style>' : ''}
+  ${shopV2On ? '<style>\n    ' + shopV2Css() + '\n  </style>' : ''}
   <style>
     ${reorderGuardCss()}
   </style>
@@ -893,7 +898,12 @@ function portalPage(
 
     <!-- ===== SHOP Section ===== -->
     <div id="section-shop" class="section space-y-4">
+      ${shopV2On ? shopAnchorsHtml(subCardOn) : ''}
+      ${shopV2On && subCardOn ? shopAnchorTarget('sub') : ''}
       ${subCardOn ? subCardHtml() : ''}
+      ${shopV2On ? shopAnchorTarget('reorder') : ''}
+      ${shopV2On ? shopGridHtml() : ''}
+      ${shopV2On ? shopAnchorTarget('lineup') : ''}
       <!-- Products -->
       <div id="products-card" class="card p-4">
         <div class="skeleton h-48 rounded-lg"></div>
@@ -3555,6 +3565,8 @@ async function loadShopData() {
     window.__liffOrders = data.recentOrders || [];
     // 二重購入ガード (採点②-1): 稼働契約の有無。確認シートを出すかの判断材料 (最終判定はサーバの 409)
     window.__liffHasActiveContract = data.hasActiveSubscriptionContract === true;
+    // Shop v2: サーバが返したグリッド (gate off ではこの呼び出しごと emit しない)
+    ${shopV2On ? 'if (data.shopGrid) { renderShopGrid(data.shopGrid); shopSyncSubChip(); }' : ''}
     // Products
     if (data.products && data.products.length > 0) {
       pel.innerHTML = '<p class="text-xs text-gray-500 font-bold mb-3">商品ラインナップ</p>' +
@@ -5133,6 +5145,7 @@ function finishQuiz() {
 
 // ─── Init ───
 ${inlineScriptBody(reorderGuardJs())}
+${shopV2On ? inlineScriptBody(shopV2Js()) : ''}
 ${subCardOn ? inlineScriptBody(subCardJs()) : ''}
 
 document.addEventListener('DOMContentLoaded', initLiff);
