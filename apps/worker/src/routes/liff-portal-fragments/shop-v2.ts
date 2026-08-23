@@ -77,7 +77,7 @@ export function shopV2Css(): string {
     '.sh-thumb{width:100%;aspect-ratio:1/1;object-fit:cover;background:#effaf8;display:block}',
     '/* 画像上のバッジ帯。読みやすさのため不透明色 (画像の明暗に依存させない) */',
     '.sh-over{position:absolute;top:6px;left:6px;right:6px;display:flex;flex-wrap:wrap;gap:4px;line-height:1.6;pointer-events:none}',
-    '.sh-thumb-ph{width:100%;aspect-ratio:1/1;background:#effaf8;display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:#0f766e}',
+    '.sh-thumb-ph{width:100%;aspect-ratio:1/1;background:#effaf8;display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:#0f766e;line-height:1}',
     '.sh-body{padding:10px;display:flex;flex-direction:column;gap:6px;flex:1}',
     '.sh-name{font-size:13px;font-weight:700;color:#1f2937;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}',
     '.sh-price{font-size:17px;font-weight:800;color:#0d827d;line-height:1.4}',

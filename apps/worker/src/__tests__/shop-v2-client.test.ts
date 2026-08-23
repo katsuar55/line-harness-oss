@@ -112,6 +112,14 @@ describe('スタイル (ブランド準拠・新色ゼロ)', () => {
     expect(css).toMatch(/\.sh-grid\{[^}]*grid-template-columns:1fr 1fr/);
   });
 
+  it('🚨 画像なしプレースホルダは行高を明示する (ラッパの line-height:0 を継承させない)', async () => {
+    // Codex P2: .sh-thumb-wrap は画像下の余白を消すため line-height:0 を持つ。
+    // 継承すると頭文字の行ボックスが 0 高になり、WebView で上下にズレる / 切れる
+    const css = extractStyles(await renderPortal(ON));
+    expect(css).toMatch(/\.sh-thumb-wrap\{[^}]*line-height:0/);
+    expect(css).toMatch(/\.sh-thumb-ph\{[^}]*line-height:1\}/);
+  });
+
   it('LINE 黄緑と禁止色を使わない', async () => {
     const css = extractStyles(await renderPortal(ON));
     expect(css.toLowerCase()).not.toContain('#06c755');
