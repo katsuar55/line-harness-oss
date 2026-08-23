@@ -30,6 +30,8 @@ export const PORTAL_GATE_MATRIX: ReadonlyArray<readonly [string, Record<string, 
   ['LIFF_SUB_CARD_ENABLED=true (Ultraplan PR-5)', { LIFF_SUB_CARD_ENABLED: 'true' }],
   ['LIFF_HOME_IA_ENABLED=true (Ultraplan PR-6b)', { LIFF_HOME_IA_ENABLED: 'true' }],
   ['LIFF_VISUAL_V2_ENABLED=true (Ultraplan PR-7/8)', { LIFF_VISUAL_V2_ENABLED: 'true' }],
+  ['LIFF_SHOP_V2_ENABLED=true (Shop タブ v2)', { LIFF_SHOP_V2_ENABLED: 'true' }],
+  ['LIFF_SHOP_V2_ENABLED=true + サブスクカード on (アンカー 3 本が揃う形)', { LIFF_SHOP_V2_ENABLED: 'true', LIFF_SUB_CARD_ENABLED: 'true' }],
   [
     '全 gate on (現在の本番)',
     {
@@ -40,6 +42,7 @@ export const PORTAL_GATE_MATRIX: ReadonlyArray<readonly [string, Record<string, 
       LIFF_SUB_CARD_ENABLED: 'true',
       LIFF_HOME_IA_ENABLED: 'true',
       LIFF_VISUAL_V2_ENABLED: 'true',
+      LIFF_SHOP_V2_ENABLED: 'true',
     },
   ],
 ];

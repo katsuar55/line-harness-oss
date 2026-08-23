@@ -142,6 +142,11 @@ name: Admin Ops
 #     ③ が 200 なら endpoint/account は健全 = 原因は worker 側 (token 権限 or 実装) に絞れる。
 #     error_summary は本 job では実装が生成する内部文字列のみ (PII なし) なので出力してよい。
 #     他 job は件数のみ (未知の文字列を公開ログに出さないため)。
+#   enable-shop-v2 / disable-shop-v2:
+#     Shop タブ v2 (アンカー 3 本「サブスク/再購入/LINE UP」+ 再購入グリッド)。
+#     LIFF_SHOP_V2_ENABLED を切り替える。off で 1 byte も emit しない (dark)。
+#     検証は要素マーカー id="sh-nav-reorder" の grep (CSS セレクタ文字列は使わない)。
+#
 #   enable-visual-v2 / disable-visual-v2:
 #     視覚刷新 v2 (Ultraplan PR-7/8) の gate 開閉。装飾 CSS のみ (主役カードの計器レール
 #     天冠・新色ゼロ)。enable は投入 → gate-on HTML の伝播実測 → liff-health。
@@ -228,6 +233,8 @@ on:
           - enable-home-ia
           - disable-home-ia
           - enable-visual-v2
+          - enable-shop-v2
+          - disable-shop-v2
           - disable-visual-v2
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
@@ -1933,6 +1940,72 @@ jobs:
           echo '⚠️ これ以降、ポータル初期化は bootstrap 1 往復で走ります。実機でリクエスト数 2-3 本 (portal-bootstrap + intake/streak ± referral/generate) を確認してください。異常時は disable-portal-bootstrap で即時 OFF (redeploy 不要)。' >> "$GITHUB_STEP_SUMMARY"
 
       # 視覚刷新 v2 (Ultraplan PR-7/8) の gate 開放。装飾 CSS のみ (新色ゼロ)。
+      - name: Enable shop v2 (LIFF_SHOP_V2_ENABLED=true)
+        if: inputs.op == 'enable-shop-v2'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          TMP="$RUNNER_TEMP/secrets.shop-v2.json"
+          printf '{"LIFF_SHOP_V2_ENABLED":"true"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+          URL='https://naturism-line-crm.katsu-7d5.workers.dev'
+          HTML="$RUNNER_TEMP/portal.html"
+          FOUND=0
+          for i in $(seq 1 12); do
+            # pipefail 下で curl | grep -q は match 時に exit 23 になる → 一時ファイルへ落として分離する
+            curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
+            if grep -q 'id="sh-nav-reorder"' "$HTML" 2>/dev/null; then
+              echo "✅ gate-on HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
+              FOUND=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$FOUND" != "1" ]; then
+            echo '❌ 60s 待っても gate-on HTML が配られていません — 伝播遅延か投入失敗。secret-list で確認のうえ再実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          node ../../scripts/liff-health-check.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '⚠️ これ以降、Shop タブ上部にアンカー 3 本と再購入グリッドが出ます。実機で確認してください。異常時は disable-shop-v2 で即時 OFF。' >> "$GITHUB_STEP_SUMMARY"
+
+      # 上記 gate の即時 kill switch (redeploy 不要)。
+      - name: Disable shop v2 (LIFF_SHOP_V2_ENABLED=false)
+        if: inputs.op == 'disable-shop-v2'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          TMP="$RUNNER_TEMP/secrets.shop-v2.json"
+          printf '{"LIFF_SHOP_V2_ENABLED":"false"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          URL='https://naturism-line-crm.katsu-7d5.workers.dev'
+          HTML="$RUNNER_TEMP/portal.html"
+          FOUND=0
+          for i in $(seq 1 12); do
+            curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
+            # 正のマーカーとの AND — 5xx の空振りを ✅ にしない
+            if grep -q 'id="section-shop"' "$HTML" 2>/dev/null && ! grep -q 'id="sh-nav-reorder"' "$HTML" 2>/dev/null; then
+              echo "✅ gate-off HTML を確認 (attempt $i)" | tee -a "$GITHUB_STEP_SUMMARY"
+              FOUND=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$FOUND" != "1" ]; then
+            echo '❌ 60s 待っても gate-off HTML になっていません — 伝播遅延か投入失敗。再実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo '✅ Shop タブ v2 を OFF にしました (従来の Shop タブに戻ります)' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Enable visual v2 (LIFF_VISUAL_V2_ENABLED=true)
         if: inputs.op == 'enable-visual-v2'
         working-directory: apps/worker

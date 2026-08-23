@@ -23,6 +23,7 @@ import {
 } from '../services/portal-read.js';
 import { generateAiResponse } from '../services/ai-response.js';
 import { isSubscriptionDeliveryOrder, hasActiveSubscriptionContract } from '../services/reorder-guard.js';
+import { buildShopContext, buildShopGrid, resolveShopBuyPlan, needsSubscriptionAck } from '../services/shop-buy.js';
 import { check } from '../middleware/rate-limit.js';
 import {
   countTodayAiAsks,
@@ -318,10 +319,17 @@ liffPortal.post('/api/liff/reorder', async (c) => {
     // UI はこの 2 値の AND で確認ステップを出す (最終判定は create 側の 409 が正)
     const hasActiveContract = await hasActiveSubscriptionContract(c.env.DB, user.friendId);
 
+    // Shop v2 グリッド (2026-08-23)。gate off では 1 度も計算しない (D1 read を増やさない)。
+    // 一覧のラベルと購入 URL は同じ buildShopContext から派生させる = 乖離を構造的に防ぐ
+    const shopV2On = c.env.LIFF_SHOP_V2_ENABLED === 'true';
+    const shopGrid = shopV2On ? buildShopGrid(await buildShopContext(c.env.DB, user.friendId)) : null;
+
     return c.json({
       success: true,
       data: {
         hasActiveSubscriptionContract: hasActiveContract,
+        // gate off では null (クライアントは従来描画のまま)
+        shopGrid,
         recentOrders: recentOrders.map((o: Record<string, unknown>) => ({
           id: o.id,
           orderNumber: o.order_number,
@@ -358,6 +366,73 @@ liffPortal.post('/api/liff/reorder', async (c) => {
  *
  * Shopify Draft Orders API でチェックアウトURLを生成し返却
  */
+/**
+ * POST /api/liff/shop/buy — Shop v2 グリッドからの購入 (2026-08-23)。
+ *
+ * 🚨 なぜサーバを通すのか: cart permalink をクライアントに持たせると
+ *   #269 の二重購入ガードが**構造的に到達不能**になる (サーバを 1 回も通らないため)。
+ *   ここで判定してから URL を返すことで fail-closed を保つ。
+ *
+ * Draft Order は作らない = shopify_draft_orders を読みも書きもしないので、
+ * #270 の 5 分窓 / reuse セマンティクスには一切触れない。
+ *
+ * variantId はクライアントから受け取らない — 受け取ると DOM 改変で任意商品の
+ * カートを組めてしまう。productId だけを受け、variant はサーバが解決する。
+ */
+liffPortal.post('/api/liff/shop/buy', async (c) => {
+  try {
+    // gate off では存在しないことにする (UI を迂回した直 POST を塞ぐ)
+    if (c.env.LIFF_SHOP_V2_ENABLED !== 'true') {
+      return c.json({ success: false, error: 'Not found' }, 404);
+    }
+    const user = getLiffUser(c);
+    if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+    // burst 対策のみ (Draft Order を作らないので 5 分窓は不要)
+    const burst = check(`liff-shop-buy:${user.friendId}`, 10, 60_000);
+    if (!burst.ok) {
+      return c.json({ success: false, error: '操作が続いています。少し時間をおいてお試しください。' }, 429);
+    }
+
+    const { productId, acknowledgeSubscriptionDuplicate } = await c.req.json<{
+      productId?: string;
+      acknowledgeSubscriptionDuplicate?: unknown;
+    }>();
+    if (!productId || typeof productId !== 'string') {
+      return c.json({ success: false, error: 'productId required' }, 400);
+    }
+
+    // 一覧時の値を信用せず**ここで再導出する** (送信直前の再導出)
+    const ctx = await buildShopContext(c.env.DB, user.friendId);
+    const product = ctx.productIndex.get(productId);
+    if (!product) return c.json({ success: false, error: 'Product not found' }, 404);
+
+    // ─── 二重購入ガード (#269 と同じ ack キー・同じ 409 コード) ───
+    // 稼働契約があり、その商品が定期便で届いている / または商品を特定できない ("不明") 場合は
+    // ack が無い限り止める。ack は boolean true のみ受理 (fail-closed)
+    if (acknowledgeSubscriptionDuplicate !== true && needsSubscriptionAck(ctx, productId)) {
+      return c.json(
+        {
+          success: false,
+          code: 'subscription_duplicate',
+          error: 'この商品は定期便でお届けしている可能性があります。定期便とは別の追加購入になるため、確認が必要です',
+        },
+        409,
+      );
+    }
+
+    const plan = resolveShopBuyPlan(ctx, product);
+    if (!plan.url) {
+      // variant が解決できない商品 = カートを組めない。商品ページへ倒す
+      return c.json({ success: false, error: 'この商品はストアのページからお求めください', code: 'no_variant' }, 422);
+    }
+    return c.json({ success: true, data: { url: plan.url, discounted: plan.discounted } });
+  } catch (err) {
+    console.error('[liff-portal] shop/buy failed:', err instanceof Error ? err.message : String(err));
+    return c.json({ success: false, error: 'ご注文ページを開けませんでした' }, 500);
+  }
+});
+
 liffPortal.post('/api/liff/reorder/create', async (c) => {
   try {
     const user = getLiffUser(c);
