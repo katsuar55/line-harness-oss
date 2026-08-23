@@ -29,8 +29,6 @@ export interface ShopGridItem {
   priceJpy: number | null;
   /** 商品ページ (定期便セレクタが見られる導線。必ず 1 本残す) */
   productUrl: string | null;
-  /** 過去にこの商品を買ったことがある (注文がローカルにある場合のみ真) */
-  purchased: boolean;
   /** 定期便で届いている / お休み中 / 表示しない */
   subscriptionState: 'active' | 'paused' | null;
   /** ランク割引が**実際に適用される**行か (ラベルはこれが真のときだけ出す) */
@@ -189,17 +187,18 @@ export function resolveShopBuyPlan(ctx: ShopContext, product: ShopifyProduct): S
 }
 
 /**
- * グリッドの並び: 過去購入 (新しい順) → 取扱中の残り。
+ * グリッドの中身: **過去購入の商品だけ** (新しい順)。
  *
- * 🚨 過去購入だけで作らない理由 (本番実測): shopify_orders.friend_id が付くのは
- *   連携済みの友だちだけで、しかもローカル注文は read_all_orders 未付与のため
- *   直近 60 日分しかない。過去購入のみだとほぼ全員が空のグリッドを見る。
+ * ⚠️ 2026-08-23 Katsu 指示で「取扱商品で埋める」をやめた:
+ *   同じ Shop タブの下に LINE UP (全商品) があるため、埋めると同じ商品が 2 度並び
+ *   ページが伸びるだけで使いにくくなる。「再購入」は名前どおり買ったものだけを出す。
+ *   購入履歴が無ければ空 (呼び出し側が案内文を出す)。
  */
 export function buildShopGrid(ctx: ShopContext, limit = 12): ShopGridItem[] {
   const items: ShopGridItem[] = [];
   const used = new Set<string>();
 
-  const push = (product: ShopifyProduct, purchased: boolean): void => {
+  const push = (product: ShopifyProduct): void => {
     const pid = product.shopify_product_id != null ? String(product.shopify_product_id) : null;
     if (!pid || used.has(pid)) return;
     used.add(pid);
@@ -212,7 +211,6 @@ export function buildShopGrid(ctx: ShopContext, limit = 12): ShopGridItem[] {
       imageUrl: product.image_url ?? null,
       priceJpy: plan.priceJpy,
       productUrl: storefrontProductUrl(product.handle),
-      purchased,
       subscriptionState: inSubs ? (ctx.subs.allPaused ? 'paused' : 'active') : null,
       discounted: plan.discounted,
       discountPercent: plan.discountPercent,
@@ -221,13 +219,8 @@ export function buildShopGrid(ctx: ShopContext, limit = 12): ShopGridItem[] {
 
   for (const pid of ctx.purchasedOrder) {
     const p = ctx.productIndex.get(pid);
-    if (p) push(p, true);
+    if (p) push(p);
     if (items.length >= limit) return items;
-  }
-  for (const p of ctx.products) {
-    if (p.status !== 'active') continue;
-    push(p, false);
-    if (items.length >= limit) break;
   }
   return items;
 }
