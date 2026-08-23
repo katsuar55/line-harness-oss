@@ -160,7 +160,7 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
     // 送信直前ガードのヒット数も heartbeat に載る (2026-08-23): 戻り値だけだと
     // 呼び出し側が捨てるため本番で完全に不可視になる。完全一致で pin し、落ちたら気付く
     expect(mockHeartbeats[0].metrics).toEqual({
-      due: 0, sent: 0, errors: 0, cancelReanchored: 0, staleSkipped: 0,
+      due: 0, sent: 0, errors: 0, cancelReanchored: 0, cancelUnparsed: 0, staleSkipped: 0,
     });
   });
 
@@ -199,7 +199,7 @@ describe('processSubscriptionReminders — cron heartbeat (Phase 6 PR-6)', () =>
     expect(mockPushMessage).toHaveBeenCalledTimes(1);
     expect(mockHeartbeats.length).toBe(1);
     expect(mockHeartbeats[0].metrics).toEqual({
-      due: 1, sent: 1, errors: 0, cancelReanchored: 0, staleSkipped: 0,
+      due: 1, sent: 1, errors: 0, cancelReanchored: 0, cancelUnparsed: 0, staleSkipped: 0,
     });
   });
 

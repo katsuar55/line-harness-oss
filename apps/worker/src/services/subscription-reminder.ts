@@ -122,6 +122,8 @@ export interface SubscriptionReminderResult {
   errorCount: number;
   /** 解約直後のため送らず先送りした件数 (解約日 + interval まで沈黙する) */
   cancelReanchoredCount: number;
+  /** cancelled_at がパース不能で無送信側へ倒した件数 (永久抑止の可能性があるので分けて数える) */
+  cancelUnparsedCount: number;
   /** next_reminder_at がパース不能で無送信側へ倒した件数 */
   staleSkippedCount: number;
 }
@@ -202,6 +204,7 @@ export async function processSubscriptionReminders(
     sentCount: 0,
     errorCount: 0,
     cancelReanchoredCount: 0,
+    cancelUnparsedCount: 0,
     staleSkippedCount: 0,
   };
 
@@ -231,8 +234,10 @@ export async function processSubscriptionReminders(
             WHERE f.id = sr.friend_id
               AND c.cancelled_at IS NULL
          )
-       -- 古い順 (2026-08-23): prefs OFF 等で恒久 due になった行が LIMIT 50 を占有して
-       -- 他の行が永久に処理されない starvation を防ぐ
+       -- 古い順を明示する (2026-08-23)。⚠️ これは starvation 対策ではない (採点R2 で訂正):
+       --   前進しない行 (prefs OFF / friend 欠落) はまさに最古で凍結するので ASC は
+       --   それを毎回先頭に置く。順序保証そのものが目的で、索引が変わっても FIFO を保つ。
+       --   prefs OFF 行の恒久 due は本 PR のスコープ外の既存課題
        ORDER BY sr.next_reminder_at ASC
        LIMIT 50`,
     )
@@ -275,12 +280,18 @@ export async function processSubscriptionReminders(
         const cancelledMs = Date.parse(cancelledAt);
         // cancelled_at は Shopify タグ由来の生値なのでパースできないことがある。
         // その場合も**無送信側**へ倒す (解約済みかどうか判断できないまま送らない)。
-        const resumeAtMs = Number.isFinite(cancelledMs)
-          ? cancelledMs + intervalDays * 86400_000
-          : Date.now() + intervalDays * 86400_000;
+        // パース可能なら「解約日 + interval」= **固定の時刻**なので沈黙はいつか必ず終わる。
+        // パース不能なら基準が now になるため、原因 (壊れた cancel タグ) が消えない限り
+        // 毎回押し出されて**二度と送られない**。正常な沈黙と同じカウンタに混ぜると
+        // cron_run_logs から永久抑止を見分けられないので、別カウンタで数える (採点R2)
+        const cancelUnparsed = !Number.isFinite(cancelledMs);
+        const resumeAtMs = cancelUnparsed
+          ? Date.now() + intervalDays * 86400_000
+          : cancelledMs + intervalDays * 86400_000;
         if (Date.now() < resumeAtMs) {
           if (await reanchorReminder(db, reminder, new Date(resumeAtMs).toISOString())) {
-            metrics.cancelReanchoredCount++;
+            if (cancelUnparsed) metrics.cancelUnparsedCount++;
+            else metrics.cancelReanchoredCount++;
           }
           continue;
         }
@@ -405,7 +416,9 @@ export async function processSubscriptionReminders(
       if (lineResult?.status === 'sent') {
         metrics.sentCount++;
         // 6. Update next_reminder_at (送信成功時): lease を本来の次サイクルに上書き
-        const nextAt = new Date(Date.now() + reminder.interval_days * 86400000).toISOString();
+        // 正規化済みを使う (採点R2): 生値だと interval_days <= 0 の行が「now 以前」へ書き戻され、
+        //   5 分毎に同じ行を送り続ける。無送信側の 2 経路だけ正規化しても穴が残る
+        const nextAt = new Date(Date.now() + intervalDays * 86400000).toISOString();
         await db
           .prepare('UPDATE subscription_reminders SET next_reminder_at = ?, last_sent_at = ?, updated_at = ? WHERE id = ?')
           .bind(nextAt, now, now, reminder.id)
@@ -416,7 +429,9 @@ export async function processSubscriptionReminders(
       } else {
         // dispatcher skip (not_following / blacklisted 等): 本サイクルは送らず、 lease を
         // 本来の次サイクルへ advance して 10 分毎の churn を防ぐ (last_sent_at は更新しない)。
-        const nextAt = new Date(Date.now() + reminder.interval_days * 86400000).toISOString();
+        // 正規化済みを使う (採点R2): 生値だと interval_days <= 0 の行が「now 以前」へ書き戻され、
+        //   5 分毎に同じ行を送り続ける。無送信側の 2 経路だけ正規化しても穴が残る
+        const nextAt = new Date(Date.now() + intervalDays * 86400000).toISOString();
         await db
           .prepare('UPDATE subscription_reminders SET next_reminder_at = ?, updated_at = ? WHERE id = ?')
           .bind(nextAt, now, reminder.id)
@@ -459,6 +474,7 @@ async function recordCronHeartbeat(
         // 送信直前ガードのヒット数 (2026-08-23)。戻り値だけだと呼び出し側が捨てるため
         // 本番では完全に不可視になる — cron_run_logs.metrics_json に残す
         cancelReanchored: metrics.cancelReanchoredCount,
+        cancelUnparsed: metrics.cancelUnparsedCount,
         staleSkipped: metrics.staleSkippedCount,
       },
     });

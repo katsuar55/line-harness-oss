@@ -168,7 +168,27 @@ describe('解約直後は再購入 push を送らない', () => {
     const m = await processSubscriptionReminders(asD1(raw), lineClient, LIFF);
 
     expect(pushMessage).not.toHaveBeenCalled();
+    // 正常な沈黙 (いつか終わる) と永久抑止 (原因が消えるまで終わらない) を
+    // 同じカウンタに混ぜると cron_run_logs から見分けられない (採点R2)
+    expect(m.cancelUnparsedCount).toBe(1);
+    expect(m.cancelReanchoredCount).toBe(0);
+  });
+
+  it('本番形式の日付のみ cancelled_at (Shopify タグ由来 YYYY-MM-DD) を正しく解釈する', async () => {
+    // 本番の cancelled_at は顧客タグ subscription-{ID}-cancel:{date} の生値 = 日付のみ。
+    // テストが完全 ISO だけだと、日付のみ形式で壊れても気付けない (採点R2 LOW)
+    const d = new Date(Date.now() - 5 * DAY);
+    const dateOnly = d.toISOString().slice(0, 10);
+
+    const raw = createSchemaDb();
+    seed(raw, { dueAgoMs: 5 * 60_000, cancelledAgoMs: dateOnly, intervalDays: 30 });
+
+    const m = await processSubscriptionReminders(asD1(raw), lineClient, LIFF);
+
+    // 解約 5 日前 (interval 30) → まだ沈黙。パース不能扱いにも落ちない
+    expect(pushMessage).not.toHaveBeenCalled();
     expect(m.cancelReanchoredCount).toBe(1);
+    expect(m.cancelUnparsedCount).toBe(0);
   });
 });
 
@@ -241,6 +261,28 @@ describe('再アンカーの CAS (並行実行での二重前進を防ぐ)', () 
     // 適用されなかったのでカウンタも増えない (「やったつもり」を数えない)
     expect(m.cancelReanchoredCount).toBe(0);
     expect(pushMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('interval_days が壊れていても送信ループにならない', () => {
+  beforeEach(() => pushMessage.mockClear());
+
+  it('🚨 interval_days が 0 の行は、送信後も now より未来へ進む (5 分毎の無限 push を作らない)', async () => {
+    // 生値のまま now + 0 日を書き戻すと即 due に戻り、5 分周期で同じ顧客へ送り続ける。
+    // LIFF の POST /api/liff/subscriptions は intervalDays を検証しないので到達しうる (採点R2)
+    const raw = createSchemaDb();
+    seed(raw, { dueAgoMs: 5 * 60_000, cancelledAgoMs: null, intervalDays: 0 });
+    const db = asD1(raw);
+
+    const before = Date.now();
+    const m1 = await processSubscriptionReminders(db, lineClient, LIFF);
+    expect(m1.sentCount).toBe(1);
+
+    // DB 実値が未来へ進んでいる = 2 周目はもう due ではない
+    expect(Date.parse(nextOf(raw))).toBeGreaterThan(before + 29 * DAY);
+    const m2 = await processSubscriptionReminders(db, lineClient, LIFF);
+    expect(m2.dueCount).toBe(0);
+    expect(pushMessage).toHaveBeenCalledTimes(1);
   });
 });
 
