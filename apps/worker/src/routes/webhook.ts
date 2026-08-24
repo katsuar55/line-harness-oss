@@ -1035,6 +1035,8 @@ async function handleEvent(
             friendId: friend.id,
             liffUrl: env?.LIFF_URL,
             subIntentEnabled: env?.SUB_INTENT_ENABLED === 'true',
+            // 紹介した側への ¥500 は gate off で出ないので、文言も gate に連動させる
+            referralRewardOn: env?.REFERRAL_REWARD_ENABLED === 'true',
           });
           await lineClient.replyMessage(event.replyToken, [...messages]);
           replyTokenConsumed = true;

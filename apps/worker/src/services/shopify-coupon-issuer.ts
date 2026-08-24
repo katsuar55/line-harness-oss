@@ -35,7 +35,11 @@ import { auditSystem } from './audit-logger.js';
 //   いたため、実装を文言に合わせる方を選んだ (景表法の有利誤認を消すのが目的)。
 //   帰結: 紹介経由の人だけ ¥500 へ格上げする機構 (welcome-upgrade.ts) は**不要になり削除**した。
 //   既発行分は台帳の discount_value が正 (遡及書換なし) = ¥300 で発行済みの分はそのまま。
-const DEFAULT_DISCOUNT_VALUE_JPY = 500;
+// 顧客向け文言 (紹介ヒーロー / 招待文 / 紹介 LP / 月次 Flex) が約束する額と**同じ値**。
+// 定数だけ動かして文言が置き去りになる事故 (#255 で実際に起きた) を防ぐため export し、
+// テストで「約束している額 === 発行する額」を固定する。
+export const WELCOME_DISCOUNT_VALUE_JPY = 500;
+const DEFAULT_DISCOUNT_VALUE_JPY = WELCOME_DISCOUNT_VALUE_JPY;
 // 全券共通の最低購入金額 (Katsu 確定 ¥2,000 — 小型缶 ¥389/¥430 が ¥0 になる事故を防ぐ)
 export const MIN_SUBTOTAL_JPY = 2000;
 // 5β-1d-2e (2026-05-19): 90 日 → 3 日 に短縮 (= マーケ最適化、 業界 best practice 3-7 日)

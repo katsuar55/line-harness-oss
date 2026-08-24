@@ -10,8 +10,10 @@ import Header from '@/components/layout/header'
 // 型定義 — worker GET /api/line-friend-coupons (Phase 5β-1d-2-followup)
 // ============================================================
 
-type CouponStatus = 'issued' | 'redeemed'
-type CouponSource = 'shopify' | 'manual'
+// worker 側 (routes/line-friend-coupons.ts) と D1 の CHECK 制約に揃える。
+// 'manual' は DB に存在せず、選ぶと API が 400 を返して一覧がエラーになっていた。
+type CouponStatus = 'issued' | 'redeemed' | 'expired' | 'revoked'
+type CouponSource = 'shopify' | 'static_fallback'
 
 interface CouponRow {
   id: string
@@ -26,7 +28,6 @@ interface CouponRow {
   expires_at: string | null
   status: CouponStatus
   source: CouponSource
-  created_at: string
 }
 
 interface CouponsListData {
@@ -53,12 +54,14 @@ const STATUS_OPTIONS: Array<{ label: string; value: '' | CouponStatus }> = [
   { label: '— 全部 —', value: '' },
   { label: '発行済 (issued)', value: 'issued' },
   { label: '利用済 (redeemed)', value: 'redeemed' },
+  { label: '期限切れ (expired)', value: 'expired' },
+  { label: '失効 (revoked)', value: 'revoked' },
 ]
 
 const SOURCE_OPTIONS: Array<{ label: string; value: '' | CouponSource }> = [
   { label: '— 全部 —', value: '' },
   { label: 'Shopify (自動)', value: 'shopify' },
-  { label: 'manual', value: 'manual' },
+  { label: 'フォールバック (static_fallback)', value: 'static_fallback' },
 ]
 
 // ============================================================

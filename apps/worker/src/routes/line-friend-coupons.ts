@@ -21,9 +21,9 @@ import { Hono } from 'hono';
 import { getCouponRedemptionStats } from '@line-crm/db';
 import type { Env } from '../index.js';
 
-const VALID_STATUSES = new Set(['issued', 'redeemed']);
-// line_friend_coupons.source の CHECK 制約と一致させる (schema.sql)。
-// 以前は 'manual' を受け付けていたが DB 側に存在せず常に 0 件、実在する 'static_fallback' は 400 で弾いていた。
+// line_friend_coupons.status / source の CHECK 制約と**同じ語彙**にする (schema.sql)。
+// 片方でも欠けると、実在する行に一覧から降りられない (expired は coupon-expiry-sweep が実際に書く)。
+const VALID_STATUSES = new Set(['issued', 'redeemed', 'expired', 'revoked']);
 const VALID_SOURCES = new Set(['shopify', 'static_fallback']);
 
 interface CouponRow {

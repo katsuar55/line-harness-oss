@@ -769,6 +769,19 @@ describe('LIFF Portal Routes', () => {
     });
   });
 
+  /** claim を任意の gate 状態で叩く (救済は REFERRAL_REWARD_ENABLED の内側にある) */
+  function claimWithGate(refCode: string, gate: string | undefined) {
+    return app.request(
+      '/api/liff/referral/claim',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: 'U_EXISTING', refCode }),
+      },
+      { ...mockEnv(), REFERRAL_REWARD_ENABLED: gate },
+    );
+  }
+
   describe('POST /api/liff/referral/claim', () => {
     it('records referral_rewards (pending) のみ — claim ではクーポンを発行しない (referred の¥500=welcome、 referrer=購入時)', async () => {
       const db = await import('@line-crm/db');
@@ -802,7 +815,7 @@ describe('LIFF Portal Routes', () => {
         id: 'rl-3', friend_id: 'friend-referrer', ref_code: 'ref-rescue', referrer_coupon_id: null, referred_coupon_id: null,
       });
 
-      const res = await post(app, '/api/liff/referral/claim', { lineUserId: 'U_EXISTING', refCode: 'ref-rescue' });
+      const res = await claimWithGate('ref-rescue', 'true');
       expect(res.status).toBe(200);
 
       expect(issueMock, '救済の呼び出しが消えたら落ちる').toHaveBeenCalledTimes(1);
@@ -812,6 +825,23 @@ describe('LIFF Portal Routes', () => {
       expect(opts.validDays).toBe(issuer.WELCOME_VALID_DAYS);
       // 額は既定 (¥500) のまま = 紹介経由だけ優遇しない
       expect(opts.discountValueJpy).toBeUndefined();
+    });
+
+    it('🚨 gate off では救済を走らせない — 実費 (Shopify 実クーポン) を gate の外に出さない', async () => {
+      // 削除前の格上げ機構は冒頭で gated_off していた。gate 非連動にすると、welcome 台帳を持たない
+      // 既存友だち (本番 約 6,580 人) が紹介リンクを開くだけで ¥500 の実クーポンを取得できてしまう。
+      const issuer = await import('../services/shopify-coupon-issuer.js');
+      const issueMock = issuer.issueCouponForFriend as ReturnType<typeof vi.fn>;
+      issueMock.mockClear();
+
+      const db = await import('@line-crm/db');
+      (db.getReferralLinkByRefCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        id: 'rl-off', friend_id: 'friend-referrer', ref_code: 'ref-gate-off', referrer_coupon_id: null, referred_coupon_id: null,
+      });
+
+      const res = await claimWithGate('ref-gate-off', undefined);
+      expect(res.status, 'claim 自体は成立する (台帳の pending は gate と無関係)').toBe(200);
+      expect(issueMock, 'gate off では 1 度も呼ばない').not.toHaveBeenCalled();
     });
 
     it('2 回目以降の claim (alreadyClaimed) でも救済を試す — 1 度きりにしない (Codex P2)', async () => {
@@ -833,7 +863,11 @@ describe('LIFF Portal Routes', () => {
         all: vi.fn(async () => ({ results: [] })),
         first: vi.fn(async () => ({ id: 'rr-existing' })),
       };
-      const env = { ...mockEnv(), DB: { prepare: vi.fn(() => stmt) } as unknown as D1Database };
+      const env = {
+        ...mockEnv(),
+        REFERRAL_REWARD_ENABLED: 'true',
+        DB: { prepare: vi.fn(() => stmt) } as unknown as D1Database,
+      };
 
       const res = await app.request(
         '/api/liff/referral/claim',
@@ -870,7 +904,7 @@ describe('LIFF Portal Routes', () => {
         id: 'rl-4', friend_id: 'friend-referrer', ref_code: 'ref-rescue-fail', referrer_coupon_id: null, referred_coupon_id: null,
       });
 
-      const res = await post(app, '/api/liff/referral/claim', { lineUserId: 'U_EXISTING', refCode: 'ref-rescue-fail' });
+      const res = await claimWithGate('ref-rescue-fail', 'true');
       expect(res.status).toBe(200);
       const json = await res.json() as { success: boolean; data: { alreadyClaimed: boolean } };
       expect(json.success).toBe(true);

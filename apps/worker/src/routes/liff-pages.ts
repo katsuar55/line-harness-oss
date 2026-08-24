@@ -4308,18 +4308,36 @@ function checkReferralParam() {
     var params = new URLSearchParams(window.location.search);
     var ref = params.get('ref');
     if (!ref) return;
-    // Clean URL (remove ref param)
-    var url = new URL(window.location.href);
-    url.searchParams.delete('ref');
-    window.history.replaceState({}, '', url.toString());
     // Claim referral (non-blocking)
+    //   🚨 URL から ref を消すのは **claim が成立してから** (採点ループ 2026-08-24)。
+    //   先に消すと、friends 行がまだ無くて 401/404 になった場合 (紹介リンク経由の新規ユーザーは
+    //   follow webhook と LIFF 起動が並行するので実際に起こる) に、その紹介は二度と成立しない。
+    //   失敗時は ref を URL に残すので、再読み込み / 次回起動でもう一度試せる。
     api('/api/liff/referral/claim', { refCode: ref }).then(function(res) {
-      if (res.success && res.data && !res.data.alreadyClaimed) {
-        // referred の ¥500 は友だち追加 welcome クーポン (welcome-coupon-card に表示) がそれに当たる。
-        showToast('紹介リンクが適用されました!お友だち追加特典の500円クーポン (¥2,000以上のご注文で) をご利用ください✨');
+      if (!res || !res.success || !res.data) return;
+      clearRefParam();
+      if (res.data.alreadyClaimed) return;
+      // referred の特典は友だち追加 welcome クーポン (welcome-coupon-card に表示) がそれに当たる。
+      //   額は**台帳の実値**をサーバから受け取る。定数を書くと ¥300 券の保有者に嘘をつく。
+      var v = Number(res.data.welcomeDiscountValue);
+      if (isFinite(v) && v > 0) {
+        showToast('紹介リンクが適用されました!お友だち追加特典の' + v + '円クーポン (¥2,000以上のご注文で) をご利用ください✨');
+      } else {
+        // まだ台帳に無い = 発行がこれから届く。持っていないクーポンを「ご利用ください」と言わない。
+        showToast('紹介リンクが適用されました!お友だち追加特典のクーポンをまもなくお届けします✨');
+        setTimeout(function() { try { loadWelcomeCoupon(); } catch (e) { /* ignore */ } }, 3000);
       }
     }).catch(function() {});
   } catch(e) { /* ignore */ }
+}
+
+function clearRefParam() {
+  try {
+    var url = new URL(window.location.href);
+    if (!url.searchParams.has('ref')) return;
+    url.searchParams.delete('ref');
+    window.history.replaceState({}, '', url.toString());
+  } catch (e) { /* ignore */ }
 }
 
 // ─── Shopify 連携ボタン (App Proxy, 2026-07-29) ───

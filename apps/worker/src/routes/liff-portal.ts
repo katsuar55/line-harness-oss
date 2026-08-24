@@ -1429,19 +1429,46 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
     //   issueCouponForFriend は Shopify 作成の**後**に UNIQUE で衝突するため、負けた側の
     //   Shopify 割引コードが台帳に載らないまま残る。コードは 31^8 の乱数で誰にも知られず
     //   7 日で失効するため実害は無いと判断し、follow の hot path を触る予約方式は採らない。
-    const rescueWork = issueCouponForFriend(c.env.DB, c.env, {
-      friendId: user.friendId,
-      validDays: WELCOME_VALID_DAYS,
-    }).catch((err) => {
-      console.error('[liff-portal] welcome coupon rescue failed:', err instanceof Error ? err.name : 'unknown');
-      return null;
-    });
-    try { c.executionCtx.waitUntil(rescueWork); } catch { /* no exec ctx in tests */ }
+    //
+    //   🚨 gate の内側に置くこと (採点ループ 2026-08-24): 削除前の格上げ機構は冒頭に
+    //   `REFERRAL_REWARD_ENABLED !== 'true' → gated_off` を持っており、**実費 (Shopify の実クーポン
+    //   発行) は gate の内側**にあった。ここを gate 非連動にすると、welcome 台帳を持たない
+    //   友だち (本番 6,616 人中 約 6,580 人 = DMM から取り込んだ既存友だち) が紹介リンクを
+    //   開くだけで ¥500 の実クーポンを取得できてしまい、意図しない一括配布になる。
+    //   紹介リンクは誰でも生成でき SNS にも貼れるため、露出は友だち数がそのまま上限になる。
+    const referralRewardOn = c.env.REFERRAL_REWARD_ENABLED === 'true';
+    if (referralRewardOn) {
+      const rescueWork = issueCouponForFriend(c.env.DB, c.env, {
+        friendId: user.friendId,
+        validDays: WELCOME_VALID_DAYS,
+      }).catch((err) => {
+        console.error('[liff-portal] welcome coupon rescue failed:', err instanceof Error ? err.name : 'unknown');
+        return null;
+      });
+      try { c.executionCtx.waitUntil(rescueWork); } catch { /* no exec ctx in tests */ }
+    }
+
+    // 被紹介者の手元にある welcome クーポンの実額 (台帳が唯一の正)。
+    //   クライアントのトーストがこの値を使う — 定数を直書きすると ¥300 券の保有者に嘘をつく。
+    //   救済は waitUntil の非同期なので、この時点で null (= まだ無い) こともある。
+    const welcomeRow = await c.env.DB
+      .prepare(
+        `SELECT discount_value FROM line_friend_coupons
+          WHERE friend_id = ? AND status = 'issued'
+          ORDER BY issued_at DESC LIMIT 1`,
+      )
+      .bind(user.friendId)
+      .first<{ discount_value: number | null }>()
+      .catch(() => null);
+    const welcomeDiscountValue =
+      welcomeRow && Number.isFinite(Number(welcomeRow.discount_value)) && Number(welcomeRow.discount_value) > 0
+        ? Number(welcomeRow.discount_value)
+        : null;
 
     if (existing) {
       return c.json({
         success: true,
-        data: { alreadyClaimed: true, rewardId: existing.id },
+        data: { alreadyClaimed: true, rewardId: existing.id, welcomeDiscountValue },
       });
     }
 
@@ -1463,6 +1490,7 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
         alreadyClaimed: false,
         rewardId: reward.id,
         status: reward.status,
+        welcomeDiscountValue,
       },
     });
   } catch (err) {
