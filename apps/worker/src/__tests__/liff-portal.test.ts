@@ -148,6 +148,23 @@ vi.mock('../services/shopify-token.js', () => ({
   getShopifyAccessToken: vi.fn(async () => 'test-shopify-token'),
 }));
 
+// welcome クーポン発行 (紹介 claim の未発行救済で呼ばれる)。定数は実物を保つ。
+vi.mock('../services/shopify-coupon-issuer.js', async (importOriginal) => {
+  const orig = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...orig,
+    issueCouponForFriend: vi.fn(async () => ({
+      code: 'LINE-RESCUE01',
+      discountValue: 500,
+      discountCurrency: 'JPY',
+      issuedAt: '2026-08-24T00:00:00.000Z',
+      expiresAt: '2026-08-31T00:00:00.000Z',
+      isExisting: false,
+      shopifyDiscountCodeId: 'gid://shopify/DiscountCodeNode/rescue',
+    })),
+  };
+});
+
 // Mock global fetch for Shopify API calls (Draft Orders — 2026-07-30 GraphQL 移行)
 const originalFetch = globalThis.fetch;
 vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
@@ -766,9 +783,53 @@ describe('LIFF Portal Routes', () => {
       expect(json.data.alreadyClaimed).toBe(false);
       expect(json.data.rewardId).toBe('rr-1');
       expect(json.data.status).toBe('pending');
-      // claim ではクーポンを発行しない (referred は welcome クーポン、 referrer は購入時) → coupons フィールド無し
+      // claim は紹介クーポンを新規に作らない (referred は welcome クーポン、 referrer は購入時)
+      //   → レスポンスに coupons フィールドは載らない
       expect(json.data.coupons).toBeUndefined();
       expect(db.createReferralReward as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+    });
+
+    it('welcome 未発行でも被紹介者に届く — 発行を冪等に呼ぶ (Codex P1: 格上げ削除で消えた救済)', async () => {
+      // 招待文は被紹介者に ¥500 を約束する。claim が follow より先に走った / follow 時の Shopify
+      // 発行が失敗した場合、以前は格上げ機構が「welcome 行が無ければ直接発行」して救済していた。
+      // 格上げは削除したが**救済だけは残す**。issueCouponForFriend は既発行なら既存 code を返す = 冪等。
+      const issuer = await import('../services/shopify-coupon-issuer.js');
+      const issueMock = issuer.issueCouponForFriend as ReturnType<typeof vi.fn>;
+      issueMock.mockClear();
+
+      const db = await import('@line-crm/db');
+      (db.getReferralLinkByRefCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        id: 'rl-3', friend_id: 'friend-referrer', ref_code: 'ref-rescue', referrer_coupon_id: null, referred_coupon_id: null,
+      });
+
+      const res = await post(app, '/api/liff/referral/claim', { lineUserId: 'U_EXISTING', refCode: 'ref-rescue' });
+      expect(res.status).toBe(200);
+
+      expect(issueMock, '救済の呼び出しが消えたら落ちる').toHaveBeenCalledTimes(1);
+      const opts = issueMock.mock.calls[0][2] as { friendId: string; validDays: number; discountValueJpy?: number };
+      expect(opts.friendId).toBe('friend-1');
+      // 有効期限は follow と同じ定数から引く (救済だけ別日数にしない)
+      expect(opts.validDays).toBe(issuer.WELCOME_VALID_DAYS);
+      // 額は既定 (¥500) のまま = 紹介経由だけ優遇しない
+      expect(opts.discountValueJpy).toBeUndefined();
+    });
+
+    it('救済で発行が失敗しても claim 自体は成功する (report は台帳の pending が正)', async () => {
+      const issuer = await import('../services/shopify-coupon-issuer.js');
+      const issueMock = issuer.issueCouponForFriend as ReturnType<typeof vi.fn>;
+      issueMock.mockClear();
+      issueMock.mockRejectedValueOnce(new Error('shopify down'));
+
+      const db = await import('@line-crm/db');
+      (db.getReferralLinkByRefCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        id: 'rl-4', friend_id: 'friend-referrer', ref_code: 'ref-rescue-fail', referrer_coupon_id: null, referred_coupon_id: null,
+      });
+
+      const res = await post(app, '/api/liff/referral/claim', { lineUserId: 'U_EXISTING', refCode: 'ref-rescue-fail' });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { success: boolean; data: { alreadyClaimed: boolean } };
+      expect(json.success).toBe(true);
+      expect(json.data.alreadyClaimed).toBe(false);
     });
 
     it('blocks self-referral (400)', async () => {

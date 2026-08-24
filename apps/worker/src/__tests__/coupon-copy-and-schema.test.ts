@@ -34,7 +34,7 @@ import { lineFriendCoupons } from '../routes/line-friend-coupons.js';
 import { liffPages } from '../routes/liff-pages.js';
 import { buildMyCouponFlex } from '../services/welcome-postback.js';
 import { buildMessagesForIntentAsync, type Intent } from '../services/intent-router.js';
-import { MIN_SUBTOTAL_JPY } from '../services/shopify-coupon-issuer.js';
+import { MIN_SUBTOTAL_JPY, WELCOME_VALID_DAYS } from '../services/shopify-coupon-issuer.js';
 import { redeemCouponByCode } from '@line-crm/db';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -168,11 +168,15 @@ describe('実装と食い違う旧文言が復活しない', () => {
     expect(flex).not.toContain('3 日間有効');
   });
 
-  it('その「7 日」は follow ハンドラの発行日数と対 (片方だけ動いたら落とす)', () => {
+  it('その「7 日」は発行側の定数と同じ値 (片方だけ動いたら落とす)', () => {
+    expect(WELCOME_VALID_DAYS, 'Flex の「7 日間有効」と発行日数は同じ定数から引く').toBe(7);
+    const flex = JSON.stringify(buildMyCouponFlex('LINE-ABCD2345', 500));
+    expect(flex).toContain(`${WELCOME_VALID_DAYS} 日間有効`);
+  });
+
+  it('follow ハンドラは定数を直書きせず import して渡す', () => {
     const src = fs.readFileSync(path.resolve(__dirname, '../routes/webhook.ts'), 'utf8');
-    expect(src, 'welcome クーポンの有効日数を変えたら Flex の文言も直すこと').toMatch(
-      /validDays:\s*7\s*,/,
-    );
+    expect(src).toContain('validDays: WELCOME_VALID_DAYS');
   });
 
   it('マイクーポン Flex: 最低購入 ¥2,000 に反する金額例 (¥696 → 実質 ¥196) を出さない', () => {

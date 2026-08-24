@@ -41,7 +41,14 @@ export const MIN_SUBTOTAL_JPY = 2000;
 // 5β-1d-2e (2026-05-19): 90 日 → 3 日 に短縮 (= マーケ最適化、 業界 best practice 3-7 日)
 // 根拠: 行動経済学的 (希少性 + 損失回避 + 後悔回避) で短期限が conversion ↑、
 // HubSpot 調査で 48h 限定 coupon の redemption rate は 30 日 coupon の 3-4 倍
-const DEFAULT_VALID_DAYS = 3;
+//
+// 2026-08-24: 既定値そのものを 7 日にした。本番の呼び元 (follow webhook) は当初から
+//   validDays:7 を明示しており、既定の 3 日は**どこからも使われていない値**だった。
+//   にもかかわらずトークの「マイクーポン」Flex は「3 日間有効」と案内しており、
+//   使われない既定値が顧客向け文言の根拠として独り歩きしていた (実際は 7 日)。
+//   顧客に出す日数と 1 箇所で対応させるため、この定数を唯一の正とする。
+export const WELCOME_VALID_DAYS = 7;
+const DEFAULT_VALID_DAYS = WELCOME_VALID_DAYS;
 const DEFAULT_CODE_PREFIX = 'LINE';
 // 5β-1d-2c (2026-05-19): API version を他 service (shopify-customer-sync.ts 等) と統一 (2024-04 → 2026-04)
 // 古い 2024-04 のままだと Shopify Admin GraphQL endpoint で 404 が返るため修正

@@ -18,6 +18,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   issueCouponForFriend,
   getCouponCodeForFriend,
+  WELCOME_VALID_DAYS,
   __test__ as t,
   type ShopifyEnv,
 } from '../services/shopify-coupon-issuer.js';
@@ -267,8 +268,9 @@ describe('issueCouponForFriend — 新規発行 (success path)', () => {
     expect(result?.discountValue).toBe(500);
     expect(result?.discountCurrency).toBe('JPY');
     expect(result?.shopifyDiscountCodeId).toBe('gid://shopify/DiscountCodeNode/new1');
-    // 5β-1d-2e: default valid days = 3 (= 90 → 3 に短縮)
-    expect(result?.expiresAt).toBe(new Date(FIXED_NOW + 3 * 86_400_000).toISOString());
+    // 2026-08-24: 既定日数は WELCOME_VALID_DAYS (7)。本番の呼び元が当初から 7 を明示しており、
+    //   使われない既定値 (3) が顧客向け文言「3 日間有効」の根拠として独り歩きしていたため統一した。
+    expect(result?.expiresAt).toBe(new Date(FIXED_NOW + WELCOME_VALID_DAYS * 86_400_000).toISOString());
 
     // DB に行が追加された
     expect(db.rows.length).toBe(1);
@@ -297,7 +299,7 @@ describe('issueCouponForFriend — 新規発行 (success path)', () => {
     const successMeta = JSON.parse(db.auditRows[0].metadata) as Record<string, unknown>;
     expect(successMeta.code).toBe('LINE-NEW12345');
     expect(successMeta.discountValue).toBe(500); // 2026-08-24 ¥500 へ復帰
-    expect(successMeta.validDays).toBe(3);
+    expect(successMeta.validDays).toBe(WELCOME_VALID_DAYS);
   });
 
   it('custom discountValueJpy + validDays + codePrefix が反映される', async () => {

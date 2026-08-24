@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { getShopifyAccessToken } from '../services/shopify-token.js';
+import { issueCouponForFriend, WELCOME_VALID_DAYS } from '../services/shopify-coupon-issuer.js';
 import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
 // read 系 handler 14 本の本体は services/portal-read.ts へ抽出済み (Ultraplan PR-2)。
 // /api/liff/portal-bootstrap (routes/liff-portal-bootstrap.ts) が同じ関数群を並列実行する。
@@ -1428,6 +1429,23 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
       referrerFriendId: link.friend_id,
       referredFriendId: user.friendId,
     });
+
+    // 未発行の救済 (Codex P1, 2026-08-24): 削除した格上げ機構は「welcome 行が無ければ直接発行する」
+    //   救済も兼ねていた。招待文は被紹介者に ¥500 を約束するので、次の 2 ケースで
+    //   「約束したのに 1 枚も届かない」が起きないよう救済だけ残す:
+    //     ① claim が follow ハンドラの発行より先に走った (friends 行は発行の前に作られる)
+    //     ② follow 時の Shopify 発行が失敗して null で終わった (本番実績 0 件だが経路は存在する)
+    //   issueCouponForFriend は既発行 row があればそれを返すので**呼ぶだけで冪等**。
+    //   額は既定 (¥500) のまま = 紹介経由だけ優遇しない (2026-08-24 の方針)。
+    //   push は送らない (welcome flow 側の通知に任せる = 2 連 push を作らない)。
+    const rescueWork = issueCouponForFriend(c.env.DB, c.env, {
+      friendId: user.friendId,
+      validDays: WELCOME_VALID_DAYS,
+    }).catch((err) => {
+      console.error('[liff-portal] welcome coupon rescue failed:', err instanceof Error ? err.name : 'unknown');
+      return null;
+    });
+    try { c.executionCtx.waitUntil(rescueWork); } catch { /* no exec ctx in tests */ }
 
     return c.json({
       success: true,
