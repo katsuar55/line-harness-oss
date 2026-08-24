@@ -104,9 +104,11 @@ function validateNote(note: unknown): string | undefined {
 }
 
 /**
- * 「未発行の welcome クーポンを救済してよい友だちか」= 友だち追加から券の寿命 (7 日) 以内か。
+ * 「未発行の welcome クーポンを救済してよい友だちか」= **最後に友だちになってから**
+ * 券の寿命 (7 日) 以内か。呼び元は `last_refollowed_at ?? created_at` を渡す
+ * (再フォローは created_at を保持するので、created_at だけ見ると正当な救済を落とす)。
  *
- * friends.created_at は JST の ISO 風文字列だが **タイムゾーン接尾辞を持たない**
+ * 値は JST の ISO 風文字列だが **タイムゾーン接尾辞を持たない**
  * (schema: `strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')`)。Workers は UTC で動くので
  * そのまま Date.parse すると 9 時間ぶんずれる。接尾辞が無いときは JST とみなして補う。
  *
@@ -114,10 +116,10 @@ function validateNote(note: unknown): string | undefined {
  * 「分からないなら出さない」が安全側 (出さない方は次回訪問で回復できるが、出した方は戻せない)。
  */
 export function isWithinWelcomeRescueWindow(
-  friendCreatedAt: string | null,
+  friendFollowedAt: string | null,
   nowMs: number = Date.now(),
 ): boolean {
-  const raw = (friendCreatedAt ?? '').trim();
+  const raw = (friendFollowedAt ?? '').trim();
   if (!raw) return false;
   const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(raw);
   const parsed = Date.parse(hasZone ? raw : `${raw}+09:00`);
@@ -135,8 +137,11 @@ function getLiffUser(c: { get: (key: string) => unknown }) {
         lineUserId: string;
         friendId: string;
         shopifyCustomerId?: string | null;
-        /** friends.created_at (JST・タイムゾーン接尾辞なし)。救済の窓判定に使う */
-        createdAt?: string | null;
+        /**
+         * 最後に友だちになった時刻 (= last_refollowed_at ?? created_at)。
+         * JST・タイムゾーン接尾辞なし。救済の窓判定に使う。
+         */
+        followedAt?: string | null;
       }
     | undefined;
 }
@@ -1475,7 +1480,7 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
     //   ¥500 の実クーポンを取得できる。紹介リンクは誰でも生成でき SNS にも貼れるため、
     //   「休眠友だちへの一括配布」が我々の意図しないタイミングで始まってしまう。
     const referralRewardOn = c.env.REFERRAL_REWARD_ENABLED === 'true';
-    const withinRescueWindow = isWithinWelcomeRescueWindow(user.createdAt ?? null);
+    const withinRescueWindow = isWithinWelcomeRescueWindow(user.followedAt ?? null);
     if (referralRewardOn && withinRescueWindow) {
       const rescueWork = issueCouponForFriend(c.env.DB, c.env, {
         friendId: user.friendId,

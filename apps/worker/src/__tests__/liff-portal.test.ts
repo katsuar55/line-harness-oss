@@ -43,6 +43,17 @@ vi.mock('@line-crm/db', async (importOriginal) => {
           created_at: new Date().toISOString(),
         };
       }
+      if (lineUserId === 'U_REFOLLOWED') {
+        return {
+          id: 'friend-refollow',
+          line_user_id: 'U_REFOLLOWED',
+          display_name: 'Refollowed',
+          is_following: 1,
+          // ブロック復活: created_at は古いまま / last_refollowed_at が今
+          created_at: '2026-01-15T10:00:00.000',
+          last_refollowed_at: new Date().toISOString(),
+        };
+      }
       if (lineUserId === 'U_OLD_FRIEND') {
         return {
           id: 'friend-old',
@@ -261,8 +272,11 @@ function createApp() {
         lineUserId: body.lineUserId,
         friendId: friend.id,
         shopifyCustomerId: (friend as { shopify_customer_id?: string | null }).shopify_customer_id ?? null,
-        // 本物と同じく createdAt も載せる (紹介 claim の救済の窓判定に使われる)
-        createdAt: (friend as { created_at?: string | null }).created_at ?? null,
+        // 本物と同じ導出: 最後に友だちになった時刻 (再フォローは created_at を保持するため)
+        followedAt:
+          (friend as { last_refollowed_at?: string | null }).last_refollowed_at ??
+          (friend as { created_at?: string | null }).created_at ??
+          null,
       });
       return next();
     } catch {
@@ -862,6 +876,33 @@ describe('LIFF Portal Routes', () => {
       const res = await claimWithGate('ref-gate-off', undefined);
       expect(res.status, 'claim 自体は成立する (台帳の pending は gate と無関係)').toBe(200);
       expect(issueMock, 'gate off では 1 度も呼ばない').not.toHaveBeenCalled();
+    });
+
+    it('🚨 再フォローした友だちには救済する — created_at ではなく最終フォロー時刻で見る (Codex P2)', async () => {
+      // ブロック復活は created_at を保持して last_refollowed_at だけ now になる。
+      // created_at で判定すると、再フォロー直後の正当な救済を「古い友だち」として落とす。
+      const issuer = await import('../services/shopify-coupon-issuer.js');
+      const issueMock = issuer.issueCouponForFriend as ReturnType<typeof vi.fn>;
+      issueMock.mockClear();
+
+      const db = await import('@line-crm/db');
+      (db.getReferralLinkByRefCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        id: 'rl-re', friend_id: 'friend-referrer', ref_code: 'ref-refollow', referrer_coupon_id: null, referred_coupon_id: null,
+      });
+
+      const res = await app.request(
+        '/api/liff/referral/claim',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lineUserId: 'U_REFOLLOWED', refCode: 'ref-refollow' }),
+        },
+        { ...mockEnv(), REFERRAL_REWARD_ENABLED: 'true' },
+      );
+
+      expect(res.status).toBe(200);
+      expect(issueMock, '再フォロー直後なので救済する').toHaveBeenCalledTimes(1);
+      expect((issueMock.mock.calls[0][2] as { friendId: string }).friendId).toBe('friend-refollow');
     });
 
     it('🚨 古い友だち (welcome 自動発行より前からの友だち) には救済しない — 一括配布を防ぐ', async () => {

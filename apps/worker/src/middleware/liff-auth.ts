@@ -93,14 +93,18 @@ export async function liffAuthMiddleware(c: Context<Env>, next: Next): Promise<R
         return c.json({ success: false, error: 'Friend not found' }, 404);
       }
 
-      // shopifyCustomerId / createdAt も載せる (= 既に読んだ行から取れるので、下流 route が
+      // shopifyCustomerId / followedAt も載せる (= 既に読んだ行から取れるので、下流 route が
       // 連携有無や友だち歴を知るために friend 行をもう一度読む必要がなくなる)。
-      //   createdAt は紹介 claim の「未発行の救済」の窓判定に使う (liff-portal.ts)。
+      //   followedAt = **最後に友だちになった時刻**。紹介 claim の「未発行の救済」の窓判定に使う。
+      //   🚨 created_at ではなく last_refollowed_at を優先すること (Codex P2, 2026-08-24):
+      //   upsertFriend はブロック復活 (再フォロー) のとき created_at を**保持**して
+      //   last_refollowed_at だけを now にする。created_at だけを見ると、再フォローで発行が
+      //   失敗した人の正当な救済を「古い友だち」として落としてしまう。
       (c as { set: (key: string, value: unknown) => void }).set('liffUser', {
         lineUserId: verifiedUserId,
         friendId: friend.id,
         shopifyCustomerId: friend.shopify_customer_id ?? null,
-        createdAt: friend.created_at ?? null,
+        followedAt: friend.last_refollowed_at ?? friend.created_at ?? null,
       });
       return next();
     }

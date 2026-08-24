@@ -98,7 +98,7 @@ describe('liffAuthMiddleware', () => {
       lineUserId: 'U1',
       friendId: 'friend-1',
       shopifyCustomerId: null, // 未連携 friend
-      createdAt: null, // friend 行に created_at が無ければ null
+      followedAt: null, // friend 行に時刻が無ければ null
     });
   });
 
@@ -118,12 +118,12 @@ describe('liffAuthMiddleware', () => {
       lineUserId: 'U1',
       friendId: 'friend-1',
       shopifyCustomerId: '6458785661181',
-      createdAt: null,
+      followedAt: null,
     });
   });
 
-  it('created_at も liffUser に載る (紹介 claim の救済の窓判定に使われる)', async () => {
-    // 下流 (routes/liff-portal.ts の紹介 claim) は「友だち追加から 7 日以内か」でしか
+  it('followedAt に created_at が載る (紹介 claim の救済の窓判定に使われる)', async () => {
+    // 下流 (routes/liff-portal.ts の紹介 claim) は「最後に友だちになってから 7 日以内か」でしか
     // 実クーポンの救済を許さない。その判定材料をここで載せておく (friend 行の再読込を避ける)。
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ sub: 'U1' }), { status: 200 }));
     mockGetFriendByLineUserId.mockResolvedValue({
@@ -136,7 +136,27 @@ describe('liffAuthMiddleware', () => {
       ENV,
     );
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { liffUser: { createdAt: string | null } }).liffUser.createdAt).toBe(
+    expect(((await res.json()) as { liffUser: { followedAt: string | null } }).liffUser.followedAt).toBe(
+      '2026-08-24T11:23:09.745',
+    );
+  });
+
+  it('🚨 再フォローは last_refollowed_at を優先する (Codex P2)', async () => {
+    // upsertFriend はブロック復活のとき created_at を**保持**して last_refollowed_at だけ now にする。
+    // created_at を見ると、再フォローで発行が失敗した人の正当な救済を「古い友だち」として落とす。
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ sub: 'U1' }), { status: 200 }));
+    mockGetFriendByLineUserId.mockResolvedValue({
+      id: 'friend-1',
+      line_user_id: 'U1',
+      created_at: '2026-01-15T10:00:00.000',
+      last_refollowed_at: '2026-08-24T11:23:09.745',
+    });
+    const res = await makeApp().fetch(
+      new Request('http://localhost/api/liff/me', { headers: { Authorization: 'Bearer tok' } }),
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { liffUser: { followedAt: string | null } }).liffUser.followedAt).toBe(
       '2026-08-24T11:23:09.745',
     );
   });
