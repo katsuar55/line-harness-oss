@@ -103,10 +103,41 @@ function validateNote(note: unknown): string | undefined {
   return note.slice(0, MAX_NOTE_LENGTH);
 }
 
+/**
+ * 「未発行の welcome クーポンを救済してよい友だちか」= 友だち追加から券の寿命 (7 日) 以内か。
+ *
+ * friends.created_at は JST の ISO 風文字列だが **タイムゾーン接尾辞を持たない**
+ * (schema: `strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')`)。Workers は UTC で動くので
+ * そのまま Date.parse すると 9 時間ぶんずれる。接尾辞が無いときは JST とみなして補う。
+ *
+ * 判定できない値 (null / 壊れた文字列) は **false** に倒す。救済は実クーポン発行 = 実費なので、
+ * 「分からないなら出さない」が安全側 (出さない方は次回訪問で回復できるが、出した方は戻せない)。
+ */
+export function isWithinWelcomeRescueWindow(
+  friendCreatedAt: string | null,
+  nowMs: number = Date.now(),
+): boolean {
+  const raw = (friendCreatedAt ?? '').trim();
+  if (!raw) return false;
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(raw);
+  const parsed = Date.parse(hasZone ? raw : `${raw}+09:00`);
+  if (!Number.isFinite(parsed)) return false;
+  const ageMs = nowMs - parsed;
+  // 未来日 (時計ずれ) は「たった今 follow した」とみなす = 正当な救済を落とさない
+  if (ageMs < 0) return true;
+  return ageMs <= WELCOME_VALID_DAYS * 86_400_000;
+}
+
 // ─── Helper: get verified friend from liffUser middleware ───
 function getLiffUser(c: { get: (key: string) => unknown }) {
   return c.get('liffUser') as
-    | { lineUserId: string; friendId: string; shopifyCustomerId?: string | null }
+    | {
+        lineUserId: string;
+        friendId: string;
+        shopifyCustomerId?: string | null;
+        /** friends.created_at (JST・タイムゾーン接尾辞なし)。救済の窓判定に使う */
+        createdAt?: string | null;
+      }
     | undefined;
 }
 
@@ -1436,8 +1467,16 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
     //   友だち (本番 6,616 人中 約 6,580 人 = DMM から取り込んだ既存友だち) が紹介リンクを
     //   開くだけで ¥500 の実クーポンを取得できてしまい、意図しない一括配布になる。
     //   紹介リンクは誰でも生成でき SNS にも貼れるため、露出は友だち数がそのまま上限になる。
+    //   🚨 救済の窓は「友だち追加から welcome 券の寿命 (7 日) 以内」に限る
+    //   (Katsu 決定 2026-08-24)。救済の目的は**follow のときに出るはずだった券の回復**であり、
+    //   7 日を過ぎた券はどのみち期限切れなので復活させる意味が無い。
+    //   窓が無いと、welcome の自動発行が始まった 2026-05-24 より前から友だちだった人
+    //   (本番 約 6,580 人 = DMM から引き継いだ既存友だち) が、誰かの紹介リンクを開くだけで
+    //   ¥500 の実クーポンを取得できる。紹介リンクは誰でも生成でき SNS にも貼れるため、
+    //   「休眠友だちへの一括配布」が我々の意図しないタイミングで始まってしまう。
     const referralRewardOn = c.env.REFERRAL_REWARD_ENABLED === 'true';
-    if (referralRewardOn) {
+    const withinRescueWindow = isWithinWelcomeRescueWindow(user.createdAt ?? null);
+    if (referralRewardOn && withinRescueWindow) {
       const rescueWork = issueCouponForFriend(c.env.DB, c.env, {
         friendId: user.friendId,
         validDays: WELCOME_VALID_DAYS,
@@ -1470,7 +1509,7 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
     // 「まもなく届く」と言ってよいのは、実際に発行を走らせたときだけ (Codex P1, 2026-08-24)。
     //   gate off で救済を skip した場合に「お届けします」と言うと、何も予定されていないのに
     //   約束したことになる (しかも claim 成功で ref は URL から消えるため再試行もできない)。
-    const couponPending = welcomeDiscountValue === null && referralRewardOn;
+    const couponPending = welcomeDiscountValue === null && referralRewardOn && withinRescueWindow;
 
     if (existing) {
       return c.json({

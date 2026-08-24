@@ -41,6 +41,7 @@ import { Hono } from 'hono';
 
 import { createSchemaDb, asD1, insertFriend } from './helpers/sqlite-d1.js';
 import { lineFriendCoupons } from '../routes/line-friend-coupons.js';
+import { isWithinWelcomeRescueWindow } from '../routes/liff-portal.js';
 import { liffPages } from '../routes/liff-pages.js';
 import { buildMyCouponFlex } from '../services/welcome-postback.js';
 import { buildMessagesForIntentAsync, type Intent } from '../services/intent-router.js';
@@ -433,7 +434,9 @@ describe('紹介した側への特典は gate off の間 約束しない', () =>
     expect(html).toContain("showToast('紹介リンクが適用されました✨');");
     // サーバ側は「救済を実際に走らせたか」でフラグを立てる
     const src = srcOf('../routes/liff-portal.ts');
-    expect(src).toContain('const couponPending = welcomeDiscountValue === null && referralRewardOn;');
+    expect(src).toContain(
+      'const couponPending = welcomeDiscountValue === null && referralRewardOn && withinRescueWindow;',
+    );
   });
 
   it('welcome 額の取得は welcome 台帳だけを見る (紹介/連携は別テーブルで混ざらない)', () => {
@@ -444,10 +447,60 @@ describe('紹介した側への特典は gate off の間 約束しない', () =>
     expect(src).not.toContain('FROM line_link_coupons');
   });
 
-  it('welcome 未発行の救済は gate の内側 (実費を gate 外に出さない)', () => {
+  it('welcome 未発行の救済は gate の内側 + 友だち追加から 7 日以内に限る (実費の露出を絞る)', () => {
     const src = srcOf('../routes/liff-portal.ts');
     expect(src).toContain("const referralRewardOn = c.env.REFERRAL_REWARD_ENABLED === 'true';");
-    expect(src).toContain('if (referralRewardOn) {');
+    expect(src).toContain('if (referralRewardOn && withinRescueWindow) {');
+  });
+});
+
+// ============================================================
+// ⑧ 救済の窓 — friends.created_at の解釈
+// ============================================================
+
+describe('isWithinWelcomeRescueWindow — 友だち追加から券の寿命 (7 日) 以内か', () => {
+  // friends.created_at は JST だが **タイムゾーン接尾辞を持たない** (schema の strftime)。
+  // Workers は UTC で動くので、素直に Date.parse すると 9 時間ずれる。
+  const JST = (iso: string) => Date.parse(`${iso}+09:00`);
+  const NOW = JST('2026-08-24T12:00:00.000');
+
+  it('たった今 follow した人は救済する (claim が follow より先のケース)', () => {
+    expect(isWithinWelcomeRescueWindow('2026-08-24T11:59:59.000', NOW)).toBe(true);
+  });
+
+  it('境界: ちょうど 7 日前は救済する / 7 日 + 1 分前は救済しない', () => {
+    expect(isWithinWelcomeRescueWindow('2026-08-17T12:00:00.000', NOW)).toBe(true);
+    expect(isWithinWelcomeRescueWindow('2026-08-17T11:59:00.000', NOW)).toBe(false);
+  });
+
+  it('🚨 welcome 自動発行 (2026-05-24) より前からの友だちは救済しない', () => {
+    expect(isWithinWelcomeRescueWindow('2026-01-15T10:00:00.000', NOW)).toBe(false);
+  });
+
+  it('接尾辞なしを JST として扱う (UTC 扱いすると 9 時間ぶんずれて窓が動く)', () => {
+    // JST 2026-08-17T20:00 = 7 日前より新しい。UTC と誤解すると 9 時間古く見えて窓の外になる
+    expect(isWithinWelcomeRescueWindow('2026-08-17T20:00:00.000', NOW)).toBe(true);
+    // 明示的な接尾辞がある値はそのまま尊重する
+    expect(isWithinWelcomeRescueWindow('2026-08-17T20:00:00.000+09:00', NOW)).toBe(true);
+    expect(isWithinWelcomeRescueWindow('2026-08-17T02:00:00.000Z', NOW)).toBe(false);
+  });
+
+  it('判断できない値は救済しない (実費なので「分からないなら出さない」)', () => {
+    for (const bad of [null, '', '   ', 'not-a-date']) {
+      expect(isWithinWelcomeRescueWindow(bad, NOW), `value=${String(bad)}`).toBe(false);
+    }
+  });
+
+  it('未来日 (時計ずれ) は「たった今」とみなす — 正当な救済を落とさない', () => {
+    expect(isWithinWelcomeRescueWindow('2026-08-24T12:05:00.000', NOW)).toBe(true);
+  });
+
+  it('窓は WELCOME_VALID_DAYS と同じ値から来る (片方だけ動かせない)', () => {
+    const justInside = NOW - WELCOME_VALID_DAYS * 86_400_000 + 60_000;
+    const justOutside = NOW - WELCOME_VALID_DAYS * 86_400_000 - 60_000;
+    const asJst = (ms: number) => new Date(ms + 9 * 3_600_000).toISOString().replace('Z', '');
+    expect(isWithinWelcomeRescueWindow(asJst(justInside), NOW)).toBe(true);
+    expect(isWithinWelcomeRescueWindow(asJst(justOutside), NOW)).toBe(false);
   });
 });
 

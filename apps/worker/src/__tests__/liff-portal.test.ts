@@ -33,7 +33,25 @@ vi.mock('@line-crm/db', async (importOriginal) => {
     ...orig,
     getFriendByLineUserId: vi.fn(async (_db: unknown, lineUserId: string) => {
       if (lineUserId === 'U_EXISTING') {
-        return { id: 'friend-1', line_user_id: 'U_EXISTING', display_name: 'Test User', is_following: 1 };
+        return {
+          id: 'friend-1',
+          line_user_id: 'U_EXISTING',
+          display_name: 'Test User',
+          is_following: 1,
+          // 紹介 claim の救済は「友だち追加から 7 日以内」に限られる。既定は**たった今**追加した人
+          // (= 救済が正当なケース)。古い友だちの挙動は専用テストで別途固定する。
+          created_at: new Date().toISOString(),
+        };
+      }
+      if (lineUserId === 'U_OLD_FRIEND') {
+        return {
+          id: 'friend-old',
+          line_user_id: 'U_OLD_FRIEND',
+          display_name: 'Old Friend',
+          is_following: 1,
+          // welcome 自動発行 (2026-05-24) より前から友だちだった層の代表 (本番 約 6,580 人)
+          created_at: '2026-01-15T10:00:00.000',
+        };
       }
       return null;
     }),
@@ -243,6 +261,8 @@ function createApp() {
         lineUserId: body.lineUserId,
         friendId: friend.id,
         shopifyCustomerId: (friend as { shopify_customer_id?: string | null }).shopify_customer_id ?? null,
+        // 本物と同じく createdAt も載せる (紹介 claim の救済の窓判定に使われる)
+        createdAt: (friend as { created_at?: string | null }).created_at ?? null,
       });
       return next();
     } catch {
@@ -842,6 +862,35 @@ describe('LIFF Portal Routes', () => {
       const res = await claimWithGate('ref-gate-off', undefined);
       expect(res.status, 'claim 自体は成立する (台帳の pending は gate と無関係)').toBe(200);
       expect(issueMock, 'gate off では 1 度も呼ばない').not.toHaveBeenCalled();
+    });
+
+    it('🚨 古い友だち (welcome 自動発行より前からの友だち) には救済しない — 一括配布を防ぐ', async () => {
+      // 本番には welcome 台帳を持たない既存友だちが約 6,580 人いる (DMM から引き継いだ層)。
+      // 窓が無いと、誰かが紹介リンクを SNS に貼った瞬間にこの層へ ¥500 の実クーポンが
+      // 一括で流れうる。救済は「友だち追加のときに出るはずだった券」の回復に限る。
+      const issuer = await import('../services/shopify-coupon-issuer.js');
+      const issueMock = issuer.issueCouponForFriend as ReturnType<typeof vi.fn>;
+      issueMock.mockClear();
+
+      const db = await import('@line-crm/db');
+      (db.getReferralLinkByRefCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        id: 'rl-old', friend_id: 'friend-referrer', ref_code: 'ref-old', referrer_coupon_id: null, referred_coupon_id: null,
+      });
+
+      const res = await app.request(
+        '/api/liff/referral/claim',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lineUserId: 'U_OLD_FRIEND', refCode: 'ref-old' }),
+        },
+        { ...mockEnv(), REFERRAL_REWARD_ENABLED: 'true' },
+      );
+
+      expect(res.status, '紹介の成立自体は妨げない').toBe(200);
+      expect(issueMock, '窓の外なので実クーポンは発行しない').not.toHaveBeenCalled();
+      const json = (await res.json()) as { data: { couponPending: boolean } };
+      expect(json.data.couponPending, '予定が無いので「まもなく」とも言わない').toBe(false);
     });
 
     it('2 回目以降の claim (alreadyClaimed) でも救済を試す — 1 度きりにしない (Codex P2)', async () => {
