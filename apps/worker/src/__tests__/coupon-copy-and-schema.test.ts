@@ -478,8 +478,12 @@ describe('isWithinWelcomeRescueWindow — 友だち追加から券の寿命 (7 �
   });
 
   it('接尾辞なしを JST として扱う (UTC 扱いすると 9 時間ぶんずれて窓が動く)', () => {
-    // JST 2026-08-17T20:00 = 7 日前より新しい。UTC と誤解すると 9 時間古く見えて窓の外になる
-    expect(isWithinWelcomeRescueWindow('2026-08-17T20:00:00.000', NOW)).toBe(true);
+    // 🚨 判別可能な値を選ぶこと。壁時計文字列を JST と読むと**絶対時刻は 9 時間early**になる
+    //    = より古く見える。よって「UTC なら窓の内側 / JST なら窓の外側」が唯一の判別方向で、
+    //    境界 (NOW - 7 日 = 2026-08-17T03:00Z) と その +9h の間の値でしか差が出ない。
+    //    ここを外すと両方 true になり、UTC 扱いへの変異が素通りする (実測で SURVIVED した)。
+    expect(isWithinWelcomeRescueWindow('2026-08-17T08:00:00.000', NOW)).toBe(false); // JST=窓の外
+    expect(isWithinWelcomeRescueWindow('2026-08-17T13:00:00.000', NOW)).toBe(true); // JST=窓の内
     // 明示的な接尾辞がある値はそのまま尊重する
     expect(isWithinWelcomeRescueWindow('2026-08-17T20:00:00.000+09:00', NOW)).toBe(true);
     expect(isWithinWelcomeRescueWindow('2026-08-17T02:00:00.000Z', NOW)).toBe(false);
