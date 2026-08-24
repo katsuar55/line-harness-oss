@@ -1451,11 +1451,13 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
     // 被紹介者の手元にある welcome クーポンの実額 (台帳が唯一の正)。
     //   クライアントのトーストがこの値を使う — 定数を直書きすると ¥300 券の保有者に嘘をつく。
     //   救済は waitUntil の非同期なので、この時点で null (= まだ無い) こともある。
+    //   line_friend_coupons は friend_id が UNIQUE (1 friend 1 枚) なので、この 1 行が welcome。
+    //   紹介 (line_referral_coupons) / 連携 (line_link_coupons) は**別テーブル**で混ざらない。
     const welcomeRow = await c.env.DB
       .prepare(
         `SELECT discount_value FROM line_friend_coupons
           WHERE friend_id = ? AND status = 'issued'
-          ORDER BY issued_at DESC LIMIT 1`,
+          LIMIT 1`,
       )
       .bind(user.friendId)
       .first<{ discount_value: number | null }>()
@@ -1465,10 +1467,15 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
         ? Number(welcomeRow.discount_value)
         : null;
 
+    // 「まもなく届く」と言ってよいのは、実際に発行を走らせたときだけ (Codex P1, 2026-08-24)。
+    //   gate off で救済を skip した場合に「お届けします」と言うと、何も予定されていないのに
+    //   約束したことになる (しかも claim 成功で ref は URL から消えるため再試行もできない)。
+    const couponPending = welcomeDiscountValue === null && referralRewardOn;
+
     if (existing) {
       return c.json({
         success: true,
-        data: { alreadyClaimed: true, rewardId: existing.id, welcomeDiscountValue },
+        data: { alreadyClaimed: true, rewardId: existing.id, welcomeDiscountValue, couponPending },
       });
     }
 
@@ -1491,6 +1498,7 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
         rewardId: reward.id,
         status: reward.status,
         welcomeDiscountValue,
+        couponPending,
       },
     });
   } catch (err) {

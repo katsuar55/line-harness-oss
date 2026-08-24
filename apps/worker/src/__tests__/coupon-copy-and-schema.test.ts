@@ -425,6 +425,25 @@ describe('紹介した側への特典は gate off の間 約束しない', () =>
     expect(src).not.toContain('あなた + お友だち 両方');
   });
 
+  it('🚨 claim トーストは「まもなくお届け」を発行予定があるときだけ言う (Codex P1)', async () => {
+    // gate off で救済を skip した場合、何も予定されていないのに「お届けします」と言うと
+    // claim 成功で ref が URL から消える分だけ回復不能な嘘になる。
+    const html = await portalHtml();
+    expect(html).toContain('} else if (res.data.couponPending) {');
+    expect(html).toContain("showToast('紹介リンクが適用されました✨');");
+    // サーバ側は「救済を実際に走らせたか」でフラグを立てる
+    const src = srcOf('../routes/liff-portal.ts');
+    expect(src).toContain('const couponPending = welcomeDiscountValue === null && referralRewardOn;');
+  });
+
+  it('welcome 額の取得は welcome 台帳だけを見る (紹介/連携は別テーブルで混ざらない)', () => {
+    const src = srcOf('../routes/liff-portal.ts');
+    expect(src).toContain('FROM line_friend_coupons');
+    // friend_id が UNIQUE なので 1 friend 1 行。他台帳を JOIN したり混ぜたりしない
+    expect(src).not.toContain('FROM line_referral_coupons');
+    expect(src).not.toContain('FROM line_link_coupons');
+  });
+
   it('welcome 未発行の救済は gate の内側 (実費を gate 外に出さない)', () => {
     const src = srcOf('../routes/liff-portal.ts');
     expect(src).toContain("const referralRewardOn = c.env.REFERRAL_REWARD_ENABLED === 'true';");

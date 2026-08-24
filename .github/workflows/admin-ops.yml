@@ -827,7 +827,7 @@ jobs:
           TMP="$RUNNER_TEMP/secrets.referral-reward.json"
           printf '{"REFERRAL_REWARD_ENABLED":"true"}' > "$TMP"
           npx wrangler secret bulk "$TMP"
-          rm -f "$TMP"
+          # TMP はここで消さない — 検証に失敗したとき同じファイルで false へ巻き戻すため
           echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
           # 伝播を実測する (要素マーカーで照合。CSS セレクタや pipe 経由の grep は使わない)
@@ -844,10 +844,17 @@ jobs:
             sleep 5
           done
           if [ "$OK" -ne 1 ]; then
-            echo '❌ 60s 以内に本番 HTML へ反映されませんでした' | tee -a "$GITHUB_STEP_SUMMARY"
+            # 🚨 検証に失敗しても secret は既に true。ここで抜けると「op は失敗と表示されたのに
+            #   顧客向け文言と実クーポン発行だけが有効」という最悪の状態が残る (Codex P1)。
+            #   失敗時は必ず false へ戻してから落とす (= 失敗状態を安全側に確定させる)。
+            echo '❌ 60s 以内に本番 HTML へ反映されませんでした — gate を false へ戻します' | tee -a "$GITHUB_STEP_SUMMARY"
+            printf '{"REFERRAL_REWARD_ENABLED":"false"}' > "$TMP"
+            npx wrangler secret bulk "$TMP" || echo '⚠️ 巻き戻しにも失敗しました。disable-referral-reward を手動で実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            rm -f "$TMP"
             exit 1
           fi
           echo '⚠️ これ以降、被紹介者が welcome クーポンを使って購入すると紹介者に ¥500 が実発行されます。' >> "$GITHUB_STEP_SUMMARY"
+          rm -f "$TMP"
           echo '⚠️ 併せて「お互いに ¥500」の文言が LIFF / トークに出ます。取り下げは disable-referral-reward。' >> "$GITHUB_STEP_SUMMARY"
 
       # 紹介報酬の kill switch (redeploy 不要)。文言も同時に「紹介された側だけ」へ戻る。

@@ -4322,10 +4322,14 @@ function checkReferralParam() {
       var v = Number(res.data.welcomeDiscountValue);
       if (isFinite(v) && v > 0) {
         showToast('紹介リンクが適用されました!お友だち追加特典の' + v + '円クーポン (¥2,000以上のご注文で) をご利用ください✨');
-      } else {
-        // まだ台帳に無い = 発行がこれから届く。持っていないクーポンを「ご利用ください」と言わない。
+      } else if (res.data.couponPending) {
+        // 発行を実際に走らせたときだけ「まもなく」と言う (Codex P1)。
+        //   予定が無いのに約束すると、claim 成功で ref が消える分だけ回復不能になる。
         showToast('紹介リンクが適用されました!お友だち追加特典のクーポンをまもなくお届けします✨');
         setTimeout(function() { try { loadWelcomeCoupon(); } catch (e) { /* ignore */ } }, 3000);
+      } else {
+        // クーポンが無く、発行の予定も無い = 紹介の成立だけを伝える (持っていない物を約束しない)。
+        showToast('紹介リンクが適用されました✨');
       }
     }).catch(function() {});
   } catch(e) { /* ignore */ }

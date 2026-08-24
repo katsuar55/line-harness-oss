@@ -115,6 +115,16 @@ describe('kill switch が対で存在する', () => {
   it('disable-referral-reward が false を投入する (redeploy 不要)', () => {
     expect(opBlock('disable-referral-reward')).toContain('"REFERRAL_REWARD_ENABLED":"false"');
   });
+
+  it('🚨 enable は検証に失敗したら gate を false へ巻き戻してから落ちる (Codex P1)', () => {
+    // secret 投入は成功しているので、ここで素直に exit すると「op は失敗表示なのに
+    // 顧客向け文言と実クーポン発行だけが有効」という最悪の状態が残る。
+    const block = opBlock('enable-referral-reward');
+    const fail = block.slice(block.indexOf('if [ "$OK" -ne 1 ]'));
+    expect(fail).toContain('"REFERRAL_REWARD_ENABLED":"false"');
+    expect(fail).toContain('wrangler secret bulk');
+    expect(fail.indexOf('"REFERRAL_REWARD_ENABLED":"false"')).toBeLessThan(fail.indexOf('exit 1'));
+  });
 });
 
 describe('gate が切り替えるものが op の説明に書いてある', () => {
