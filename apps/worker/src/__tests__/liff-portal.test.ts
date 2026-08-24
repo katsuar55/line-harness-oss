@@ -814,6 +814,51 @@ describe('LIFF Portal Routes', () => {
       expect(opts.discountValueJpy).toBeUndefined();
     });
 
+    it('2 回目以降の claim (alreadyClaimed) でも救済を試す — 1 度きりにしない (Codex P2)', async () => {
+      // 成立記録だけ先に成功して救済が落ちると、以降は必ず alreadyClaimed で早期 return する。
+      // 救済を成立記録の後ろに置くと、一過性の Shopify 障害で永久にクーポンが届かなくなる。
+      const issuer = await import('../services/shopify-coupon-issuer.js');
+      const issueMock = issuer.issueCouponForFriend as ReturnType<typeof vi.fn>;
+      issueMock.mockClear();
+
+      const db = await import('@line-crm/db');
+      (db.getReferralLinkByRefCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        id: 'rl-5', friend_id: 'friend-referrer', ref_code: 'ref-retry', referrer_coupon_id: null, referred_coupon_id: null,
+      });
+
+      // 既に claim 済み: referral_rewards に行がある状態を作る
+      const stmt = {
+        bind: vi.fn().mockReturnThis(),
+        run: vi.fn(async () => ({ success: true })),
+        all: vi.fn(async () => ({ results: [] })),
+        first: vi.fn(async () => ({ id: 'rr-existing' })),
+      };
+      const env = { ...mockEnv(), DB: { prepare: vi.fn(() => stmt) } as unknown as D1Database };
+
+      const res = await app.request(
+        '/api/liff/referral/claim',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lineUserId: 'U_EXISTING', refCode: 'ref-retry' }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { data: { alreadyClaimed: boolean; rewardId: string } };
+      expect(json.data.alreadyClaimed, '前提: alreadyClaimed の経路を通っていること').toBe(true);
+      expect(json.data.rewardId).toBe('rr-existing');
+
+      // 成立記録は増やさない
+      expect(db.createReferralReward as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+      // それでも救済は走る (早期 return の手前に置いていないと 0 回になる)
+      expect(issueMock, 'alreadyClaimed でも救済を試すこと').toHaveBeenCalledTimes(1);
+      const opts = issueMock.mock.calls[0][2] as { friendId: string; validDays: number };
+      expect(opts.friendId).toBe('friend-1');
+      expect(opts.validDays).toBe(issuer.WELCOME_VALID_DAYS);
+    });
+
     it('救済で発行が失敗しても claim 自体は成功する (report は台帳の pending が正)', async () => {
       const issuer = await import('../services/shopify-coupon-issuer.js');
       const issueMock = issuer.issueCouponForFriend as ReturnType<typeof vi.fn>;
