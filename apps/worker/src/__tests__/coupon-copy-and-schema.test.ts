@@ -477,16 +477,24 @@ describe('isWithinWelcomeRescueWindow — 友だち追加から券の寿命 (7 �
     expect(isWithinWelcomeRescueWindow('2026-01-15T10:00:00.000', NOW)).toBe(false);
   });
 
-  it('接尾辞なしを JST として扱う (UTC 扱いすると 9 時間ぶんずれて窓が動く)', () => {
-    // 🚨 判別可能な値を選ぶこと。壁時計文字列を JST と読むと**絶対時刻は 9 時間early**になる
-    //    = より古く見える。よって「UTC なら窓の内側 / JST なら窓の外側」が唯一の判別方向で、
-    //    境界 (NOW - 7 日 = 2026-08-17T03:00Z) と その +9h の間の値でしか差が出ない。
-    //    ここを外すと両方 true になり、UTC 扱いへの変異が素通りする (実測で SURVIVED した)。
-    expect(isWithinWelcomeRescueWindow('2026-08-17T08:00:00.000', NOW)).toBe(false); // JST=窓の外
-    expect(isWithinWelcomeRescueWindow('2026-08-17T13:00:00.000', NOW)).toBe(true); // JST=窓の内
-    // 明示的な接尾辞がある値はそのまま尊重する
-    expect(isWithinWelcomeRescueWindow('2026-08-17T20:00:00.000+09:00', NOW)).toBe(true);
-    expect(isWithinWelcomeRescueWindow('2026-08-17T02:00:00.000Z', NOW)).toBe(false);
+  it('🚨 接尾辞なしを JST として扱う — 本番と同じ UTC 環境で検証する', () => {
+    // Date.parse('2026-08-17T08:00:00.000') は**ローカル時刻**扱い。開発機は JST なので
+    // ローカルのまま測ると「+09:00 を付ける」実装と区別がつかず、付け忘れの変異が素通りする
+    // (実測で SURVIVED した)。**本番の Workers は UTC** なので、その環境を再現して測る。
+    const savedTz = process.env.TZ;
+    process.env.TZ = 'UTC';
+    try {
+      // 境界 = NOW - 7 日 = 2026-08-17T03:00Z。JST と読めば絶対時刻は 9 時間 early = より古い。
+      //   よって「UTC なら窓の内側 / JST なら窓の外側」の区間 (03:00〜12:00) でだけ差が出る。
+      expect(isWithinWelcomeRescueWindow('2026-08-17T08:00:00.000', NOW), 'JST なら窓の外').toBe(false);
+      expect(isWithinWelcomeRescueWindow('2026-08-17T13:00:00.000', NOW), 'JST なら窓の内').toBe(true);
+      // 明示的な接尾辞がある値はそのまま尊重する
+      expect(isWithinWelcomeRescueWindow('2026-08-17T20:00:00.000+09:00', NOW)).toBe(true);
+      expect(isWithinWelcomeRescueWindow('2026-08-17T02:00:00.000Z', NOW)).toBe(false);
+    } finally {
+      if (savedTz === undefined) delete process.env.TZ;
+      else process.env.TZ = savedTz;
+    }
   });
 
   it('判断できない値は救済しない (実費なので「分からないなら出さない」)', () => {
