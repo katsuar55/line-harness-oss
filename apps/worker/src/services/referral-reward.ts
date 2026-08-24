@@ -83,7 +83,7 @@ export function buildReferrerRewardMessage(
     },
     {
       type: 'text',
-      text: 'ご紹介ありがとうございます。お礼に500円OFFクーポンをプレゼントします。',
+      text: 'ご紹介ありがとうございます。お礼に500円OFFクーポンをプレゼントします。(¥2,000以上のご注文でお使いいただけます)',
       size: 'sm',
       color: '#555555',
       wrap: true,
@@ -161,7 +161,7 @@ export function buildReferrerQueuedMessage(
     },
     {
       type: 'text',
-      text: 'ご紹介ありがとうございます。500円OFFクーポンを獲得しました。',
+      text: 'ご紹介ありがとうございます。500円OFFクーポンを獲得しました。(¥2,000以上のご注文でお使いいただけます)',
       size: 'sm',
       color: '#555555',
       wrap: true,

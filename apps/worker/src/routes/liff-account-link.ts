@@ -67,7 +67,7 @@ const VERIFY_FAILURE: Record<VerifyCodeFailure, { status: number; message: strin
   already_linked: { status: 409, message: 'このアカウントはすでに連携済みです。' },
   no_code: { status: 400, message: '確認コードの有効期限が切れています。 もう一度送信してください。' },
   locked: { status: 429, message: '試行回数の上限に達しました。 もう一度コードを送信してください。' },
-  customer_not_found: { status: 404, message: 'このメールアドレスのご注文が見つかりませんでした。 ご購入時のメールアドレスをご確認ください。' },
+  customer_not_found: { status: 404, message: 'このメールアドレスのアカウントが見つかりませんでした。 ご購入時・ご登録時のメールアドレスをご確認ください。' },
   customer_conflict: { status: 409, message: 'このご注文アカウントは別の LINE と連携済みです。' },
   shopify_error: { status: 502, message: '連携処理でエラーが発生しました。 もう一度お試しください。' },
 };

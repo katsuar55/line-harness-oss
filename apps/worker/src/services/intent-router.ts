@@ -283,7 +283,7 @@ export async function buildMessagesForIntentAsync(
       {
         type: 'flex',
         altText: `🎁 マイクーポン ${coupon.couponCode}`,
-        contents: buildMyCouponFlex(coupon.couponCode),
+        contents: buildMyCouponFlex(coupon.couponCode, coupon.discountValue),
       },
       // 5/26 user feedback: クーポンコードは copy したいので **別 text message として送る** (= reply 内、 push 0 通追加)
       // LINE では text message を長押しで copy 可能
@@ -319,7 +319,7 @@ export async function buildMessagesForIntentAsync(
     return [
       {
         type: 'text',
-        text: `🌿 友だち紹介はこちらから💝\nご紹介でお互いにおトクなクーポンをプレゼント🎁\n\n↓ こちらをタップ\n${ctx.liffUrl}#referral`,
+        text: `🌿 友だち紹介はこちらから💝\nご紹介でお互いに 500 円 OFF クーポンをプレゼント🎁\n(¥2,000 以上のご注文でお使いいただけます)\n\n↓ こちらをタップ\n${ctx.liffUrl}#referral`,
       },
     ];
   }

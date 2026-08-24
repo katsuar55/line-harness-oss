@@ -1,7 +1,5 @@
 import { Hono } from 'hono';
 import { getShopifyAccessToken } from '../services/shopify-token.js';
-import { upgradeWelcomeCouponForReferred } from '../services/welcome-upgrade.js';
-import { LineClient } from '@line-crm/line-sdk';
 import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
 // read 系 handler 14 本の本体は services/portal-read.ts へ抽出済み (Ultraplan PR-2)。
 // /api/liff/portal-bootstrap (routes/liff-portal-bootstrap.ts) が同じ関数群を並列実行する。
@@ -1420,27 +1418,16 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
     }
 
     // 紹介成立記録 (status='pending')。
-    //   referred の ¥500 は「友だち追加 welcome クーポン」(follow 時に既発行) がそれに当たるため、
-    //   ここでは新規クーポンを発行しない (= referred は ¥500 一枚)。
+    //   referred (紹介された側) の ¥500 は「友だち追加 welcome クーポン」(follow 時に既発行) が
+    //   そのまま該当するため、ここでは新規クーポンを発行しない (= referred は ¥500 一枚)。
+    //   2026-08-24: welcome を ¥500 へ戻したので、かつての「紹介経由だけ ¥300→¥500 に格上げ」
+    //   (welcome-upgrade.ts) は不要になり削除した。claim の副作用は台帳への pending 記録のみ。
     //   referrer 報酬は referred がその welcome クーポンを「利用して購入」した時に、 orders webhook の
     //   coupon-redemption 経路 (processReferralRewardOnPurchase) が発行する。
     const reward = await createReferralReward(c.env.DB, {
       referrerFriendId: link.friend_id,
       referredFriendId: user.friendId,
     });
-
-    // 格上げ (Ultraplan PR-C R3): 紹介経由と確定した瞬間、referred の welcome ¥300 を ¥500 へ。
-    //   応答は待たせない (waitUntil)。二重格上げは metadata CAS が防ぐ。
-    //   welcome 未発行 (claim が follow より先) は ¥500 直接発行 + push 1 本に統合。
-    const upgradeWork = upgradeWelcomeCouponForReferred(
-      c.env.DB,
-      c.env,
-      new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN),
-      { friendId: user.friendId },
-    ).catch((err) => {
-      console.error('[liff-portal] welcome upgrade failed:', err instanceof Error ? err.name : 'unknown');
-    });
-    try { c.executionCtx.waitUntil(upgradeWork); } catch { /* no exec ctx in tests */ }
 
     return c.json({
       success: true,

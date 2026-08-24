@@ -2,9 +2,9 @@
  * Shopify Discount 管理 mutation の共通ラッパー (2026-08-13, Ultraplan PR-C)
  *
  * discountCodeDeactivate / discountCodeActivate。呼び元:
- *   - welcome→referred 格上げ (welcome-upgrade.ts): 旧 ¥300 を殺してから ¥500 を発行 /
- *     失敗補償で復活
  *   - (PR-D 予定) rank supersede 時の旧 NLR- 無効化・期限 sweep の Shopify 側同期
+ *   ※ かつての welcome→referred 格上げ (welcome-upgrade.ts) は 2026-08-24 に削除済み
+ *     (welcome を ¥500 へ戻したため格上げ自体が不要になった)。
  *
  * 規約 (CLAUDE.md): fetch は fetch.bind(globalThis) / timeout 8s / 例外は caller へ ok:false。
  * GraphQL は Shopify dev MCP validate 済み (2026-04)。

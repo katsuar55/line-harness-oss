@@ -139,7 +139,7 @@ function build6JuneReferralFlex(): FlexContainer {
         { type: 'text', text: '🌿 あなた → 次回購入で 500 円 OFF', size: 'xs', color: '#15803d', wrap: true, margin: 'sm' },
         { type: 'text', text: '🌿 お友だち → 初回購入で 500 円 OFF', size: 'xs', color: '#15803d', wrap: true },
         { type: 'separator', margin: 'md' },
-        { type: 'text', text: '※ 紹介プログラム詳細は Phase 4 で実装予定 — まずは「公式 LINE 楽しい」 と感じてもらってから', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '※ ¥2,000 以上のご注文でお使いいただけます', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
       ],
     },
   } as unknown as FlexContainer;
@@ -259,7 +259,7 @@ function build7JulyBlueFlex(): FlexContainer {
 }
 
 function build7JulyCampaignFlex(): FlexContainer {
-  // 夏キャンペーン予告 (= 紹介 reminder と統合、 Phase 4 で実装予定)
+  // 夏キャンペーン予告 (= 紹介 reminder と統合)
   return {
     type: 'bubble',
     header: {
@@ -425,7 +425,7 @@ function build8AugustCampaignFlex(): FlexContainer {
         { type: 'text', text: '🌿 友だち紹介で 500 円 OFF (= 7-8 月継続)', size: 'sm', weight: 'bold', color: '#15803d' },
         { type: 'text', text: 'あなた → 次回購入 / お友だち → 初回購入 で両方お得。 帰省で会うご家族にも🌸', size: 'xs', color: '#475569', wrap: true },
         { type: 'separator', margin: 'md' },
-        { type: 'text', text: '※ 紹介プログラム詳細は Phase 4 で実装予定 — まずは LINE 公式で随時お知らせします', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '※ ¥2,000 以上のご注文でお使いいただけます', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
       ],
     },
   } as unknown as FlexContainer;
