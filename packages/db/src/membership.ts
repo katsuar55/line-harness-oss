@@ -557,3 +557,67 @@ export async function getMembershipStats(db: D1Database): Promise<MembershipStat
     byTier,
   };
 }
+
+/**
+ * 返金・取消の反映 (2026-08-26, Codex P1)。
+ *
+ * `addPurchaseEvent` は加算しかしないので、いったん paid で記録した注文が後から返金されても
+ * **ランクは下がらないまま**になる。会員ランクは「直近12ヶ月の購入額」で決まる特典 (最大 8% OFF +
+ * NLR- 割引コードの発行) なので、返金された売上でランクが維持されるのは実費が出続けるということ。
+ *
+ * 反映の仕方:
+ *   - `newAmountJpy <= 0` (全額返金 / void) → `applied_at` を NULL に戻す。
+ *     trailing-12mo の集計は `applied_at IS NOT NULL` で絞るので、これで算入から外れる。
+ *   - `newAmountJpy > 0` (一部返金) → その金額へ付け替える。
+ *   いずれも `members.total_purchase_jpy` から差分を引く (0 未満にはしない)。
+ *
+ * 冪等: 既に同じ金額なら何もしない。未 applied の行にも触らない
+ * (= 二重に引かない。webhook の再配信は実際に起きる)。
+ */
+export async function reconcilePurchaseEventAmount(
+  db: D1Database,
+  shopifyOrderId: string,
+  newAmountJpy: number,
+): Promise<{ changed: boolean; friendId: string | null; from: number; to: number; reason?: string }> {
+  const next = Math.max(0, Math.floor(Number.isFinite(newAmountJpy) ? newAmountJpy : 0));
+  const row = await db
+    .prepare(
+      `SELECT id, friend_id, amount_jpy, applied_at FROM member_purchase_events WHERE shopify_order_id = ?`,
+    )
+    .bind(shopifyOrderId)
+    .first<{ id: string; friend_id: string | null; amount_jpy: number; applied_at: string | null }>();
+  if (!row) return { changed: false, friendId: null, from: 0, to: next, reason: 'not recorded' };
+  if (!row.applied_at || !row.friend_id) {
+    return { changed: false, friendId: row.friend_id, from: row.amount_jpy, to: next, reason: 'not applied' };
+  }
+  const from = Math.max(0, Math.floor(Number(row.amount_jpy) || 0));
+  if (from === next) {
+    return { changed: false, friendId: row.friend_id, from, to: next, reason: 'unchanged' };
+  }
+
+  const now = jstNow();
+  // 🚨 applied_at を条件に入れる (CAS)。並行する再配信で 2 回引かれるのを防ぐ。
+  const upd = await db
+    .prepare(
+      `UPDATE member_purchase_events
+          SET amount_jpy = ?, applied_at = ?, updated_at = ?
+        WHERE id = ? AND applied_at IS NOT NULL AND amount_jpy = ?`,
+    )
+    .bind(next, next > 0 ? row.applied_at : null, now, row.id, from)
+    .run();
+  if ((upd.meta?.changes ?? 0) < 1) {
+    return { changed: false, friendId: row.friend_id, from, to: next, reason: 'raced' };
+  }
+
+  // members からも差分を引く (0 未満にしない)
+  await db
+    .prepare(
+      `UPDATE members
+          SET total_purchase_jpy = MAX(0, total_purchase_jpy - ?), updated_at = ?
+        WHERE friend_id = ?`,
+    )
+    .bind(from - next, now, row.friend_id)
+    .run();
+
+  return { changed: true, friendId: row.friend_id, from, to: next };
+}

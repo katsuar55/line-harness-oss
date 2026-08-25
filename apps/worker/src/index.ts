@@ -201,6 +201,8 @@ export type Env = {
     //   'true' で有効化 (= 未設定なら backfill は no-op、 本番 member_purchase_events 未書込)。
     //   ⚠️ read_all_orders scope 未付与だと直近60日のみ取得 (= 完全 backfill には scope 追加が必要)。
     MEMBER_BACKFILL_ENABLED?: string;
+    /** 'false' で会員ランクの原資取り込みを停止 (既定 ON = 取り込む)。 */
+    MEMBER_INGEST_ENABLED?: string;
     // 自前 friend↔Shopify customer 連携 Option B (2026-06-06): LIFF + email OTP 本人確認
     //   CRM PLUS / Social PLUS 非依存。 'true' で有効化 (= 未設定なら全 endpoint が disabled、 本番未稼働)。
     ACCOUNT_LINK_ENABLED?: string;
