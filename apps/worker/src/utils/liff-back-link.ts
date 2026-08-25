@@ -16,10 +16,11 @@
  * 確認の条件:
  *   1. `document.referrer` の path が、リンクの href の path と一致する
  *      (= 直前の文書がその行き先そのもの)
- *   2. 行き先がポータルのとき、ポータルの離脱スナップショットが `via: 'replace'` でない
- *      — リッチメニュー `#rank` は `location.replace('/liff/my-rank')` でポータルの
- *      履歴エントリを**上書き**している。このとき referrer はポータルを指すのに、
+ *   2. 行き先がポータルのとき、この URL に `?entry=replace` が付いていない
+ *      — リッチメニュー `#rank` は `location.replace('/liff/my-rank?entry=replace')` で
+ *      ポータルの履歴エントリを**上書き**している。このとき referrer はポータルを指すのに、
  *      戻り先はポータルではない (ミニアプリが閉じる)。referrer だけを信じると外す。
+ *      印はクエリ名で引いて値を照合する (部分一致は別パラメータの値を誤検出する)。
  *
  * ## 注意
  * - inline script は CLAUDE.md の LIFF ルールに従い文字列配列で持つ。
@@ -35,7 +36,10 @@
  * 端末の戻るでそのエントリへ復帰すると guard が外れ、preventDefault 済みのまま history.back() が
  * ミニアプリを閉じる方向へ走る (採点ループ P2)。 URL のクエリなら履歴エントリと一緒に復元される。
  */
-export const LIFF_ENTRY_REPLACED_PARAM = 'entry=replace';
+export const LIFF_ENTRY_REPLACED_KEY = 'entry';
+export const LIFF_ENTRY_REPLACED_VALUE = 'replace';
+/** URL に付ける形 (liff-pages.ts の redirect が使う)。 */
+export const LIFF_ENTRY_REPLACED_PARAM = `${LIFF_ENTRY_REPLACED_KEY}=${LIFF_ENTRY_REPLACED_VALUE}`;
 
 /**
  * 戻りリンクに付ける属性。script はこの属性で対象を集める。
@@ -54,7 +58,10 @@ const BACK_LINK_JS: string = [
   '  // このページのどの履歴エントリでも・何度戻ってきても同じ答えになる。',
   '  function entryWasReplaced() {',
   '    try {',
-  '      return String(window.location.search || "").indexOf(' + JSON.stringify(LIFF_ENTRY_REPLACED_PARAM) + ') >= 0;',
+  '      // 🚨 部分一致で探さない。 別パラメータの値に同じ文字列が埋まっていると誤検出し、',
+  '      //    正当な戻るを拒否して履歴をもう 1 段積む (Codex P3)。 名前で引いて値を照合する。',
+  '      var q = new URLSearchParams(String(window.location.search || ""));',
+  '      return q.get(' + JSON.stringify(LIFF_ENTRY_REPLACED_KEY) + ') === ' + JSON.stringify(LIFF_ENTRY_REPLACED_VALUE) + ';',
   '    } catch (e) { return true; }',
   '  }',
   '  function previousIs(href) {',

@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { navStateJs, navStateCss, NAV_SNAPSHOT_KEY, NAV_SNAPSHOT_TTL_MS } from '../routes/liff-portal-fragments/nav-state.js';
+import { liffBackLinkScriptTag } from '../utils/liff-back-link.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const pagesSrc = readFileSync(join(root, '..', 'routes', 'liff-pages.ts'), 'utf8').replace(/\r\n/g, '\n');
@@ -473,5 +474,68 @@ describe('nav-state — liff-pages.ts への配線', () => {
     for (const id of ['#orders-card', '#fulfillments-card', '#rank-card']) {
       expect(navStateCss()).toContain(id);
     }
+  });
+});
+
+// ───────────────────────── サブページの「← マイページ」 ─────────────────────────
+
+describe('liff-back-link — replace されたエントリの判定', () => {
+  interface BackApi { entryWasReplaced: () => boolean; previousIs: (href: string) => boolean }
+
+  function backHarness(search: string, referrer: string): BackApi {
+    // 吐き出された script タグから本体を取り出して実際に評価する
+    const tag = liffBackLinkScriptTag();
+    const body = tag.slice(tag.indexOf('>') + 1, tag.lastIndexOf('</'));
+    const win = {
+      location: { search, origin: 'https://example.workers.dev' },
+      history: { length: 3, back() {} },
+    };
+    const doc = {
+      referrer,
+      readyState: 'complete',
+      querySelectorAll: () => [] as unknown[],
+      addEventListener: () => {},
+    };
+    // IIFE の中身を外へ返させる (本体は 1 文字も書き換えず、包みだけ開ける)
+    const src = body
+      .replace('(function () {', 'return (function () {')
+      .replace('})();', '  return { entryWasReplaced: entryWasReplaced, previousIs: previousIs };\n})();');
+    expect(src, 'IIFE の包みを開けられていない').toContain('return (function () {');
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const factory = new Function('window', 'document', 'URL', 'URLSearchParams', src) as (
+      ...a: unknown[]
+    ) => BackApi;
+    return factory(win, doc, URL, URLSearchParams);
+  }
+
+  it('印が付いていれば replace されたエントリと判定する', () => {
+    expect(backHarness('?entry=replace', '').entryWasReplaced()).toBe(true);
+  });
+
+  it('印が無ければ通常のエントリ', () => {
+    expect(backHarness('', '').entryWasReplaced()).toBe(false);
+    expect(backHarness('?demo=1', '').entryWasReplaced()).toBe(false);
+  });
+
+  it('🚨 別パラメータの値に同じ文字列が埋まっていても誤検出しない (部分一致にしない — Codex P3)', () => {
+    expect(backHarness('?return=%2Fx%3Fentry%3Dreplace', '').entryWasReplaced()).toBe(false);
+    expect(backHarness('?entry=replacement', '').entryWasReplaced()).toBe(false);
+  });
+
+  it('🚨 replace されたエントリではポータルへの history.back() を拒否する (LINE を閉じない)', () => {
+    const marked = backHarness('?entry=replace', 'https://example.workers.dev/liff/portal');
+    expect(marked.previousIs('/liff/portal')).toBe(false);
+    const normal = backHarness('', 'https://example.workers.dev/liff/portal');
+    expect(normal.previousIs('/liff/portal')).toBe(true);
+  });
+
+  it('直前がその行き先でなければ前進遷移に倒す (安全側)', () => {
+    const h = backHarness('', 'https://example.workers.dev/liff/food');
+    expect(h.previousIs('/liff/portal')).toBe(false);
+    expect(h.previousIs('/liff/food')).toBe(true);
+  });
+
+  it('他オリジンからの referrer では back しない', () => {
+    expect(backHarness('', 'https://naturism-diet.com/cart').previousIs('/liff/portal')).toBe(false);
   });
 });
