@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
 import { liffWatchdogScriptTag } from '../utils/liff-watchdog.js';
+import { liffBackLinkScriptTag } from '../utils/liff-back-link.js';
 
 /**
  * LIFF Email Opt-In Page (Phase 5β-1b)
@@ -67,6 +68,7 @@ function optInPage(liffId: string, apiBase: string): string {
   <meta name="robots" content="noindex,nofollow">
   <title>メール配信登録 — naturism</title>
   ${liffWatchdogScriptTag()}
+  ${liffBackLinkScriptTag()}
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -99,7 +101,7 @@ function optInPage(liffId: string, apiBase: string): string {
 
   <header class="sticky top-0 z-50" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(0,0,0,.06)">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
-      <a href="/liff/portal" class="text-xs text-gray-500 flex items-center gap-1">&larr; マイページ</a>
+      <a href="/liff/portal" data-liff-back class="text-xs text-gray-500 flex items-center gap-1">&larr; マイページ</a>
       <h1 class="text-base font-bold tracking-tight" style="color:#0f766e">📧 メール配信登録</h1>
       <span class="w-16"></span>
     </div>
@@ -153,7 +155,7 @@ function optInPage(liffId: string, apiBase: string): string {
       </div>
 
       <div class="card p-4 mt-4">
-        <a href="/liff/portal" class="btn-secondary w-full py-3 rounded-xl text-sm font-bold inline-block text-center">マイページに戻る</a>
+        <a href="/liff/portal" data-liff-back class="btn-secondary w-full py-3 rounded-xl text-sm font-bold inline-block text-center">マイページに戻る</a>
       </div>
     </section>
 

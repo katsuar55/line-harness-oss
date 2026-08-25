@@ -49,9 +49,14 @@ interface FakeEl {
   style: Record<string, string>;
   attrs: Record<string, string>;
   classes: Set<string>;
+  childNodes: FakeEl[];
+  parentNode: FakeEl | null;
   _html: string;
+  _text: string;
   innerHTML: string;
   classList: { add(c: string): void; remove(c: string): void };
+  appendChild(child: FakeEl): FakeEl;
+  removeChild(child: FakeEl): FakeEl;
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
   addEventListener(): void;
@@ -62,16 +67,50 @@ function el(tagName: string, id = ''): FakeEl {
     tagName,
     id,
     className: '',
-    textContent: '',
     style: {},
     attrs: {},
     classes: new Set<string>(),
+    childNodes: [] as FakeEl[],
+    parentNode: null as FakeEl | null,
     _html: '',
+    _text: '',
     get innerHTML() {
       return node._html;
     },
     set innerHTML(html: string) {
       node._html = html;
+      // innerHTML の差し替えは子を捨てる (本物と同じ意味論)
+      for (const c of node.childNodes) c.parentNode = null;
+      node.childNodes = [];
+    },
+    // DOM 組み立て型のレンダラ (rank-hero) を走らせるための最小実装。
+    // textContent は子があれば連結を返す = 顧客が読む文字列を逐語照合できる。
+    get textContent(): string {
+      if (node.childNodes.length === 0) return node._text;
+      return node.childNodes.map((c) => c.textContent).join('');
+    },
+    set textContent(v: string) {
+      for (const c of node.childNodes) c.parentNode = null;
+      node.childNodes = [];
+      node._text = v === undefined || v === null ? '' : String(v);
+    },
+    appendChild(child: FakeEl): FakeEl {
+      if (node.childNodes.length === 0 && node._text !== '') {
+        const t = el('#text');
+        t.textContent = node._text;
+        t.parentNode = node;
+        node.childNodes.push(t);
+        node._text = '';
+      }
+      child.parentNode = node;
+      node.childNodes.push(child);
+      return child;
+    },
+    removeChild(child: FakeEl): FakeEl {
+      const i = node.childNodes.indexOf(child);
+      if (i >= 0) node.childNodes.splice(i, 1);
+      child.parentNode = null;
+      return child;
     },
     classList: {
       add: (c: string) => void node.classes.add(c),
@@ -135,6 +174,11 @@ function loadSandbox(script: string, opts: { hash?: string; search?: string } = 
     querySelector: () => null,
     querySelectorAll: () => [] as FakeEl[],
     createElement: (t: string) => el(t),
+    createTextNode: (text: string) => {
+      const t = el('#text');
+      t.textContent = text;
+      return t;
+    },
     body: el('body'),
   };
   const storage = {
@@ -221,6 +265,14 @@ const tick = async (n = 8): Promise<void> => {
 // rank section の data (個別 POST /api/liff/rank の data と同 shape)。フォールバック検証でも使う。
 const RANK_DATA = {
   linked: false,
+  // ホームのヒーローが描くのはこの 1 本 (= 会員証 /liff/my-rank と同じ系統)。
+  // 下の currentRank 系は DEPRECATED な friend_ranks 由来で、本番は空 (描画には使わない)。
+  loyalty: {
+    rank: { id: 'silver', name: 'シルバー', discountPercent: 4, badgeEmoji: '🥈', badgeColor: '#C0C0C0', badgeImageUrl: '/images/rank-silver-v2.png' },
+    trailing12moJpy: 15000,
+    next: { id: 'gold', name: 'ゴールド', remainingJpy: 9000, discountPercent: 6 },
+    progressRatio: 0.25,
+  },
   currentRank: { name: 'Silver', color: '#C0C0C0', icon: 'Ag' },
   totalSpent: 15000,
   ordersCount: 3,
@@ -356,7 +408,7 @@ describe('bootstrap 成功 — 個別 section fetch ゼロで全カード描画'
     });
     await (sb.fn.bootstrapPortal as unknown as () => Promise<boolean>)();
     await tick();
-    expect(sb.byId.get('rank-card')!.innerHTML).toContain('Silver');
+    expect(sb.byId.get('rank-card')!.textContent).toContain('会員');
     expect(sb.byId.get('tip-card')!.innerHTML).toContain('水分補給のコツ');
     // 紹介カードは bootstrap の refCode で generate を撃たずに描画される
     expect(sb.byId.get('referral-card')!.innerHTML).toContain('ref_abc123');
@@ -375,7 +427,7 @@ describe('bootstrap 成功 — 個別 section fetch ゼロで全カード描画'
     const p = (sb.fn.bootstrapPortal as unknown as () => Promise<boolean>)();
     await tick(20);
     // bootstrapPortal 全体は streak 待ちで未解決のまま — それでも rank は描画済み・loading 解除済み
-    expect(sb.byId.get('rank-card')!.innerHTML).toContain('Silver');
+    expect(sb.byId.get('rank-card')!.textContent).toContain('会員');
     expect(sb.byId.get('loading')!.style.display).toBe('none');
     void p; // 未解決の promise は放置して良い (fetch stub は leak しない)
   });
@@ -398,7 +450,7 @@ describe('部分失敗の隔離と丸ごとフォールバック', () => {
     expect(sb.byId.get('tip-card')!.innerHTML).toContain('個別経路の Tip');
     // 他 section は個別 fetch されない
     expect(sb.calls.map((c) => c.path)).not.toContain('/api/liff/rank');
-    expect(sb.byId.get('rank-card')!.innerHTML).toContain('Silver');
+    expect(sb.byId.get('rank-card')!.textContent).toContain('会員');
   });
 
   it('bootstrap 呼び出し自体の失敗 (network) は false = 旧経路へ丸ごとフォールバック', async () => {
@@ -438,7 +490,7 @@ describe('initLiff — gate 配線の end-to-end 観測', () => {
     await (sb.fn.initLiff as unknown as () => Promise<void>)();
     const paths = sb.calls.map((c) => c.path);
     expect(paths.length, '総 fetch 本数 (= PR-3 の削減効果そのもの): ' + paths.join(', ')).toBe(2);
-    expect(sb.byId.get('rank-card')!.innerHTML).toContain('Silver');
+    expect(sb.byId.get('rank-card')!.textContent).toContain('会員');
     expect(sb.byId.get('loading')!.style.display).toBe('none');
   });
 
@@ -451,7 +503,7 @@ describe('initLiff — gate 配線の end-to-end 観測', () => {
     expect(paths).toContain('/api/liff/rank');
     expect(paths).toContain('/api/liff/tips/today');
     expect(paths).toContain('/api/liff/badges');
-    expect(sb.byId.get('rank-card')!.innerHTML).toContain('Silver');
+    expect(sb.byId.get('rank-card')!.textContent).toContain('会員');
     expect(sb.byId.get('loading')!.style.display).toBe('none');
   });
 
@@ -476,7 +528,7 @@ describe('deep-link 入場では早期 reveal を見送る', () => {
     sb.respond.set('/api/liff/intake/streak', 'never');
     const p = (sb.fn.bootstrapPortal as unknown as () => Promise<boolean>)();
     await tick(30);
-    expect(sb.byId.get('rank-card')!.innerHTML).toContain('Silver');
+    expect(sb.byId.get('rank-card')!.textContent).toContain('会員');
     expect(sb.byId.get('loading')!.style.display).not.toBe('none');
     void p;
   });

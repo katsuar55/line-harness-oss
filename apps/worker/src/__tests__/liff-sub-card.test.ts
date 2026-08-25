@@ -272,7 +272,8 @@ describe('gate LIFF_SUB_CARD_ENABLED (既定 off = fragment を 1 byte も出さ
     // shop タブ lazy-load + deep-link 先行フェッチの**分岐内**に配線される
     // (出現回数だけの assert は「if (name === 'account') 側へ移動」の mutation を素通りする)
     expect(scriptOn).toMatch(/if \(name === 'shop'\) \{[\s\S]{0,300}?loadSubContractsOnce\(\);/);
-    expect(scriptOn).toMatch(/earlyDest === 'delivery'[\s\S]{0,300}?loadSubContractsOnce\(\);/);
+    // 2026-08-25: deep-link の生 hash 判定 (earlyDest) は navResolveOnce() の確定した行き先に置き換わった
+    expect(scriptOn).toMatch(/entry\.tab === 'shop'[\s\S]{0,300}?loadSubContractsOnce\(\);/);
   });
 });
 

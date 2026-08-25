@@ -17,10 +17,17 @@ const root = dirname(fileURLToPath(import.meta.url));
 const pages = readFileSync(join(root, '..', 'routes', 'liff-pages.ts'), 'utf8');
 
 describe('回遊ループ導線 (consolidation)', () => {
-  it('ホーム rank card に会員特典・購入への CTA を追加 (text dead-end を解消)', () => {
-    expect(pages).toContain('会員特典・おトクに購入する');
-    // CTA は my-rank ページへ (API_BASE + path)
-    expect(pages).toMatch(/API_BASE \+ '\/liff\/my-rank"[\s\S]{0,200}会員特典・おトクに購入する/);
+  it('ホーム rank card に会員特典・購入への CTA がある (text dead-end を解消)', () => {
+    // 2026-08-25: 統合ランクヒーローに置き換わり、CTA は fragment 側のフッターボタンへ移った。
+    // 導線の有無 (ここが消えると回遊が閉じる) はここで、文言と挙動は liff-rank-hero.test.ts で固定する。
+    const heroJs = readFileSync(
+      join(root, '..', 'routes', 'liff-portal-fragments', 'rank-hero.ts'),
+      'utf8',
+    );
+    expect(heroJs).toContain('会員特典を見る');
+    expect(heroJs).toMatch(/openFeaturePage\("\/liff\/my-rank"\)/);
+    // fragment が実際にポータルへ emit されていること (import しただけで配線漏れ、を防ぐ)
+    expect(pages).toContain('${rankHeroJs()}');
   });
 
   it('服用記録(intake)タブ末尾に次アクション回遊導線を追加 (記録→ランク/購入)', () => {
