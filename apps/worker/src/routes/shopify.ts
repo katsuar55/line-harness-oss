@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import {
   addPurchaseEvent,
+  reconcilePurchaseEventAmount,
   upsertShopifyOrder,
   upsertShopifyCustomer,
   upsertShopifyProduct,
@@ -406,6 +407,8 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
     // 会員ランクの原資 (member_purchase_events) の取り込み。
     // **既定 ON**: off で出荷すると「本番でずっと壊れていた状態」をそのまま出すことになる。
     // 止めたいときだけ MEMBER_INGEST_ENABLED='false' を投入する (redeploy 不要の kill switch)。
+    // 返金系の financial_status。 これが届いたら記録済みの購入額を実額へ付け替える
+    const REFUND_STATUSES = new Set(['refunded', 'partially_refunded', 'voided']);
     const MEMBER_INGEST_ON =
       (c.env as unknown as Record<string, string | undefined>).MEMBER_INGEST_ENABLED !== 'false';
 
@@ -539,6 +542,23 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
               //    member_purchase_events は 21 行すべて source='backfill' で、
               //    webhook 由来は**開設以来 0 行**。 実際に届く webhook で記録する
               //    (coupon-redemption.ts が同じ理由で orders/create を使っているのと同じ判断)。
+              // 返金・取消の反映 (Codex P1)。 いったん paid で記録した注文が後から返金されても
+              // ランクが下がらないと、返金済みの売上で最大 8% OFF + NLR- コードが出続ける。
+              // 金額は Shopify の current_total_price (返金後の実額) を優先し、無ければ全額返金扱い。
+              if (MEMBER_INGEST_ON && REFUND_STATUSES.has(orderFinancialStatus)) {
+                try {
+                  const rawCurrent = body.current_total_price;
+                  const current = rawCurrent === undefined || rawCurrent === null ? NaN : Number(rawCurrent);
+                  const nextAmount = Number.isFinite(current) ? current : 0;
+                  const r = await reconcilePurchaseEventAmount(db, shopifyOrderId, nextAmount);
+                  if (r.changed) {
+                    await logWebhook(db, topic, shopifyOrderId, 'refund-reconciled', `${r.from} -> ${r.to}`);
+                  }
+                } catch (err) {
+                  console.error('[shopify-webhook] refund reconcile failed:', err instanceof Error ? err.message : String(err));
+                }
+              }
+
               if (MEMBER_INGEST_ON && orderFinancialStatus === 'paid') {
                 try {
                   await addPurchaseEvent(db, {

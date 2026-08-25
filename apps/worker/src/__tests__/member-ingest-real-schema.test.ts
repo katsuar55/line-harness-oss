@@ -227,3 +227,69 @@ describe('会員ランクの原資 — 昇格 push を撃たない', () => {
     fetchSpy.mockRestore();
   });
 });
+
+describe('会員ランクの原資 — 返金・取消の反映 (Codex P1)', () => {
+  it('🚨 全額返金でランクから外れる (返金済みの売上で 8% OFF が出続けない)', async () => {
+    const ctx = setup();
+    await post(ctx, 'orders/updated', orderBody());
+    expect((await settle(ctx.db, 1)).length).toBe(1);
+
+    await post(ctx, 'orders/updated', orderBody({ financial_status: 'refunded', current_total_price: '0' }));
+    for (let i = 0; i < 40; i++) {
+      const r = events(ctx.db)[0];
+      if (r && r.applied_at === null) break;
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    const row = events(ctx.db)[0];
+    // applied_at が NULL = trailing-12mo の集計 (applied_at IS NOT NULL) から外れる
+    expect(row.applied_at, '返金後も applied のままだとランクが下がらない').toBeNull();
+    expect(row.amount_jpy).toBe(0);
+
+    const member = ctx.db
+      .prepare(`SELECT total_purchase_jpy FROM members WHERE friend_id = '${FRIEND}'`)
+      .get() as { total_purchase_jpy: number } | undefined;
+    expect(member?.total_purchase_jpy, '累計からも引く').toBe(0);
+  });
+
+  it('一部返金は返金後の実額へ付け替える (current_total_price)', async () => {
+    const ctx = setup();
+    await post(ctx, 'orders/updated', orderBody());
+    await settle(ctx.db, 1);
+
+    await post(ctx, 'orders/updated', orderBody({ financial_status: 'partially_refunded', current_total_price: '1800' }));
+    for (let i = 0; i < 40; i++) {
+      if (events(ctx.db)[0].amount_jpy === 1800) break;
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    const row = events(ctx.db)[0];
+    expect(row.amount_jpy).toBe(1800);
+    expect(row.applied_at, '一部返金なら算入は続ける').not.toBeNull();
+
+    const member = ctx.db
+      .prepare(`SELECT total_purchase_jpy FROM members WHERE friend_id = '${FRIEND}'`)
+      .get() as { total_purchase_jpy: number } | undefined;
+    expect(member?.total_purchase_jpy).toBe(1800);
+  });
+
+  it('🚨 返金の再配信で二度引かない (webhook は実際に複数回届く)', async () => {
+    const ctx = setup();
+    await post(ctx, 'orders/updated', orderBody());
+    await settle(ctx.db, 1);
+    for (let i = 0; i < 3; i++) {
+      await post(ctx, 'orders/updated', orderBody({ financial_status: 'partially_refunded', current_total_price: '1800' }));
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    const member = ctx.db
+      .prepare(`SELECT total_purchase_jpy FROM members WHERE friend_id = '${FRIEND}'`)
+      .get() as { total_purchase_jpy: number } | undefined;
+    expect(member?.total_purchase_jpy, '3 回受けても 1 回ぶんだけ引く').toBe(1800);
+    expect(events(ctx.db).length).toBe(1);
+  });
+
+  it('記録していない注文の返金では何も起きない (無関係な行を触らない)', async () => {
+    const ctx = setup();
+    await post(ctx, 'orders/updated', orderBody({ id: 88888, financial_status: 'refunded', current_total_price: '0' }));
+    await settle(ctx.db, 1, 8);
+    expect(events(ctx.db).length).toBe(0);
+  });
+});
