@@ -360,6 +360,16 @@ describe('統合ランクヒーロー — 取得できなかったとき', () =>
     expect(byId(h.doc, 'rank-card').textContent).not.toContain('% OFF');
     expect(h.doc.getElementById('rh-detail')).not.toBeNull();
   });
+
+  it('🚨 取得失敗の退避表示も gate に従う (gate off で「割引特典が受けられます」と言わない)', () => {
+    const on = makeHarness({ rankDiscountOn: true });
+    on.api.renderRankHero(null);
+    expect(byId(on.doc, 'rh-off').textContent).toBe('ご購入でランクが上がり、割引特典が受けられます');
+    const off = makeHarness({ rankDiscountOn: false });
+    off.api.renderRankHero(null);
+    expect(byId(off.doc, 'rh-off').textContent).toBe('ランクの割引特典は準備中です');
+    expect(byId(off.doc, 'rank-card').textContent).not.toContain('割引特典が受けられます');
+  });
 });
 
 describe('統合ランクヒーロー — フッター (クーポン枚数と詳細導線)', () => {
