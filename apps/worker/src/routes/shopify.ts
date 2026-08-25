@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import {
+  addPurchaseEvent,
   upsertShopifyOrder,
   upsertShopifyCustomer,
   upsertShopifyProduct,
@@ -402,6 +403,12 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
     const db = c.env.DB;
 
     // 注文イベント
+    // 会員ランクの原資 (member_purchase_events) の取り込み。
+    // **既定 ON**: off で出荷すると「本番でずっと壊れていた状態」をそのまま出すことになる。
+    // 止めたいときだけ MEMBER_INGEST_ENABLED='false' を投入する (redeploy 不要の kill switch)。
+    const MEMBER_INGEST_ON =
+      (c.env as unknown as Record<string, string | undefined>).MEMBER_INGEST_ENABLED !== 'false';
+
     if (topic === 'orders/create' || topic === 'orders/updated') {
       const shopifyOrderId = String(body.id ?? '');
 
@@ -419,6 +426,11 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
       const shopifyCustomerId = customer?.id ? String(customer.id) : undefined;
       const totalPrice = body.total_price ? Number(body.total_price) : undefined;
       const lineItemsRaw = body.line_items as Array<Record<string, unknown>> | undefined;
+      // 会員ランクの原資 (member_purchase_events) 用。 Shopify の注文作成時刻をそのまま使う —
+      // ここを now にすると orders/updated で届いた**古い注文**が直近12ヶ月に誤計上され、
+      // ランクが膨張する (migration 063 で occurred_at を足した理由そのもの)。
+      const orderFinancialStatus = (body.financial_status as string) ?? '';
+      const orderOccurredAt = (body.created_at as string) ?? null;
 
       await logWebhook(db, topic, shopifyOrderId, 'received', `order #${body.order_number ?? '?'} ¥${body.total_price ?? '?'}`);
 
@@ -512,6 +524,39 @@ shopify.post('/api/integrations/shopify/webhook', async (c) => {
                   .prepare(`INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)`)
                   .bind(friendId, shopifyTag.id, jstNow())
                   .run();
+              }
+
+              // ─── 会員ランクの原資を記録 (2026-08-26) ───
+              // 🚨 syncOrderToMember は使わない。 あれは orders/paid 用で、内部で
+              //    checkAndNotifyForFriend → **LINE push「◯◯会員ランクへ昇格しました」** を撃つ。
+              //    その文言は members/membership_tiers (0/3/5/8% ・ ¥0/1万/3万/10万) 由来で、
+              //    ミニアプリが見せる NATURISM_RANK_DEFS (0/2/4/6/8% ・ ¥0/1/1.2万/2.4万/4.5万) とは
+              //    **別の制度**。 同じ顧客に食い違う 2 つのランク名を送ることになるので撃たせない。
+              //    friend は上で解決済みなので addPurchaseEvent を直接呼ぶ (二重解決もしない)。
+              //
+              // 🚨 なぜ orders/paid ではなくここか: orders/paid は **購読されていない**
+              //    (routes/shopify.ts の webhookTopics に無い)。 本番実測でも
+              //    member_purchase_events は 21 行すべて source='backfill' で、
+              //    webhook 由来は**開設以来 0 行**。 実際に届く webhook で記録する
+              //    (coupon-redemption.ts が同じ理由で orders/create を使っているのと同じ判断)。
+              if (MEMBER_INGEST_ON && orderFinancialStatus === 'paid') {
+                try {
+                  await addPurchaseEvent(db, {
+                    shopifyOrderId,
+                    friendId,
+                    amountJpy: totalPrice ?? 0,
+                    currency: (body.currency as string) ?? 'JPY',
+                    orderNumber: body.order_number ? Number(body.order_number) : null,
+                    email: email ?? null,
+                    phone: phone ?? null,
+                    source: 'webhook',
+                    occurredAt: orderOccurredAt,
+                    metadata: { topic, financialStatus: orderFinancialStatus },
+                  });
+                } catch (err) {
+                  // 記録に失敗しても注文処理そのものは止めない (冪等なので次の updated で回収される)
+                  console.error('[shopify-webhook] addPurchaseEvent failed:', err instanceof Error ? err.message : String(err));
+                }
               }
 
               // 自動タグ付け: purchased

@@ -178,12 +178,47 @@ adminDashboard.get('/api/admin/dashboard', async (c) => {
     };
   });
 
+  // 🚨 会員ランクの原資の生存確認 (2026-08-26)。
+  // この取り込みは「壊れていても誰にも見えない」型の機能で、実際に**開設以来 webhook 由来 0 行**の
+  // まま数ヶ月気付かれなかった (ランクが上がらない = 何も起きないので苦情も出ない)。
+  // 最終取り込み時刻と直近 7 日の件数を常時出して、止まったら数字で分かるようにする。
+  const memberIngest = await section('memberIngest', async () => {
+    const agg = await db
+      .prepare(
+        `SELECT COUNT(*) AS total,
+                SUM(CASE WHEN source = 'webhook' THEN 1 ELSE 0 END) AS fromWebhook,
+                SUM(CASE WHEN applied_at IS NOT NULL AND COALESCE(occurred_at, created_at) >= ? THEN 1 ELSE 0 END) AS last7d,
+                MAX(CASE WHEN source = 'webhook' THEN created_at ELSE NULL END) AS lastWebhookAt
+           FROM member_purchase_events`,
+      )
+      .bind(new Date(Date.now() + 9 * 3600_000 - 7 * 86400_000).toISOString().replace('Z', '+09:00'))
+      .first<{ total: number; fromWebhook: number; last7d: number; lastWebhookAt: string | null }>();
+    // ランクが動きうる母数 = 連携済み friend。ここが小さいと取り込みが正常でもランクは増えない
+    const linked = await db
+      .prepare(`SELECT COUNT(*) AS n FROM friends WHERE shopify_customer_id IS NOT NULL`)
+      .first<{ n: number }>();
+    return {
+      totalEvents: agg?.total ?? 0,
+      fromWebhook: agg?.fromWebhook ?? 0,
+      last7d: agg?.last7d ?? 0,
+      lastWebhookAt: agg?.lastWebhookAt ?? null,
+      linkedFriends: linked?.n ?? 0,
+    };
+  });
+
   // 機能ステータス行 (ラベル込みでサーバ側から返す — 未公開機能のロードマップを
   // 公開 shell の静的 HTML に埋め込まない。API_KEY 保護下でのみ閲覧可)
   const on = (v: string | undefined) => v === 'true';
   const features = [
     { label: '友だち追加 500円クーポン (7日有効・¥2,000以上のご注文で)', on: true, offText: '' },
     { label: '会員ランク & ランク別割引', on: on(c.env.RANK_DISCOUNT_ENABLED), offText: '未公開' },
+    // 取り込みが止まると「購入してもランクが上がらない」が静かに起きる。実測を併記する
+    {
+      label: '(基盤) 購入の取り込み — ランクの原資',
+      on: c.env.MEMBER_INGEST_ENABLED !== 'false',
+      offText: '停止中 — 購入してもランクが上がりません',
+      dynamic: 'memberIngest',
+    },
     { label: '友だち限定クーポン', on: false, offText: '', dynamic: 'friendCoupon' },
     { label: '友達紹介の「紹介した人に500円」特典 (¥2,000以上のご注文で)', on: on(c.env.REFERRAL_REWARD_ENABLED), offText: '未公開 — 案内NG' },
     { label: 'アカウント連携の「連携特典 300円」クーポン (¥2,000以上のご注文で)', on: on(c.env.LINK_REWARD_ENABLED), offText: '未公開 — 案内NG' },
@@ -203,7 +238,7 @@ adminDashboard.get('/api/admin/dashboard', async (c) => {
 
   return c.json({
     success: true,
-    data: { friends, welcomeCoupons, faq, ai7d, friendCoupon, chats, subscriptionIngest, system, features,
+    data: { friends, welcomeCoupons, faq, ai7d, friendCoupon, chats, subscriptionIngest, memberIngest, system, features,
       generatedAt: new Date(Date.now() + 9 * 3600_000).toISOString().replace('Z', '+09:00'),
       ...(Object.keys(errors).length > 0 ? { sectionErrors: errors } : {}) },
   });
