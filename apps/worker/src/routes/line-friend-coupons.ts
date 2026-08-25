@@ -21,8 +21,10 @@ import { Hono } from 'hono';
 import { getCouponRedemptionStats } from '@line-crm/db';
 import type { Env } from '../index.js';
 
-const VALID_STATUSES = new Set(['issued', 'redeemed']);
-const VALID_SOURCES = new Set(['shopify', 'manual']);
+// line_friend_coupons.status / source の CHECK 制約と**同じ語彙**にする (schema.sql)。
+// 片方でも欠けると、実在する行に一覧から降りられない (expired は coupon-expiry-sweep が実際に書く)。
+const VALID_STATUSES = new Set(['issued', 'redeemed', 'expired', 'revoked']);
+const VALID_SOURCES = new Set(['shopify', 'static_fallback']);
 
 interface CouponRow {
   id: string;
@@ -37,7 +39,6 @@ interface CouponRow {
   expires_at: string | null;
   status: string;
   source: string;
-  created_at: string;
 }
 
 interface CountRow {
@@ -95,7 +96,7 @@ lineFriendCoupons.get('/api/line-friend-coupons', async (c) => {
       c.env.DB.prepare(
         `SELECT c.id, c.friend_id, f.display_name, c.line_account_id, c.coupon_code,
                 c.shopify_discount_code_id, c.discount_value, c.discount_currency,
-                c.issued_at, c.expires_at, c.status, c.source, c.created_at
+                c.issued_at, c.expires_at, c.status, c.source
          FROM line_friend_coupons c
          LEFT JOIN friends f ON c.friend_id = f.id
          ${where}

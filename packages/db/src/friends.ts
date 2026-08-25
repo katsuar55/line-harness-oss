@@ -11,6 +11,12 @@ export interface Friend {
   metadata: string;
   created_at: string;
   updated_at: string;
+  /**
+   * ブロック復活 (再フォロー) の時刻。upsertFriend は再フォロー時に created_at を**保持**して
+   * この列だけを now にする (= 「最後に友だちになった時刻」は `last_refollowed_at ?? created_at`)。
+   * 列は schema に存在するが多くの既存 Friend literal が省略しているため optional で宣言する。
+   */
+  last_refollowed_at?: string | null;
   /** Shopify customer 数値 ID (= migration 060。 PR3 で metafield 逆引きにより populate)。 未 link は null。 */
   shopify_customer_id: string | null;
   /**

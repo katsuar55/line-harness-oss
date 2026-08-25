@@ -2307,7 +2307,9 @@ async function loadWelcomeCoupon(preRes) {
       '<span class="chip-coral px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700">🎁 あなた専用</span>' +
       (cp.remainingText ? '<span class="text-xs font-bold text-coral">⏳ ' + esc(couponExpiryPhrase(cp.remainingText)) + '</span>' : '') + '</div>' +
       '<p class="text-2xl font-extrabold text-coral-lg mb-1">' + currency + Number(cp.discountValue) + ' OFF クーポン</p>' +
-      '<p class="text-xs text-gray-500 mb-2">友だち追加のお礼です。公式ストアの初回購入にお使いいただけます。</p>' +
+      // 利用条件 (¥2,000 以上) は額と同じカードに必ず出す (2026-08-24)。
+      //   書かないと ¥2,000 未満の注文でコードが無言で外れ、顧客には「使えなかった」としか見えない。
+      '<p class="text-xs text-gray-500 mb-2">友だち追加のお礼です。<b>¥2,000 以上のご注文</b>でお使いいただけます (定期便の初回にも)。</p>' +
       '<div class="flex items-center gap-2 mb-3">' +
       '<code id="welcome-coupon-code" class="flex-1 text-center text-sm font-bold tracking-widest bg-white rounded-lg py-2" style="border:1px solid #f4c0ad">' + esc(cp.code) + '</code>' +
       '<button onclick="copyWelcomeCoupon()" class="text-xs font-bold text-coral rounded-lg px-3 py-2" style="border:1px solid #f4c0ad;background:#fff5ec">コピー</button></div>' +
@@ -2376,7 +2378,7 @@ async function loadReferralCoupon(preRes) {
       '<span class="chip-coral px-2 py-0.5 rounded-full" style="font-size:10px;font-weight:700">🎁 紹介特典</span>' +
       '<span class="text-xs font-bold text-coral">' + availLabel + '</span></div>' +
       '<p class="text-2xl font-extrabold text-coral-lg mb-1">¥' + val + ' OFF クーポン</p>' +
-      '<p class="text-xs text-gray-500 mb-2">ご紹介ありがとうございます!お友だちが購入するたびに増えます。公式ストアでお使いいただけます(紹介クーポンは1回のご注文に1枚)。</p>';
+      '<p class="text-xs text-gray-500 mb-2">ご紹介ありがとうございます!お友だちが購入するたびに増えます。<b>¥2,000 以上のご注文</b>でお使いいただけます(紹介クーポンは1回のご注文に1枚)。</p>';
     var items = list.map(function(cp) {
       return '<div class="flex items-center gap-2 mb-2">' +
         '<code class="flex-1 text-center text-sm font-bold tracking-widest bg-white rounded-lg py-2" style="border:1px solid #f4c0ad">' + esc(cp.code) + '</code>' +
@@ -2435,13 +2437,15 @@ async function loadLinkCoupon(preRes) {
     //    PR-C (welcome combinesWith + 全券 min¥2,000) が本番に乗った後、UX 採点済みの帯文言
     //    「クーポンは併用できます — 1回のご注文につき紹介クーポンは1枚まで・¥2,000以上のご注文で」
     //    に差し替える (docs/SPRINT_C_MAGIC_LINK_MAIL.md §6)。先に書くと景表法の「言い過ぎ」。
+    //    ⚠️ 2026-08-24 時点でも「併用できます」はまだ書かない (流通中の旧コードへの遡及 op が未実施)。
+    //    ただし **min ¥2,000 は PR-C が本番に乗っており全券に実際に付いている**ので、条件として明記する。
     el.innerHTML =
       '<div class="flex items-center flex-wrap gap-2 mb-2">' +
       '<span class="coupon-eyebrow">🔗 連携特典</span>' + expiry + '</div>' +
       (val
         ? '<p class="coupon-amt">¥' + val + '<span class="coupon-amt-unit">OFF</span></p>'
         : '<p class="coupon-amt" style="font-size:22px">割引クーポン</p>') +
-      '<p class="coupon-note mt-1 mb-3">アカウント連携のお礼です。公式ストアの全商品にお使いいただけます。</p>' +
+      '<p class="coupon-note mt-1 mb-3">アカウント連携のお礼です。<b>¥2,000 以上のご注文</b>でお使いいただけます。</p>' +
       // 320px 端末では「コードをコピー」と「このクーポンで買う →」を横に並べると
       // nowrap の最小幅合計がカード内幅 (約 254px) を超えて溢れる。コピーはコード行に寄せ、
       // 主 CTA は 1 行占有にする (60代のタップ精度にも効く)。
@@ -3173,6 +3177,9 @@ async function loadReferralCard(preRes) {
       '<p class="text-sm font-bold text-gray-700">お友だちに</p>' +
       '<p class="mb-1"><span class="ref-500">¥500</span><span class="text-sm font-bold" style="color:#b84a2e"> OFFクーポンをプレゼント</span></p>' +
       (REFERRAL_REWARD_ON ? '<p class="text-xs font-bold mt-1" style="color:#0f766e">👑 お友だちがクーポンで購入すると、あなたにも ¥500</p>' : '') +
+      // 利用条件の明示 (2026-08-24): 全券共通の最低購入 ¥2,000。書かないと ¥2,000 未満の
+      //   注文でコードが無言で外れ、顧客には「使えなかった」としか見えない (景表法の有利誤認)。
+      '<p class="text-xs text-gray-500 mt-1">¥2,000 以上のご注文でお使いいただけます</p>' +
       '<div class="grid grid-cols-3 gap-1.5 mt-3 mb-3">' +
       '<div class="ref-step"><p style="font-size:18px">📮</p><p style="font-size:10px;color:#64748b;font-weight:700">リンクを送る</p></div>' +
       '<div class="ref-step"><p style="font-size:18px">👋</p><p style="font-size:10px;color:#64748b;font-weight:700">友だち追加</p></div>' +
@@ -3214,10 +3221,12 @@ function openLineShare(msg) {
 function shareRefLine() {
   var url = document.getElementById('ref-url').textContent;
   // gate 連動 (実機FB第5弾): 紹介報酬 (referrer 側 ¥500) が有効化されたら承認済コピー A' に自動切替。
-  //   off の間は referred 側 (= welcome ¥500、稼働中) のみを約束する文言 (景表法セーフ)。
+  //   off の間は referred 側 (= 友だち追加 welcome ¥500、稼働中) のみを約束する文言。
+  //   2026-08-24: どちらの分岐にも利用条件 (¥2,000 以上) を入れる。受け取った人が実際に使える
+  //   条件を招待の時点で示さないと、額だけ約束して条件を伏せた案内になる (景表法の有利誤認)。
   var msg = REFERRAL_REWARD_ON
-    ? '🎁ナチュリズムの500円クーポン、おすそ分け!\\nこのリンクから友だち追加するだけで、あなたにも500円クーポンが届くよ✨\\n100%植物由来のインナーケア(食事サポート)が実質¥1,876〜\\n' + url
-    : 'naturismを一緒に始めませんか? 友だち追加で500円OFFクーポンがもらえます!\\n' + url;
+    ? '🎁ナチュリズムの500円クーポン、おすそ分け!\\nこのリンクから友だち追加するだけで、あなたにも500円クーポンが届くよ✨\\n(¥2,000以上のご注文で使えます)\\n100%植物由来のインナーケア(食事サポート)が実質¥1,876〜\\n' + url
+    : 'naturismを一緒に始めませんか? 友だち追加で500円OFFクーポンがもらえます!\\n(¥2,000以上のご注文で使えます)\\n' + url;
   if (typeof liff !== 'undefined' && liff.isApiAvailable && liff.isApiAvailable('shareTargetPicker')) {
     liff.shareTargetPicker([{ type: 'text', text: msg }]).then(function(res) {
       if (res) showToast('送信しました!');
@@ -4299,18 +4308,40 @@ function checkReferralParam() {
     var params = new URLSearchParams(window.location.search);
     var ref = params.get('ref');
     if (!ref) return;
-    // Clean URL (remove ref param)
-    var url = new URL(window.location.href);
-    url.searchParams.delete('ref');
-    window.history.replaceState({}, '', url.toString());
     // Claim referral (non-blocking)
+    //   🚨 URL から ref を消すのは **claim が成立してから** (採点ループ 2026-08-24)。
+    //   先に消すと、friends 行がまだ無くて 401/404 になった場合 (紹介リンク経由の新規ユーザーは
+    //   follow webhook と LIFF 起動が並行するので実際に起こる) に、その紹介は二度と成立しない。
+    //   失敗時は ref を URL に残すので、再読み込み / 次回起動でもう一度試せる。
     api('/api/liff/referral/claim', { refCode: ref }).then(function(res) {
-      if (res.success && res.data && !res.data.alreadyClaimed) {
-        // referred の ¥500 は友だち追加 welcome クーポン (welcome-coupon-card に表示) がそれに当たる。
-        showToast('紹介リンクが適用されました!お友だち追加特典の500円クーポンをご利用ください✨');
+      if (!res || !res.success || !res.data) return;
+      clearRefParam();
+      if (res.data.alreadyClaimed) return;
+      // referred の特典は友だち追加 welcome クーポン (welcome-coupon-card に表示) がそれに当たる。
+      //   額は**台帳の実値**をサーバから受け取る。定数を書くと ¥300 券の保有者に嘘をつく。
+      var v = Number(res.data.welcomeDiscountValue);
+      if (isFinite(v) && v > 0) {
+        showToast('紹介リンクが適用されました!お友だち追加特典の' + v + '円クーポン (¥2,000以上のご注文で) をご利用ください✨');
+      } else if (res.data.couponPending) {
+        // 発行を実際に走らせたときだけ「まもなく」と言う (Codex P1)。
+        //   予定が無いのに約束すると、claim 成功で ref が消える分だけ回復不能になる。
+        showToast('紹介リンクが適用されました!お友だち追加特典のクーポンをまもなくお届けします✨');
+        setTimeout(function() { try { loadWelcomeCoupon(); } catch (e) { /* ignore */ } }, 3000);
+      } else {
+        // クーポンが無く、発行の予定も無い = 紹介の成立だけを伝える (持っていない物を約束しない)。
+        showToast('紹介リンクが適用されました✨');
       }
     }).catch(function() {});
   } catch(e) { /* ignore */ }
+}
+
+function clearRefParam() {
+  try {
+    var url = new URL(window.location.href);
+    if (!url.searchParams.has('ref')) return;
+    url.searchParams.delete('ref');
+    window.history.replaceState({}, '', url.toString());
+  } catch (e) { /* ignore */ }
 }
 
 // ─── Shopify 連携ボタン (App Proxy, 2026-07-29) ───

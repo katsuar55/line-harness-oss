@@ -136,10 +136,12 @@ function build6JuneReferralFlex(): FlexContainer {
       spacing: 'md',
       contents: [
         { type: 'text', text: 'お友だちを naturism 公式 LINE に招待すると、', size: 'sm', color: '#1e293b', wrap: true },
-        { type: 'text', text: '🌿 あなた → 次回購入で 500 円 OFF', size: 'xs', color: '#15803d', wrap: true, margin: 'sm' },
-        { type: 'text', text: '🌿 お友だち → 初回購入で 500 円 OFF', size: 'xs', color: '#15803d', wrap: true },
+        { type: 'text', text: '🌿 お友だち → 友だち追加で 500 円 OFF', size: 'xs', color: '#15803d', wrap: true, margin: 'sm' },
         { type: 'separator', margin: 'md' },
-        { type: 'text', text: '※ 紹介プログラム詳細は Phase 4 で実装予定 — まずは「公式 LINE 楽しい」 と感じてもらってから', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '※ ¥2,000 以上のご注文でお使いいただけます', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
+        // 紹介した側への特典は REFERRAL_REWARD_ENABLED (本番 off) の内側。gate を見られない
+        // 静的 Flex で額を約束しない (採点ループ 2026-08-24)。
+        { type: 'text', text: '※ ご紹介いただいた方への特典は準備中です', size: 'xxs', color: '#9ca3af', wrap: true },
       ],
     },
   } as unknown as FlexContainer;
@@ -259,7 +261,7 @@ function build7JulyBlueFlex(): FlexContainer {
 }
 
 function build7JulyCampaignFlex(): FlexContainer {
-  // 夏キャンペーン予告 (= 紹介 reminder と統合、 Phase 4 で実装予定)
+  // 夏キャンペーン予告 (= 紹介 reminder と統合)
   return {
     type: 'bubble',
     header: {
@@ -278,7 +280,7 @@ function build7JulyCampaignFlex(): FlexContainer {
       spacing: 'md',
       contents: [
         { type: 'text', text: '7-8 月限定の特典を準備中です🌸', size: 'sm', color: '#1e293b', wrap: true },
-        { type: 'text', text: '🌿 友だち紹介で 500 円 OFF (= あなた + お友だち 両方)', size: 'xs', color: '#9d174d', wrap: true, margin: 'sm' },
+        { type: 'text', text: '🌿 友だち紹介 — お友だちに 500 円 OFF (¥2,000 以上のご注文で)', size: 'xs', color: '#9d174d', wrap: true, margin: 'sm' },
         { type: 'text', text: '🌿 Blue + Pink セット お試し企画 (検討中)', size: 'xs', color: '#9d174d', wrap: true },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '※ 詳細は公式 LINE で随時お知らせ。 公式 Instagram @naturism_supplement もチェック✨', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
@@ -423,9 +425,10 @@ function build8AugustCampaignFlex(): FlexContainer {
         { type: 'text', text: '8/11-15 はご注文受付のみ、 発送は 8/16 から順次対応となります。', size: 'xs', color: '#475569', wrap: true },
         { type: 'separator', margin: 'sm' },
         { type: 'text', text: '🌿 友だち紹介で 500 円 OFF (= 7-8 月継続)', size: 'sm', weight: 'bold', color: '#15803d' },
-        { type: 'text', text: 'あなた → 次回購入 / お友だち → 初回購入 で両方お得。 帰省で会うご家族にも🌸', size: 'xs', color: '#475569', wrap: true },
+        { type: 'text', text: 'お友だちの初回購入が 500 円 OFF。 帰省で会うご家族にも🌸', size: 'xs', color: '#475569', wrap: true },
+        { type: 'text', text: 'ご紹介いただいた方への特典は準備中です', size: 'xs', color: '#94a3b8', wrap: true },
         { type: 'separator', margin: 'md' },
-        { type: 'text', text: '※ 紹介プログラム詳細は Phase 4 で実装予定 — まずは LINE 公式で随時お知らせします', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
+        { type: 'text', text: '※ ¥2,000 以上のご注文でお使いいただけます', size: 'xxs', color: '#9ca3af', wrap: true, margin: 'sm' },
       ],
     },
   } as unknown as FlexContainer;

@@ -29,18 +29,30 @@ import { auditSystem } from './audit-logger.js';
 // 定数
 // ============================================================
 
-// 2026-08-13 Katsu 決定 (Ultraplan): ¥500 → ¥300。全員の初回購入動機付けとしては存続し、
-// 紹介経由 (claim 成立) の人だけ ¥500 へ**格上げ** (upgradeWelcomeCouponForReferred) =
-// 「紹介された方がお得」を体験として残す。既発行分は台帳の discount_value が正 (遡及書換なし)。
-const DEFAULT_DISCOUNT_VALUE_JPY = 300;
-// 紹介経由の格上げ後の額
-export const UPGRADED_DISCOUNT_VALUE_JPY = 500;
+// 2026-08-24 Katsu 決定: ¥300 → ¥500 に**戻す**。
+//   2026-08-14 の ¥300 化 (PR-C #255) は実額だけを下げ、顧客向け文言を 1 つも追随させなかった。
+//   友だち追加の挨拶・招待文・紹介カード・月次 Flex・管理画面がすべて「500 円 OFF」と言い続けて
+//   いたため、実装を文言に合わせる方を選んだ (景表法の有利誤認を消すのが目的)。
+//   帰結: 紹介経由の人だけ ¥500 へ格上げする機構 (welcome-upgrade.ts) は**不要になり削除**した。
+//   既発行分は台帳の discount_value が正 (遡及書換なし) = ¥300 で発行済みの分はそのまま。
+// 顧客向け文言 (紹介ヒーロー / 招待文 / 紹介 LP / 月次 Flex) が約束する額と**同じ値**。
+// 定数だけ動かして文言が置き去りになる事故 (#255 で実際に起きた) を防ぐため export し、
+// テストで「約束している額 === 発行する額」を固定する。
+export const WELCOME_DISCOUNT_VALUE_JPY = 500;
+const DEFAULT_DISCOUNT_VALUE_JPY = WELCOME_DISCOUNT_VALUE_JPY;
 // 全券共通の最低購入金額 (Katsu 確定 ¥2,000 — 小型缶 ¥389/¥430 が ¥0 になる事故を防ぐ)
 export const MIN_SUBTOTAL_JPY = 2000;
 // 5β-1d-2e (2026-05-19): 90 日 → 3 日 に短縮 (= マーケ最適化、 業界 best practice 3-7 日)
 // 根拠: 行動経済学的 (希少性 + 損失回避 + 後悔回避) で短期限が conversion ↑、
 // HubSpot 調査で 48h 限定 coupon の redemption rate は 30 日 coupon の 3-4 倍
-const DEFAULT_VALID_DAYS = 3;
+//
+// 2026-08-24: 既定値そのものを 7 日にした。本番の呼び元 (follow webhook) は当初から
+//   validDays:7 を明示しており、既定の 3 日は**どこからも使われていない値**だった。
+//   にもかかわらずトークの「マイクーポン」Flex は「3 日間有効」と案内しており、
+//   使われない既定値が顧客向け文言の根拠として独り歩きしていた (実際は 7 日)。
+//   顧客に出す日数と 1 箇所で対応させるため、この定数を唯一の正とする。
+export const WELCOME_VALID_DAYS = 7;
+const DEFAULT_VALID_DAYS = WELCOME_VALID_DAYS;
 const DEFAULT_CODE_PREFIX = 'LINE';
 // 5β-1d-2c (2026-05-19): API version を他 service (shopify-customer-sync.ts 等) と統一 (2024-04 → 2026-04)
 // 古い 2024-04 のままだと Shopify Admin GraphQL endpoint で 404 が返るため修正

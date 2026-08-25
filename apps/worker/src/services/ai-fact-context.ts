@@ -18,6 +18,8 @@
  *   - **timestamp**: D1 の TEXT timestamps は ISO 8601 + JST '+09:00' suffix で比較可
  */
 
+import { MIN_SUBTOTAL_JPY } from './shopify-coupon-issuer.js';
+
 const ACTIVE_BROADCAST_WINDOW_DAYS = 7; // 過去 N 日間に配信済 broadcast を「進行中」 として扱う
 const BROADCAST_LIMIT = 3; // prompt 肥大化防止
 
@@ -171,7 +173,9 @@ export async function getFriendCouponContext(
 
     const expiry = row.expires_at ? formatJstDate(row.expires_at) + ' まで有効' : '無期限';
     const currency = row.discount_currency === 'JPY' ? '¥' : row.discount_currency + ' ';
-    return `\n## あなた専用クーポン (有効)\n- コード: ${row.coupon_code}\n- 値引: ${currency}${row.discount_value} OFF\n- 有効期限: ${expiry}\n- 利用先: 公式ストア naturism-diet.com`;
+    // 🚨 利用条件は**この fact block に載せる**こと (2026-08-24)。system prompt 側のルール文だけだと
+    //   LLM はデータ側を優先して転記し、最低購入が落ちた回答になる。値は発行側の定数が唯一の正。
+    return `\n## あなた専用クーポン (有効)\n- コード: ${row.coupon_code}\n- 値引: ${currency}${row.discount_value} OFF\n- 有効期限: ${expiry}\n- ご利用条件: ¥${MIN_SUBTOTAL_JPY.toLocaleString('en-US')} 以上のご注文\n- 利用先: 公式ストア naturism-diet.com`;
   } catch (err) {
     console.error(
       '[ai-fact-context] getFriendCouponContext failed:',

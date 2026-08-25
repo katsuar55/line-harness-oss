@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import { getShopifyAccessToken } from '../services/shopify-token.js';
-import { upgradeWelcomeCouponForReferred } from '../services/welcome-upgrade.js';
-import { LineClient } from '@line-crm/line-sdk';
+import { issueCouponForFriend, WELCOME_VALID_DAYS } from '../services/shopify-coupon-issuer.js';
 import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
 // read 系 handler 14 本の本体は services/portal-read.ts へ抽出済み (Ultraplan PR-2)。
 // /api/liff/portal-bootstrap (routes/liff-portal-bootstrap.ts) が同じ関数群を並列実行する。
@@ -104,10 +103,46 @@ function validateNote(note: unknown): string | undefined {
   return note.slice(0, MAX_NOTE_LENGTH);
 }
 
+/**
+ * 「未発行の welcome クーポンを救済してよい友だちか」= **最後に友だちになってから**
+ * 券の寿命 (7 日) 以内か。呼び元は `last_refollowed_at ?? created_at` を渡す
+ * (再フォローは created_at を保持するので、created_at だけ見ると正当な救済を落とす)。
+ *
+ * 値は JST の ISO 風文字列だが **タイムゾーン接尾辞を持たない**
+ * (schema: `strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')`)。Workers は UTC で動くので
+ * そのまま Date.parse すると 9 時間ぶんずれる。接尾辞が無いときは JST とみなして補う。
+ *
+ * 判定できない値 (null / 壊れた文字列) は **false** に倒す。救済は実クーポン発行 = 実費なので、
+ * 「分からないなら出さない」が安全側 (出さない方は次回訪問で回復できるが、出した方は戻せない)。
+ */
+export function isWithinWelcomeRescueWindow(
+  friendFollowedAt: string | null,
+  nowMs: number = Date.now(),
+): boolean {
+  const raw = (friendFollowedAt ?? '').trim();
+  if (!raw) return false;
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(raw);
+  const parsed = Date.parse(hasZone ? raw : `${raw}+09:00`);
+  if (!Number.isFinite(parsed)) return false;
+  const ageMs = nowMs - parsed;
+  // 未来日 (時計ずれ) は「たった今 follow した」とみなす = 正当な救済を落とさない
+  if (ageMs < 0) return true;
+  return ageMs <= WELCOME_VALID_DAYS * 86_400_000;
+}
+
 // ─── Helper: get verified friend from liffUser middleware ───
 function getLiffUser(c: { get: (key: string) => unknown }) {
   return c.get('liffUser') as
-    | { lineUserId: string; friendId: string; shopifyCustomerId?: string | null }
+    | {
+        lineUserId: string;
+        friendId: string;
+        shopifyCustomerId?: string | null;
+        /**
+         * 最後に友だちになった時刻 (= last_refollowed_at ?? created_at)。
+         * JST・タイムゾーン接尾辞なし。救済の窓判定に使う。
+         */
+        followedAt?: string | null;
+      }
     | undefined;
 }
 
@@ -1412,16 +1447,87 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
       .bind(user.friendId)
       .first<{ id: string }>();
 
+    // 未発行の救済 (Codex P1/P2, 2026-08-24): 削除した格上げ機構は「welcome 行が無ければ直接
+    //   発行する」救済も兼ねていた。招待文は被紹介者に ¥500 を約束するので、次の 2 ケースで
+    //   「約束したのに 1 枚も届かない」が起きないよう救済だけ残す:
+    //     ① claim が follow ハンドラの発行より先に走った (friends 行は発行の前に作られる)
+    //     ② follow 時の Shopify 発行が失敗して null で終わった (本番実績 0 件だが経路は存在する)
+    //
+    //   🚨 **重複チェックより手前**に置くこと (Codex P2): 台帳への pending 記録が先に成功して
+    //   救済だけ失敗すると、以降の claim は必ず alreadyClaimed で早期 return するため、
+    //   救済を成立記録の後ろに置くと **1 度きりのチャンス**になる。一過性の Shopify 障害で
+    //   永久にクーポンが届かなくなるので、再訪のたびに試せる位置に置く。
+    //   issueCouponForFriend は既発行 row があればそれを返すので**呼ぶだけで冪等**。
+    //   額は既定 (¥500) のまま = 紹介経由だけ優遇しない (2026-08-24 の方針)。
+    //   push は送らない (welcome flow 側の通知に任せる = 2 連 push を作らない)。
+    //
+    //   ⚠️ 既知の受容リスク (Codex P2-2): follow ハンドラの発行と真に同時に走ると、
+    //   issueCouponForFriend は Shopify 作成の**後**に UNIQUE で衝突するため、負けた側の
+    //   Shopify 割引コードが台帳に載らないまま残る。コードは 31^8 の乱数で誰にも知られず
+    //   7 日で失効するため実害は無いと判断し、follow の hot path を触る予約方式は採らない。
+    //
+    //   🚨 gate の内側に置くこと (採点ループ 2026-08-24): 削除前の格上げ機構は冒頭に
+    //   `REFERRAL_REWARD_ENABLED !== 'true' → gated_off` を持っており、**実費 (Shopify の実クーポン
+    //   発行) は gate の内側**にあった。ここを gate 非連動にすると、welcome 台帳を持たない
+    //   友だち (本番 6,616 人中 約 6,580 人 = DMM から取り込んだ既存友だち) が紹介リンクを
+    //   開くだけで ¥500 の実クーポンを取得できてしまい、意図しない一括配布になる。
+    //   紹介リンクは誰でも生成でき SNS にも貼れるため、露出は友だち数がそのまま上限になる。
+    //   🚨 救済の窓は「友だち追加から welcome 券の寿命 (7 日) 以内」に限る
+    //   (Katsu 決定 2026-08-24)。救済の目的は**follow のときに出るはずだった券の回復**であり、
+    //   7 日を過ぎた券はどのみち期限切れなので復活させる意味が無い。
+    //   窓が無いと、welcome の自動発行が始まった 2026-05-24 より前から友だちだった人
+    //   (本番 約 6,580 人 = DMM から引き継いだ既存友だち) が、誰かの紹介リンクを開くだけで
+    //   ¥500 の実クーポンを取得できる。紹介リンクは誰でも生成でき SNS にも貼れるため、
+    //   「休眠友だちへの一括配布」が我々の意図しないタイミングで始まってしまう。
+    const referralRewardOn = c.env.REFERRAL_REWARD_ENABLED === 'true';
+    const withinRescueWindow = isWithinWelcomeRescueWindow(user.followedAt ?? null);
+    if (referralRewardOn && withinRescueWindow) {
+      const rescueWork = issueCouponForFriend(c.env.DB, c.env, {
+        friendId: user.friendId,
+        validDays: WELCOME_VALID_DAYS,
+      }).catch((err) => {
+        console.error('[liff-portal] welcome coupon rescue failed:', err instanceof Error ? err.name : 'unknown');
+        return null;
+      });
+      try { c.executionCtx.waitUntil(rescueWork); } catch { /* no exec ctx in tests */ }
+    }
+
+    // 被紹介者の手元にある welcome クーポンの実額 (台帳が唯一の正)。
+    //   クライアントのトーストがこの値を使う — 定数を直書きすると ¥300 券の保有者に嘘をつく。
+    //   救済は waitUntil の非同期なので、この時点で null (= まだ無い) こともある。
+    //   line_friend_coupons は friend_id が UNIQUE (1 friend 1 枚) なので、この 1 行が welcome。
+    //   紹介 (line_referral_coupons) / 連携 (line_link_coupons) は**別テーブル**で混ざらない。
+    const welcomeRow = await c.env.DB
+      .prepare(
+        `SELECT discount_value FROM line_friend_coupons
+          WHERE friend_id = ? AND status = 'issued'
+          LIMIT 1`,
+      )
+      .bind(user.friendId)
+      .first<{ discount_value: number | null }>()
+      .catch(() => null);
+    const welcomeDiscountValue =
+      welcomeRow && Number.isFinite(Number(welcomeRow.discount_value)) && Number(welcomeRow.discount_value) > 0
+        ? Number(welcomeRow.discount_value)
+        : null;
+
+    // 「まもなく届く」と言ってよいのは、実際に発行を走らせたときだけ (Codex P1, 2026-08-24)。
+    //   gate off で救済を skip した場合に「お届けします」と言うと、何も予定されていないのに
+    //   約束したことになる (しかも claim 成功で ref は URL から消えるため再試行もできない)。
+    const couponPending = welcomeDiscountValue === null && referralRewardOn && withinRescueWindow;
+
     if (existing) {
       return c.json({
         success: true,
-        data: { alreadyClaimed: true, rewardId: existing.id },
+        data: { alreadyClaimed: true, rewardId: existing.id, welcomeDiscountValue, couponPending },
       });
     }
 
     // 紹介成立記録 (status='pending')。
-    //   referred の ¥500 は「友だち追加 welcome クーポン」(follow 時に既発行) がそれに当たるため、
-    //   ここでは新規クーポンを発行しない (= referred は ¥500 一枚)。
+    //   referred (紹介された側) の ¥500 は「友だち追加 welcome クーポン」(follow 時に既発行) が
+    //   そのまま該当するため、ここでは新規クーポンを発行しない (= referred は ¥500 一枚)。
+    //   2026-08-24: welcome を ¥500 へ戻したので、かつての「紹介経由だけ ¥300→¥500 に格上げ」
+    //   (welcome-upgrade.ts) は不要になり削除した。claim の副作用は台帳への pending 記録のみ。
     //   referrer 報酬は referred がその welcome クーポンを「利用して購入」した時に、 orders webhook の
     //   coupon-redemption 経路 (processReferralRewardOnPurchase) が発行する。
     const reward = await createReferralReward(c.env.DB, {
@@ -1429,25 +1535,14 @@ liffPortal.post('/api/liff/referral/claim', async (c) => {
       referredFriendId: user.friendId,
     });
 
-    // 格上げ (Ultraplan PR-C R3): 紹介経由と確定した瞬間、referred の welcome ¥300 を ¥500 へ。
-    //   応答は待たせない (waitUntil)。二重格上げは metadata CAS が防ぐ。
-    //   welcome 未発行 (claim が follow より先) は ¥500 直接発行 + push 1 本に統合。
-    const upgradeWork = upgradeWelcomeCouponForReferred(
-      c.env.DB,
-      c.env,
-      new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN),
-      { friendId: user.friendId },
-    ).catch((err) => {
-      console.error('[liff-portal] welcome upgrade failed:', err instanceof Error ? err.name : 'unknown');
-    });
-    try { c.executionCtx.waitUntil(upgradeWork); } catch { /* no exec ctx in tests */ }
-
     return c.json({
       success: true,
       data: {
         alreadyClaimed: false,
         rewardId: reward.id,
         status: reward.status,
+        welcomeDiscountValue,
+        couponPending,
       },
     });
   } catch (err) {

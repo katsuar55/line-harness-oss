@@ -198,8 +198,18 @@ export function buildProductCompareFlex(): FlexContainer {
 /**
  * flex bubble: マイクーポン (= 旧 step 2 から格上げ、 永続表示用に強化)
  * coupon code が null なら fallback text を表示。
+ *
+ * 🚨 割引額は**台帳の値 (discountValueJpy) が唯一の正**。ここに定数を書かないこと
+ *   (2026-08-24): 既発行の ¥300 券を持つ人にこの吹き出しが「500 円 OFF」と言ってしまう。
+ *   額が取れないときは金額を出さず条件だけ伝える (既定額で埋めない)。
+ *   期限の「7 日」は webhook の follow ハンドラが validDays:7 で発行しているのと対。
  */
-export function buildMyCouponFlex(couponCode: string | null): FlexContainer {
+export function buildMyCouponFlex(
+  couponCode: string | null,
+  discountValueJpy?: number | null,
+): FlexContainer {
+  const rawValue = Number(discountValueJpy);
+  const value = Number.isFinite(rawValue) && rawValue > 0 ? Math.round(rawValue) : null;
   const couponSection = couponCode
     ? [
         {
@@ -212,10 +222,21 @@ export function buildMyCouponFlex(couponCode: string | null): FlexContainer {
           contents: [
             { type: 'text' as const, text: 'クーポンコード', size: 'xxs' as const, color: '#92400e', align: 'center' as const },
             { type: 'text' as const, text: couponCode, size: 'xl' as const, weight: 'bold' as const, color: '#06C755', align: 'center' as const, margin: 'sm' as const },
-            { type: 'text' as const, text: '3 日間有効 / naturism-diet.com', size: 'xxs' as const, color: '#78350f', align: 'center' as const, wrap: true },
+            { type: 'text' as const, text: '発行から 7 日間有効 / naturism-diet.com', size: 'xxs' as const, color: '#78350f', align: 'center' as const, wrap: true },
           ],
         },
-        { type: 'text' as const, text: '💡 Blue 7日分 ¥696 → 500円 OFF で 実質 ¥196', size: 'xs' as const, color: '#475569', align: 'center' as const, wrap: true, margin: 'md' as const },
+        // 利用条件は必ず併記する (2026-08-24): 全券共通の最低購入 ¥2,000 を書かないと
+        //   ¥2,000 未満の注文でコードが無言で外れ、顧客には「使えなかった」としか見えない。
+        //   かつてここには「Blue 7日分 ¥696 → 500円 OFF で 実質 ¥196」という例示があったが、
+        //   ¥696 の注文には最低購入額の条件で適用できず、金額・期限とあわせて三重に誤りだった。
+        {
+          type: 'text' as const,
+          text: value
+            ? `💡 ¥2,000 以上のご注文で ${value} 円 OFF`
+            : '💡 ¥2,000 以上のご注文でお使いいただけます',
+          size: 'xs' as const, color: '#475569', align: 'center' as const, wrap: true, margin: 'md' as const,
+        },
+        { type: 'text' as const, text: '定期便の初回にもお使いいただけます', size: 'xxs' as const, color: '#94a3b8', align: 'center' as const, wrap: true },
       ]
     : [
         { type: 'text' as const, text: 'クーポンは間もなくお届けします', size: 'sm' as const, color: '#78350f', align: 'center' as const, wrap: true },
@@ -361,12 +382,14 @@ export async function handleWelcomeAgeGroup(
   // coupon code を D1 から SELECT (= follow event で issueCouponForFriend が INSERT 済の想定、 失敗時は null)
   const couponRow = await db
     .prepare(
-      "SELECT coupon_code FROM line_friend_coupons WHERE friend_id = ? AND status = 'issued' ORDER BY issued_at DESC LIMIT 1",
+      "SELECT coupon_code, discount_value FROM line_friend_coupons WHERE friend_id = ? AND status = 'issued' ORDER BY issued_at DESC LIMIT 1",
     )
     .bind(friend.id)
-    .first<{ coupon_code: string }>()
+    .first<{ coupon_code: string; discount_value: number | null }>()
     .catch(() => null);
   const couponCode = couponRow?.coupon_code ?? null;
+  // 額は台帳が正 (既発行の ¥300 券に「500 円」と言わないため)
+  const couponValue = couponRow?.discount_value ?? null;
 
   const displayName = friend.display_name ?? 'お客様';
   const messages: Message[] = [
@@ -382,7 +405,7 @@ export async function handleWelcomeAgeGroup(
     {
       type: 'flex',
       altText: 'マイクーポン (友だち限定)',
-      contents: buildMyCouponFlex(couponCode),
+      contents: buildMyCouponFlex(couponCode, couponValue),
     },
   ];
   await lineClient.replyMessage(replyToken, messages);

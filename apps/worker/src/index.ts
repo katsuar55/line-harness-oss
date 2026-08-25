@@ -453,29 +453,41 @@ app.get('/r/:ref', (c) => {
   }
   const target = `${liffUrl}?ref=${encodeURIComponent(ref)}`;
 
+  // 2026-08-24: ここは**被紹介者が最初に見る画面**。以前は OSS デモの LP (「L社 / U社 の無料代替 OSS」
+  //   「ステップ配信・フォーム・自動返信を体験できます」) をそのまま出しており、naturism の紹介
+  //   ランディングとして完全に別物だった。ブランド面へ差し替える。
+  //   inline script は置かない (公開固定パスの inline JS は liff-script-syntax.test.ts の対象になり、
+  //   このページに動的挙動は不要)。target は encodeURIComponent 済み + 自前 env なので属性に直接埋めてよい。
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>naturism</title>
+<title>naturism — お友だちからのご招待</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Hiragino Sans',system-ui,sans-serif;background:#0d1117;color:#fff;display:flex;justify-content:center;align-items:center;min-height:100vh}
-.card{text-align:center;max-width:400px;width:90%;padding:48px 24px}
-h1{font-size:28px;font-weight:800;margin-bottom:8px}
-.sub{font-size:14px;color:rgba(255,255,255,0.5);margin-bottom:40px}
-.btn{display:block;width:100%;padding:18px;border:none;border-radius:12px;font-size:18px;font-weight:700;text-decoration:none;text-align:center;color:#fff;background:#06C755;transition:opacity .15s}
-.btn:active{opacity:.85}
-.note{font-size:12px;color:rgba(255,255,255,0.3);margin-top:24px;line-height:1.6}
+body{font-family:'Hiragino Sans',system-ui,sans-serif;background:linear-gradient(170deg,#f2fbfa 0%,#ffffff 60%);color:#1e293b;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.card{text-align:center;max-width:400px;width:90%;padding:44px 24px}
+.eyebrow{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;color:#0f766e;background:#d9f2f0;border-radius:999px;padding:5px 12px;margin-bottom:18px}
+h1{font-size:26px;font-weight:800;margin-bottom:6px;color:#0f172a}
+.tag{font-size:13px;color:#64748b;margin-bottom:28px}
+.amt{font-size:44px;font-weight:800;color:#0ABAB5;line-height:1.1}
+.amt small{font-size:16px;font-weight:700;margin-left:4px}
+.cond{font-size:12px;color:#64748b;margin-top:8px;margin-bottom:28px;line-height:1.7}
+.btn{display:block;width:100%;padding:18px;border:none;border-radius:14px;font-size:17px;font-weight:700;text-decoration:none;text-align:center;color:#fff;background:#06C755;transition:transform .15s ease-out,opacity .15s}
+.btn:active{transform:scale(.96);opacity:.9}
+.note{font-size:11px;color:#94a3b8;margin-top:22px;line-height:1.8}
 </style>
 </head>
 <body>
 <div class="card">
+<span class="eyebrow">🎁 お友だちからのご招待</span>
 <h1>naturism</h1>
-<p class="sub">L社 / U社 の無料代替 OSS</p>
-<a href="${target}" class="btn">LINE で体験する</a>
-<p class="note">友だち追加するだけで<br>ステップ配信・フォーム・自動返信を体験できます</p>
+<p class="tag">100%植物由来のインナーケア</p>
+<p class="amt">¥500<small>OFF クーポン</small></p>
+<p class="cond">LINE で友だち追加するとすぐに届きます<br>¥2,000 以上のご注文でお使いいただけます</p>
+<a href="${target}" class="btn">LINE で友だち追加する</a>
+<p class="note">株式会社ケンコーエクスプレス<br>naturism-diet.com</p>
 </div>
 </body>
 </html>`);

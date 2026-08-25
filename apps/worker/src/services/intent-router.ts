@@ -57,6 +57,12 @@ export interface IntentBuildContext {
   readonly liffUrl?: string;
   /** §10-5: 受理レイヤー有効時、契約カードを受理ボタン付きで返す (入口による見た目の分裂を作らない) */
   readonly subIntentEnabled?: boolean;
+  /**
+   * 紹介報酬 gate (REFERRAL_REWARD_ENABLED)。**紹介した側**への ¥500 は gate off の間 1 円も出ない
+   * (referral-reward.ts:372 で完全 no-op) ため、off のときに「お互いに」と書くと景表法の有利誤認になる。
+   * LIFF ポータルの紹介ヒーロー / 招待文と**同じ規約**で分岐する (liff-pages.ts の REFERRAL_REWARD_ON)。
+   */
+  readonly referralRewardOn?: boolean;
 }
 
 interface PatternRule {
@@ -283,7 +289,7 @@ export async function buildMessagesForIntentAsync(
       {
         type: 'flex',
         altText: `🎁 マイクーポン ${coupon.couponCode}`,
-        contents: buildMyCouponFlex(coupon.couponCode),
+        contents: buildMyCouponFlex(coupon.couponCode, coupon.discountValue),
       },
       // 5/26 user feedback: クーポンコードは copy したいので **別 text message として送る** (= reply 内、 push 0 通追加)
       // LINE では text message を長押しで copy 可能
@@ -319,7 +325,11 @@ export async function buildMessagesForIntentAsync(
     return [
       {
         type: 'text',
-        text: `🌿 友だち紹介はこちらから💝\nご紹介でお互いにおトクなクーポンをプレゼント🎁\n\n↓ こちらをタップ\n${ctx.liffUrl}#referral`,
+        // gate off の間は**紹介された側**にだけ確実に届くもの (友だち追加 welcome ¥500) を約束する。
+        //   紹介した側の ¥500 は gate off で 1 円も出ないので、on になるまで書かない。
+        text: ctx.referralRewardOn
+          ? `🌿 友だち紹介はこちらから💝\nご紹介でお互いに 500 円 OFF クーポンをプレゼント🎁\n(¥2,000 以上のご注文でお使いいただけます)\n\n↓ こちらをタップ\n${ctx.liffUrl}#referral`
+          : `🌿 友だち紹介はこちらから💝\nお友だちに 500 円 OFF クーポンをプレゼントできます🎁\n(¥2,000 以上のご注文でお使いいただけます)\n\n↓ こちらをタップ\n${ctx.liffUrl}#referral`,
       },
     ];
   }

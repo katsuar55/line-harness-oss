@@ -34,7 +34,7 @@ import { generateAiResponse } from '../services/ai-response.js';
 import { analyzeFoodImage, FoodAnalyzerError } from '../services/food-analyzer.js';
 import { downloadLineContent, LineContentError } from '../services/line-content.js';
 import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
-import { issueCouponForFriend } from '../services/shopify-coupon-issuer.js';
+import { issueCouponForFriend, WELCOME_VALID_DAYS } from '../services/shopify-coupon-issuer.js';
 import { auditSystem } from '../services/audit-logger.js';
 import {
   isWelcomePostback,
@@ -228,9 +228,11 @@ async function handleEvent(
         const couponResult = await issueCouponForFriend(db, env, {
           friendId: friend.id,
           lineAccountId,
-          // 有効期限 7 日: 友だち追加特典であり、 かつ友だち紹介 (referred が 7 日以内に利用) の起点。
-          //   referred の ¥500 = この welcome クーポン (別途の紹介クーポンは発行しない = 二重¥500 回避)。
-          validDays: 7,
+          // 有効期限は WELCOME_VALID_DAYS (7 日): 友だち追加特典であり、 かつ友だち紹介
+          //   (referred が期限内に利用) の起点。referred の ¥500 = この welcome クーポン
+          //   (別途の紹介クーポンは発行しない = 二重¥500 回避)。
+          //   🚨 顧客向け文言 (マイクーポン Flex の「7 日間有効」) と同じ定数から引くこと。
+          validDays: WELCOME_VALID_DAYS,
         });
         lineFriendCouponCode = couponResult?.code ?? null;
       } catch (err) {
@@ -1033,6 +1035,8 @@ async function handleEvent(
             friendId: friend.id,
             liffUrl: env?.LIFF_URL,
             subIntentEnabled: env?.SUB_INTENT_ENABLED === 'true',
+            // 紹介した側への ¥500 は gate off で出ないので、文言も gate に連動させる
+            referralRewardOn: env?.REFERRAL_REWARD_ENABLED === 'true',
           });
           await lineClient.replyMessage(event.replyToken, [...messages]);
           replyTokenConsumed = true;

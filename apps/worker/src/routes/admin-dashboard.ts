@@ -182,11 +182,11 @@ adminDashboard.get('/api/admin/dashboard', async (c) => {
   // 公開 shell の静的 HTML に埋め込まない。API_KEY 保護下でのみ閲覧可)
   const on = (v: string | undefined) => v === 'true';
   const features = [
-    { label: '友だち追加 500円クーポン (7日有効)', on: true, offText: '' },
+    { label: '友だち追加 500円クーポン (7日有効・¥2,000以上のご注文で)', on: true, offText: '' },
     { label: '会員ランク & ランク別割引', on: on(c.env.RANK_DISCOUNT_ENABLED), offText: '未公開' },
     { label: '友だち限定クーポン', on: false, offText: '', dynamic: 'friendCoupon' },
-    { label: '友達紹介の「紹介した人に500円」特典', on: on(c.env.REFERRAL_REWARD_ENABLED), offText: '未公開 — 案内NG' },
-    { label: 'アカウント連携の「連携特典 300円」クーポン', on: on(c.env.LINK_REWARD_ENABLED), offText: '未公開 — 案内NG' },
+    { label: '友達紹介の「紹介した人に500円」特典 (¥2,000以上のご注文で)', on: on(c.env.REFERRAL_REWARD_ENABLED), offText: '未公開 — 案内NG' },
+    { label: 'アカウント連携の「連携特典 300円」クーポン (¥2,000以上のご注文で)', on: on(c.env.LINK_REWARD_ENABLED), offText: '未公開 — 案内NG' },
     { label: 'LINE 一斉配信 (ブロードキャスト)', on: on(c.env.BROADCAST_ALL_ENABLED), offText: '未公開 (開発者に依頼)' },
     { label: 'トーク内サブスク管理カード', on: on(c.env.SUBSCRIPTION_MENU_ENABLED), offText: '近日公開 — 案内NG' },
     // 収集は顧客から見えない準備工程 (定期便の契約データを裏で貯めている状態)。

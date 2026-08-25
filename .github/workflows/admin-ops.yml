@@ -236,6 +236,9 @@ on:
           - enable-shop-v2
           - disable-shop-v2
           - disable-visual-v2
+          - apply-migration-068
+          - enable-referral-reward
+          - disable-referral-reward
       contract_gid:
         description: 'release-billing-hold 用: 対象契約 gid (例 gid://shopify/SubscriptionContract/123)'
         required: false
@@ -778,6 +781,112 @@ jobs:
           printf '{"COUPON_SWEEP_ENABLED":"true"}' > "$TMP"
           npx wrangler secret bulk "$TMP"
           echo '✅ COUPON_SWEEP_ENABLED=true (次の JST 03:40 tick から sweep 稼働)' >> "$GITHUB_STEP_SUMMARY"
+
+      # 紹介クーポン台帳 (migration 068)。CREATE TABLE + INDEX のみ = additive・冪等。
+      # gate REFERRAL_REWARD_ENABLED が既定 off なので、適用しただけでは本番挙動は変わらない。
+      - name: Apply migration 068 (referral coupons, additive)
+        if: inputs.op == 'apply-migration-068'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute naturism-line-crm --remote             --file ../../packages/db/migrations/068_line_referral_coupons.sql
+          echo '### Verification (line_referral_coupons table)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json             --command "SELECT name FROM sqlite_master WHERE type='table' AND name='line_referral_coupons'" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # 友だち紹介の「紹介した人に ¥500」を有効化。
+      # ⚠️ この gate は**顧客向け文言も切り替える** (LIFF 紹介ヒーロー / 招待文 / トークの紹介 intent)。
+      #   off の間はどの面も「紹介された側の ¥500」しか約束していないので、ON にした瞬間から
+      #   「お互いに ¥500」が顧客に出る。実際に発行できる状態でだけ ON にすること。
+      - name: Enable referral reward (REFERRAL_REWARD_ENABLED=true)
+        if: inputs.op == 'enable-referral-reward'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # 前提 1: migration 068 (台帳)。未適用のまま ON にすると、被紹介者が購入した瞬間に
+          #   findReferralCoupon が `no such table` を throw し、例外は webhook の catch に吸われて
+          #   console.error だけになる。referral_rewards は pending のまま残るが**再試行の経路が無い**
+          #   (発火は welcome クーポンの初回 redemption 1 回きり) ため、その紹介は永久に報酬化しない。
+          TABLE=$(npx wrangler d1 execute naturism-line-crm --remote --json             --command "SELECT name FROM sqlite_master WHERE type='table' AND name='line_referral_coupons'")
+          if ! echo "$TABLE" | grep -q 'line_referral_coupons'; then
+            echo '❌ line_referral_coupons が存在しません — apply-migration-068 を先に実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # 前提 2: 順次活性化の queue (migration 079)。issueOrEnqueueReferralCoupon は queue を
+          #   裸で引くため、queue が無いと「直接発行に退行」する catch まで到達せず同じく沈黙する。
+          QUEUE=$(npx wrangler d1 execute naturism-line-crm --remote --json             --command "SELECT name FROM sqlite_master WHERE type='table' AND name='line_referral_coupon_queue'")
+          if ! echo "$QUEUE" | grep -q 'line_referral_coupon_queue'; then
+            echo '❌ line_referral_coupon_queue が存在しません — apply-migration-079 を先に実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          TMP="$RUNNER_TEMP/secrets.referral-reward.json"
+          printf '{"REFERRAL_REWARD_ENABLED":"true"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          # TMP はここで消さない — 検証に失敗したとき同じファイルで false へ巻き戻すため
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+          # 伝播を実測する (要素マーカーで照合。CSS セレクタや pipe 経由の grep は使わない)
+          echo '### 本番 HTML の gate 実測 (5s x 12)' >> "$GITHUB_STEP_SUMMARY"
+          URL="https://naturism-line-crm.katsu-7d5.workers.dev"
+          HTML="$RUNNER_TEMP/portal.html"
+          OK=0
+          for i in $(seq 1 12); do
+            curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
+            if grep -q 'id="section-home"' "$HTML" && grep -q 'REFERRAL_REWARD_ON = true' "$HTML"; then
+              OK=1; echo "- attempt $i: ✅ REFERRAL_REWARD_ON = true" >> "$GITHUB_STEP_SUMMARY"; break
+            fi
+            echo "- attempt $i: まだ反映されていません" >> "$GITHUB_STEP_SUMMARY"
+            sleep 5
+          done
+          if [ "$OK" -ne 1 ]; then
+            # 🚨 検証に失敗しても secret は既に true。ここで抜けると「op は失敗と表示されたのに
+            #   顧客向け文言と実クーポン発行だけが有効」という最悪の状態が残る (Codex P1)。
+            #   失敗時は必ず false へ戻してから落とす (= 失敗状態を安全側に確定させる)。
+            echo '❌ 60s 以内に本番 HTML へ反映されませんでした — gate を false へ戻します' | tee -a "$GITHUB_STEP_SUMMARY"
+            printf '{"REFERRAL_REWARD_ENABLED":"false"}' > "$TMP"
+            npx wrangler secret bulk "$TMP" || echo '⚠️ 巻き戻しにも失敗しました。disable-referral-reward を手動で実行してください' | tee -a "$GITHUB_STEP_SUMMARY"
+            rm -f "$TMP"
+            exit 1
+          fi
+          echo '⚠️ これ以降、被紹介者が welcome クーポンを使って購入すると紹介者に ¥500 が実発行されます。' >> "$GITHUB_STEP_SUMMARY"
+          rm -f "$TMP"
+          echo '⚠️ 併せて「お互いに ¥500」の文言が LIFF / トークに出ます。取り下げは disable-referral-reward。' >> "$GITHUB_STEP_SUMMARY"
+
+      # 紹介報酬の kill switch (redeploy 不要)。文言も同時に「紹介された側だけ」へ戻る。
+      - name: Disable referral reward (REFERRAL_REWARD_ENABLED=false)
+        if: inputs.op == 'disable-referral-reward'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          TMP="$RUNNER_TEMP/secrets.referral-reward-off.json"
+          printf '{"REFERRAL_REWARD_ENABLED":"false"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          echo '### 本番 HTML の gate 実測 (5s x 12)' >> "$GITHUB_STEP_SUMMARY"
+          URL="https://naturism-line-crm.katsu-7d5.workers.dev"
+          HTML="$RUNNER_TEMP/portal.html"
+          OK=0
+          for i in $(seq 1 12); do
+            curl -sS --max-time 20 -o "$HTML" "$URL/liff/portal" || true
+            # gate-off は**正マーカーとの AND** で見る (5xx / 空応答を ✅ と誤読しないため)
+            if grep -q 'id="section-home"' "$HTML" && grep -q 'REFERRAL_REWARD_ON = false' "$HTML"; then
+              OK=1; echo "- attempt $i: ✅ REFERRAL_REWARD_ON = false" >> "$GITHUB_STEP_SUMMARY"; break
+            fi
+            echo "- attempt $i: まだ反映されていません" >> "$GITHUB_STEP_SUMMARY"
+            sleep 5
+          done
+          if [ "$OK" -ne 1 ]; then
+            echo '❌ 60s 以内に本番 HTML へ反映されませんでした' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       # 連携特典クーポン (¥300/7日) の発行を有効化。Sprint A-1。
       - name: Enable link reward coupon (LINK_REWARD_ENABLED=true)

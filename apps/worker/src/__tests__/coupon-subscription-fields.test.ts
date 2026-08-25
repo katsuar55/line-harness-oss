@@ -60,14 +60,14 @@ function assertFixedAmountContract(input: BasicInput, amount: number) {
 beforeEach(() => vi.clearAllMocks());
 
 describe('固定額 3 issuer の payload 契約 (min¥2,000 / サブスク初回のみ / 併用ON)', () => {
-  it('welcome: ¥300 + combinesWith (¥300化 + 併用ON は 2026-08-13 Katsu 決定)', async () => {
+  it('welcome: ¥500 + combinesWith (2026-08-24 に ¥300 → ¥500 へ戻す・併用ON は 2026-08-13 Katsu 決定)', async () => {
     const raw = createSchemaDb(); insertFriend(raw, 'F1');
     const { fn, captured } = captureFetch();
     const r = await issueCouponForFriend(asD1(raw), { SHOPIFY_STORE_DOMAIN: 'x.myshopify.com', SHOPIFY_CLIENT_ID: 'i', SHOPIFY_CLIENT_SECRET: 's' }, {
       friendId: 'F1', fetchImpl: fn, now: () => FIXED_NOW,
     });
-    expect(r?.discountValue).toBe(300);
-    assertFixedAmountContract(captured[0], 300);
+    expect(r?.discountValue).toBe(500);
+    assertFixedAmountContract(captured[0], 500);
   });
 
   it('紹介: ¥500 (60日・活性化起点は queue 側で検証済み)', async () => {
