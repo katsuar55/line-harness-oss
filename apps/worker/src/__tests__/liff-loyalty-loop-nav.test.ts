@@ -24,7 +24,9 @@ describe('回遊ループ導線 (consolidation)', () => {
       join(root, '..', 'routes', 'liff-portal-fragments', 'rank-hero.ts'),
       'utf8',
     );
-    expect(heroJs).toContain('会員特典を見る');
+    // 🚨 コメント本文でも満たせる素の部分一致にしない。 コード位置 (引用符に囲まれた実文字列) で照合する。
+    //    逐語の可視テキストは liff-rank-hero.test.ts が実 DOM で固定している。
+    expect(heroJs).toContain('"会員特典を見る →"');
     expect(heroJs).toMatch(/openFeaturePage\("\/liff\/my-rank"\)/);
     // fragment が実際にポータルへ emit されていること (import しただけで配線漏れ、を防ぐ)
     expect(pages).toContain('${rankHeroJs()}');

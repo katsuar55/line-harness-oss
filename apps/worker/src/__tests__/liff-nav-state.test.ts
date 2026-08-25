@@ -51,6 +51,7 @@ interface Harness {
   scrolledTo: number[];
   listeners: Record<string, Array<() => void>>;
   activeTab: { id: string };
+  doc: { visibilityState: string };
 }
 
 interface HarnessOpts {
@@ -137,7 +138,7 @@ function makeHarness(opts: HarnessOpts = {}): Harness {
     URL,
   );
   return {
-    api, history, session, url, switched, scrolledTo, listeners, activeTab,
+    api, history, session, url, switched, scrolledTo, listeners, activeTab, doc,
     get deepLinkCalls() { return deepLinkCalls; },
   } as unknown as Harness;
 }
@@ -362,6 +363,62 @@ describe('nav-state — 配線', () => {
     h.listeners['pagehide'][0]();
     expect(h.api.navSnapshotRead()).toEqual({ tab: 'quiz', y: 77, via: 'link', ts: NOW });
   });
+
+  it('🚨 visibilitychange は hidden のときだけ退避する (前面に居るあいだ書き換えない)', () => {
+    const h = makeHarness({ activeTab: 'shop', pageY: 500 });
+    h.api.initNavState();
+    h.doc.visibilityState = 'visible';
+    h.listeners['doc:visibilitychange'][0]();
+    expect(h.api.navSnapshotRead(), 'visible で書いてはいけない').toBeNull();
+    h.doc.visibilityState = 'hidden';
+    h.listeners['doc:visibilitychange'][0]();
+    expect(h.api.navSnapshotRead()!.tab).toBe('shop');
+  });
+
+  it('🚨 復元は顧客が自分でスクロールした時点でやめる (操作を奪わない)', () => {
+    const h = makeHarness({
+      navType: 'back_forward',
+      snapshot: { tab: 'home', y: 1200, via: 'link', ts: NOW - 1000 },
+    });
+    h.api.initNavState();
+    // 復元より前に顧客が触った = 1 回も打たない
+    h.listeners['touchstart'][0]();
+    h.api.applyNavEntry();
+    expect(h.scrolledTo).toEqual([]);
+  });
+
+  it('🚨 キャンセルの受け皿は初期化直後から張られている (reveal 前の操作も拾う)', () => {
+    const h = makeHarness();
+    h.api.initNavState();
+    // applyNavEntry を呼ぶ前に listener が居ること = loading 表示中の操作も検出できる
+    expect(h.listeners['touchstart']?.length).toBe(1);
+    expect(h.listeners['wheel']?.length).toBe(1);
+  });
+
+  it('高さが伸びるので複数回打ち直す (カードが後から着弾する)', () => {
+    const h = makeHarness({
+      navType: 'back_forward',
+      snapshot: { tab: 'home', y: 300, via: 'link', ts: NOW - 1000 },
+    });
+    h.api.applyNavEntry();
+    // setTimeout は同期実行の stub なので、リトライぶんがそのまま積まれる
+    expect(h.scrolledTo.length).toBeGreaterThan(1);
+    for (const y of h.scrolledTo) expect(y).toBe(300);
+  });
+
+  it('退避の期限は 30 分 (境界を literal で固定する — 定数の自己参照にしない)', () => {
+    expect(NAV_SNAPSHOT_TTL_MS).toBe(30 * 60 * 1000);
+    const justOk = makeHarness({
+      navType: 'back_forward',
+      snapshot: { tab: 'shop', y: 10, via: 'link', ts: NOW - (30 * 60 * 1000 - 1) },
+    });
+    expect(justOk.api.navResolveEntry().source).toBe('restore');
+    const justOld = makeHarness({
+      navType: 'back_forward',
+      snapshot: { tab: 'shop', y: 10, via: 'link', ts: NOW - (30 * 60 * 1000 + 1) },
+    });
+    expect(justOld.api.navResolveEntry().source).toBe('fresh');
+  });
 });
 
 // ───────────────────────── ソース側の契約 (ここが切れると黙って元に戻る) ─────────────────────────
@@ -397,7 +454,10 @@ describe('nav-state — liff-pages.ts への配線', () => {
 
   it('🚨 bootstrap の早期 reveal は確定した行き先を見る (deepLinkDest だと復元入場でタブが飛ぶ)', () => {
     const fn = pagesSrc.match(/async function bootstrapPortal\(\) \{[\s\S]*?\n\}/);
-    expect(fn![0]).toContain('navResolveOnce().tab');
+    // 2026-08-25: y も見るようになったので entry を受けてから参照する (採点ループ P2)
+    expect(fn![0]).toContain('navResolveOnce()');
+    expect(fn![0]).toContain('navE.tab');
+    expect(fn![0]).toContain('Number(navE.y) > 0');
     expect(fn![0]).not.toMatch(/var dest = deepLinkDest\(\);/);
   });
 

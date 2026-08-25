@@ -363,7 +363,7 @@ describe('gate PORTAL_BOOTSTRAP_ENABLED の注入 (既定 off = dark)', () => {
   it('bootstrapPortal 内は ambassador → rank → revealLoading の順 (rank 装飾と #loading 契約)', () => {
     const amb = scriptOn.indexOf("loadAmbassador(bootstrapSection(s, 'ambassador'))");
     const rank = scriptOn.indexOf("loadRank(bootstrapSection(s, 'rank'))");
-    const reveal = scriptOn.indexOf("if (!dest || dest === 'home') { revealLoading(); }");
+    const reveal = scriptOn.indexOf("navE.tab === 'home') && !(Number(navE.y) > 0)) { revealLoading(); }");
     expect(amb).toBeGreaterThan(-1);
     expect(rank).toBeGreaterThan(amb);
     expect(reveal).toBeGreaterThan(rank);
@@ -408,7 +408,9 @@ describe('bootstrap 成功 — 個別 section fetch ゼロで全カード描画'
     });
     await (sb.fn.bootstrapPortal as unknown as () => Promise<boolean>)();
     await tick();
-    expect(sb.byId.get('rank-card')!.textContent).toContain('会員');
+    // 🚨 '会員' の部分一致は失敗系 ('会員ランク' ラベル) でも満たされる = 全損が緑になる。
+    // 成功時にしか出ない「<ランク名>会員」で固定する (採点ループ P2)。
+    expect(sb.byId.get('rank-card')!.textContent).toContain('シルバー会員');
     expect(sb.byId.get('tip-card')!.innerHTML).toContain('水分補給のコツ');
     // 紹介カードは bootstrap の refCode で generate を撃たずに描画される
     expect(sb.byId.get('referral-card')!.innerHTML).toContain('ref_abc123');
@@ -427,7 +429,9 @@ describe('bootstrap 成功 — 個別 section fetch ゼロで全カード描画'
     const p = (sb.fn.bootstrapPortal as unknown as () => Promise<boolean>)();
     await tick(20);
     // bootstrapPortal 全体は streak 待ちで未解決のまま — それでも rank は描画済み・loading 解除済み
-    expect(sb.byId.get('rank-card')!.textContent).toContain('会員');
+    // 🚨 '会員' の部分一致は失敗系 ('会員ランク' ラベル) でも満たされる = 全損が緑になる。
+    // 成功時にしか出ない「<ランク名>会員」で固定する (採点ループ P2)。
+    expect(sb.byId.get('rank-card')!.textContent).toContain('シルバー会員');
     expect(sb.byId.get('loading')!.style.display).toBe('none');
     void p; // 未解決の promise は放置して良い (fetch stub は leak しない)
   });
@@ -450,7 +454,9 @@ describe('部分失敗の隔離と丸ごとフォールバック', () => {
     expect(sb.byId.get('tip-card')!.innerHTML).toContain('個別経路の Tip');
     // 他 section は個別 fetch されない
     expect(sb.calls.map((c) => c.path)).not.toContain('/api/liff/rank');
-    expect(sb.byId.get('rank-card')!.textContent).toContain('会員');
+    // 🚨 '会員' の部分一致は失敗系 ('会員ランク' ラベル) でも満たされる = 全損が緑になる。
+    // 成功時にしか出ない「<ランク名>会員」で固定する (採点ループ P2)。
+    expect(sb.byId.get('rank-card')!.textContent).toContain('シルバー会員');
   });
 
   it('bootstrap 呼び出し自体の失敗 (network) は false = 旧経路へ丸ごとフォールバック', async () => {
@@ -490,7 +496,9 @@ describe('initLiff — gate 配線の end-to-end 観測', () => {
     await (sb.fn.initLiff as unknown as () => Promise<void>)();
     const paths = sb.calls.map((c) => c.path);
     expect(paths.length, '総 fetch 本数 (= PR-3 の削減効果そのもの): ' + paths.join(', ')).toBe(2);
-    expect(sb.byId.get('rank-card')!.textContent).toContain('会員');
+    // 🚨 '会員' の部分一致は失敗系 ('会員ランク' ラベル) でも満たされる = 全損が緑になる。
+    // 成功時にしか出ない「<ランク名>会員」で固定する (採点ループ P2)。
+    expect(sb.byId.get('rank-card')!.textContent).toContain('シルバー会員');
     expect(sb.byId.get('loading')!.style.display).toBe('none');
   });
 
@@ -503,7 +511,9 @@ describe('initLiff — gate 配線の end-to-end 観測', () => {
     expect(paths).toContain('/api/liff/rank');
     expect(paths).toContain('/api/liff/tips/today');
     expect(paths).toContain('/api/liff/badges');
-    expect(sb.byId.get('rank-card')!.textContent).toContain('会員');
+    // 🚨 '会員' の部分一致は失敗系 ('会員ランク' ラベル) でも満たされる = 全損が緑になる。
+    // 成功時にしか出ない「<ランク名>会員」で固定する (採点ループ P2)。
+    expect(sb.byId.get('rank-card')!.textContent).toContain('シルバー会員');
     expect(sb.byId.get('loading')!.style.display).toBe('none');
   });
 
@@ -528,7 +538,9 @@ describe('deep-link 入場では早期 reveal を見送る', () => {
     sb.respond.set('/api/liff/intake/streak', 'never');
     const p = (sb.fn.bootstrapPortal as unknown as () => Promise<boolean>)();
     await tick(30);
-    expect(sb.byId.get('rank-card')!.textContent).toContain('会員');
+    // 🚨 '会員' の部分一致は失敗系 ('会員ランク' ラベル) でも満たされる = 全損が緑になる。
+    // 成功時にしか出ない「<ランク名>会員」で固定する (採点ループ P2)。
+    expect(sb.byId.get('rank-card')!.textContent).toContain('シルバー会員');
     expect(sb.byId.get('loading')!.style.display).not.toBe('none');
     void p;
   });

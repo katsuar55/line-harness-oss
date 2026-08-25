@@ -184,6 +184,24 @@ describe('統合ランクヒーロー — 安全規約', () => {
   it('reduced-motion でバーのトランジションを止める', () => {
     expect(rankHeroCss()).toContain('@media(prefers-reduced-motion:reduce)');
   });
+
+  it('🚨 badgeColor が届くのは文字の載らない装飾要素だけ (禁止 hex が文字の地色にならない)', () => {
+    const js = rankHeroJs();
+    // rhSafeColor の戻り値 `color` を使う箇所は glow の background 1 つだけ
+    const uses = [...js.matchAll(/\+ color/g)];
+    expect(uses.length, 'badgeColor の使用箇所が増えている').toBe(2); // gradient の 2 stop
+    expect(js).toMatch(/glow\.style\.background/);
+    // その glow に文字を載せない (textContent を渡さずに作っている)
+    expect(js).toContain('var glow = rhNode("span", "rh-glow");');
+    // platinum の badgeColor はブランド原色ティール = 白文字 2.3:1 の事故色。
+    // 実際にそれを渡しても、文字が載る要素の style には 1 つも入らないことを実挙動で確認する。
+    const h = makeHarness();
+    h.api.renderRankHero(PLATINUM);
+    for (const id of ['rh-name', 'rh-off', 'rh-next']) {
+      const el = byId(h.doc, id);
+      expect(JSON.stringify(el.style), id).not.toMatch(/0abab5/i);
+    }
+  });
 });
 
 // ───────────────────────── B. 実挙動 ─────────────────────────
@@ -193,9 +211,9 @@ describe('統合ランクヒーロー — ノータップでランク・割引%�
     const h = makeHarness();
     h.api.renderRankHero(BRONZE);
     expect(byId(h.doc, 'rh-name').textContent).toBe('ブロンズ会員');
-    expect(byId(h.doc, 'rh-off').textContent).toBe('通常購入 2% OFF');
-    expect(byId(h.doc, 'rh-spent').textContent).toBe('直近 12 ヶ月のお買い上げ ¥660');
-    expect(byId(h.doc, 'rh-next').textContent).toBe('あと ¥11,340 で シルバー会員（4% OFF） にランクアップ');
+    expect(byId(h.doc, 'rh-off').textContent).toBe('通常購入 2% OFFクーポン');
+    expect(byId(h.doc, 'rh-spent').textContent).toBe('ランクに反映されたお買い上げ（直近 12 ヶ月） ¥660');
+    expect(byId(h.doc, 'rh-next').textContent).toBe('次のランク シルバー会員（通常購入 4% OFFクーポン） — あと ¥11,340');
     const img = byId(h.doc, 'rh-medal-img');
     expect(img['src']).toBe('/images/rank-bronze-v2.png');
     // タップ不要 = 「見てみる」を押させる文言が本文に無いこと
@@ -208,7 +226,7 @@ describe('統合ランクヒーロー — ノータップでランク・割引%�
     expect(byId(h.doc, 'rh-name').textContent).toBe('レギュラー会員');
     expect(byId(h.doc, 'rh-off').textContent).toBe('割引特典はこれから');
     expect(byId(h.doc, 'rh-off').className).toContain('is-none');
-    expect(byId(h.doc, 'rh-next').textContent).toBe('1 回のお買い物で ブロンズ会員（2% OFF） になります');
+    expect(byId(h.doc, 'rh-next').textContent).toBe('次のランク ブロンズ会員（通常購入 2% OFFクーポン）');
   });
 
   it('🚨 累計 0 円のときは金額を出さない (原資が本番で空 = 購入済みの顧客にも 0 が出るため)', () => {
@@ -222,13 +240,16 @@ describe('統合ランクヒーロー — ノータップでランク・割引%�
     const h = makeHarness();
     h.api.renderRankHero(REGULAR);
     expect(byId(h.doc, 'rh-next').textContent).not.toContain('はじめて');
+    // 🚨 「買えば上がる」とも約束しない (取り込み経路が本番で生きていないため — 採点ループ P2)
+    expect(byId(h.doc, 'rank-card').textContent).not.toContain('になります');
+    expect(byId(h.doc, 'rank-card').textContent).not.toContain('ランクアップ');
   });
 
   it('最高ランク: 次が無いときは達成を称える', () => {
     const h = makeHarness();
     h.api.renderRankHero(PLATINUM);
-    expect(byId(h.doc, 'rh-next').textContent).toBe('✨ 最高ランク達成！いつもありがとうございます');
-    expect(byId(h.doc, 'rh-off').textContent).toBe('通常購入 8% OFF');
+    expect(byId(h.doc, 'rh-next').textContent).toBe('✨ いちばん上のランクです。いつもありがとうございます');
+    expect(byId(h.doc, 'rh-off').textContent).toBe('通常購入 8% OFFクーポン');
   });
 
   it('進捗バーは 0..1 をクランプして % 幅にする', () => {
@@ -251,7 +272,7 @@ describe('統合ランクヒーロー — ノータップでランク・割引%�
     expect(text).not.toContain('undefined');
     expect(byId(h.doc, 'rh-off').textContent).toBe('割引特典はこれから');
     // remainingJpy が読めないときは金額を断定せず「1 回のお買い物で」に倒す
-    expect(byId(h.doc, 'rh-next').textContent).toBe('1 回のお買い物で 次会員 になります');
+    expect(byId(h.doc, 'rh-next').textContent).toBe('次のランク 次会員');
   });
 });
 
@@ -288,8 +309,8 @@ describe('統合ランクヒーロー — 割引 gate (RANK_DISCOUNT_ENABLED) �
   it('gate on: % と ¥2,000 の条件を必ずセットで出す', () => {
     const h = makeHarness({ rankDiscountOn: true });
     h.api.renderRankHero(BRONZE);
-    expect(byId(h.doc, 'rh-off').textContent).toBe('通常購入 2% OFF');
-    expect(byId(h.doc, 'rh-cond').textContent).toBe('¥2,000 以上のご注文でお使いいただけます');
+    expect(byId(h.doc, 'rh-off').textContent).toBe('通常購入 2% OFFクーポン');
+    expect(byId(h.doc, 'rh-cond').textContent).toBe('通常購入（単発のお買い物）の ¥2,000 以上のご注文でお使いいただけます');
   });
 
   it('🚨 % を出すときは ¥2,000 の併記が必ず付く (NLR- コードには最低購入金額が必ず付く = % 単独は有利誤認)', () => {
@@ -318,19 +339,34 @@ describe('統合ランクヒーロー — 割引 gate (RANK_DISCOUNT_ENABLED) �
     expect(text).not.toContain('% OFF');
     expect(text).not.toContain('¥2,000');
     expect(byId(h.doc, 'rh-off').textContent).toBe('割引特典は準備中です');
-    expect(byId(h.doc, 'rh-next').textContent).toBe('あと ¥11,340 で シルバー会員 にランクアップ');
+    expect(byId(h.doc, 'rh-next').textContent).toBe('次のランク シルバー会員 — あと ¥11,340');
   });
 
   it('gate off でもランク名・メダル・累計は出す (分かっている事実は隠さない)', () => {
     const h = makeHarness({ rankDiscountOn: false });
     h.api.renderRankHero(BRONZE);
     expect(byId(h.doc, 'rh-name').textContent).toBe('ブロンズ会員');
-    expect(byId(h.doc, 'rh-spent').textContent).toBe('直近 12 ヶ月のお買い上げ ¥660');
+    expect(byId(h.doc, 'rh-spent').textContent).toBe('ランクに反映されたお買い上げ（直近 12 ヶ月） ¥660');
     expect(h.doc.getElementById('rh-medal-img')).not.toBeNull();
   });
 });
 
 describe('統合ランクヒーロー — メダル画像のフォールバック', () => {
+  it('🚨 キャッシュ済みの 404 も即座に退避する (onerror が二度と発火しない経路)', () => {
+    // 本物の img は「読込済みだが幅 0」= 既に失敗している状態を complete/naturalWidth で表す。
+    // この分岐が無いと、2 回目以降の描画でメダルが空円のまま残る。
+    const h = makeHarness();
+    const orig = h.doc.createElement;
+    (h.doc as unknown as Record<string, unknown>).createElement = (tag: string) => {
+      const n = orig(tag);
+      if (tag === 'img') { n['complete'] = true; n['naturalWidth'] = 0; }
+      return n;
+    };
+    h.api.renderRankHero(BRONZE);
+    expect(byId(h.doc, 'rh-medal-img').style['display']).toBe('none');
+    expect(byId(h.doc, 'rh-medal-fallback').style['display']).toBe('block');
+  });
+
   it('画像が落ちたら絵文字へ退避する', () => {
     const h = makeHarness();
     h.api.renderRankHero(BRONZE);
@@ -364,19 +400,24 @@ describe('統合ランクヒーロー — 取得できなかったとき', () =>
   it('🚨 取得失敗の退避表示も gate に従う (gate off で「割引特典が受けられます」と言わない)', () => {
     const on = makeHarness({ rankDiscountOn: true });
     on.api.renderRankHero(null);
-    expect(byId(on.doc, 'rh-off').textContent).toBe('ご購入でランクが上がり、割引特典が受けられます');
+    expect(byId(on.doc, 'rh-off').textContent).toBe('会員ランクに応じた割引クーポンがあります');
     const off = makeHarness({ rankDiscountOn: false });
     off.api.renderRankHero(null);
     expect(byId(off.doc, 'rh-off').textContent).toBe('ランクの割引特典は準備中です');
-    expect(byId(off.doc, 'rank-card').textContent).not.toContain('割引特典が受けられます');
+    expect(byId(off.doc, 'rank-card').textContent).not.toContain('割引クーポンがあります');
   });
 });
 
 describe('統合ランクヒーロー — フッター (クーポン枚数と詳細導線)', () => {
+  // 🚨 観測点は #rh-coupon-label ではなく **#rh-coupon (ボタン全体)**。
+  //    ラベル単体を見ていたせいで「クーポン クーポン 3枚」の二重表示を 43 テスト全緑で
+  //    出荷直前まで通してしまった (採点ループ P1)。合成後の可視文字列を逐語で固定する。
+  const btn = (h: Harness): string => byId(h.doc, 'rh-coupon').textContent;
+
   it('0 枚は「無い」で終わらせず もらう導線へ', () => {
     const h = makeHarness();
     h.api.renderRankHero(REGULAR);
-    expect(byId(h.doc, 'rh-coupon-label').textContent).toBe('クーポンをもらう →');
+    expect(btn(h)).toBe('🎟️クーポンをもらう →');
   });
 
   it('互いに素な 5 系統を合算して枚数にする', () => {
@@ -388,7 +429,17 @@ describe('統合ランクヒーロー — フッター (クーポン枚数と詳
     h.api.vsSetCoupons('link', 1);
     h.api.vsSetCoupons('friend', 1);
     expect(h.api.vsCouponTotal()).toBe(8);
-    expect(byId(h.doc, 'rh-coupon-label').textContent).toBe('クーポン 8枚');
+    expect(btn(h)).toBe('🎟️クーポン 8枚');
+  });
+
+  it('🚨 語の重複が無い (ボタン全体で「クーポン」は 1 回だけ)', () => {
+    const h = makeHarness();
+    h.api.renderRankHero(REGULAR);
+    for (const n of [0, 1, 5]) {
+      h.api.vsSetCoupons('list', n);
+      const text = btn(h);
+      expect(text.split('クーポン').length - 1, 'n=' + n + ' → ' + text).toBe(1);
+    }
   });
 
   it('🚨 set であって increment ではない (loader の再試行で二重計上しない)', () => {
@@ -398,16 +449,16 @@ describe('統合ランクヒーロー — フッター (クーポン枚数と詳
     h.api.vsSetCoupons('welcome', 1);
     h.api.vsSetCoupons('welcome', 1);
     expect(h.api.vsCouponTotal()).toBe(1);
-    expect(byId(h.doc, 'rh-coupon-label').textContent).toBe('クーポン 1枚');
+    expect(btn(h)).toBe('🎟️クーポン 1枚');
   });
 
   it('待機枚数は主数字に混ぜない (「使える枚数」の誤認防止)', () => {
     const h = makeHarness();
     h.api.renderRankHero(REGULAR);
     h.api.vsSetCouponsWaiting(2);
-    expect(byId(h.doc, 'rh-coupon-label').textContent).toBe('クーポン +2枚 準備中');
+    expect(btn(h)).toBe('🎟️クーポン +2枚 準備中');
     h.api.vsSetCoupons('welcome', 1);
-    expect(byId(h.doc, 'rh-coupon-label').textContent).toBe('クーポン 1枚（+2枚 準備中）');
+    expect(btn(h)).toBe('🎟️クーポン 1枚（+2枚 準備中）');
   });
 
   it('枚数が 0 に戻ったら表示も 0 状態へ戻る (古い数字を残さない)', () => {
@@ -415,14 +466,41 @@ describe('統合ランクヒーロー — フッター (クーポン枚数と詳
     h.api.renderRankHero(REGULAR);
     h.api.vsSetCoupons('welcome', 1);
     h.api.vsSetCoupons('welcome', 0);
-    expect(byId(h.doc, 'rh-coupon-label').textContent).toBe('クーポンをもらう →');
+    expect(btn(h)).toBe('🎟️クーポンをもらう →');
+  });
+
+  it('壊れた値 (NaN / undefined) は 0 として扱い、NaN を表示しない (旧 VITAL STRIP から移設)', () => {
+    const h = makeHarness();
+    h.api.renderRankHero(REGULAR);
+    h.api.vsSetCoupons('list', 'abc');
+    h.api.vsSetCoupons('welcome', undefined);
+    expect(h.api.vsCouponTotal()).toBe(0);
+    expect(btn(h)).toBe('🎟️クーポンをもらう →');
+    h.api.vsSetCouponsWaiting('zzz');
+    expect(btn(h)).toBe('🎟️クーポンをもらう →');
+  });
+
+  it('絵文字は読み上げない (アイコンだけの意味を文字が二重に持つ — 旧 VITAL STRIP から移設)', () => {
+    const h = makeHarness();
+    h.api.renderRankHero(REGULAR);
+    const icons = byId(h.doc, 'rh-coupon').childNodes.filter((n) => n.getAttribute('aria-hidden') === 'true');
+    expect(icons.length).toBe(1);
+    expect(byId(h.doc, 'rh-detail').childNodes.filter((n) => n.getAttribute('aria-hidden') === 'true').length).toBe(1);
   });
 
   it('🚨 ヒーロー描画より先に着弾した枚数も反映される (loader の順序に依存しない)', () => {
     const h = makeHarness();
     h.api.vsSetCoupons('list', 3); // まだヒーローは未描画
     h.api.renderRankHero(REGULAR);
-    expect(byId(h.doc, 'rh-coupon-label').textContent).toBe('クーポン 3枚');
+    expect(btn(h)).toBe('🎟️クーポン 3枚');
+  });
+
+  it('🚨 ランクが取れなかったときもフッターは残る (枚数と導線を巻き添えにしない)', () => {
+    const h = makeHarness();
+    h.api.vsSetCoupons('list', 2);
+    h.api.renderRankHero(null);
+    expect(btn(h)).toBe('🎟️クーポン 2枚');
+    expect(h.doc.getElementById('rh-detail')).not.toBeNull();
   });
 
   it('クーポンボタン: 0 枚なら紹介へ、1 枚以上ならクーポン一覧へ', () => {
@@ -438,7 +516,7 @@ describe('統合ランクヒーロー — フッター (クーポン枚数と詳
   it('詳細ボタンは会員証ページへ (ランク判定日 / 全ランク一覧はそちらに置く)', () => {
     const h = makeHarness();
     h.api.renderRankHero(BRONZE);
-    expect(byId(h.doc, 'rh-detail').textContent).toContain('会員特典を見る');
+    expect(byId(h.doc, 'rh-detail').textContent).toBe('🛍️会員特典を見る →');
     byId(h.doc, 'rh-detail').dispatch('click');
     expect(h.featurePages).toEqual(['/liff/my-rank']);
   });
@@ -469,7 +547,7 @@ describe('統合ランクヒーロー — loader への配線', () => {
   it('🚨 loadRank は data.loyalty を描く (DEPRECATED な currentRank を見ない)', () => {
     const fn = pagesSrc.match(/async function loadRank\(preRes\) \{[\s\S]*?\n\}/);
     expect(fn).toBeTruthy();
-    expect(fn![0]).toContain('renderRankHero(data.loyalty');
+    expect(fn![0]).toContain('renderRankHero(data.loyalty,');
     for (const dead of ['data.currentRank', 'data.totalSpent', 'data.nextRank', 'data.progressPercent']) {
       expect(fn![0], dead + ' は本番で空の DEPRECATED 系統').not.toContain(dead);
     }

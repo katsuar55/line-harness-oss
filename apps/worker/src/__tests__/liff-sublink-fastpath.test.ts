@@ -437,7 +437,7 @@ describe('?slk= fast path — 実行順序 (§10-1)', () => {
   });
 
   it('#rank 早期分岐より後にある (そこは idToken 未代入)', () => {
-    const rankBranch = script.indexOf("location.replace('/liff/my-rank')");
+    const rankBranch = script.indexOf("location.replace('/liff/my-rank?entry=replace')");
     expect(rankBranch).toBeGreaterThan(-1);
     expect(script.indexOf('checkSubLinkParam();')).toBeGreaterThan(rankBranch);
   });

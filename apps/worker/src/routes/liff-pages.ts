@@ -1421,6 +1421,12 @@ async function initLiff() {
     // ナビ状態の配線は最優先。 ブラウザ既定のスクロール復元を切り、 離脱時の退避を仕掛ける
     // (liff.login() の往復で離脱する場合もここで拾う)。
     initNavState();
+    // 🚨 行き先は **退避を読む前に上書きされない位置** で確定させる。 initNavState が離脱の退避を
+    //    武装した後、 liff.init()/getProfile() の数秒でアプリがバックグラウンドに回ると
+    //    visibilitychange が同じスロットを {home,0} で潰し、 復元位置を自分で消してしまう
+    //    (採点ループ P3)。 読むのは history.state / sessionStorage / performance / referrer だけで
+    //    LIFF の初期化に依存しないので、 ここで確定できる。
+    navResolveOnce();
     // ?slk= は liff.init() より前に退避する。 liff.login() は現在 URL へ戻ってくるが、 その URL は
     // 既に replaceState で slk を削ってあるため、 sessionStorage が唯一のトークン運搬手段になる。
     captureSubLinkToken();
@@ -1433,11 +1439,13 @@ async function initLiff() {
     // (trailing-12mo ランク) に集約する canonical entry。LIFF init 後 = hash 復元済 (liff.state 経由でも OK)、
     // 重い portal data load の前に redirect することで画面 flash と二重ロードを最小化する。
     if (location.hash === '#rank' && new URLSearchParams(location.search).get('demo') !== '1') {
-      // 集約 redirect は「顧客がポータルのタブを選んだ結果」ではない。 via=replace を記録して、
-      // 会員証ページの「マイページ」が history.back() (= LINE を閉じる) に化けないようにする。
+      // 集約 redirect は「顧客がポータルのタブを選んだ結果」ではない。 このエントリは replace で
+      // 潰れるので、会員証ページの「マイページ」が history.back() (= LINE を閉じる) に化けないよう
+      // 印を付ける。 🚨 印は **URL に載せる** — sessionStorage はセッションに 1 つしかない可変
+      // スロットで、後続のポータル文書の pagehide が上書きしてしまう (採点ループ P2)。
       navViaOverride = 'replace';
       try { navSnapshot('replace'); } catch (e) { /* ignore */ }
-      location.replace('/liff/my-rank');
+      location.replace('/liff/my-rank?entry=replace');
       return;
     }
     idToken = liff.getIDToken();
@@ -1526,14 +1534,13 @@ function loadDemoData() {
   document.getElementById('user-avatar').innerHTML =
     '<div class="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center text-white text-xs font-bold">D</div>';
 
-  // Rank
-  document.getElementById('rank-card').innerHTML =
-    '<div class="flex items-center gap-3 mb-3">' +
-    '<div class="w-12 h-12 rounded-full flex items-center justify-center text-2xl" style="background:#C0C0C020">Ag</div>' +
-    '<div><p class="text-sm font-bold text-gray-800">Silver</p>' +
-    '<p class="text-xs text-gray-500">\u7d2f\u8a08 \xa515,000</p></div></div>' +
-    '<div class="bg-gray-100 rounded-full h-2 overflow-hidden"><div class="bg-green-500 h-2 progress-bar" style="width:25%"></div></div>' +
-    '<p class="text-xs text-gray-400 mt-1">\u6b21\u306e\u30e9\u30f3\u30af Gold \u307e\u3067\u3042\u3068 \xa59,000</p>';
+  // Rank \u2014 \u672c\u756a\u3068\u540c\u3058\u63cf\u753b\u95a2\u6570\u3092\u901a\u3059 (\u5ec3\u6b62\u3057\u305f\u65e7\u30e9\u30f3\u30af\u30e2\u30c7\u30eb\u3092 preview \u306b\u6b8b\u3055\u306a\u3044)
+  renderRankHero({
+    rank: { id: 'silver', name: '\u30b7\u30eb\u30d0\u30fc', discountPercent: 4, badgeEmoji: '\u{1F948}', badgeColor: '#C0C0C0', badgeImageUrl: '/images/rank-silver-v2.png' },
+    trailing12moJpy: 15000,
+    next: { id: 'gold', name: '\u30b4\u30fc\u30eb\u30c9', remainingJpy: 9000, discountPercent: 6 },
+    progressRatio: 0.25,
+  }, false);
 
   // Tip
   document.getElementById('tip-card').innerHTML =
@@ -1765,8 +1772,10 @@ async function bootstrapPortal() {
     // 🚨 deepLinkDest() ではなく **確定した行き先** を見る。 復元入場 (戻るで Shop タブへ戻る等) は
     //    URL に hash が無いので deepLinkDest() は null を返し、 早期 reveal → その後タブが飛ぶ、
     //    という PR-3 が潰したはずの窓が復活する。
-    var dest = navResolveOnce().tab;
-    if (!dest || dest === 'home') { revealLoading(); }
+    // 🚨 y も見る。 tab だけで判定すると「home へ y>0 の復元」で loading を先に剥がしてしまい、
+    //    顧客が読み始めた後に applyNavEntry() のスクロール復元で画面が飛ぶ (採点ループ P2)。
+    var navE = navResolveOnce();
+    if ((!navE.tab || navE.tab === 'home') && !(Number(navE.y) > 0)) { revealLoading(); }
     await Promise.all([
       loadLanguage(bootstrapSection(s, 'language')),
       loadTip(bootstrapSection(s, 'tip')),
@@ -2027,9 +2036,15 @@ async function loadRank(preRes) {
   const el = document.getElementById('rank-card');
   try {
     const res = preRes || await api('/api/liff/rank');
-    if (apiFailed(res)) { cardError(el, res, 'loadRank'); return; }
+    // 🚨 失敗時も cardError でカードごと差し替えない。 ヒーローのフッターには 5 系統の loader が
+    //    数えた保有クーポン枚数と会員証への導線が入っており、 ランクが取れないことの巻き添えで
+    //    それらまで消えるのは旧 VITAL STRIP には無かった退行 (採点ループ P3)。
+    //    renderRankHeroUnknown は「分からない」を断定せずに述べ、フッターは残す。
+    if (apiFailed(res) || !res.data) {
+      try { renderRankHeroUnknown(el); } catch (e) { cardError(el, res, 'loadRank'); }
+      return;
+    }
     const data = res.data;
-    if (!data) return;
     // Shopify 連携済みなら、全ての連携 CTA を畳む (マイアカウントのカードは「連携済み」表示へ、
     // 空表示に挿した導線は非表示へ)。= 既連携ユーザーの無意味な外部ブラウザ往復と、
     // 完了直後の「まだ押せる」不安を消す。
@@ -2047,7 +2062,9 @@ async function loadRank(preRes) {
     }
     // ambassadorData は loadAmbassador が先に確定させている (bootstrap / 旧経路とも順序は同じ)
     renderRankHero(data.loyalty, !!ambassadorData);
-  } catch { cardError(el, null, 'loadRank'); }
+  } catch {
+    try { renderRankHeroUnknown(el); } catch (e) { cardError(el, null, 'loadRank'); }
+  }
 }
 
 // ─── HOME: Today's Tip ───

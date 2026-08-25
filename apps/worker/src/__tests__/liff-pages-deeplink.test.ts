@@ -43,12 +43,14 @@ describe('GET /liff/portal — マイランク deep-link 配線', () => {
   it('リッチメニュー #rank 導線: 新・会員証ページ /liff/my-rank へ redirect する', async () => {
     const r = await fetchPage('/liff/portal');
     expect(r.body).toContain("location.hash === '#rank'");
-    expect(r.body).toMatch(/location\.replace\('\/liff\/my-rank'\)/);
+    // 2026-08-25: replace で潰れるエントリの印を URL に載せる (会員証の「マイページ」が
+    // history.back() = LINE を閉じる、に化けないための唯一の手掛かり)
+    expect(r.body).toMatch(/location\.replace\('\/liff\/my-rank\?entry=replace'\)/);
   });
 
   it('redirect は重い data load (Promise.all) より前に配置される (flash/二重ロード防止)', async () => {
     const r = await fetchPage('/liff/portal');
-    const idxRedirect = r.body.indexOf("location.replace('/liff/my-rank')");
+    const idxRedirect = r.body.indexOf("location.replace('/liff/my-rank?entry=replace')");
     const idxHeavyLoad = r.body.indexOf('Promise.all([loadLanguage');
     expect(idxRedirect).toBeGreaterThan(-1);
     expect(idxHeavyLoad).toBeGreaterThan(-1);
@@ -58,7 +60,7 @@ describe('GET /liff/portal — マイランク deep-link 配線', () => {
   it('redirect は liff.init / ログインガードより後に配置される (LIFF context 確立後)', async () => {
     const r = await fetchPage('/liff/portal');
     const idxInit = r.body.indexOf('await liff.init(');
-    const idxRedirect = r.body.indexOf("location.replace('/liff/my-rank')");
+    const idxRedirect = r.body.indexOf("location.replace('/liff/my-rank?entry=replace')");
     expect(idxInit).toBeGreaterThan(-1);
     expect(idxRedirect).toBeGreaterThan(idxInit);
   });

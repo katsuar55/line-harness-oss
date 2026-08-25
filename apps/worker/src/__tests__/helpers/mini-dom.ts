@@ -45,6 +45,9 @@ export interface MiniDocument {
 
 function makeNode(tagName: string): MiniNode {
   let ownText = '';
+  // img は本物と同じ既定を持たせる。 これが無いと rhMedal の
+  // `img.complete && img.naturalWidth === 0` (= キャッシュ済み 404 の即時フォールバック) が
+  // 常に false になり、その分岐が一度も実行されないまま緑になる (採点ループ P3)。
   const node = {
     tagName,
     id: '',
@@ -99,6 +102,8 @@ function makeNode(tagName: string): MiniNode {
     addEventListener(type: string, fn: (ev: unknown) => void): void {
       (node.listeners[type] ||= []).push(fn);
     },
+    complete: false,
+    naturalWidth: 0,
     dispatch(type: string): void {
       for (const fn of node.listeners[type] || []) fn({ currentTarget: node, preventDefault() {} });
     },

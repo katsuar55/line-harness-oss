@@ -26,8 +26,16 @@
  * - 終了タグを literal で書かない (コメント・文字列を含む)。
  */
 
-/** ポータルの離脱スナップショット (fragments/nav-state.ts の NAV_SNAPSHOT_KEY と同値)。 */
-const NAV_SNAPSHOT_KEY = 'nx_portal_nav_v1';
+/**
+ * ポータルが `location.replace` で去ったことを示す印 (liff-pages.ts の #rank 集約 redirect が付ける)。
+ *
+ * 🚨 これを sessionStorage で持ってはいけない。 守りたい事実は「**この履歴エントリ**は replace で
+ * 作られた」というエントリ固有かつ永続の性質なのに、sessionStorage はセッションに 1 つしかない
+ * 可変スロットで、後続のポータル文書が pagehide のたびに同じキーを上書きする。 上書きされた後に
+ * 端末の戻るでそのエントリへ復帰すると guard が外れ、preventDefault 済みのまま history.back() が
+ * ミニアプリを閉じる方向へ走る (採点ループ P2)。 URL のクエリなら履歴エントリと一緒に復元される。
+ */
+export const LIFF_ENTRY_REPLACED_PARAM = 'entry=replace';
 
 /**
  * 戻りリンクに付ける属性。script はこの属性で対象を集める。
@@ -38,19 +46,16 @@ export const LIFF_BACK_ATTR = 'data-liff-back';
 
 const BACK_LINK_JS: string = [
   '(function () {',
-  '  var NAV_KEY = ' + JSON.stringify(NAV_SNAPSHOT_KEY) + ';',
   '  function trimSlash(p) {',
   '    return (p && p.length > 1 && p.charAt(p.length - 1) === "/") ? p.slice(0, -1) : p;',
   '  }',
-  '  // ポータルが location.replace で去った直後は、referrer がポータルを指していても',
-  '  // 戻り先はポータルではない (エントリが上書きされている)。そのときは前進遷移に倒す。',
-  '  function portalEntryWasReplaced() {',
+  '  // ポータルが location.replace で去ったエントリでは、referrer がポータルを指していても',
+  '  // 戻り先はポータルではない (エントリが上書きされている)。 印は URL に載っているので、',
+  '  // このページのどの履歴エントリでも・何度戻ってきても同じ答えになる。',
+  '  function entryWasReplaced() {',
   '    try {',
-  '      var raw = window.sessionStorage.getItem(NAV_KEY);',
-  '      if (!raw) return false;',
-  '      var rec = JSON.parse(raw);',
-  '      return !!rec && rec.via === "replace";',
-  '    } catch (e) { return false; }',
+  '      return String(window.location.search || "").indexOf(' + JSON.stringify(LIFF_ENTRY_REPLACED_PARAM) + ') >= 0;',
+  '    } catch (e) { return true; }',
   '  }',
   '  function previousIs(href) {',
   '    if (!document.referrer) return false;',
@@ -59,7 +64,7 @@ const BACK_LINK_JS: string = [
   '      var ref = new URL(document.referrer, window.location.origin);',
   '      if (ref.origin !== target.origin) return false;',
   '      if (trimSlash(ref.pathname) !== trimSlash(target.pathname)) return false;',
-  '      if (trimSlash(target.pathname) === "/liff/portal" && portalEntryWasReplaced()) return false;',
+  '      if (trimSlash(target.pathname) === "/liff/portal" && entryWasReplaced()) return false;',
   '      return true;',
   '    } catch (e) { return false; }',
   '  }',
