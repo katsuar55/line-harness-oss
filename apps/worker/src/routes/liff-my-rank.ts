@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
 import { liffWatchdogScriptTag } from '../utils/liff-watchdog.js';
+import { liffBackLinkScriptTag } from '../utils/liff-back-link.js';
 import {
   NATURISM_RANK_DEFS,
   resolveFriendRank,
@@ -180,7 +181,13 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
       },
       trailing12moJpy: resolved.trailing12moJpy,
       next: p.next
-        ? { id: p.next.id, name: p.next.name, remainingJpy: p.remainingToNextJpy }
+        ? {
+            id: p.next.id,
+            name: p.next.name,
+            remainingJpy: p.remainingToNextJpy,
+            // ホームの統合ランクヒーローと同じ shape を保つ (2026-08-25)
+            discountPercent: p.next.discountPercent,
+          }
         : null,
       progressRatio: p.progressRatio,
       // official = 月次 snapshot (= cron 実行後に値が入る、 未実行なら null で live のみ)
@@ -246,6 +253,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
   <meta name="theme-color" content="#2fa8ad">
   <title>マイランク — naturism</title>
   ${liffWatchdogScriptTag()}
+  ${liffBackLinkScriptTag()}
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -288,7 +296,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
 
   <header class="sticky top-0 z-40" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(0,0,0,.05)">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
-      <a href="/liff/portal" class="text-xs text-gray-500 flex items-center gap-1 tap">&larr; マイページ</a>
+      <a href="/liff/portal" data-liff-back class="text-xs text-gray-500 flex items-center gap-1 tap">&larr; マイページ</a>
       <h1 class="text-base font-extrabold tracking-tight" style="color:#0f766e">&#x1F451; マイランク</h1>
       <span class="w-16"></span>
     </div>

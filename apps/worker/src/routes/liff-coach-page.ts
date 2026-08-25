@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
 import { liffWatchdogScriptTag } from '../utils/liff-watchdog.js';
+import { liffBackLinkScriptTag } from '../utils/liff-back-link.js';
 
 /**
  * LIFF 栄養コーチページ (Phase 4 PR-4)
@@ -42,6 +43,7 @@ function coachPage(liffId: string, apiBase: string): string {
   <meta name="theme-color" content="#2fa8ad">
   <title>栄養コーチ — naturism</title>
   ${liffWatchdogScriptTag()}
+  ${liffBackLinkScriptTag()}
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -75,7 +77,7 @@ function coachPage(liffId: string, apiBase: string): string {
 
   <header class="sticky top-0 z-50" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(0,0,0,.06)">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
-      <a href="/liff/portal" class="text-xs text-gray-500 flex items-center gap-1">&larr; マイページ</a>
+      <a href="/liff/portal" data-liff-back class="text-xs text-gray-500 flex items-center gap-1">&larr; マイページ</a>
       <h1 class="text-base font-bold tracking-tight" style="color:#0f766e">&#x1F33F; 栄養コーチ</h1>
       <span class="w-16"></span>
     </div>

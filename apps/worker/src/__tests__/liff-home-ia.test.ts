@@ -105,14 +105,18 @@ describe('IA 再編の安全条件', () => {
     expect(new Set(values).size).toBe(values.length);
   });
 
-  it('rank-hero: rank の order はクーポン群 (hub) より前・VITAL STRIP/次の一手より後', () => {
+  it('rank-hero: 統合ランクヒーローが home の最上段 (2026-08-25 オーナー指示)', () => {
     const order = new Map(HOME_IA_ORDER);
+    // 旧 VITAL STRIP は廃止され、ヒーローがその位置を継いだ。台帳に亡霊が残らないこと。
+    expect(order.has('vital-strip'), 'VITAL STRIP は廃止済み — 台帳に残っている').toBe(false);
+    expect(Math.min(...HOME_IA_ORDER.map(([, n]) => n))).toBe(order.get('rank-card')!);
     expect(order.get('rank-card')!).toBeLessThan(order.get('coupon-hub-head')!);
     expect(order.get('rank-card')!).toBeLessThan(order.get('coupons-card')!);
-    expect(order.get('rank-card')!).toBeGreaterThan(order.get('vital-strip')!);
-    // C3 決定 (liff-pages.ts): 連携は配送/再注文/ランク全ての前提 — CTA は前提未充足の
-    // rank ティーザーより上に置く (未連携ユーザーにしか表示されないので rank-hero とは両立)
-    expect(order.get('shopify-link-home-card')!).toBeLessThan(order.get('rank-card')!);
+    // 連携 CTA と「次の一手」はヒーローの直下 (ヒーロー自身が未連携の注記を持つので、
+    // 前提の提示より先に「あなたのランクはこれ」を見せてよい — 旧 C3 はティーザー時代の判断)
+    expect(order.get('next-move-card')!).toBeGreaterThan(order.get('rank-card')!);
+    expect(order.get('shopify-link-home-card')!).toBeGreaterThan(order.get('rank-card')!);
+    expect(order.get('shopify-link-home-card')!).toBeLessThan(order.get('coupon-hub-head')!);
   });
 
   it('coupon-hub: 見出し + クーポン 5 面が連続 order (分断されない)', () => {

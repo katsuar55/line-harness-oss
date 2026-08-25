@@ -13,6 +13,8 @@ import { LineClient } from '@line-crm/line-sdk';
 import {
   getFriendRank,
   getMemberRanks,
+  resolveFriendRank,
+  NATURISM_RANK_DEFS,
   getCouponAssignmentsByFriend,
   getReferralStats,
   getReferralLink,
@@ -64,11 +66,62 @@ const FRIEND_COUPON_STORE_DOMAIN = 'naturism-diet.com';
 // ─── read 関数 14 本 (liff-portal.ts の handler と 1:1) ───
 
 /**
+ * 会員ランク (= 自社内製ロイヤリティ, trailing-12ヶ月) の read-model。
+ *
+ * 🚨 会員証 (GET /api/liff/my-rank) と**同じ 1 本の実装** (resolveFriendRank) から導くこと。
+ *   ポータルのホームは長らく DEPRECATED な member_ranks 表 (getFriendRank/getMemberRanks) を
+ *   読んでおり、会員証ページ (/liff/my-rank) の trailing-12mo ランクと**別の答え**を出していた
+ *   (ホーム「はじめて」/ 会員証「レギュラー会員」)。同じ顧客に 2 つのランクを見せないため、
+ *   顧客可視のランク表示はすべてこの関数を通す。
+ *
+ * shape は GET /api/liff/my-rank の data.rank / trailing12moJpy / next / progressRatio と
+ * 逐語で一致させる (drift すると同じ画面で 2 つの数字が出る)。
+ * 失敗しても null を返してホーム全体は描く (会員証本体を落とさない my-rank と同じ作法)。
+ */
+export async function readLoyaltyRank(deps: PortalReadDeps, liffUser: LiffUser) {
+  try {
+    const resolved = await resolveFriendRank(deps.db, liffUser.friendId, NATURISM_RANK_DEFS);
+    const p = resolved.progress;
+    return {
+      rank: {
+        id: resolved.rank.id,
+        name: resolved.rank.name,
+        discountPercent: resolved.rank.discountPercent,
+        badgeEmoji: resolved.rank.badgeEmoji ?? null,
+        badgeColor: resolved.rank.badgeColor ?? null,
+        badgeImageUrl: resolved.rank.badgeImageUrl ?? null,
+      },
+      trailing12moJpy: resolved.trailing12moJpy,
+      next: p.next
+        ? {
+            id: p.next.id,
+            name: p.next.name,
+            remainingJpy: p.remainingToNextJpy,
+            // ホームは「次は何% OFF か」まで出す (会員証と同じ 1 本から出すため両方に足す)
+            discountPercent: p.next.discountPercent,
+          }
+        : null,
+      progressRatio: p.progressRatio,
+    };
+  } catch (err) {
+    console.error('[portal-read] readLoyaltyRank failed:', err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
+/**
  * POST /api/liff/rank の本体 — ランク＋進捗バー＋特典。
  */
 export async function readRank(deps: PortalReadDeps, liffUser: LiffUser) {
-  const friendRank = await getFriendRank(deps.db, liffUser.friendId);
-  const allRanks = await getMemberRanks(deps.db);
+  // 顧客可視のランクは会員証 (/liff/my-rank) と同じ 1 本 (loyalty) から出す。 member_ranks 由来
+  // フィールド (currentRank/totalSpent/nextRank/progressPercent) は DEPRECATED な旧系統で、
+  // 表示には使わない (既存 consumer との後方互換のためだけに残す)。
+  // この endpoint はポータル初期化の直列パスに居るので 3 本を直列に await しない (並列で 1 往復ぶん)。
+  const [friendRank, allRanks, loyalty] = await Promise.all([
+    getFriendRank(deps.db, liffUser.friendId),
+    getMemberRanks(deps.db),
+    readLoyaltyRank(deps, liffUser),
+  ]);
   // linked = Shopify customer と紐付け済か。 ポータルのマイアカウントが
   // 「オンラインストアと連携」カードを畳む判定に使う (= 連携済みの人に押させない)。
   // 命名は /api/liff/my-rank の同名フィールドに合わせる。
@@ -79,10 +132,19 @@ export async function readRank(deps: PortalReadDeps, liffUser: LiffUser) {
   if (!friendRank) {
     return {
       linked,
+      loyalty,
       currentRank: null,
       totalSpent: 0,
       ordersCount: 0,
-      nextRank: allRanks[0] ?? null,
+      // 有り分岐と同じ shape に揃える (旧実装は member_ranks の生行 = snake_case・remaining 無しを返していた)
+      nextRank: allRanks[0]
+        ? {
+            name: allRanks[0].name,
+            color: allRanks[0].color,
+            minTotalSpent: allRanks[0].min_total_spent,
+            remaining: Math.max(0, Number(allRanks[0].min_total_spent ?? 0)),
+          }
+        : null,
       progressPercent: 0,
       benefits: null,
       allRanks: allRanks.map((r) => ({
@@ -113,6 +175,7 @@ export async function readRank(deps: PortalReadDeps, liffUser: LiffUser) {
 
   return {
     linked,
+    loyalty,
     currentRank: currentRankDetail
       ? {
           name: currentRankDetail.name,

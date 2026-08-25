@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
 import { liffWatchdogScriptTag } from '../utils/liff-watchdog.js';
+import { liffBackLinkScriptTag } from '../utils/liff-back-link.js';
 
 /**
  * GET /liff/food/graph — 食事ログ集計グラフ SPA (PR-6)
@@ -37,6 +38,7 @@ function graphPage(liffId: string, apiBase: string): string {
   <meta name="theme-color" content="#2fa8ad">
   <title>📊 食事グラフ — naturism</title>
   ${liffWatchdogScriptTag()}
+  ${liffBackLinkScriptTag()}
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
@@ -69,7 +71,7 @@ function graphPage(liffId: string, apiBase: string): string {
 
   <header class="sticky top-0 z-40" style="background:rgba(255,255,255,.88);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(0,0,0,.06)">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center gap-3">
-      <a href="/liff/food" class="text-teal-700 text-sm font-medium hover:underline" aria-label="食事ログに戻る">&larr; 戻る</a>
+      <a href="/liff/portal" data-liff-back class="text-teal-700 text-sm font-medium hover:underline" aria-label="マイページに戻る">&larr; マイページ</a>
       <h1 class="text-lg font-bold tracking-tight ml-1" style="color:#0f766e">📊 食事グラフ</h1>
     </div>
   </header>

@@ -10,14 +10,14 @@
  * 視覚順を差し替える — DOM 順は不変なので既存の配線が 1 本も壊れない。
  *
  * ## 新しい視覚順 (gate on)
- *   1. VITAL STRIP (計器)
+ *   1. 統合ランクヒーロー (rank-card — 2026-08-25 に VITAL STRIP と統合。ノータップでランク/割引%/次条件)
  *   2. 次の一手 (next-move)
- *   3. ストア連携 CTA (未連携時のみ — C3「連携は全ての前提なので上部」の決定を維持し、
- *      前提未充足の rank ティーザーより上に置く)
- *   4. 会員ランク (rank-hero — 4 枚の発行済みクーポンカードの下に埋まっていたのを昇格)
- *   5. 🎟 クーポン・お得 (coupon-hub 見出し) + クーポン 5 面を**連続配置**
+ *   3. ストア連携 CTA (未連携時のみ)。2026-08-25: 旧 C3「rank ティーザーより上」は
+ *      ティーザー時代の判断なので、実データを出すヒーローの下へ移した (ヒーロー自身が
+ *      記録が無いときの注記を持つ)
+ *   4. 🎟 クーポン・お得 (coupon-hub 見出し) + クーポン 5 面を**連続配置**
  *      (従来は発行済み 4 面が最上部・一覧が rank の下に分断されていた)
- *   6. 紹介ヒーロー → ランキング → バッジ → 服用 → Tip → アンバサダー (従来順)
+ *   5. 紹介ヒーロー → ランキング → バッジ → 服用 → Tip → アンバサダー (従来順)
  *
  * ## 注意
  * - `.section.active{display:block}` (liff-pages.ts) より強い `#section-home.active` で
@@ -30,22 +30,22 @@
 
 /** 視覚順の台帳 (id → order)。home セクション直下の全要素を列挙する。 */
 export const HOME_IA_ORDER: ReadonlyArray<readonly [string, number]> = [
-  ['vital-strip', 0],
+  // 2026-08-25: VITAL STRIP は廃止し、ランクヒーロー (rank-card) が最上段を継いだ。
+  ['rank-card', 0],
   ['next-move-card', 1],
   ['shopify-link-home-card', 2],
-  ['rank-card', 3],
-  ['coupon-hub-head', 4],
-  ['coupons-card', 5],
-  ['welcome-coupon-card', 6],
-  ['referral-coupon-card', 7],
-  ['link-coupon-card', 8],
-  ['friend-coupon-card', 9],
-  ['referral-card', 10],
-  ['ranking-card', 11],
-  ['badge-card', 12],
-  ['intake-today-card', 13],
-  ['tip-card', 14],
-  ['ambassador-section', 15],
+  ['coupon-hub-head', 3],
+  ['coupons-card', 4],
+  ['welcome-coupon-card', 5],
+  ['referral-coupon-card', 6],
+  ['link-coupon-card', 7],
+  ['friend-coupon-card', 8],
+  ['referral-card', 9],
+  ['ranking-card', 10],
+  ['badge-card', 11],
+  ['intake-today-card', 12],
+  ['tip-card', 13],
+  ['ambassador-section', 14],
 ];
 
 /** coupon-hub の見出し。DOM 上はどこに置いても CSS order が視覚位置を決める。 */

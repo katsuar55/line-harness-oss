@@ -9,6 +9,8 @@ import { homeIaCss, homeIaHubHeadHtml } from './liff-portal-fragments/home-ia.js
 import { visualV2Css } from './liff-portal-fragments/visual-v2.js';
 import { reorderGuardHtml, reorderGuardCss, reorderGuardJs } from './liff-portal-fragments/reorder-guard.js';
 import { shopAnchorsHtml, shopAnchorTarget, shopGridHtml, shopV2Css, shopV2Js } from './liff-portal-fragments/shop-v2.js';
+import { navStateJs, navStateCss } from './liff-portal-fragments/nav-state.js';
+import { rankHeroCss, rankHeroHtml, rankHeroJs } from './liff-portal-fragments/rank-hero.js';
 import { BUILD_SHA, buildMetaTag } from '../utils/build-info.js';
 
 const liffPages = new Hono<Env>();
@@ -61,7 +63,11 @@ const portalHandler = (c: { env: Env['Bindings']; html: (html: string) => Respon
   const visualV2On = c.env.LIFF_VISUAL_V2_ENABLED === 'true';
   // Shop タブ v2 gate (2026-08-23): アンカー 3 本 + 再購入グリッド。off で 1 byte も emit しない
   const shopV2On = c.env.LIFF_SHOP_V2_ENABLED === 'true';
-  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl, portalBootstrapOn, subCardOn, homeIaOn, visualV2On, shopV2On));
+  // ランク割引 gate: off のときランクヒーローは「x% OFF」を 1 箇所も出さない。
+  // off では issueRankDiscountForFriend が必ず何も発行しないので、% を出した時点で
+  // 「受け取れない割引」の広告になる (景表法の有利誤認)。
+  const rankDiscountOn = c.env.RANK_DISCOUNT_ENABLED === 'true';
+  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl, portalBootstrapOn, subCardOn, homeIaOn, visualV2On, shopV2On, rankDiscountOn));
 };
 liffPages.get('/liff/portal', portalHandler as never);
 liffPages.get('/liff/portal/', portalHandler as never);
@@ -76,6 +82,7 @@ function portalPage(
   homeIaOn = false,
   visualV2On = false,
   shopV2On = false,
+  rankDiscountOn = false,
 ): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -244,32 +251,8 @@ function portalPage(
     .coupon-act--fill{background:var(--gold-deep);color:#fff;border:1.5px solid var(--gold-deep)}
     .coupon-expiry{font-size:12px;font-weight:600;color:var(--ink-2);font-variant-numeric:tabular-nums}
     .coupon-expiry--soon{font-size:11px;font-weight:700;color:#b84a2e;background:#fff3ec;border-radius:999px;padding:2px 8px;display:inline-block}
-    /* ─ VITAL STRIP = 1 秒ダッシュボード (VITAL INSTRUMENT §3) ─
-       ランク / クーポン枚数 / 連携状態を fold 上で一目にする。**追加 fetch ゼロ** —
-       すべて既存 loader が取ったデータを寄せているだけ。
-       色覚対応: dot の色だけに意味を持たせず「連携済み/未連携」の文字と二重符号化する。
-       リング終端 #0d827d と空トラック --track (#e6efef) は 3:1 以上 (WCAG 1.4.11)。
-       ブランド原色ティールは §7-1 でポータル使用禁止なので、明るい側は --brand #2fa8ad。
-       アニメーションは足さない (モーション憲法: 動く枠は .ref-hero 1 枚だけ)。 */
-    .vs-grid{display:grid;grid-template-columns:1.25fr 1px 1fr 1px 1fr;align-items:stretch}
-    .vs-cell{display:flex;align-items:center;gap:8px;min-height:56px;padding:6px 6px;background:none;border:0;text-align:left;border-radius:12px;min-width:0}
-    .vs-div{background:linear-gradient(180deg,transparent,var(--hairline) 30%,var(--hairline) 70%,transparent)}
-    .vs-ring{--p:0%;width:40px;height:40px;border-radius:50%;flex:none;background:conic-gradient(from -90deg,#2fa8ad,#0d827d var(--p),var(--track) 0);display:flex;align-items:center;justify-content:center}
-    .vs-ring-in{width:32px;height:32px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:inset 0 0 0 1px #eef4f4}
-    .vs-num{font-size:24px;font-weight:800;color:#052422;letter-spacing:-.5px;min-width:26px;text-align:center;font-variant-numeric:tabular-nums}
-    .vs-meta{min-width:0}
-    .vs-b{display:block;font-size:12px;font-weight:700;color:#052422;line-height:1.3}
-    .vs-s{display:block;font-size:11px;font-weight:600;color:#66727d;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .vs-s.is-ng{color:#b84a2e} .vs-s.is-ok{color:#0f766e}
-    .vs-dot{width:12px;height:12px;border-radius:50%;flex:none;background:#c3cdd4}
-    .vs-dot.is-on{background:#0d827d;box-shadow:0 0 0 3px rgba(13,130,125,.18)}
-    .vs-dot.is-off{background:#d9573d;box-shadow:0 0 0 3px rgba(217,87,61,.15)}
-    .vs-sk{display:inline-block;width:44px;height:12px;border-radius:6px}
-    /* skeleton の stagger (新しい animation は足さず、既存 shimmer の delay だけずらす)。
-       .vs-cell は button なので nth-of-type は区切りの span を数えず 1..3 になる。 */
-    #vital-strip .vs-cell:nth-of-type(1) .skeleton{animation-delay:.15s}
-    #vital-strip .vs-cell:nth-of-type(2) .skeleton{animation-delay:.3s}
-    #vital-strip .vs-cell:nth-of-type(3) .skeleton{animation-delay:.45s}
+    ${rankHeroCss()}
+    ${navStateCss()}
     .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:shimmer 1.6s ease-in-out infinite;border-radius:8px}
     @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
     .progress-bar{transition:width .6s cubic-bezier(.4,0,.2,1)}
@@ -434,27 +417,7 @@ function portalPage(
 
     <!-- ===== HOME Section ===== -->
     <div id="section-home" class="section active space-y-4">
-      <!-- VITAL STRIP (§3): 1 秒ダッシュボード。ランク / クーポン枚数 / 連携状態。
-           追加 fetch ゼロ = 既存 loader が取ったデータを寄せるだけ。
-           3 セルとも「その先」へ跳ぶ導線 (行き止まりを作らない)。 -->
-      <div id="vital-strip" class="card" role="group" aria-label="あなたの現在ステータス" style="padding:4px 6px">
-        <div class="vs-grid">
-          <button type="button" class="vs-cell tap" onclick="vsJumpRank()" aria-label="会員ランクの詳細へ">
-            <span class="vs-ring" id="vs-ring" style="--p:0%"><span class="vs-ring-in" id="vs-rank-icon">🌱</span></span>
-            <span class="vs-meta"><b class="vs-b">ランク</b><small class="vs-s" id="vs-rank-sub"><span class="skeleton vs-sk"></span></small></span>
-          </button>
-          <span class="vs-div" aria-hidden="true"></span>
-          <button type="button" class="vs-cell tap" id="vs-coupon-cell" onclick="vsJumpCoupons()" aria-label="クーポン一覧へ">
-            <span class="vs-num" id="vs-coupon-n">–</span>
-            <span class="vs-meta"><b class="vs-b">クーポン</b><small class="vs-s" id="vs-coupon-sub"><span class="skeleton vs-sk"></span></small></span>
-          </button>
-          <span class="vs-div" aria-hidden="true"></span>
-          <button type="button" class="vs-cell tap" id="vs-link-cell" onclick="vsLinkTap()" aria-label="ストア連携の状態">
-            <span class="vs-dot" id="vs-link-dot"></span>
-            <span class="vs-meta"><b class="vs-b">連携</b><small class="vs-s" id="vs-link-sub"><span class="skeleton vs-sk"></span></small></span>
-          </button>
-        </div>
-      </div>
+      ${rankHeroHtml()}
       ${homeIaOn ? homeIaHubHeadHtml() : ''}
       <!-- 友だち追加 welcome クーポン (発行済みのときのみ表示・期限カウントダウン付き) -->
       <div id="welcome-coupon-card" class="card p-4" style="display:none"></div>
@@ -485,11 +448,6 @@ function portalPage(
           </div>
           <button onclick="dismissNextMove()" aria-label="閉じる" class="text-gray-300 text-xl leading-none px-1">×</button>
         </div>
-      </div>
-
-      <!-- Rank Card -->
-      <div id="rank-card" class="card p-4">
-        <div class="skeleton h-24 rounded-lg"></div>
       </div>
 
       <!-- ── お得ゾーン (採点R1 HIGH: 定常ユーザーの fold もディールファーストに。
@@ -1174,6 +1132,8 @@ function portalPage(
 const LIFF_ID = '${escapeHtml(liffId)}';
 const API_BASE = '${escapeHtml(apiBase)}';
 const REFERRAL_REWARD_ON = ${referralRewardOn ? 'true' : 'false'};
+// ランク割引 gate。off のとき統合ランクヒーローは % を 1 箇所も出さない (受け取れない割引を広告しない)
+const RANK_DISCOUNT_ON = ${rankDiscountOn ? 'true' : 'false'};
 const PORTAL_BOOTSTRAP_ON = ${portalBootstrapOn ? 'true' : 'false'};
 let idToken = null;
 let selectedCondition = null;
@@ -1458,6 +1418,15 @@ let isDemo = false;
 async function initLiff() {
   try {
     if (!LIFF_ID) throw new Error('LIFF_ID not configured');
+    // ナビ状態の配線は最優先。 ブラウザ既定のスクロール復元を切り、 離脱時の退避を仕掛ける
+    // (liff.login() の往復で離脱する場合もここで拾う)。
+    initNavState();
+    // 🚨 行き先は **退避を読む前に上書きされない位置** で確定させる。 initNavState が離脱の退避を
+    //    武装した後、 liff.init()/getProfile() の数秒でアプリがバックグラウンドに回ると
+    //    visibilitychange が同じスロットを {home,0} で潰し、 復元位置を自分で消してしまう
+    //    (採点ループ P3)。 読むのは history.state / sessionStorage / performance / referrer だけで
+    //    LIFF の初期化に依存しないので、 ここで確定できる。
+    navResolveOnce();
     // ?slk= は liff.init() より前に退避する。 liff.login() は現在 URL へ戻ってくるが、 その URL は
     // 既に replaceState で slk を削ってあるため、 sessionStorage が唯一のトークン運搬手段になる。
     captureSubLinkToken();
@@ -1470,7 +1439,13 @@ async function initLiff() {
     // (trailing-12mo ランク) に集約する canonical entry。LIFF init 後 = hash 復元済 (liff.state 経由でも OK)、
     // 重い portal data load の前に redirect することで画面 flash と二重ロードを最小化する。
     if (location.hash === '#rank' && new URLSearchParams(location.search).get('demo') !== '1') {
-      location.replace('/liff/my-rank');
+      // 集約 redirect は「顧客がポータルのタブを選んだ結果」ではない。 このエントリは replace で
+      // 潰れるので、会員証ページの「マイページ」が history.back() (= LINE を閉じる) に化けないよう
+      // 印を付ける。 🚨 印は **URL に載せる** — sessionStorage はセッションに 1 つしかない可変
+      // スロットで、後続のポータル文書の pagehide が上書きしてしまう (採点ループ P2)。
+      navViaOverride = 'replace';
+      try { navSnapshot('replace'); } catch (e) { /* ignore */ }
+      location.replace('/liff/my-rank?entry=replace');
       return;
     }
     idToken = liff.getIDToken();
@@ -1493,9 +1468,11 @@ async function initLiff() {
     }
     // 採点R3: リッチメニュー #delivery/#reorder 直行時、shop の fetch を home batch と並列に先行
     //   (旧: home 12 loader 完了後に直列で shop fetch = 体感2倍待ち)。switchTab 側は 1 回だけ skip。
+    // この起動の行き先 (deep link / 復元 / 新規) を 1 度だけ決め、 prefetch と最終適用で共有する。
+    // 再計算しないのは、 間に走る非同期処理が history.state を書き換えても答えがブレないようにするため。
+    var entry = navResolveOnce();
     try {
-      var earlyDest = (location.hash || '').replace('#', '') || (new URLSearchParams(location.search).get('page') || '');
-      if (earlyDest === 'delivery' || earlyDest === 'reorder' || earlyDest === 'shop' || earlyDest === 'store') {
+      if (entry.tab === 'shop') {
         window.__shopPrefetched = true;
         loadShopData(); loadSubscriptionsOnce();
         ${subCardOn ? 'loadSubContractsOnce();' : ''}
@@ -1519,8 +1496,9 @@ async function initLiff() {
     }
     // 紹介リンク経由チェック（?ref=xxx）
     checkReferralParam();
-    // ハッシュベースのディープリンク（リッチメニューから特定タブへ遷移）
-    handleDeepLink();
+    // 行き先の適用。 deep link は 1 回で使い切り (URL から落とす)、 戻ってきたときは
+    // 直前のタブ + スクロール位置を復元する。 詳細は fragments/nav-state.ts。
+    applyNavEntry();
     // タブ/ツアーのフリック操作 (2026-07-04 先進性方針)
     initTabSwipe();
     initTourSwipe();
@@ -1556,14 +1534,13 @@ function loadDemoData() {
   document.getElementById('user-avatar').innerHTML =
     '<div class="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center text-white text-xs font-bold">D</div>';
 
-  // Rank
-  document.getElementById('rank-card').innerHTML =
-    '<div class="flex items-center gap-3 mb-3">' +
-    '<div class="w-12 h-12 rounded-full flex items-center justify-center text-2xl" style="background:#C0C0C020">Ag</div>' +
-    '<div><p class="text-sm font-bold text-gray-800">Silver</p>' +
-    '<p class="text-xs text-gray-500">\u7d2f\u8a08 \xa515,000</p></div></div>' +
-    '<div class="bg-gray-100 rounded-full h-2 overflow-hidden"><div class="bg-green-500 h-2 progress-bar" style="width:25%"></div></div>' +
-    '<p class="text-xs text-gray-400 mt-1">\u6b21\u306e\u30e9\u30f3\u30af Gold \u307e\u3067\u3042\u3068 \xa59,000</p>';
+  // Rank \u2014 \u672c\u756a\u3068\u540c\u3058\u63cf\u753b\u95a2\u6570\u3092\u901a\u3059 (\u5ec3\u6b62\u3057\u305f\u65e7\u30e9\u30f3\u30af\u30e2\u30c7\u30eb\u3092 preview \u306b\u6b8b\u3055\u306a\u3044)
+  renderRankHero({
+    rank: { id: 'silver', name: '\u30b7\u30eb\u30d0\u30fc', discountPercent: 4, badgeEmoji: '\u{1F948}', badgeColor: '#C0C0C0', badgeImageUrl: '/images/rank-silver-v2.png' },
+    trailing12moJpy: 15000,
+    next: { id: 'gold', name: '\u30b4\u30fc\u30eb\u30c9', remainingJpy: 9000, discountPercent: 6 },
+    progressRatio: 0.25,
+  }, false);
 
   // Tip
   document.getElementById('tip-card').innerHTML =
@@ -1792,8 +1769,13 @@ async function bootstrapPortal() {
     // home 以外へのタブ切替) 入場では見送り、旧経路と同じ init 完走時 (= handleDeepLink で
     // タブ切替を済ませた後) に解除する — 早期 reveal だと「home が見えて操作を始めた頃に
     // 画面が突然別タブへ飛ぶ」窓が streak fetch 1 往復ぶん開く (採点ループ R1 confirmed)。
-    var dest = deepLinkDest();
-    if (!dest || dest === 'home') { revealLoading(); }
+    // 🚨 deepLinkDest() ではなく **確定した行き先** を見る。 復元入場 (戻るで Shop タブへ戻る等) は
+    //    URL に hash が無いので deepLinkDest() は null を返し、 早期 reveal → その後タブが飛ぶ、
+    //    という PR-3 が潰したはずの窓が復活する。
+    // 🚨 y も見る。 tab だけで判定すると「home へ y>0 の復元」で loading を先に剥がしてしまい、
+    //    顧客が読み始めた後に applyNavEntry() のスクロール復元で画面が飛ぶ (採点ループ P2)。
+    var navE = navResolveOnce();
+    if ((!navE.tab || navE.tab === 'home') && !(Number(navE.y) > 0)) { revealLoading(); }
     await Promise.all([
       loadLanguage(bootstrapSection(s, 'language')),
       loadTip(bootstrapSection(s, 'tip')),
@@ -1814,6 +1796,10 @@ async function bootstrapPortal() {
     return false;
   }
 }
+
+${rankHeroJs()}
+
+${navStateJs()}
 
 // ─── Deep Link (hash-based tab navigation from rich menu) ───
 // 写像はこの 1 表が単一の正 (PR-6 で台帳化予定)。handleDeepLink と bootstrapPortal の
@@ -1850,7 +1836,7 @@ function handleDeepLink() {
 }
 
 // ─── Tab Switching ───
-function switchTab(name) {
+function switchTab(name, keepScroll) {
   // 未知タブは現状維持で無視 (review HIGH: throw すると tabAnimating が固まり全タブ操作が死ぬ)
   var section = document.getElementById('section-' + name);
   if (!section) { console.error('switchTab: unknown tab', name); return; }
@@ -1859,8 +1845,10 @@ function switchTab(name) {
   section.classList.add('active');
   var tabBtn = document.getElementById('tab-' + name);
   if (tabBtn) tabBtn.className = tabBtn.className.replace('tab-inactive', 'tab-active');
-  // Scroll to top smoothly
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  // Scroll to top smoothly (復元中だけは抑止 — 復元スクロールと綱引きになる)
+  if (!keepScroll) { window.scrollTo({ top: 0, behavior: 'smooth' }); }
+  // いま居るタブをこの履歴エントリに記録する (戻ってきたときの行き先の正)
+  try { navMarkTab(name); } catch (e) { /* nav-state 未初期化でも タブ切替は動く */ }
 
   // Lazy load section data (4タブ再設計: 体調は「記録」に統合、旧 more は「マイアカウント」へ)
   if (name === 'intake') { loadIntakeData(); initReminder(); loadHealthData(); }
@@ -2040,14 +2028,23 @@ function showToast(msg) {
   setTimeout(() => { t.style.opacity = '0'; }, 2000);
 }
 
-// ─── HOME: Rank ───
+// ─── HOME: Rank (統合ランクヒーロー) ───
+// 🚨 描画は data.loyalty (= 会員証 /liff/my-rank と同じ 1 本) だけを見る。
+//    data.currentRank / totalSpent / nextRank / progressPercent は DEPRECATED な
+//    friend_ranks / member_ranks 由来で、本番は空 (= 全員に「はじめて」を見せていた)。
 async function loadRank(preRes) {
   const el = document.getElementById('rank-card');
   try {
     const res = preRes || await api('/api/liff/rank');
-    if (apiFailed(res)) { cardError(el, res, 'loadRank'); return; }
+    // 🚨 失敗時も cardError でカードごと差し替えない。 ヒーローのフッターには 5 系統の loader が
+    //    数えた保有クーポン枚数と会員証への導線が入っており、 ランクが取れないことの巻き添えで
+    //    それらまで消えるのは旧 VITAL STRIP には無かった退行 (採点ループ P3)。
+    //    renderRankHeroUnknown は「分からない」を断定せずに述べ、フッターは残す。
+    if (apiFailed(res) || !res.data) {
+      try { renderRankHeroUnknown(el); } catch (e) { cardError(el, res, 'loadRank'); }
+      return;
+    }
     const data = res.data;
-    if (!data) return;
     // Shopify 連携済みなら、全ての連携 CTA を畳む (マイアカウントのカードは「連携済み」表示へ、
     // 空表示に挿した導線は非表示へ)。= 既連携ユーザーの無意味な外部ブラウザ往復と、
     // 完了直後の「まだ押せる」不安を消す。
@@ -2063,43 +2060,11 @@ async function loadRank(preRes) {
       window.__shopifyLinked = false;
       try { showShopifyLinkHomeCard(); } catch (e) {}
     }
-    // VITAL STRIP (§3): ランク / 連携の 2 セルはこの応答だけで埋まる (追加 fetch なし)
-    try { vsSetRank(data.currentRank, data.progressPercent); } catch (e) {}
-    // 連携は単調性ガード (__shopifyLinked) と同じ向きに揃える — 一度 on にしたら off へ戻さない
-    try { vsSetLinked(window.__shopifyLinked === true || !!data.linked); } catch (e) {}
-    if (data.currentRank) {
-      const pct = data.progressPercent || 0;
-      // Check if user is ambassador (will be set after loadAmbassador runs)
-      const isAmb = !!ambassadorData;
-      if (isAmb) {
-        el.classList.add('rank-ambassador');
-      }
-      const badgeHtml = isAmb ? ' <span class="ambassador-badge">&#x2728; Ambassador</span>' : '';
-      const sparkleHtml = isAmb ? '<div class="sparkle-dots">' +
-        '<div class="sparkle-dot" style="top:12%;left:85%;animation-delay:0s"></div>' +
-        '<div class="sparkle-dot" style="top:35%;left:10%;animation-delay:0.6s"></div>' +
-        '<div class="sparkle-dot" style="top:70%;left:78%;animation-delay:1.2s"></div>' +
-        '<div class="sparkle-dot" style="top:55%;left:25%;animation-delay:0.3s"></div>' +
-        '<div class="sparkle-dot" style="top:20%;left:55%;animation-delay:0.9s"></div></div>' : '';
-      el.innerHTML = sparkleHtml +
-        '<div class="flex items-center gap-3 mb-3" style="position:relative;z-index:1">' +
-        '<div class="w-12 h-12 rounded-full flex items-center justify-center text-2xl" style="background:' + esc(data.currentRank.color || '#ccc') + '20">' + esc(data.currentRank.icon || '') + '</div>' +
-        '<div><p class="text-sm font-bold text-gray-800">' + esc(data.currentRank.name) + badgeHtml + '</p>' +
-        '<p class="text-xs text-gray-500">累計 ¥' + Number(data.totalSpent).toLocaleString() + '</p></div></div>' +
-        '<div class="bg-gray-100 rounded-full h-2 overflow-hidden" style="position:relative;z-index:1"><div class="' + (isAmb ? 'h-2 progress-bar' : 'bg-green-500 h-2 progress-bar') + '" style="width:' + pct + '%;' + (isAmb ? 'background:linear-gradient(90deg,#fbbf24,#f59e0b)' : '') + '"></div></div>' +
-        (data.nextRank ? '<p class="text-xs text-gray-400 mt-1" style="position:relative;z-index:1">次のランク ' + esc(data.nextRank.name) + ' まであと ¥' + Number(data.nextRank.remaining).toLocaleString() + '</p>' : '<p class="text-xs text-green-600 mt-1" style="position:relative;z-index:1">最高ランク達成!</p>') +
-        // 回遊: ランク表示で終わらせず、会員特典のおトクな購入へ繋ぐ (purchase motivation)
-        '<a href="' + API_BASE + '/liff/my-rank" class="tap block mt-3 text-center text-xs text-green-700 bg-green-50 rounded-xl py-2 font-bold" style="position:relative;z-index:1">🛍 会員特典・おトクに購入する →</a>';
-    } else {
-      // 採点R1: 未購入ユーザーに「死んだグレー行」でなくランク制度のティーザーを見せる (割引訴求のみ=薬機法セーフ)
-      el.innerHTML =
-        '<div class="flex items-center gap-3 mb-2">' +
-        '<div class="w-12 h-12 rounded-full flex items-center justify-center text-2xl" style="background:#effaf8">🌱</div>' +
-        '<div><p class="text-sm font-bold text-gray-800">会員ランク</p>' +
-        '<p class="text-xs text-gray-500">ご購入でランクが上がり、割引特典が受けられます</p></div></div>' +
-        '<a href="' + API_BASE + '/liff/my-rank" class="tap block mt-1 text-center text-xs text-green-700 bg-green-50 rounded-xl py-2 font-bold">🛍 会員特典を見てみる →</a>';
-    }
-  } catch { cardError(el, null, 'loadRank'); }
+    // ambassadorData は loadAmbassador が先に確定させている (bootstrap / 旧経路とも順序は同じ)
+    renderRankHero(data.loyalty, !!ambassadorData);
+  } catch {
+    try { renderRankHeroUnknown(el); } catch (e) { cardError(el, null, 'loadRank'); }
+  }
 }
 
 // ─── HOME: Today's Tip ───
@@ -2119,14 +2084,15 @@ async function loadTip(preRes) {
   } catch { cardError(el, null, 'loadTip'); }
 }
 
-// ─── VITAL STRIP (§3): 1 秒ダッシュボード ───
+// ─── 保有クーポン枚数 (ヒーローのフッターに集約, 2026-08-25) ───
 // **追加 fetch ゼロ**。各 loader が「自分の分」を set し、合計を書き直すだけ。
 // increment でなく set にするのは、loader が再試行されても二重計上しないため (冪等)。
 // 発生源は互いに素: /api/liff/coupons (台帳) と welcome/referral/link/friend (Shopify 個人コード)。
+// 🚨 この 5 系統のどれかが set を呼ばなくなると、カードは出ているのに枚数が 0 になる。
+//    loader を足したら vsSetCoupons のキーも足すこと。
 window.__vsCoupons = { list: 0, welcome: 0, referral: 0, link: 0, friend: 0 };
 // 順次活性化 (R1): 紹介クーポンの待機枚数。主数字には**混ぜない** (「3枚使える」との誤認防止)。
 window.__vsCouponsWaiting = 0;
-var vsCouponAnimated = false;
 
 function vsSetCoupons(key, n) {
   try {
@@ -2148,70 +2114,26 @@ function vsCouponTotal() {
   return (c.list || 0) + (c.welcome || 0) + (c.referral || 0) + (c.link || 0) + (c.friend || 0);
 }
 
+// ヒーローのフッター左ボタンのラベルを書き直す。ヒーローが未描画のときは何もしない
+// (各 loader は描画前に着弾しうる。renderRankHero が最後にもう一度呼ぶ)。
 function updateVsCouponCell() {
-  var num = document.getElementById('vs-coupon-n');
-  var sub = document.getElementById('vs-coupon-sub');
-  if (!num || !sub) return;
+  var label = document.getElementById('rh-coupon-label');
+  if (!label) return;
   var total = vsCouponTotal();
   var waiting = Number(window.__vsCouponsWaiting) || 0;
+  label.textContent = '';
   if (total <= 0) {
     // 空状態は「無い」で終わらせず、もらう導線へ回遊させる (vsJumpCoupons が 0 枚なら紹介へ跳ぶ)。
-    // 待機だけある (= 次の1枚を準備中) ときはその旨を出す。
-    num.textContent = '–';
-    sub.textContent = waiting > 0 ? '+' + waiting + '枚 待機' : 'もらう →';
-    sub.className = 'vs-s is-ng';
+    label.appendChild(document.createTextNode(waiting > 0 ? 'クーポン +' + waiting + '枚 準備中' : 'クーポンをもらう →'));
     return;
   }
+  label.appendChild(document.createTextNode('クーポン '));
+  var n = document.createElement('b');
+  n.className = 'rh-coupon-n';
+  n.textContent = String(total);
+  label.appendChild(n);
   // 待機は主数字に混ぜない (「3枚使える」との誤認防止 — R1 は 1 注文 1 枚)
-  sub.textContent = waiting > 0 ? '+' + waiting + '枚 待機' : '使えます';
-  sub.className = 'vs-s is-ok';
-  // count-up は「0 枚 → 初めて枚数が入った」1 回だけ。5 系統が別々に着弾するたびに
-  // 数字が跳ねるのは目障りなので、2 回目以降は即値にする (モーション憲法: 常時アニメを作らない)
-  if (vsCouponAnimated || TAB_REDUCED_MOTION) { num.textContent = String(total); return; }
-  vsCouponAnimated = true;
-  var start = 0;
-  var t0 = 0;
-  var step = function(ts) {
-    if (!t0) { t0 = ts; }
-    var p = Math.min((ts - t0) / 400, 1);
-    num.textContent = String(Math.round(start + (total - start) * p));
-    if (p < 1) { requestAnimationFrame(step); } else { num.textContent = String(total); }
-  };
-  requestAnimationFrame(step);
-}
-
-function vsSetRank(currentRank, progressPercent) {
-  var ring = document.getElementById('vs-ring');
-  var icon = document.getElementById('vs-rank-icon');
-  var sub = document.getElementById('vs-rank-sub');
-  if (!ring || !icon || !sub) return;
-  var pct = Math.max(0, Math.min(100, Number(progressPercent) || 0));
-  ring.style.setProperty('--p', pct + '%');
-  if (currentRank) {
-    if (currentRank.icon) { icon.textContent = String(currentRank.icon); }
-    // 60代に最も意味があるのは % でなく「自分の格」の名前
-    sub.textContent = String(currentRank.name || '');
-    sub.className = 'vs-s';
-  } else {
-    sub.textContent = 'はじめて';
-    sub.className = 'vs-s';
-  }
-}
-
-function vsSetLinked(linked) {
-  var dot = document.getElementById('vs-link-dot');
-  var sub = document.getElementById('vs-link-sub');
-  if (!dot || !sub) return;
-  // 色覚対応: dot の色だけに意味を持たせず、文字と二重符号化する
-  if (linked) {
-    dot.className = 'vs-dot is-on';
-    sub.textContent = '連携済み';
-    sub.className = 'vs-s is-ok';
-  } else {
-    dot.className = 'vs-dot is-off';
-    sub.textContent = '未連携 →';
-    sub.className = 'vs-s is-ng';
-  }
+  label.appendChild(document.createTextNode('枚' + (waiting > 0 ? '（+' + waiting + '枚 準備中）' : '')));
 }
 
 function vsScrollTo(id) {
@@ -2220,7 +2142,6 @@ function vsScrollTo(id) {
   try { el.scrollIntoView({ behavior: TAB_REDUCED_MOTION ? 'auto' : 'smooth', block: 'start' }); }
   catch (e) { el.scrollIntoView(); }
 }
-function vsJumpRank() { vsScrollTo('rank-card'); }
 function vsJumpCoupons() {
   // 0 枚のときにクーポン一覧 (空表示) へ落とすと行き止まりになる → もらう導線へ
   if (vsCouponTotal() <= 0) { vsJumpReferral(); return; }
@@ -2229,10 +2150,6 @@ function vsJumpCoupons() {
 function vsJumpReferral() {
   if (typeof scrollToReferralCard === 'function') { scrollToReferralCard(); return; }
   vsScrollTo('referral-card');
-}
-function vsLinkTap() {
-  if (window.__shopifyLinked === true) { vsJumpRank(); return; }
-  if (typeof openShopifyLinkPage === 'function') { openShopifyLinkPage(); }
 }
 
 // ─── HOME: Coupons ───
@@ -4340,7 +4257,8 @@ function clearRefParam() {
     var url = new URL(window.location.href);
     if (!url.searchParams.has('ref')) return;
     url.searchParams.delete('ref');
-    window.history.replaceState({}, '', url.toString());
+    // 🚨 素の replaceState({}, ...) は history.state.nxTab を消して復元先を失わせる
+    navReplaceUrl(url.toString());
   } catch (e) { /* ignore */ }
 }
 
@@ -4366,9 +4284,6 @@ window.__shopifyLinked = undefined;
 //                                     「連携済み」と出しても意味がないため)
 function markShopifyLinked() {
   window.__shopifyLinked = true;
-  // VITAL STRIP (§3): 連携が成立した**その瞬間**に strip も同期する
-  // (loadRank の再取得を待つと、連携直後の数秒だけ「未連携 →」が残る)
-  try { vsSetLinked(true); } catch (e) {}
   var nodes = document.querySelectorAll('[data-shopify-link-cta]');
   for (var i = 0; i < nodes.length; i++) {
     var card = nodes[i];
@@ -4493,7 +4408,8 @@ function captureSubLinkToken() {
     if (!slk) return;
     var url = new URL(window.location.href);
     url.searchParams.delete('slk');
-    window.history.replaceState({}, '', url.toString());
+    // 🚨 素の replaceState({}, ...) は history.state.nxTab を消して復元先を失わせる
+    navReplaceUrl(url.toString());
     subLinkStashWrite({ t: slk, s: null, ts: Date.now() });
     // ツアー抑止は init 完走を待たない (ツアーは loading 解除直後に走るため)
     window.__subLinkPending = true;

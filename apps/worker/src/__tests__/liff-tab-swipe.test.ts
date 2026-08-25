@@ -72,7 +72,7 @@ describe('タブ フリック切替', () => {
   });
 
   it('switchTab は未知タブで throw せず現状維持する (review HIGH: deadlock 防止)', () => {
-    expect(pages).toMatch(/function switchTab\(name\) \{[\s\S]{0,300}if \(!section\)/);
+    expect(pages).toMatch(/function switchTab\(name, keepScroll\) \{[\s\S]{0,300}if \(!section\)/);
   });
 
   it('tabAnimating / tourAnimating は例外時も finally 系で必ず復帰する', () => {
