@@ -18,7 +18,7 @@
  *      progressRatio と逐語で一致**すること。drift すると同じ顧客に 2 つの数字を見せる。
  */
 import { describe, it, expect } from 'vitest';
-import { readLoyaltyRank } from '../services/portal-read.js';
+import { readLoyaltyRank, readRank } from '../services/portal-read.js';
 import { createSchemaDb, asD1, insertFriend } from './helpers/sqlite-d1.js';
 import { NATURISM_RANK_DEFS, resolveFriendRank } from '@line-crm/db';
 import type { SqliteDatabase } from './helpers/sqlite-d1.js';
@@ -146,6 +146,21 @@ describe('readLoyaltyRank — 会員証 (/api/liff/my-rank) との shape 一致'
     // 実データであることの確認 (両方 null / 両方 0 で「一致」を名乗らない)
     expect(home!.rank.id).toBe('gold');
     expect(home!.trailing12moJpy).toBe(26000);
+  });
+
+  it('🚨 readRank は loyalty という名前で載せる (client が読むのはこの 1 語)', async () => {
+    // mutation 実測: `loyalty,` を `loyaltyRank: loyalty,` に変えても、client 側の
+    // fixture が手書きなので bootstrap テストは緑のまま = 全ユーザーが「ただいま確認中」に
+    // 落ちるのに誰も気付かない。サーバ側の出力そのものを観測点にして塞ぐ。
+    const { db, deps, user } = setup();
+    const recent = new Date(Date.now() - 15 * 86400_000).toISOString();
+    purchase(db, FRIEND, 'e1', 13000, recent);
+
+    const rank = (await readRank(deps, user)) as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(rank, 'loyalty'), 'readRank に loyalty が無い').toBe(true);
+    expect(rank.loyalty).toEqual(await readLoyaltyRank(deps, user));
+    // 中身が本物であること (null 同士で「一致」を名乗らない)
+    expect((rank.loyalty as { rank: { id: string } }).rank.id).toBe('silver');
   });
 
   it('メダル画像 URL は公開配信できる形で返る (ホームが 76px で表示する唯一の材料)', async () => {
