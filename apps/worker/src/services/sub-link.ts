@@ -276,8 +276,31 @@ export type PreviewResult =
  * 判定順序は redeem と一致させる (= preview で ready を出したボタンが redeem で必ず失敗する
  * 「死んだボタン」を防ぐ)。 プラン (=対象顧客のサブスク内容) は「連携当事者」に対してのみ開示し、
  * used/taken/expired/friend_conflict では null を返す (= 転送 link 保持者への情報開示を防ぐ)。
+ *
+ * 監査: 判定結果を audit_logs に 1 行残す (= 連携ファネルの観測点)。
+ * App Proxy でトークンが 3 件発行され全件失効した 2026-08 の実事例で、preview に観測が無く
+ * 「顧客は LIFF に到達したのか」を事後に一切切り分けられなかった (発行 4 件 / redeem 0 件 /
+ * その間の記録ゼロ)。preview はユーザー操作 1 回につき高々数回・友だち未反映は middleware で
+ * 弾かれ本関数に到達しないため、行数は問題にならない。dormant (両 gate off) では書かない。
  */
 export async function previewSubLinkToken(
+  env: EnvLike,
+  input: { token: string; friendId: string },
+): Promise<PreviewResult> {
+  const result = await previewSubLinkTokenInner(env, input);
+  if (result.ok) {
+    await auditSystem(env.DB, {
+      action: 'account_link.sub_link_previewed',
+      targetType: 'friend',
+      targetId: input.friendId,
+      result: 'success',
+      metadata: { status: result.status, kind: result.kind },
+    });
+  }
+  return result;
+}
+
+async function previewSubLinkTokenInner(
   env: EnvLike,
   input: { token: string; friendId: string },
 ): Promise<PreviewResult> {

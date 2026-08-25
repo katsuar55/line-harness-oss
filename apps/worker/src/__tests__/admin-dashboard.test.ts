@@ -39,6 +39,27 @@ function fakeDb(opts: FakeOpts = {}) {
       const respond = () => {
         // authMiddleware の staff_members 照合 → 不在 (env API_KEY fallback 経路を使う)
         if (sql.includes('staff_members')) return null;
+        // linkFunnel (2026-08-26): 経路別の試行/成立を audit_logs から集計する
+        if (sql.includes('FROM audit_logs')) {
+          requirePredicates([
+            "'account_link.code_requested'",
+            "'account_link.linked'",
+            "'account_link.app_proxy_token_issued'",
+            "'account_link.sub_link_previewed'",
+            "'account_link.sub_link_redeemed'",
+            "result = 'success'",
+          ]);
+          return [
+            { action: 'account_link.code_requested', total: 7, last7d: 2, last: '2026-08-25T10:00:00.000+09:00' },
+            { action: 'account_link.linked', total: 4, last7d: 1, last: '2026-08-25T10:05:00.000+09:00' },
+            { action: 'account_link.app_proxy_token_issued', total: 3, last7d: 1, last: '2026-08-22T21:04:07.867+09:00' },
+          ];
+        }
+        // 連携済み friend 数 (linkFunnel / memberIngest 共用の COUNT)。
+        // friends 集計 (SUM CASE ... IS NOT NULL) と混同しないよう WHERE 句で判別する
+        if (sql.includes('FROM friends WHERE shopify_customer_id IS NOT NULL')) {
+          return { n: 10 };
+        }
         if (sql.includes('FROM friends')) {
           if (opts.failFriends) throw new Error('friends query failed');
           return { total: 6600, following: 6570, blocked: 30, new7d: 42, linked: 15 };
@@ -352,6 +373,42 @@ describe('GET /api/admin/dashboard', () => {
     expect(features.find((f) => f.label.includes('定期便データの収集'))?.dynamic).toBe('subscriptionIngest');
   });
 
+  it('linkFunnel: 経路別の試行/成立を audit_logs 集計で返す (2026-08-26 連携ファネル観測)', async () => {
+    const app = createApp();
+    const res = await app.request(
+      'http://localhost/api/admin/dashboard',
+      { method: 'GET', headers: { Authorization: `Bearer ${API_KEY}` } },
+      ENV(fakeDb(), { ACCOUNT_LINK_ENABLED: 'true' }),
+    );
+    const json = (await res.json()) as { data: Record<string, any> };
+    expect(json.data.linkFunnel).toEqual({
+      linkedFriends: 10,
+      otpRequested: { total: 7, last7d: 2, last: '2026-08-25T10:00:00.000+09:00' },
+      otpLinked: { total: 4, last7d: 1, last: '2026-08-25T10:05:00.000+09:00' },
+      appProxyTokenIssued: { total: 3, last7d: 1, last: '2026-08-22T21:04:07.867+09:00' },
+      // audit に 1 行も無い action は 0 で返る (undefined を client に渡さない)
+      slkPreviewed: { total: 0, last7d: 0, last: null },
+      slkRedeemed: { total: 0, last7d: 0, last: null },
+    });
+    const features = json.data.features as Array<{ label: string; on: boolean; dynamic?: string; offText: string }>;
+    const row = features.find((f) => f.label.includes('アカウント連携の受付'));
+    expect(row?.on).toBe(true);
+    expect(row?.dynamic).toBe('linkFunnel');
+  });
+
+  it('linkFunnel features 行: 両 gate off なら off (offText = 顧客は連携できません)', async () => {
+    const app = createApp();
+    const res = await app.request(
+      'http://localhost/api/admin/dashboard',
+      { method: 'GET', headers: { Authorization: `Bearer ${API_KEY}` } },
+      ENV(fakeDb()),
+    );
+    const json = (await res.json()) as { data: { features: Array<{ label: string; on: boolean; offText: string }> } };
+    const row = json.data.features.find((f) => f.label.includes('アカウント連携の受付'));
+    expect(row?.on).toBe(false);
+    expect(row?.offText).toContain('連携できません');
+  });
+
   it('よく使う画面: 定期便マイページは /account (旧 /apps/subscription は本番 400 の死にリンク)', async () => {
     const app = createApp();
     const res = await app.request('http://localhost/admin', { method: 'GET' }, ENV(fakeDb()));
@@ -410,6 +467,65 @@ describe('GET /api/admin/dashboard', () => {
         { label: '(準備) 定期便データの収集', on: true, offText: '停止中 — 顧客影響なし', dynamic: 'subscriptionIngest' },
       ],
       // subscriptionIngest: undefined = section 取得失敗
+    });
+    expect(els['features']!.innerHTML).toContain('取得できませんでした');
+    expect(els['features']!.innerHTML).not.toContain('稼働中');
+  });
+
+  it('render 実行: linkFunnel があれば経路別ファネル detail を併記', async () => {
+    const els = await renderWith({
+      features: [
+        { label: '(基盤) アカウント連携の受付 — LINE内メール連携 / ストアログイン連携', on: true, offText: '', dynamic: 'linkFunnel' },
+      ],
+      linkFunnel: {
+        linkedFriends: 10,
+        otpRequested: { total: 7, last7d: 2, last: null },
+        otpLinked: { total: 4, last7d: 1, last: null },
+        appProxyTokenIssued: { total: 3, last7d: 1, last: null },
+        slkPreviewed: { total: 0, last7d: 0, last: null },
+        slkRedeemed: { total: 0, last7d: 0, last: null },
+      },
+    });
+    const fhtml = els['features']!.innerHTML;
+    expect(fhtml).toContain('稼働中');
+    expect(fhtml).toContain('連携済み 10 人');
+    expect(fhtml).toContain('コード請求 7 (2)');
+    expect(fhtml).toContain('成立 4 (1)');
+    expect(fhtml).toContain('リンク発行 3 (1)');
+    expect(fhtml).toContain('LINE到達 0 (0)');
+  });
+
+  it('🚨render 実行: linkFunnel 取得失敗時は「取得できませんでした」pill (gate だけの緑に落とさない)', async () => {
+    const els = await renderWith({
+      features: [
+        { label: '(基盤) アカウント連携の受付 — LINE内メール連携 / ストアログイン連携', on: true, offText: '', dynamic: 'linkFunnel' },
+      ],
+      // linkFunnel: undefined = section 取得失敗
+    });
+    expect(els['features']!.innerHTML).toContain('取得できませんでした');
+    expect(els['features']!.innerHTML).not.toContain('稼働中');
+  });
+
+  it('render 実行: memberIngest があれば実測 detail (webhook 取込/最終取込) を併記 (PR#280 の表示ギャップ修正)', async () => {
+    const els = await renderWith({
+      features: [
+        { label: '(基盤) 購入の取り込み — ランクの原資', on: true, offText: '', dynamic: 'memberIngest' },
+      ],
+      memberIngest: { totalEvents: 23, fromWebhook: 0, last7d: 2, lastWebhookAt: null, linkedFriends: 10 },
+    });
+    const fhtml = els['features']!.innerHTML;
+    expect(fhtml).toContain('稼働中');
+    expect(fhtml).toContain('webhook 取込 累計 0 件');
+    expect(fhtml).toContain('直近7日の購入 2 件');
+    expect(fhtml).toContain('まだなし');
+    expect(fhtml).toContain('連携済み 10 人');
+  });
+
+  it('🚨render 実行: memberIngest 取得失敗時は「取得できませんでした」pill', async () => {
+    const els = await renderWith({
+      features: [
+        { label: '(基盤) 購入の取り込み — ランクの原資', on: true, offText: '', dynamic: 'memberIngest' },
+      ],
     });
     expect(els['features']!.innerHTML).toContain('取得できませんでした');
     expect(els['features']!.innerHTML).not.toContain('稼働中');

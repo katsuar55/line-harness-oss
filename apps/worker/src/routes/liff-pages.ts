@@ -67,7 +67,14 @@ const portalHandler = (c: { env: Env['Bindings']; html: (html: string) => Respon
   // off では issueRankDiscountForFriend が必ず何も発行しないので、% を出した時点で
   // 「受け取れない割引」の広告になる (景表法の有利誤認)。
   const rankDiscountOn = c.env.RANK_DISCOUNT_ENABLED === 'true';
-  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl, portalBootstrapOn, subCardOn, homeIaOn, visualV2On, shopV2On, rankDiscountOn));
+  // LINE 内メール OTP 連携 (会員証 /liff/my-rank の連携カード) の gate (2026-08-26)。
+  // on のとき連携 CTA が OTP 導線を第一候補にする。off では OTP ボタンを 1 byte も出さない
+  // (route が 404 で inert のため、出すと押した瞬間に「見つかりません」になる死んだボタン)。
+  const accountLinkOtpOn = c.env.ACCOUNT_LINK_ENABLED === 'true';
+  // 過去注文 backfill gate。off のとき「これまでのお買い物がランクに反映」を 1 箇所も書かない
+  // (連携しても過去分は 1 円も反映されないため、書いた時点で嘘になる)。
+  const memberBackfillOn = c.env.MEMBER_BACKFILL_ENABLED === 'true';
+  return c.html(portalPage(liffId, workerUrl, referralRewardOn, shopifyLinkUrl, portalBootstrapOn, subCardOn, homeIaOn, visualV2On, shopV2On, rankDiscountOn, accountLinkOtpOn, memberBackfillOn));
 };
 liffPages.get('/liff/portal', portalHandler as never);
 liffPages.get('/liff/portal/', portalHandler as never);
@@ -83,6 +90,8 @@ function portalPage(
   visualV2On = false,
   shopV2On = false,
   rankDiscountOn = false,
+  accountLinkOtpOn = false,
+  memberBackfillOn = false,
 ): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -130,6 +139,12 @@ function portalPage(
     /* ↑ VITAL INSTRUMENT: 縦グラデ #11837c→#0f766e は両端とも白文字 4.6:1+ で AA 維持
        (旧・横グラデ #2fa8ad 側 2.87:1 の再来ではない)。字間 .04em はハイブランドの CTA 慣行。 */
     .btn-primary:active{transform:scale(.96) translateY(1.5px);box-shadow:0 2px 6px rgba(29,125,130,.35)}
+    /* 連携 CTA の第二候補 (ストアログイン)。第一候補 (メール OTP) と押し間違えないよう
+       塗りを外した控えめな見た目にする。色は既存トークンのみ: --brand-soft 地 + --action 文字は
+       会員証の「ランク特典」バッジと同じペアで 5.0:1 (16px bold は WCAG 大文字扱いにならないため
+       4.5:1+ が必要。--brand-deep だと 4.48:1 で AA 割れ)。触感は btn-primary の押し込みに揃える */
+    .link-cta-secondary{background:var(--brand-soft);color:var(--action);border:1px solid var(--brand-line);border-radius:999px !important;letter-spacing:.04em;min-height:48px;transition:transform .15s}
+    .link-cta-secondary:active{transform:scale(.96) translateY(1.5px)}
     /* 連携カード (magic-link 着地面) の 60代トークン (§7-2): 本文≥16px / 行間1.6 / タップ領域≥48px /
        日付・プランは 20px bold #0f766e。全 .btn-primary への min-height 一括適用は 40+ 箇所の
        レイアウト回帰を伴うため、本 PR が所有するこの面に限定する。 */
@@ -427,15 +442,25 @@ function portalPage(
       <div id="link-coupon-card" class="card p-4" style="display:none"></div>
       <!-- LINE友だち限定クーポン (管理トグル ON 時のみ表示) -->
       <div id="friend-coupon-card" class="card p-4" style="display:none"></div>
-      ${shopifyLinkUrl ? `<!-- C3: オンラインストア連携 (未連携と判明したときだけ出す)。
+      ${accountLinkOtpOn || shopifyLinkUrl ? `<!-- C3: オンラインストア連携 (未連携と判明したときだけ出す)。
            連携が配送状況・再注文・ランク・定期便の全ての前提なので、ホームの上部に置く。
            既定は非表示 = 既連携ユーザーには一度も見えない (loadRank が linked=false を
-           返したときだけ showShopifyLinkHomeCard() が開く)。連携完了で markShopifyLinked が畳む -->
+           返したときだけ showShopifyLinkHomeCard() が開く)。連携完了で markShopifyLinked が畳む。
+           2026-08-26: 第一候補を LINE 内で完結するメール OTP (会員証の連携カード) へ。
+           外部ブラウザ + ストアログインを要する App Proxy は第二候補に降格 (本番実測:
+           トークン発行 3 件・完遂 0 件 = ログイン往復で全員離脱)。各ボタンは gate 連動で
+           server 側から emit し、off の経路のボタンは 1 byte も出さない (死んだボタン防止)。
+           「これまでのお買い物が反映」は MEMBER_BACKFILL_ENABLED 連動 — off では過去分が
+           1 円も反映されないため、書いた時点で嘘になる -->
       <div id="shopify-link-home-card" data-shopify-link-cta="hide" class="card p-4" style="display:none" role="status" aria-live="polite">
         <p class="text-base font-bold text-gray-800 mb-1">🛍️ オンラインストアと連携しませんか</p>
-        <p class="text-sm text-gray-600 mb-3">連携すると、ご注文の状況確認や、過去のご注文からの再注文がこの画面でできるようになります。</p>
-        <button onclick="openShopifyLinkPage()" class="tap btn-primary py-3 px-5 rounded-xl text-base font-bold">ストアにログインして連携 →</button>
-        <p class="text-sm text-gray-600 mt-2">ストアのページが開きます。ログイン確認のあと、ボタンをタップするとLINEに戻ります。</p>
+        <p class="text-sm text-gray-600 mb-3">${memberBackfillOn
+          ? '連携すると、これまでのお買い物が会員ランクに反映されます。ご注文の状況確認や、過去のご注文からの再注文もこの画面でできるようになります。'
+          : '連携すると、ご注文の状況確認や、過去のご注文からの再注文がこの画面でできるようになります。'}</p>
+        ${accountLinkOtpOn ? `<button onclick="openAccountLinkCard()" class="tap btn-primary py-3 px-5 rounded-xl text-base font-bold">メールで連携する（LINEの中で完結）→</button>
+        <p class="text-sm text-gray-600 mt-2">ご注文時のメールアドレスに届く6桁の確認コードで本人確認します。</p>` : ''}
+        ${shopifyLinkUrl ? `<button onclick="openShopifyLinkPage()" class="tap ${accountLinkOtpOn ? 'link-cta-secondary' : 'btn-primary'} py-3 px-5 rounded-xl text-base font-bold${accountLinkOtpOn ? ' mt-1' : ''}">ストアにログインして連携 →</button>
+        <p class="text-sm text-gray-600 mt-2">ストアのページが開きます。ログイン確認のあと、ボタンをタップするとLINEに戻ります。</p>` : ''}
       </div>` : ''}
       <!-- 次の一手 (第2波-⑥: 初回体験の埋没解消。文脈で1つだけ next action を提示・診断ファースト) -->
       <div id="next-move-card" class="card p-4" style="display:none">
@@ -947,12 +972,17 @@ function portalPage(
         </div>
       </div>
 
-      ${shopifyLinkUrl ? `<!-- Shopify 連携 (App Proxy, 2026-07-29): gate on + storefront URL 設定時のみ表示 -->
+      ${accountLinkOtpOn || shopifyLinkUrl ? `<!-- Shopify 連携 (2026-07-29 App Proxy / 2026-08-26 OTP 第一候補化):
+           いずれかの連携経路の gate が on のときのみ表示。ボタンは経路ごとの gate 連動で emit -->
       <div class="card p-4" id="shopify-link-card" data-shopify-link-cta="replace" role="status" aria-live="polite">
         <p class="text-base font-bold text-gray-800 mb-1">🛍️ オンラインストアと連携</p>
-        <p class="text-sm text-gray-600 mb-3">ストアにログインするだけで、会員特典やお届けのお知らせがLINEで受け取れるようになります。</p>
-        <button onclick="openShopifyLinkPage()" class="tap btn-primary py-3 px-5 rounded-xl text-base font-bold">ストアにログインして連携 →</button>
-        <p class="text-sm text-gray-600 mt-2">ストアのページが開きます。ログイン確認のあと、ボタンをタップするとLINEに戻ります。</p>
+        <p class="text-sm text-gray-600 mb-3">${memberBackfillOn
+          ? '連携すると、これまでのお買い物が会員ランクに反映され、会員特典やお届けのお知らせがLINEで受け取れるようになります。'
+          : '連携すると、会員特典やお届けのお知らせがLINEで受け取れるようになります。'}</p>
+        ${accountLinkOtpOn ? `<button onclick="openAccountLinkCard()" class="tap btn-primary py-3 px-5 rounded-xl text-base font-bold">メールで連携する（LINEの中で完結）→</button>
+        <p class="text-sm text-gray-600 mt-2">ご注文時のメールアドレスに届く6桁の確認コードで本人確認します。</p>` : ''}
+        ${shopifyLinkUrl ? `<button onclick="openShopifyLinkPage()" class="tap ${accountLinkOtpOn ? 'link-cta-secondary' : 'btn-primary'} py-3 px-5 rounded-xl text-base font-bold${accountLinkOtpOn ? ' mt-1' : ''}">ストアにログインして連携 →</button>
+        <p class="text-sm text-gray-600 mt-2">ストアのページが開きます。ログイン確認のあと、ボタンをタップするとLINEに戻ります。</p>` : ''}
       </div>` : ''}
 
       <p class="text-xs text-gray-400 font-bold pt-1">⚙️ 設定</p>
@@ -1134,6 +1164,8 @@ const API_BASE = '${escapeHtml(apiBase)}';
 const REFERRAL_REWARD_ON = ${referralRewardOn ? 'true' : 'false'};
 // ランク割引 gate。off のとき統合ランクヒーローは % を 1 箇所も出さない (受け取れない割引を広告しない)
 const RANK_DISCOUNT_ON = ${rankDiscountOn ? 'true' : 'false'};
+// LINE 内メール OTP 連携 gate。off のとき OTP ボタンを 1 箇所も出さない (route が 404 の死んだボタンになる)
+const ACCOUNT_LINK_OTP_ON = ${accountLinkOtpOn ? 'true' : 'false'};
 const PORTAL_BOOTSTRAP_ON = ${portalBootstrapOn ? 'true' : 'false'};
 let idToken = null;
 let selectedCondition = null;
@@ -4327,13 +4359,29 @@ function showShopifyLinkHomeCard() {
 // 文字サイズ・タップ領域は §7 (本文 16px / 48px) に合わせる。 通行量が最も多い面なので、
 // ここだけ 14px / 40px にすると 60代の読者が最初に当たる導線が一番読みにくくなる。
 function shopifyLinkCtaHtml(lead) {
-  if (!SHOPIFY_LINK_URL) return '';
+  if (!SHOPIFY_LINK_URL && !ACCOUNT_LINK_OTP_ON) return '';
   if (window.__shopifyLinked === true) return '';
   if (document.querySelector('[data-shopify-link-cta][data-linked="1"]')) return '';
-  return '<div data-shopify-link-cta="hide" class="mt-3 pt-3" style="border-top:1px solid var(--brand-line)">' +
-    '<p class="text-base text-gray-600 mb-2">' + esc(lead) + '</p>' +
-    '<button onclick="openShopifyLinkPage()" class="tap btn-primary py-3 px-5 rounded-xl text-base font-bold" style="min-height:48px">ストアにログインして連携 →</button>' +
-    '</div>';
+  // 第一候補 = LINE 内で完結するメール OTP (2026-08-26)。ストアログインは第二候補。
+  // それぞれの gate が off のボタンは 1 byte も出さない (押した先が 404 の死んだボタン防止)。
+  var html = '<div data-shopify-link-cta="hide" class="mt-3 pt-3" style="border-top:1px solid var(--brand-line)">' +
+    '<p class="text-base text-gray-600 mb-2">' + esc(lead) + '</p>';
+  if (ACCOUNT_LINK_OTP_ON) {
+    html += '<button onclick="openAccountLinkCard()" class="tap btn-primary py-3 px-5 rounded-xl text-base font-bold" style="min-height:48px">メールで連携する（LINEの中で完結）→</button>';
+  }
+  if (SHOPIFY_LINK_URL) {
+    html += ACCOUNT_LINK_OTP_ON
+      ? '<button onclick="openShopifyLinkPage()" class="tap link-cta-secondary py-3 px-5 rounded-xl text-base font-bold mt-2" style="min-height:48px">ストアにログインして連携 →</button>'
+      : '<button onclick="openShopifyLinkPage()" class="tap btn-primary py-3 px-5 rounded-xl text-base font-bold" style="min-height:48px">ストアにログインして連携 →</button>';
+  }
+  html += '</div>';
+  return html;
+}
+
+// LINE 内で完結するメール OTP 連携 (会員証 /liff/my-rank の連携カード) へ。
+// #link は my-rank 側が読み、連携カードへスクロールして強調する (受け側: liff-my-rank.ts renderLink)。
+function openAccountLinkCard() {
+  window.location.href = API_BASE + '/liff/my-rank' + (isDemoRequested() ? '?demo=1' : '') + '#link';
 }
 
 function openShopifyLinkPage() {
@@ -4620,13 +4668,16 @@ function subLinkShowUnavailable(kind) {
   card.appendChild(subLinkNode('h3', 'sublink-title mb-3', paused
     ? 'ただいまお受けできません'
     : 'このリンクはご利用いただけません'));
-  // App Proxy 経由の人 (SHOPIFY_LINK_URL が出ている面) には、届いていないメールでなく
-  // 実際に押せる導線を案内する。
+  // 復旧導線は「実際に押せるもの」を案内する (届いていないメールを探させない)。
+  // 2026-08-26: メール OTP (LINE 内で完結) が使えるときはそれを第一候補にする —
+  // ストアログインの再往復 (外部ブラウザ) は本番実測で完遂 0 件の高摩擦経路。
   card.appendChild(subLinkNode('p', 'sublink-body mb-5', paused
     ? 'LINEでの連携のお受付を一時停止しています。ご迷惑をおかけします。再開しましたら改めてご案内しますので、そのままお待ちください。'
-    : (SHOPIFY_LINK_URL
-      ? 'お手数ですが、画面右上のプロフィール写真をタップ →「ストアにログインして連携」からもう一度お試しください。お困りのときはサポートまでご連絡ください。'
-      : 'お手数ですが、最新のご案内メールのリンクからお試しください。お困りのときはサポートまでご連絡ください。')));
+    : (ACCOUNT_LINK_OTP_ON
+      ? 'お手数ですが、ホームの「メールで連携する（LINEの中で完結）」からもう一度お試しください。お困りのときはサポートまでご連絡ください。'
+      : (SHOPIFY_LINK_URL
+        ? 'お手数ですが、画面右上のプロフィール写真をタップ →「ストアにログインして連携」からもう一度お試しください。お困りのときはサポートまでご連絡ください。'
+        : 'お手数ですが、最新のご案内メールのリンクからお試しください。お困りのときはサポートまでご連絡ください。'))));
   var close = subLinkNode('button', 'btn-primary sublink-btn', 'とじる');
   close.addEventListener('click', function() { subLinkDismiss(true); });
   card.appendChild(close);
@@ -4641,8 +4692,12 @@ function subLinkStatusInfo(status, kind) {
   if (status === 'taken') return { emoji: '🔒', title: '別のLINEと連携済み', desc: 'このご登録は、すでに別のLINEアカウントと連携されています。お心当たりがない場合はサポートへお問い合わせください。' };
   // 復旧手段は経路で違う: shop (App Proxy) の人はメールを受け取っていないので、
   // 「ご案内メール」を案内すると存在しないものを探させる死路になる。
+  // 2026-08-26: shop 経路の再試行はメール OTP (LINE 内で完結) を第一候補に —
+  // App Proxy トークンは TTL 15 分で、ストアログインの再往復は本番実測で完遂 0 件だった。
   if (status === 'expired') return { emoji: '⏰', title: 'リンクの有効期限切れ', desc: (kind === 'shop'
-    ? 'この連携リンクは有効期限が切れています。お手数ですが、画面右上のプロフィール写真をタップ →「ストアにログインして連携」からもう一度お試しください。'
+    ? (ACCOUNT_LINK_OTP_ON
+      ? 'この連携リンクは有効期限が切れています。お手数ですが、ホームの「メールで連携する（LINEの中で完結）」からもう一度お試しください。'
+      : 'この連携リンクは有効期限が切れています。お手数ですが、画面右上のプロフィール写真をタップ →「ストアにログインして連携」からもう一度お試しください。')
     : 'この連携リンクは有効期限が切れています。お手数ですが、最新のご案内メールのリンクからお試しください。') };
   return { emoji: 'ℹ️', title: '使用済みのリンク', desc: 'この連携リンクはすでに使用されています。' };
 }

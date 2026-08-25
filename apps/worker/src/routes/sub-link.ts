@@ -26,6 +26,17 @@ import {
 } from '../services/sub-link.js';
 import type { Env } from '../index.js';
 import { issueLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
+import { backfillCustomerOrders } from '../services/member-purchase-backfill.js';
+import { getShopifyAccessToken } from '../services/shopify-token.js';
+
+/**
+ * redeem 経由の backfill のページ上限。
+ * redeem の同一 invocation は D1 (redeem 本体 ~8) + 連携特典クーポン発行 (Shopify ~5) も使うため、
+ * 無料プランの subrequest 上限 (50/invocation) に収まるよう既定 6 より絞る。
+ * 2 ページ = 100 注文/12ヶ月 で naturism の実顧客 (最大 59 注文/生涯) を必ず覆う。
+ * 万一 cap に達しても backfill は冪等で、admin op (backfill-linked) が同じ friend を再走できる。
+ */
+const REDEEM_BACKFILL_MAX_PAGES = 2;
 
 const subLink = new Hono<Env>();
 
@@ -181,6 +192,36 @@ subLink.post('/api/liff/sub-link/redeem', async (c) => {
           ),
         );
         try { c.executionCtx.waitUntil(issueP); } catch { /* no exec ctx in tests */ }
+        // 過去 paid 注文の backfill (= 「連携するとこれまでのお買い物がランクに反映」を
+        // App Proxy / magic-link 経路でも成立させる)。OTP 経路は verifyAccountLinkCode が
+        // service 内で同じ backfill を呼ぶが、この経路には無かった (= slk で連携した人だけ
+        // ランクが ¥0 のままになる設計ギャップ、2026-08-26 修正)。
+        // best-effort + waitUntil: backfill は Shopify GraphQL 最大 2 ページ (8s timeout/頁) を
+        // 伴うため、redeem 応答 (= 確認カードの完了表示) をそれで待たせない。
+        // gate は backfillCustomerOrders 側でも二重判定するが、off のとき token 取得の
+        // subrequest すら使わないようここでも先に判定する。
+        const envRecord = c.env as unknown as Record<string, string | undefined>;
+        if (envRecord.MEMBER_BACKFILL_ENABLED === 'true') {
+          const friendId = user.friendId;
+          const customerId = result.summary.customerId;
+          const backfillP = (async () => {
+            const accessToken = await getShopifyAccessToken(c.env.DB, envRecord);
+            await backfillCustomerOrders(
+              c.env.DB,
+              {
+                SHOPIFY_STORE_DOMAIN: envRecord.SHOPIFY_STORE_DOMAIN,
+                MEMBER_BACKFILL_ENABLED: envRecord.MEMBER_BACKFILL_ENABLED,
+              },
+              { customerId, friendId, accessToken, maxPages: REDEEM_BACKFILL_MAX_PAGES },
+            );
+          })().catch((err) =>
+            console.error(
+              '[sub-link] purchase backfill failed:',
+              err instanceof Error ? err.message : 'unknown',
+            ),
+          );
+          try { c.executionCtx.waitUntil(backfillP); } catch { /* no exec ctx in tests */ }
+        }
       }
       return c.json({
         success: true,
