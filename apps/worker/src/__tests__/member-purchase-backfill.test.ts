@@ -20,6 +20,12 @@ vi.mock('@line-crm/db', async (importActual) => {
   const actual = await importActual<typeof import('@line-crm/db')>();
   return { ...actual, addPurchaseEvent: addPurchaseEventMock };
 });
+// 完了 audit の result/metadata を検証する (Codex P2: capped=success だと sweep が永久に再訪しない)
+vi.mock('../services/audit-logger.js', () => ({
+  auditSystem: vi.fn(async () => {}),
+}));
+import { auditSystem } from '../services/audit-logger.js';
+const mockedAuditSystem = vi.mocked(auditSystem);
 
 import {
   backfillCustomerOrders,
@@ -431,5 +437,40 @@ describe('member-backfill-sweep の cron 配線', () => {
     expect(idx).toMatch(/processMemberBackfillSweep\(/);
     // metrics に pending / skippedGating が入る (= dashboard/cron_run_logs から生存が見える)
     expect(idx).toMatch(/pending: r\.pending[\s\S]{0,200}skippedGating: r\.skippedGating/);
+  });
+});
+
+// ─── 完了 audit の result 意味論 (Codex P2 2026-08-26) ───
+// sweep / admin op は success audit を「完遂」とみなして pending から外す。
+// capped (一部未取得) を success で書くと、上限より注文の多い顧客が不完全なまま永久に再訪されない。
+describe('backfillCustomerOrders — 完了 audit の result (capped は success にしない)', () => {
+  beforeEach(() => {
+    mockedAuditSystem.mockClear();
+  });
+  const auditCall = () =>
+    mockedAuditSystem.mock.calls.find(([, i]) => i.action === 'loyalty_purchase_backfill.completed')?.[1];
+
+  it('全件取得 (cap 未到達・エラー 0) → success', async () => {
+    const fetchImpl = mockOrdersFetch([{ nodes: [order('gid://shopify/Order/1', '1000', '2026-05-01T00:00:00Z')] }]);
+    await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(auditCall()).toMatchObject({ result: 'success', metadata: { capped: false } });
+  });
+
+  it('🚨cap 到達 (エラー 0) → failure (= pending に残り sweep が再訪する。放置しない)', async () => {
+    const fetchImpl = mockOrdersFetch([
+      { nodes: [order('gid://shopify/Order/1', '1000', '2026-05-01T00:00:00Z')], hasNextPage: true, endCursor: 'c1' },
+      { nodes: [order('gid://shopify/Order/2', '1000', '2026-05-02T00:00:00Z')], hasNextPage: true, endCursor: 'c2' },
+    ]);
+    const r = await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, maxPages: 2, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(r.capped).toBe(true);
+    expect(r.errors).toBe(0);
+    expect(auditCall()).toMatchObject({ result: 'failure', metadata: { capped: true } });
+  });
+
+  it('個別エラーあり → failure', async () => {
+    addPurchaseEventMock.mockRejectedValueOnce(new Error('db busy'));
+    const fetchImpl = mockOrdersFetch([{ nodes: [order('gid://shopify/Order/1', '1000', '2026-05-01T00:00:00Z')] }]);
+    await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(auditCall()).toMatchObject({ result: 'failure' });
   });
 });

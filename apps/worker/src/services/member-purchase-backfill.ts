@@ -314,12 +314,17 @@ export async function backfillCustomerOrders(
     );
   }
 
-  // 完了 audit (= best-effort、 PII なし)
+  // 完了 audit (= best-effort、 PII なし)。
+  // 🚨 capped (= ページ上限到達で一部未取得) は success にしない (Codex P2 2026-08-26):
+  // sweep / admin op の pending 述語は success audit を「完遂」とみなして対象から外すため、
+  // capped を success で記録すると、上限より注文の多い顧客が**不完全な履歴のまま永久に再訪されない**。
+  // failure として記録すれば pending に残って再走され、恒常的に cap する顧客も
+  // SWEEP_FAILURE_CAP で retry が自己制動する (metadata.capped で失敗理由は判別できる)。
   await auditSystem(db, {
     action: 'loyalty_purchase_backfill.completed',
     targetType: 'friend',
     targetId: options.friendId,
-    result: errors > 0 ? 'failure' : 'success',
+    result: errors > 0 || capped ? 'failure' : 'success',
     metadata: { shopifyCustomerId: customerId, scanned, backfilled, alreadyApplied, errors, totalJpy, capped },
   });
 
