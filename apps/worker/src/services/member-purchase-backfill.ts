@@ -317,9 +317,14 @@ export async function backfillCustomerOrders(
   // 完了 audit (= best-effort、 PII なし)。
   // 🚨 capped (= ページ上限到達で一部未取得) は success にしない (Codex P2 2026-08-26):
   // sweep / admin op の pending 述語は success audit を「完遂」とみなして対象から外すため、
-  // capped を success で記録すると、上限より注文の多い顧客が**不完全な履歴のまま永久に再訪されない**。
-  // failure として記録すれば pending に残って再走され、恒常的に cap する顧客も
-  // SWEEP_FAILURE_CAP で retry が自己制動する (metadata.capped で失敗理由は判別できる)。
+  // capped を success で記録すると「不完全なのに完遂扱い」の嘘になる。
+  // ⚠️ ただし retry は cursor を先頭から辿り直すため、**ページ上限そのものを超える顧客**
+  // (sweep 既定 6 ページ = 12 ヶ月に 300+ 注文。naturism の生涯最大 59 注文の 5 倍) は
+  // retry でも回収できず、SWEEP_FAILURE_CAP 到達後に capped:true の failure audit 5 行を
+  // 残して停止する — これは設計上の受容限界 (Codex 追撃 P2 を認識のうえ、cursor 永続化は
+  // この規模には作らない。仮に到達しても D1 予算 ~50/run が先に律速する)。
+  // retry が実際に回収するのは**subrequest 予算切れの部分反映** (= 現実に起きる方) で、
+  // そちらは適用済み注文が duplicate-skip (~1 D1) になるため run を重ねると前進して収束する。
   await auditSystem(db, {
     action: 'loyalty_purchase_backfill.completed',
     targetType: 'friend',
@@ -350,11 +355,18 @@ export async function backfillCustomerOrders(
  *     ∧ 失敗 audit < SWEEP_FAILURE_CAP。1 run 1 friend (= 専用 invocation の予算をフルに使う)。
  *   - backfill は冪等 (shopify_order_id UNIQUE + CAS)。途中死しても適用済み分は残り、
  *     次の run では適用済み注文が ~1 D1 の duplicate skip になるため、run を重ねるたびに
- *     前進して必ず収束する。完遂すると成功 audit が付き対象から外れる。
+ *     前進して収束する。完遂すると成功 audit が付き対象から外れる。
  *   - 予算切れは addPurchaseEvent 単位の catch で errors に計上され、その run の完了 audit
  *     自体が書けなくても pending に残る = 取りこぼさない。
  *   - 恒常エラーの friend (例: Shopify 側の顧客消滅) は失敗 audit が CAP に達した時点で
  *     retry を止める (= 5 分毎の無限 retry を作らない)。audit_logs に痕跡が残る。
+ *
+ * 保証の範囲 (= 嘘をつかないための明記):
+ *   収束が保証されるのは「subrequest 予算切れで途中死した部分反映」(= 現実に起きる方)。
+ *   **ページ上限 (既定 6 = 12 ヶ月に 300+ 注文) を超える顧客**は retry が cursor を先頭から
+ *   辿り直すため回収できず、capped:true の failure audit を CAP 件残して停止する。
+ *   naturism の生涯最大 59 注文の 5 倍なので設計上の受容限界とする (Codex 追撃 P2 認識済み。
+ *   cursor 永続化はこの規模には作らない — 仮に到達しても D1 予算が先に律速する)。
  */
 const SWEEP_FAILURE_CAP = 5;
 
