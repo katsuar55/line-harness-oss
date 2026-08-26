@@ -284,6 +284,20 @@ describe('GET /api/liff/my-rank', () => {
     const { body } = await callApi(makeApp(USER), makeDb(15000));
     expect(body.data.accountLinkEnabled).toBe(false);
   });
+
+  // ─── backfill gate フラグ (2026-08-26): 「これまでの購入履歴を反映」と書けるか ───
+  it('memberBackfillOn: MEMBER_BACKFILL_ENABLED=true で true', async () => {
+    const { body } = await callApi(makeApp(USER), makeDb(15000), { MEMBER_BACKFILL_ENABLED: 'true' });
+    expect(body.data.memberBackfillOn).toBe(true);
+  });
+
+  it.each([[undefined], ['false'], ['TRUE'], ['true\r']])(
+    'memberBackfillOn: MEMBER_BACKFILL_ENABLED=%j なら false (過去反映を約束しない)',
+    async (v) => {
+      const { body } = await callApi(makeApp(USER), makeDb(15000), v === undefined ? {} : { MEMBER_BACKFILL_ENABLED: v });
+      expect(body.data.memberBackfillOn).toBe(false);
+    },
+  );
 });
 
 describe('GET /liff/my-rank (会員証ページ HTML)', () => {

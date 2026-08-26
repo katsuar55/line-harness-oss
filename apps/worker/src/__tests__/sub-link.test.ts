@@ -19,6 +19,20 @@ import { Hono } from 'hono';
 vi.mock('../services/link-reward-coupon-issuer.js', () => ({
   issueLinkRewardCoupon: vi.fn(async () => null),
 }));
+// 過去購入 backfill (2026-08-26): redeem 成功 hook の発火だけを検証する (backfill 本体は
+// member-purchase-backfill.test.ts で網羅済)。token 取得も外部 I/O なので同様に固定する。
+vi.mock('../services/member-purchase-backfill.js', () => ({
+  backfillCustomerOrders: vi.fn(async () => ({
+    skipped: false, scanned: 0, backfilled: 0, alreadyApplied: 0, errors: 0, totalJpy: 0, capped: false,
+  })),
+}));
+vi.mock('../services/shopify-token.js', () => ({
+  getShopifyAccessToken: vi.fn(async () => 'test-access-token'),
+}));
+// preview の監査 (2026-08-26): 呼び出しの有無と内容だけを検証する (insert 本体は audit-logger 側)。
+vi.mock('../services/audit-logger.js', () => ({
+  auditSystem: vi.fn(async () => {}),
+}));
 
 import {
   generateSubLinkBatch,
@@ -29,9 +43,20 @@ import {
 } from '../services/sub-link.js';
 import { subLink } from '../routes/sub-link.js';
 import { issueLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
+import { backfillCustomerOrders } from '../services/member-purchase-backfill.js';
+import { getShopifyAccessToken } from '../services/shopify-token.js';
+import { auditSystem } from '../services/audit-logger.js';
 import { toJstString } from '@line-crm/db';
 
 const mockedIssueLinkReward = vi.mocked(issueLinkRewardCoupon);
+const mockedBackfill = vi.mocked(backfillCustomerOrders);
+const mockedGetToken = vi.mocked(getShopifyAccessToken);
+const mockedAudit = vi.mocked(auditSystem);
+
+/** waitUntil 内の fire-and-forget promise chain を settle させる (member-ingest テストと同じ作法)。 */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+}
 
 // ============================================================
 // in-memory D1 fake (= CAS/UNIQUE を忠実に enforce)
@@ -1124,6 +1149,230 @@ describe('link reward hook (POST /api/liff/sub-link/redeem)', () => {
   });
 });
 
+// 過去購入 backfill hook (2026-08-26): slk redeem 経路の設計ギャップ修正。
+// OTP 経路 (verifyAccountLinkCode) は service 内で backfill するが、この経路には無かった
+// = App Proxy / magic-link で連携した人だけ「これまでのお買い物」がランクに 1 円も反映されない。
+describe('purchase backfill hook (POST /api/liff/sub-link/redeem)', () => {
+  function authedApp(friendId: string, lineUserId = 'U1') {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      (c as unknown as { set: (k: string, v: unknown) => void }).set('liffUser', { friendId, lineUserId });
+      await next();
+    });
+    app.route('/', subLink as never);
+    return app;
+  }
+  async function postRedeem(friendId: string, db: D1Database, token: string, over: Record<string, string | undefined> = {}) {
+    return authedApp(friendId).request(
+      '/api/liff/sub-link/redeem',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) },
+      {
+        DB: db,
+        LIFF_URL: 'https://liff.line.me/123-abc',
+        SUB_LINK_ENABLED: 'true',
+        MEMBER_BACKFILL_ENABLED: 'true',
+        SHOPIFY_STORE_DOMAIN: 'x.myshopify.com',
+        ...over,
+      } as unknown as Record<string, unknown>,
+    );
+  }
+
+  beforeEach(() => {
+    mockedBackfill.mockClear();
+    mockedGetToken.mockClear();
+    mockedGetToken.mockResolvedValue('test-access-token');
+  });
+
+  it('🚨新規連携成功 → backfill が customerId/friendId/取得済 token で 1 回呼ばれる', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1');
+    const res = await postRedeem('f1', db, 'T');
+    expect(res.status).toBe(200);
+    await settle();
+    expect(mockedBackfill).toHaveBeenCalledTimes(1);
+    const [, env, opts] = mockedBackfill.mock.calls[0];
+    expect(env).toMatchObject({ SHOPIFY_STORE_DOMAIN: 'x.myshopify.com', MEMBER_BACKFILL_ENABLED: 'true' });
+    // maxPages=2: redeem invocation は D1 + クーポン発行も subrequest を使うため既定 6 より絞る
+    expect(opts).toMatchObject({ customerId: '100', friendId: 'f1', accessToken: 'test-access-token', maxPages: 2 });
+  });
+
+  it('gate off (MEMBER_BACKFILL_ENABLED 未設定) → backfill も token 取得も呼ばない', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1');
+    const res = await postRedeem('f1', db, 'T', { MEMBER_BACKFILL_ENABLED: undefined });
+    expect(res.status).toBe(200);
+    await settle();
+    // 観測点は「外部 I/O に触れていないこと」(ステータスだけ見ると「取ってから捨てる」実装で緑になる)
+    expect(mockedGetToken).not.toHaveBeenCalled();
+    expect(mockedBackfill).not.toHaveBeenCalled();
+  });
+
+  it.each([['false'], ['TRUE'], ['true\r'], ['']])(
+    'gate 値 %j は有効化しない (=== \'true\' 厳密一致)',
+    async (gate) => {
+      const { db, store } = createDb();
+      seedCustomer(store, '100');
+      store.tokens.set('T', mkToken('T', '100'));
+      seedFriend(store, 'f1');
+      const res = await postRedeem('f1', db, 'T', { MEMBER_BACKFILL_ENABLED: gate });
+      expect(res.status).toBe(200);
+      await settle();
+      expect(mockedGetToken).not.toHaveBeenCalled();
+      expect(mockedBackfill).not.toHaveBeenCalled();
+    },
+  );
+
+  it('冪等再訪 (alreadyLinked=true) → backfill を呼ばない (admin op の管轄)', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1', { shopify_customer_id: '100' });
+    const res = await postRedeem('f1', db, 'T');
+    expect(res.status).toBe(200);
+    await settle();
+    expect(mockedBackfill).not.toHaveBeenCalled();
+  });
+
+  it('redeem 失敗 (無効トークン) → backfill を呼ばない', async () => {
+    const { db, store } = createDb();
+    seedFriend(store, 'f1');
+    const res = await postRedeem('f1', db, 'nope');
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    await settle();
+    expect(mockedBackfill).not.toHaveBeenCalled();
+  });
+
+  it('token 取得が reject しても redeem 応答は成功のまま (fire-and-forget)', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1');
+    mockedGetToken.mockRejectedValueOnce(new Error('token store down'));
+    const res = await postRedeem('f1', db, 'T');
+    expect(res.status).toBe(200);
+    await settle();
+    expect(mockedBackfill).not.toHaveBeenCalled(); // token 無しでは backfill に進まない
+  });
+
+  it('🚨backfill はクーポン発行の**後**に直列実行される (subrequest 予算の巻き添え防止・採点ループ HIGH)', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1');
+    // クーポン発行を保留にして、その間 backfill が始まらないことを観測する
+    let resolveIssue: (() => void) | undefined;
+    mockedIssueLinkReward.mockImplementationOnce(
+      () => new Promise((res) => { resolveIssue = () => res(null); }) as ReturnType<typeof issueLinkRewardCoupon>,
+    );
+    const res = await postRedeem('f1', db, 'T');
+    expect(res.status).toBe(200);
+    await settle();
+    expect(mockedGetToken).not.toHaveBeenCalled(); // クーポン未完了の間は token 取得すら始めない
+    expect(mockedBackfill).not.toHaveBeenCalled();
+    resolveIssue!();
+    await settle();
+    expect(mockedBackfill).toHaveBeenCalledTimes(1); // 発行完了後に backfill が走る
+  });
+
+  it('クーポン発行が reject しても backfill は走る (直列化は順序であって依存ではない)', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1');
+    mockedIssueLinkReward.mockRejectedValueOnce(new Error('shopify down'));
+    const res = await postRedeem('f1', db, 'T');
+    expect(res.status).toBe(200);
+    await settle();
+    expect(mockedBackfill).toHaveBeenCalledTimes(1);
+  });
+});
+
+// バッチ発行の監査 (2026-08-26 採点ループ MED): magic-link 一斉発行に監査が無いと、
+// dashboard の連携ファネルが「発行 < 到達」の矛盾表示になる (発行列の母集団欠落)。
+describe('generate バッチ監査 (account_link.sub_link_batch_generated)', () => {
+  beforeEach(() => {
+    mockedAudit.mockClear();
+  });
+
+  it('発行あり → 1 バッチ 1 行 (count 入り・PII なし)', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    seedCustomer(store, '200');
+    const r = await generateSubLinkBatch(envWith(db), { customerIds: ['100', '200'] });
+    expect(r.ok).toBe(true);
+    const calls = mockedAudit.mock.calls.filter(([, i]) => i.action === 'account_link.sub_link_batch_generated');
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toMatchObject({ result: 'success', metadata: { count: 2 } });
+    // PII (email/氏名) を audit に載せない
+    expect(JSON.stringify(calls[0][1])).not.toContain('@example.com');
+  });
+
+  it('発行 0 件 → バッチ監査を書かない (ノイズ防止)', async () => {
+    const { db } = createDb();
+    const r = await generateSubLinkBatch(envWith(db), { customerIds: ['nope'] });
+    expect(r.ok).toBe(true);
+    expect(
+      mockedAudit.mock.calls.filter(([, i]) => i.action === 'account_link.sub_link_batch_generated'),
+    ).toHaveLength(0);
+  });
+});
+
+// preview 監査 (2026-08-26): 「顧客は LIFF に到達したのか」を事後に切り分ける観測点。
+// App Proxy トークン 3 件が全件失効した実事例で、この記録が無く破断点を特定できなかった。
+describe('preview 監査 (account_link.sub_link_previewed)', () => {
+  beforeEach(() => {
+    mockedAudit.mockClear();
+  });
+
+  it('ready → status/kind 入りで 1 回記録される', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, 'c1', { email: 'hanako@example.com' });
+    seedFriend(store, 'f1');
+    store.tokens.set('tk1', mkToken('tk1', 'c1', { batch_id: 'app-proxy' }));
+    const r = await previewSubLinkToken(
+      envWith(db, { APP_PROXY_LINK_ENABLED: 'true' }),
+      { token: 'tk1', friendId: 'f1' },
+    );
+    expect(r.ok).toBe(true);
+    expect(mockedAudit).toHaveBeenCalledTimes(1);
+    const [, input] = mockedAudit.mock.calls[0];
+    expect(input).toMatchObject({
+      action: 'account_link.sub_link_previewed',
+      targetType: 'friend',
+      targetId: 'f1',
+      metadata: { status: 'ready', kind: 'shop' },
+    });
+  });
+
+  it('invalid (存在しないトークン) も status 入りで記録される', async () => {
+    const { db, store } = createDb();
+    seedFriend(store, 'f1');
+    const r = await previewSubLinkToken(envWith(db), { token: 'nope', friendId: 'f1' });
+    expect(r.ok).toBe(true);
+    expect(mockedAudit).toHaveBeenCalledTimes(1);
+    expect(mockedAudit.mock.calls[0][1]).toMatchObject({
+      action: 'account_link.sub_link_previewed',
+      metadata: { status: 'invalid', kind: 'subscription' },
+    });
+  });
+
+  it('dormant (両 gate off) では 1 行も書かない (dormancy 不変条件)', async () => {
+    const { db, store } = createDb();
+    seedFriend(store, 'f1');
+    store.tokens.set('tk1', mkToken('tk1', 'c1'));
+    const r = await previewSubLinkToken(
+      envWith(db, { SUB_LINK_ENABLED: undefined }),
+      { token: 'tk1', friendId: 'f1' },
+    );
+    expect(r.ok).toBe(false);
+    expect(mockedAudit).not.toHaveBeenCalled();
+  });
+});
+
 // 再注入ドリル (2026-08-11): waitUntil 登録そのものを検証する (account-link 側と同旨)。
 describe('link reward hook — waitUntil 登録 (redeem)', () => {
   it('🚨新規連携成功 → executionCtx.waitUntil に発行 Promise が登録される', async () => {
@@ -1147,5 +1396,28 @@ describe('link reward hook — waitUntil 登録 (redeem)', () => {
     expect(res.status).toBe(200);
     expect(waitUntil).toHaveBeenCalledTimes(1);
     expect(waitUntil.mock.calls[0][0]).toBeInstanceOf(Promise);
+  });
+
+  it('🚨backfill gate on → waitUntil に backfill Promise も登録される (計 2 件)', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1');
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      (c as unknown as { set: (k: string, v: unknown) => void }).set('liffUser', { friendId: 'f1', lineUserId: 'U1' });
+      await next();
+    });
+    app.route('/', subLink as never);
+    const waitUntil = vi.fn();
+    const res = await app.request(
+      '/api/liff/sub-link/redeem',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: 'T' }) },
+      { DB: db, LIFF_URL: 'https://liff.line.me/123-abc', SUB_LINK_ENABLED: 'true', LINK_REWARD_ENABLED: 'true', MEMBER_BACKFILL_ENABLED: 'true', SHOPIFY_STORE_DOMAIN: 'x.myshopify.com' },
+      { waitUntil, passThroughOnException: () => {} } as unknown as ExecutionContext,
+    );
+    expect(res.status).toBe(200);
+    expect(waitUntil).toHaveBeenCalledTimes(2);
+    for (const call of waitUntil.mock.calls) expect(call[0]).toBeInstanceOf(Promise);
   });
 });

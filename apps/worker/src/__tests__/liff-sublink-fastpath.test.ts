@@ -327,6 +327,9 @@ function loadSandbox(
     // 「空表示から呼び出しを消す」変異が生き残る)
     'markShopifyLinked',
     'shopifyLinkCtaHtml',
+    'openAccountLinkCard',
+    'subLinkStatusInfo',
+    'subLinkShowUnavailable',
     'showShopifyLinkHomeCard',
     'loadShopData',
     'loadRank',
@@ -1102,6 +1105,82 @@ describe('C3: オンラインストア連携の導線', () => {
     expect(html).toContain('data-shopify-link-cta="hide"');
     expect(html).toContain('openShopifyLinkPage()');
     expect(html).toContain('ご注文済みの場合は連携がまだかもしれません。');
+    // OTP gate off の面では OTP ボタンを 1 byte も出さない (押した先が 404 の死んだボタン)
+    expect(html).not.toContain('openAccountLinkCard()');
+  });
+
+  it('OTP gate on → 空表示 CTA はメール連携が第一候補・ストアログインは第二候補 (実行ベース)', async () => {
+    const env = {
+      ...baseEnv,
+      APP_PROXY_LINK_ENABLED: 'true',
+      SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
+      ACCOUNT_LINK_ENABLED: 'true',
+    };
+    const res = await liffPages.request('/liff/portal', {}, env as unknown as Record<string, unknown>);
+    const script = inlineScript(await res.text());
+    const sb = loadSandbox(script);
+    const html = ctaHtml(sb, 'ご注文済みの場合は連携がまだかもしれません。');
+    const otpAt = html.indexOf('openAccountLinkCard()');
+    const storeAt = html.indexOf('openShopifyLinkPage()');
+    expect(otpAt).toBeGreaterThanOrEqual(0);
+    expect(storeAt).toBeGreaterThan(otpAt);
+    expect(html).toContain('メールで連携する（LINEの中で完結）→');
+    // ストアログイン側だけが第二候補スタイル (class 属性は onclick の後ろに出る)
+    expect(html.slice(storeAt, storeAt + 200)).toContain('link-cta-secondary');
+    expect(html.slice(otpAt, storeAt)).not.toContain('link-cta-secondary');
+  });
+
+  it('OTP gate のみ on (App Proxy off) → 空表示 CTA はメール連携だけ (実行ベース)', async () => {
+    const env = { ...baseEnv, ACCOUNT_LINK_ENABLED: 'true' };
+    const res = await liffPages.request('/liff/portal', {}, env as unknown as Record<string, unknown>);
+    const script = inlineScript(await res.text());
+    const sb = loadSandbox(script);
+    const html = ctaHtml(sb, 'ご注文済みの場合は連携がまだかもしれません。');
+    expect(html).toContain('openAccountLinkCard()');
+    expect(html).not.toContain('openShopifyLinkPage()');
+  });
+
+  // ─── slk 死路の復旧文言 (実行ベース。採点ループ MED: ソース内リテラル存在の contains だと
+  //     ACCOUNT_LINK_OTP_ON 分岐の反転/削除が全緑で通る — 両アームの文字列は常に JS に在るため) ───
+  describe('slk 死路の復旧文言は OTP gate に実行時連動する', () => {
+    async function scriptWith(env: Record<string, string>) {
+      const res = await liffPages.request(
+        '/liff/portal', {},
+        { ...baseEnv, ...env } as unknown as Record<string, unknown>,
+      );
+      return inlineScript(await res.text());
+    }
+    const PROXY_ENV = { APP_PROXY_LINK_ENABLED: 'true', SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com' };
+    type StatusInfo = (s: string, k: string) => { title: string; desc: string };
+
+    it('expired(shop): OTP on → メール連携を案内 / off → ストアログイン再試行を案内', async () => {
+      const on = loadSandbox(await scriptWith({ ...PROXY_ENV, ACCOUNT_LINK_ENABLED: 'true' }));
+      const dOn = (on.fn.subLinkStatusInfo as unknown as StatusInfo)('expired', 'shop').desc;
+      expect(dOn).toContain('メールで連携する（LINEの中で完結）');
+      expect(dOn).not.toContain('プロフィール写真');
+
+      const off = loadSandbox(await scriptWith(PROXY_ENV));
+      const dOff = (off.fn.subLinkStatusInfo as unknown as StatusInfo)('expired', 'shop').desc;
+      expect(dOff).toContain('プロフィール写真');
+      expect(dOff).not.toContain('メールで連携する（LINEの中で完結）');
+    });
+
+    it('unavailable(invalid): OTP on → メール連携 / off+proxy → プロフィール写真 / 両 off → ご案内メール', async () => {
+      const bodyText = (sb: Sandbox) => {
+        (sb.fn.subLinkShowUnavailable as unknown as (k: string) => void)('invalid');
+        return textOf(sb.body);
+      };
+      const on = loadSandbox(await scriptWith({ ...PROXY_ENV, ACCOUNT_LINK_ENABLED: 'true' }));
+      expect(bodyText(on)).toContain('メールで連携する（LINEの中で完結）');
+
+      const proxyOnly = loadSandbox(await scriptWith(PROXY_ENV));
+      const t2 = bodyText(proxyOnly);
+      expect(t2).toContain('プロフィール写真');
+      expect(t2).not.toContain('メールで連携する（LINEの中で完結）');
+
+      const none = loadSandbox(await scriptWith({}));
+      expect(bodyText(none)).toContain('ご案内メール');
+    });
   });
 
   it('🚨連携済みと分かっている面には導線を出さない (既連携者を外部ブラウザへ往復させない)', () => {
@@ -1374,12 +1453,42 @@ describe('C3: 配線とブランドガード (gate on の実マークアップ)'
     }
   });
 
-  it('連携 CTA のボタンは btn-primary (白文字 AA 5.47:1) を使う', () => {
-    // 関数定義行 (`function openShopifyLinkPage()`) ではなく、onclick で呼ぶ**ボタン**だけを見る
+  it('連携 CTA のボタンは AA 検証済みの塗りだけを使う (btn-primary / link-cta-secondary)', () => {
+    // 関数定義行 (`function openShopifyLinkPage()`) ではなく、onclick で呼ぶ**ボタン**だけを見る。
+    // 2026-08-26: OTP 第一候補化でストアログインは第二候補 (link-cta-secondary =
+    // --brand-soft 地 + --action 文字 5.0:1) に降格しうる。許すのはこの 2 クラスのみ —
+    // クラス無しの生 style や新 hex を書いたら落ちる。
     const ctaButtons = gateOnHtml
       .split('\n')
       .filter((l) => l.includes('onclick="openShopifyLinkPage()"'));
     expect(ctaButtons.length).toBeGreaterThan(0);
-    for (const line of ctaButtons) expect(line).toContain('btn-primary');
+    for (const line of ctaButtons) {
+      expect(/btn-primary|link-cta-secondary/.test(line), line).toBe(true);
+    }
+    // 第一候補 (メール OTP) のボタンは常に btn-primary (第二候補スタイルに落とさない)
+    for (const line of gateOnHtml.split('\n').filter((l) => l.includes('onclick="openAccountLinkCard()"'))) {
+      expect(line).toContain('btn-primary');
+      expect(line).not.toContain('link-cta-secondary');
+    }
+  });
+
+  it('OTP gate も on のとき、ストアログインは第二候補 (link-cta-secondary) に降格する', async () => {
+    const env = {
+      ...baseEnv,
+      APP_PROXY_LINK_ENABLED: 'true',
+      SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
+      ACCOUNT_LINK_ENABLED: 'true',
+    };
+    const res = await liffPages.request('/liff/portal', {}, env as unknown as Record<string, unknown>);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // server 側で emit される両カード (home + マイアカウント) で、OTP が第一候補 (btn-primary)、
+    // ストアログインが第二候補 (link-cta-secondary) になっている
+    const otpButtons = html.split('\n').filter((l) => l.includes('onclick="openAccountLinkCard()"') && l.includes('<button'));
+    expect(otpButtons.length).toBeGreaterThanOrEqual(2); // home + マイアカウント
+    for (const line of otpButtons) expect(line).toContain('btn-primary');
+    const storeButtons = html.split('\n').filter((l) => l.includes('onclick="openShopifyLinkPage()"') && l.includes('<button') && !l.includes("'<button"));
+    expect(storeButtons.length).toBeGreaterThanOrEqual(2);
+    for (const line of storeButtons) expect(line).toContain('link-cta-secondary');
   });
 });

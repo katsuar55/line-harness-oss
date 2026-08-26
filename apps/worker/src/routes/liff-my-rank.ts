@@ -54,6 +54,10 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
   const friend = await getFriendById(c.env.DB, liffUser.friendId).catch(() => null);
   const linked = !!friend?.shopify_customer_id;
   const accountLinkEnabled = c.env.ACCOUNT_LINK_ENABLED === 'true';
+  // 「これまでの購入履歴をランクに反映」と書けるかの gate (2026-08-26)。
+  // MEMBER_BACKFILL_ENABLED off では連携しても過去分が 1 円も反映されない
+  // (verifyAccountLinkCode 内の backfill が no-op) ため、off で書くと嘘になる。
+  const memberBackfillOn = c.env.MEMBER_BACKFILL_ENABLED === 'true';
 
   // ─── 定期便ランク (B案 2026-08-16): HB ネイティブ会員ランクのタグを読む ───
   //   HB がランク付与時に顧客タグ subscription-rank:ランク名 を書き、customers/update webhook が
@@ -219,6 +223,7 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
       // 自前アカウント連携 (Phase 2、 gated)
       linked,
       accountLinkEnabled,
+      memberBackfillOn,
     },
   });
 });
@@ -282,6 +287,8 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
     @keyframes pop{0%{transform:scale(.7);opacity:0}100%{transform:scale(1);opacity:1}}
     .rise{animation:rise .5s ease both}
     @keyframes rise{0%{transform:translateY(10px);opacity:0}100%{transform:translateY(0);opacity:1}}
+    /* #link 着地 (ホームの「メールで連携する」から) の強調。静的リング = reduced-motion でも成立 */
+    .link-focus{box-shadow:0 0 0 3px rgba(15,118,110,.30),0 1px 4px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.04)}
     .ladder-row{transition:background .2s}
     .acc-body{overflow:hidden;max-height:0;transition:max-height .35s ease}
     .acc-body.open{max-height:560px}
@@ -367,7 +374,8 @@ var DEMO_DATA = {
     { title: 'KOSO in naturism (Pink) 18粒 (3日分)', price: '430', imageUrl: null, url: 'https://naturism-diet.com/cart/42885035819261:1', discounted: false }
   ],
   linked: false,
-  accountLinkEnabled: true
+  accountLinkEnabled: true,
+  memberBackfillOn: true
 };
 
 function esc(s){ if(s===null||s===undefined) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -559,11 +567,15 @@ function renderLink(d){
   card.style.display='block';
   // a11y: 各 input に aria-label (placeholder だけだと入力開始で消える + SR が名前として読まない)。
   //       #link-msg は role=status aria-live=polite で検証/送信エラーを SR に通知。
+  // 「これまでの購入履歴を反映」は memberBackfillOn 連動 (2026-08-26) — backfill gate off では
+  // 連携しても過去分が 1 円も反映されないため、off ではその一文を落として連携の事実だけを述べる。
   card.innerHTML =
     '<div class="flex items-center gap-2 mb-1.5"><span class="text-base">&#x1F517;</span>' +
-      '<p class="text-sm font-bold text-gray-700">これまでのお買い物をランクに反映</p></div>' +
+      '<p class="text-sm font-bold text-gray-700">' + (d.memberBackfillOn ? 'これまでのお買い物をランクに反映' : 'お買い物アカウントと連携') + '</p></div>' +
     // なぜメール? = 注文時メールで本人確認 → 購入履歴をランクへ。opt-in (メルマガ登録) とは別機能である区別も明記。
-    '<p class="text-xs text-gray-500 leading-relaxed mb-3">公式ストアの<b>ご注文時に使ったメールアドレス</b>宛に確認コードをお送りして本人確認し、これまでの購入履歴を会員ランクに反映します。メールマガジンの配信登録とは別の機能で、これによってメールが届くようになることはありません。</p>' +
+    '<p class="text-xs text-gray-500 leading-relaxed mb-3">' + (d.memberBackfillOn
+      ? '公式ストアの<b>ご注文時に使ったメールアドレス</b>宛に確認コードをお送りして本人確認し、これまでの購入履歴を会員ランクに反映します。メールマガジンの配信登録とは別の機能で、これによってメールが届くようになることはありません。'
+      : '公式ストアの<b>ご注文時に使ったメールアドレス</b>宛に確認コードをお送りして本人確認し、お客様のご注文アカウントとこのLINEを連携します。メールマガジンの配信登録とは別の機能で、これによってメールが届くようになることはありません。') + '</p>' +
     '<div id="link-step-email">' +
       '<input id="link-email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" aria-label="ご注文時のメールアドレス" placeholder="ご注文時のメールアドレス" ' +
         'class="w-full px-3.5 py-2.5 rounded-xl text-sm mb-2" style="border:1px solid #e2e8f0;outline:none">' +
@@ -585,6 +597,20 @@ function renderLink(d){
   // Enter/Go/Done キーで送信 (= 片手モバイルでキーボードを閉じずに進める)
   var ee=document.getElementById('link-email'); if(ee) ee.addEventListener('keydown', function(ev){ if(ev.key==='Enter'){ ev.preventDefault(); linkRequest(); } });
   var ce2=document.getElementById('link-code'); if(ce2) ce2.addEventListener('keydown', function(ev){ if(ev.key==='Enter'){ ev.preventDefault(); linkVerify(); } });
+  // ホーム/マイアカウントの「メールで連携する（LINEの中で完結）」からの着地 (#link, 2026-08-26):
+  // 連携カードへスクロールして 1 回だけ強調する。既連携などでカードが出ないときは何もしない。
+  // 再 render (連携失敗後の loadRank 等) で毎回スクロールし直さないよう window flag で 1 回に限定。
+  if(!window.__linkFocusDone && location.hash==='#link'){
+    window.__linkFocusDone=true;
+    setTimeout(function(){
+      try{
+        var smooth=true;
+        try{ smooth=!window.matchMedia('(prefers-reduced-motion: reduce)').matches; }catch(e){}
+        card.scrollIntoView({behavior:smooth?'smooth':'auto',block:'center'});
+        card.classList.add('link-focus');
+      }catch(e){}
+    },150);
+  }
 }
 
 // ─── おトクにお買い物 (= 3タップ購入: 割引適用リンク + cart permalink) ───

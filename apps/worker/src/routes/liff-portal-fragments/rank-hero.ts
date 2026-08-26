@@ -21,20 +21,20 @@
  * → ヒーローは `readLoyaltyRank` (= 会員証と同じ 1 本) の `data.loyalty` だけを描く。
  *
  * ## 嘘をつかないための決め事
- * - `trailing12moJpy` が 0 のときは **累計額を出さない**。本番は原資 (member_purchase_events)
- *   が空なので、実際には購入している顧客にも 0 が出る。「¥0」と断定しない。
- * - 🚨 **ランクが上がると約束しない**。原資へ live で書く経路 (Shopify `orders/paid` webhook) は
- *   本番未購読、過去注文の取り込みは `MEMBER_BACKFILL_ENABLED` の別 gate。つまり
- *   「1 回のお買い物で〜になります」は今の本番で 1 件も成立しない (採点ループ P2)。
- *   述べてよいのは**制度の条件**だけ (次はどのランクで、何が付いて、いくら足りないか)。
+ * - `trailing12moJpy` が 0 のときは **累計額を出さない**。未連携の顧客は実際には購入していても
+ *   原資 (member_purchase_events) に載らず 0 になる。「¥0」と断定しない。
+ * - 🚨 **ランクが上がると約束しない**。purchase ingest は PR #280 (2026-08-26) で
+ *   orders/create/updated に配線され live になったが、それが効くのは**連携済みの顧客だけ**
+ *   (本番 6,618 人中 10 人)。未連携の閲覧者 (大多数) には「1 回のお買い物で〜になります」は
+ *   依然成立しないので、述べてよいのは**制度の条件**だけ (次はどのランクで、何が付くか)。
  * - 金額は「ランクに反映されたお買い上げ」と名乗る。取り込みが完全であるとは断定しない。
  * - % は会員証と**逐語で揃える**: 「通常購入 N% OFFクーポン」。「クーポン」を落とすと自動割引に
  *   読まれ、「通常購入」を落とすと定期便にも乗ると読まれる (NLR- は appliesOnSubscription:false)。
  * - 記録が 1 円も無いときは進捗バーを出さず、「会員ランクは、公式ストアでのお買い物の記録から
- *   判定しています」とだけ添える。**「連携すればこれまでのお買い物が反映されます」とは書かない** —
- *   過去注文の取り込みは `MEMBER_BACKFILL_ENABLED` の別 gate、今後の注文の取り込みは Shopify
- *   `orders/paid` webhook の購読に依存しており、どちらもクライアントからは分からない
- *   (2026-08-25 時点で本番の `friend_ranks` は 0 行、`member_purchase_events` は 21 行 / 5 名だけ)。
+ *   判定しています」とだけ添える。**ヒーロー自身は「連携すれば反映されます」と書かない** —
+ *   その約束は真下の連携 CTA カード (#shopify-link-home-card) が `MEMBER_BACKFILL_ENABLED`
+ *   連動でサーバ側から出し分ける (2026-08-26 連携ファネル修復)。ヒーローにも書くと同じ CTA が
+ *   2 枚並ぶうえ、gate 状態をクライアントへ二重に配る羽目になる。
  * - 割引率は `RANK_DISCOUNT_ENABLED` に連動させる。gate off では `issueRankDiscountForFriend` が
  *   1 枚も発行しないので、% を出した時点で「受け取れない割引」の広告になる。
  * - 🚨 % を出すときは必ず **「¥2,000 以上のご注文で」** を併記する。NLR- コードには
@@ -200,9 +200,8 @@ const RANK_HERO_JS: string = [
   '  if (RANK_DISCOUNT_ON && isFinite(pct) && pct > 0) {',
   '    label += "（通常購入 " + Math.floor(pct) + "% OFFクーポン）";',
   '  }',
-  '  // 🚨 「1 回のお買い物で〜になります」と**約束しない**。 ランク上昇の原資 (member_purchase_events)',
-  '  //    へ live で書く経路 = Shopify orders/paid webhook は本番未購読で、過去注文の取り込みも',
-  '  //    MEMBER_BACKFILL_ENABLED の別 gate。 つまり「買えば上がる」は今の本番では成立しない。',
+  '  // 🚨 「1 回のお買い物で〜になります」と**約束しない**。 purchase ingest (PR #280) が効くのは',
+  '  //    連携済みの顧客だけで、 この面の閲覧者の大多数は未連携。',
   '  //    ここで述べてよいのは**制度の条件**だけ (次はどのランクで、何が付いて、いくら足りないか)。',
   '  p.appendChild(document.createTextNode("次のランク "));',
   '  p.appendChild(rhNode("b", "", label));',
@@ -325,10 +324,9 @@ const RANK_HERO_JS: string = [
   '  body.appendChild(nextP);',
   '  // 現在の割引が無くても次ランクの % を出す以上、条件はどこかに必ず添える',
   '  if (!hasOff && showsAnyPct) { body.appendChild(rhCond()); }',
-  '  // 🚨 「連携すると**これまでの**お買い物が反映されます」とは書かない。',
-  '  //    過去注文の取り込みは MEMBER_BACKFILL_ENABLED の別 gate、 今後の注文の取り込みは',
-  '  //    Shopify orders/paid webhook に依存しており、 どちらもここからは分からない。',
-  '  //    判定の**根拠**だけを述べる (「なぜレギュラーなのか」に答えつつ、何も約束しない)。',
+  '  // 🚨 ヒーロー自身は「連携すると反映されます」と書かない。 その約束は真下の連携 CTA カード',
+  '  //    (#shopify-link-home-card) が MEMBER_BACKFILL_ENABLED 連動でサーバ側から出し分ける。',
+  '  //    ここは判定の**根拠**だけを述べる (「なぜレギュラーなのか」に答えつつ、何も約束しない)。',
   '  if (spent <= 0) {',
   '    var note = rhNode("p", "rh-note", "会員ランクは、公式ストアでのお買い物の記録から判定しています");',
   '    note.id = "rh-note";',

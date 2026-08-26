@@ -206,6 +206,93 @@ adminDashboard.get('/api/admin/dashboard', async (c) => {
     };
   });
 
+  // 🚨 連携ファネルの観測 (2026-08-26)。
+  // 連携はランク・購買セグメント配信・サブスク管理すべての律速 (本番 6,618 人中 10 人) なのに、
+  // 「どの経路で何人が試みてどこで落ちたか」を見る場所が無かった。実事例: App Proxy で
+  // トークンが 3 件発行され全件失効 (= 顧客 3 人が連携ボタンを押して誰も完遂しなかった) が、
+  // 誰にも見えないまま 3 週間経過していた。経路別の試行と成立をここで常時観測する。
+  const linkFunnel = await section('linkFunnel', async () => {
+    const since7d = new Date(Date.now() + 9 * 3600_000 - 7 * 86400_000)
+      .toISOString()
+      .replace('Z', '+09:00');
+    // OTP (会員証のメール連携) と App Proxy 発行は action 単位で母集団が閉じている
+    const agg = await db
+      .prepare(
+        `SELECT action,
+                COUNT(*) AS total,
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS last7d
+           FROM audit_logs
+          WHERE action IN ('account_link.code_requested', 'account_link.linked',
+                           'account_link.app_proxy_token_issued')
+            AND result = 'success'
+          GROUP BY action`,
+      )
+      .bind(since7d)
+      .all<{ action: string; total: number; last7d: number }>();
+    // preview/redeem は kind 混在の action なので、metadata で経路 (shop = App Proxy /
+    // mail = magic-link) に分離する (2026-08-26 採点ループ MED: 分離しないと発行列 = App Proxy
+    // のみ・到達/成立列 = magic-link 込み、という母集団のねじれたファネルになる)。
+    // preview は metadata.kind ('shop'|'subscription')、redeem は metadata.batchId で判定。
+    const slkAgg = await db
+      .prepare(
+        `SELECT action,
+                CASE WHEN action = 'account_link.sub_link_previewed'
+                     THEN CASE WHEN json_extract(metadata, '$.kind') = 'shop' THEN 'shop' ELSE 'mail' END
+                     ELSE CASE WHEN json_extract(metadata, '$.batchId') = 'app-proxy' THEN 'shop' ELSE 'mail' END
+                END AS k,
+                COUNT(*) AS total,
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS last7d
+           FROM audit_logs
+          WHERE action IN ('account_link.sub_link_previewed', 'account_link.sub_link_redeemed')
+            AND result = 'success'
+            -- 成立列は新規連携のみ (冪等再 redeem = idempotent:true を数えると成立 > 実連携に膨らむ)
+            AND (action != 'account_link.sub_link_redeemed' OR json_extract(metadata, '$.idempotent') = 0)
+          GROUP BY action, k`,
+      )
+      .bind(since7d)
+      .all<{ action: string; k: string; total: number; last7d: number }>();
+    // magic-link の発行はバッチ audit (1 行 = count 件) の SUM
+    const mailGen = await db
+      .prepare(
+        `SELECT COALESCE(SUM(json_extract(metadata, '$.count')), 0) AS total,
+                COALESCE(SUM(CASE WHEN created_at >= ? THEN json_extract(metadata, '$.count') ELSE 0 END), 0) AS last7d
+           FROM audit_logs
+          WHERE action = 'account_link.sub_link_batch_generated' AND result = 'success'`,
+      )
+      .bind(since7d)
+      .first<{ total: number; last7d: number }>();
+    const linked = await db
+      .prepare(`SELECT COUNT(*) AS n FROM friends WHERE shopify_customer_id IS NOT NULL`)
+      .first<{ n: number }>();
+    const byAction = new Map(
+      (agg.results ?? []).map((r) => [r.action, { total: r.total, last7d: r.last7d }]),
+    );
+    const bySlk = new Map(
+      (slkAgg.results ?? []).map((r) => [`${r.action}|${r.k}`, { total: r.total, last7d: r.last7d }]),
+    );
+    const zero = { total: 0, last7d: 0 };
+    const pick = (a: string) => byAction.get(`account_link.${a}`) ?? zero;
+    const pickSlk = (a: string, k: string) => bySlk.get(`account_link.${a}|${k}`) ?? zero;
+    return {
+      linkedFriends: linked?.n ?? 0,
+      // LINE 内メール OTP (会員証): 請求 → 成立
+      otpRequested: pick('code_requested'),
+      otpLinked: pick('linked'),
+      // ストアログイン (App Proxy): 発行 → LIFF 到達 (preview) → 成立 (redeem)
+      shop: {
+        issued: pick('app_proxy_token_issued'),
+        previewed: pickSlk('sub_link_previewed', 'shop'),
+        redeemed: pickSlk('sub_link_redeemed', 'shop'),
+      },
+      // magic-link (メールに載せる 1 タップリンク): 発行 → LIFF 到達 → 成立
+      mail: {
+        issued: mailGen ?? zero,
+        previewed: pickSlk('sub_link_previewed', 'mail'),
+        redeemed: pickSlk('sub_link_redeemed', 'mail'),
+      },
+    };
+  });
+
   // 機能ステータス行 (ラベル込みでサーバ側から返す — 未公開機能のロードマップを
   // 公開 shell の静的 HTML に埋め込まない。API_KEY 保護下でのみ閲覧可)
   const on = (v: string | undefined) => v === 'true';
@@ -220,6 +307,15 @@ adminDashboard.get('/api/admin/dashboard', async (c) => {
       dynamic: 'memberIngest',
     },
     { label: '友だち限定クーポン', on: false, offText: '', dynamic: 'friendCoupon' },
+    // 連携はランク・配信・サブスク管理すべての前提。実測 (経路別の試行/成立) を併記する。
+    // on 判定は受付経路の全 gate の OR (採点ループ MED: SUB_LINK_ENABLED を落とすと
+    // magic-link キャンペーン単独稼働時に「お客様は連携できません」と嘘を表示する)
+    {
+      label: '(基盤) アカウント連携の受付 — LINE内メール連携 / ストアログイン連携',
+      on: on(c.env.ACCOUNT_LINK_ENABLED) || on(c.env.APP_PROXY_LINK_ENABLED) || on(c.env.SUB_LINK_ENABLED),
+      offText: '停止中 — お客様は連携できません',
+      dynamic: 'linkFunnel',
+    },
     { label: '友達紹介の「紹介した人に500円」特典 (¥2,000以上のご注文で)', on: on(c.env.REFERRAL_REWARD_ENABLED), offText: '未公開 — 案内NG' },
     { label: 'アカウント連携の「連携特典 300円」クーポン (¥2,000以上のご注文で)', on: on(c.env.LINK_REWARD_ENABLED), offText: '未公開 — 案内NG' },
     { label: 'LINE 一斉配信 (ブロードキャスト)', on: on(c.env.BROADCAST_ALL_ENABLED), offText: '未公開 (開発者に依頼)' },
@@ -238,7 +334,7 @@ adminDashboard.get('/api/admin/dashboard', async (c) => {
 
   return c.json({
     success: true,
-    data: { friends, welcomeCoupons, faq, ai7d, friendCoupon, chats, subscriptionIngest, memberIngest, system, features,
+    data: { friends, welcomeCoupons, faq, ai7d, friendCoupon, chats, subscriptionIngest, memberIngest, linkFunnel, system, features,
       generatedAt: new Date(Date.now() + 9 * 3600_000).toISOString().replace('Z', '+09:00'),
       ...(Object.keys(errors).length > 0 ? { sectionErrors: errors } : {}) },
   });
@@ -463,7 +559,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   }
   function render(d){
     var f = d.friends, w = d.welcomeCoupons, faq = d.faq, ai = d.ai7d, fc = d.friendCoupon, sys = d.system;
-    var ch = d.chats, sub = d.subscriptionIngest;
+    var ch = d.chats, sub = d.subscriptionIngest, mi = d.memberIngest, lf = d.linkFunnel;
     if(f){ $('v-following').textContent = Number(f.following||0).toLocaleString(); $('v-following').classList.remove('skeleton');
       $('s-friends').textContent = '累計 ' + Number(f.total||0).toLocaleString() + ' ・ ブロック ' + Number(f.blocked||0).toLocaleString();
       $('v-new7d').textContent = '+' + Number(f.new7d||0).toLocaleString(); $('v-new7d').classList.remove('skeleton');
@@ -534,8 +630,32 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           // 実測 section の取得失敗を gate だけの緑に落とさない — それでは
           // 「secret の値しか見ないので 401 全滅でも緑」という、この行を作った理由そのものが復活する
           pillHtml = '<span class="pill off">取得できませんでした</span>';
+        } else if(row.dynamic === 'memberIngest' && !mi){
+          pillHtml = '<span class="pill off">取得できませんでした</span>';
+        } else if(row.dynamic === 'linkFunnel' && !lf){
+          pillHtml = '<span class="pill off">取得できませんでした</span>';
         } else {
           pillHtml = row.on ? '<span class="pill on">稼働中</span>' : '<span class="pill off">' + esc(row.offText || '未公開') + '</span>';
+          if(row.dynamic === 'memberIngest'){
+            // gate の値だけでなく実測を併記 — 「壊れていても何も起きないので誰も気付かない」型の
+            // 再発防止 (2026-08-26: webhook 由来 0 行が数ヶ月見えていなかった)
+            var lastW = fmtAgo(mi.lastWebhookAt);
+            detail = '<div class="hint">webhook 取込 累計 ' + Number(mi.fromWebhook||0) + ' 件 ・ 直近7日の購入 ' + Number(mi.last7d||0)
+              + ' 件 ・ 最終 webhook 取込 ' + (lastW ? esc(lastW) : 'まだなし') + ' ・ 連携済み ' + Number(mi.linkedFriends||0) + ' 人</div>';
+          }
+          if(row.dynamic === 'linkFunnel'){
+            // 経路別のファネル: 試行 → 成立。「累計 (直近7日)」の並び。3 経路を分けて出す —
+            // 混ぜると母集団がねじれる (発行 = App Proxy のみ・到達 = magic-link 込み、等)。
+            // x 欠落で throw すると render() 全体が死に、ダッシュボードが空になる — 必ず 0 に落とす
+            var lfFmt = function(x){ x = x || {}; return Number(x.total||0) + ' (' + Number(x.last7d||0) + ')'; };
+            var lfShop = lf.shop || {}, lfMail = lf.mail || {};
+            detail = '<div class="hint">連携済み ' + Number(lf.linkedFriends||0) + ' 人 — 累計 (直近7日): '
+              + 'メール連携(会員証) コード請求 ' + lfFmt(lf.otpRequested) + ' → 成立 ' + lfFmt(lf.otpLinked)
+              + ' ／ ストアログイン 発行 ' + lfFmt(lfShop.issued)
+              + ' → LINE到達 ' + lfFmt(lfShop.previewed) + ' → 成立 ' + lfFmt(lfShop.redeemed)
+              + ' ／ メールリンク 発行 ' + lfFmt(lfMail.issued)
+              + ' → LINE到達 ' + lfFmt(lfMail.previewed) + ' → 成立 ' + lfFmt(lfMail.redeemed) + '</div>';
+          }
           if(row.dynamic === 'subscriptionIngest'){
             // gate の値だけでなく実測を併記 — 収集が「本当に」動いているかはここで見る。
             // 実測日付あり > 0 なのに最終受信が取れないのは cron_run_logs の保持期限切れ

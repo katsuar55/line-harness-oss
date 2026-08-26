@@ -120,6 +120,7 @@ import { processBirthdayGreetings } from './services/birthday-cron.js';
 import { processMembershipPromotionSanity } from './services/membership-promotion-cron.js';
 import { processLoyaltyRankReeval } from './services/loyalty-rank-cron.js';
 import { processFriendCustomerLink } from './services/friend-customer-linker.js';
+import { processMemberBackfillSweep } from './services/member-purchase-backfill.js';
 import { syncAiModelsCatalog } from './services/ai-models-catalog.js';
 import { syncCloudflareChangelog } from './services/cloudflare-changelog-sync.js';
 import { processEmailFailureMonitor } from './services/email-failure-monitor.js';
@@ -890,6 +891,26 @@ async function scheduled(
       }
     }).catch((err) =>
       console.error('friend-customer-link failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // 連携済み friend の過去購入 backfill sweep (2026-08-26 採点ループ HIGH の恒久対策):
+  //   redeem / OTP verify のインライン backfill は同一 invocation の subrequest 予算 (~50、
+  //   D1 込み) を認証・本体・クーポン発行と分け合うため、注文の多い顧客 (定期便層) では
+  //   途中で尽きて部分反映のまま残る。ここは専用 invocation で 1 run 1 friend を処理し、
+  //   冪等 (shopify_order_id UNIQUE) なので途中死しても run を重ねるたびに前進して収束する。
+  //   成功 audit が付いた friend は対象外・恒常失敗は CAP 到達で retry 停止 (service 参照)。
+  //   MEMBER_BACKFILL_ENABLED != 'true' なら skippedGating (= money path gate はここでも守る)。
+  jobs.push(
+    withHeartbeat(env.DB, 'member-backfill-sweep', () =>
+      processMemberBackfillSweep(env as unknown as Parameters<typeof processMemberBackfillSweep>[0]),
+      (r) => ({ pending: r.pending, processed: r.processed, backfilled: r.backfilled, alreadyApplied: r.alreadyApplied, errors: r.errors, skippedGating: r.skippedGating }),
+    ).then((r) => {
+      if (r.processed > 0) {
+        console.info(`member-backfill-sweep: friend=${r.friendId} backfilled=${r.backfilled} alreadyApplied=${r.alreadyApplied} errors=${r.errors} pending=${r.pending}`);
+      }
+    }).catch((err) =>
+      console.error('member-backfill-sweep failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 
