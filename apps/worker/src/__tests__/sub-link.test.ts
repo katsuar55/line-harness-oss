@@ -1257,6 +1257,68 @@ describe('purchase backfill hook (POST /api/liff/sub-link/redeem)', () => {
     await settle();
     expect(mockedBackfill).not.toHaveBeenCalled(); // token 無しでは backfill に進まない
   });
+
+  it('🚨backfill はクーポン発行の**後**に直列実行される (subrequest 予算の巻き添え防止・採点ループ HIGH)', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1');
+    // クーポン発行を保留にして、その間 backfill が始まらないことを観測する
+    let resolveIssue: (() => void) | undefined;
+    mockedIssueLinkReward.mockImplementationOnce(
+      () => new Promise((res) => { resolveIssue = () => res(null); }) as ReturnType<typeof issueLinkRewardCoupon>,
+    );
+    const res = await postRedeem('f1', db, 'T');
+    expect(res.status).toBe(200);
+    await settle();
+    expect(mockedGetToken).not.toHaveBeenCalled(); // クーポン未完了の間は token 取得すら始めない
+    expect(mockedBackfill).not.toHaveBeenCalled();
+    resolveIssue!();
+    await settle();
+    expect(mockedBackfill).toHaveBeenCalledTimes(1); // 発行完了後に backfill が走る
+  });
+
+  it('クーポン発行が reject しても backfill は走る (直列化は順序であって依存ではない)', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    store.tokens.set('T', mkToken('T', '100'));
+    seedFriend(store, 'f1');
+    mockedIssueLinkReward.mockRejectedValueOnce(new Error('shopify down'));
+    const res = await postRedeem('f1', db, 'T');
+    expect(res.status).toBe(200);
+    await settle();
+    expect(mockedBackfill).toHaveBeenCalledTimes(1);
+  });
+});
+
+// バッチ発行の監査 (2026-08-26 採点ループ MED): magic-link 一斉発行に監査が無いと、
+// dashboard の連携ファネルが「発行 < 到達」の矛盾表示になる (発行列の母集団欠落)。
+describe('generate バッチ監査 (account_link.sub_link_batch_generated)', () => {
+  beforeEach(() => {
+    mockedAudit.mockClear();
+  });
+
+  it('発行あり → 1 バッチ 1 行 (count 入り・PII なし)', async () => {
+    const { db, store } = createDb();
+    seedCustomer(store, '100');
+    seedCustomer(store, '200');
+    const r = await generateSubLinkBatch(envWith(db), { customerIds: ['100', '200'] });
+    expect(r.ok).toBe(true);
+    const calls = mockedAudit.mock.calls.filter(([, i]) => i.action === 'account_link.sub_link_batch_generated');
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toMatchObject({ result: 'success', metadata: { count: 2 } });
+    // PII (email/氏名) を audit に載せない
+    expect(JSON.stringify(calls[0][1])).not.toContain('@example.com');
+  });
+
+  it('発行 0 件 → バッチ監査を書かない (ノイズ防止)', async () => {
+    const { db } = createDb();
+    const r = await generateSubLinkBatch(envWith(db), { customerIds: ['nope'] });
+    expect(r.ok).toBe(true);
+    expect(
+      mockedAudit.mock.calls.filter(([, i]) => i.action === 'account_link.sub_link_batch_generated'),
+    ).toHaveLength(0);
+  });
 });
 
 // preview 監査 (2026-08-26): 「顧客は LIFF に到達したのか」を事後に切り分ける観測点。

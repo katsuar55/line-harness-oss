@@ -162,8 +162,7 @@ describe('連携 CTA の顧客可視文言 (逐語)', () => {
     expect(html).toMatch(/function openAccountLinkCard\(\)[\s\S]{0,220}#link/);
   });
 
-  it('App Proxy 死路の復旧文言は OTP on のときメール連携を案内する (期限切れ/無効)', async () => {
-    const html = await fetchPortal(ALL_ON);
-    expect(html).toContain('ホームの「メールで連携する（LINEの中で完結）」からもう一度お試しください');
-  });
+  // slk 死路の復旧文言の gate 連動は liff-sublink-fastpath.test.ts で**実行ベース**に検証する
+  // (ここで HTML 全文 toContain すると、両アームが常に JS リテラルとして存在するため
+  //  分岐の反転/削除が素通りする tautology になる — 採点ループ MED で実測)
 });

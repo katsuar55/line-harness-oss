@@ -243,6 +243,19 @@ export async function generateSubLinkBatch(
     });
   }
 
+  // 発行の監査 (2026-08-26 採点ループ MED): magic-link の一斉発行に監査が無く、
+  // admin dashboard の連携ファネルで「発行 < 到達」の矛盾表示になる母集団欠落があった。
+  // 1 バッチ 1 行 (PII なし・件数のみ)。dashboard は SUM(json_extract('$.count')) で発行列を作る。
+  if (entries.length > 0) {
+    await auditSystem(db, {
+      action: 'account_link.sub_link_batch_generated',
+      targetType: 'sub_link_batch',
+      targetId: batchId,
+      result: 'success',
+      metadata: { count: entries.length, ttlDays },
+    });
+  }
+
   return { ok: true, batchId, expiresAt, count: entries.length, entries };
 }
 

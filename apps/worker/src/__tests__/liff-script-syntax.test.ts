@@ -40,6 +40,8 @@ interface MinimalEnv {
   LIFF_HOME_IA_ENABLED?: string;
   LIFF_VISUAL_V2_ENABLED?: string;
   SHOPIFY_STOREFRONT_URL?: string;
+  ACCOUNT_LINK_ENABLED?: string;
+  MEMBER_BACKFILL_ENABLED?: string;
 }
 
 const baseEnv: MinimalEnv = {
@@ -379,6 +381,22 @@ describe('LIFF ポータル inline script は構文的に valid (吐き出され
   it('/liff/portal (REFERRAL_REWARD_ENABLED=true = gate on 分岐も valid)', async () => {
     const html = await fetchBody('/liff/portal', { ...baseEnv, REFERRAL_REWARD_ENABLED: 'true' });
     assertParses(extractInlineScripts(html), '/liff/portal (gate on)');
+  });
+
+  it('/liff/portal (連携系 全 gate on = OTP/backfill 分岐込みの吐き出しも valid)', async () => {
+    // 2026-08-26 連携ファネル修復: ACCOUNT_LINK (OTP ボタン)・MEMBER_BACKFILL (過去反映文言) の
+    // 分岐が emit する形も parse 検証の行列に入れる (入れないと新分岐だけ誰にも検査されない)
+    const env = {
+      ...baseEnv,
+      APP_PROXY_LINK_ENABLED: 'true',
+      SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com',
+      ACCOUNT_LINK_ENABLED: 'true',
+      MEMBER_BACKFILL_ENABLED: 'true',
+      REFERRAL_REWARD_ENABLED: 'true',
+    };
+    const html = await fetchBody('/liff/portal', env);
+    assertParses(extractInlineScripts(html), '/liff/portal (link gates all on)');
+    expect(html).toContain('onclick="openAccountLinkCard()"');
   });
 
   it('/liff/portal (APP_PROXY_LINK_ENABLED=true + storefront URL = Shopify 連携カード分岐も valid)', async () => {

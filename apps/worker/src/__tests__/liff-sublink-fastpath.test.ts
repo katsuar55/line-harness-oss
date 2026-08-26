@@ -328,6 +328,8 @@ function loadSandbox(
     'markShopifyLinked',
     'shopifyLinkCtaHtml',
     'openAccountLinkCard',
+    'subLinkStatusInfo',
+    'subLinkShowUnavailable',
     'showShopifyLinkHomeCard',
     'loadShopData',
     'loadRank',
@@ -1136,6 +1138,49 @@ describe('C3: オンラインストア連携の導線', () => {
     const html = ctaHtml(sb, 'ご注文済みの場合は連携がまだかもしれません。');
     expect(html).toContain('openAccountLinkCard()');
     expect(html).not.toContain('openShopifyLinkPage()');
+  });
+
+  // ─── slk 死路の復旧文言 (実行ベース。採点ループ MED: ソース内リテラル存在の contains だと
+  //     ACCOUNT_LINK_OTP_ON 分岐の反転/削除が全緑で通る — 両アームの文字列は常に JS に在るため) ───
+  describe('slk 死路の復旧文言は OTP gate に実行時連動する', () => {
+    async function scriptWith(env: Record<string, string>) {
+      const res = await liffPages.request(
+        '/liff/portal', {},
+        { ...baseEnv, ...env } as unknown as Record<string, unknown>,
+      );
+      return inlineScript(await res.text());
+    }
+    const PROXY_ENV = { APP_PROXY_LINK_ENABLED: 'true', SHOPIFY_STOREFRONT_URL: 'https://naturism-diet.com' };
+    type StatusInfo = (s: string, k: string) => { title: string; desc: string };
+
+    it('expired(shop): OTP on → メール連携を案内 / off → ストアログイン再試行を案内', async () => {
+      const on = loadSandbox(await scriptWith({ ...PROXY_ENV, ACCOUNT_LINK_ENABLED: 'true' }));
+      const dOn = (on.fn.subLinkStatusInfo as unknown as StatusInfo)('expired', 'shop').desc;
+      expect(dOn).toContain('メールで連携する（LINEの中で完結）');
+      expect(dOn).not.toContain('プロフィール写真');
+
+      const off = loadSandbox(await scriptWith(PROXY_ENV));
+      const dOff = (off.fn.subLinkStatusInfo as unknown as StatusInfo)('expired', 'shop').desc;
+      expect(dOff).toContain('プロフィール写真');
+      expect(dOff).not.toContain('メールで連携する（LINEの中で完結）');
+    });
+
+    it('unavailable(invalid): OTP on → メール連携 / off+proxy → プロフィール写真 / 両 off → ご案内メール', async () => {
+      const bodyText = (sb: Sandbox) => {
+        (sb.fn.subLinkShowUnavailable as unknown as (k: string) => void)('invalid');
+        return textOf(sb.body);
+      };
+      const on = loadSandbox(await scriptWith({ ...PROXY_ENV, ACCOUNT_LINK_ENABLED: 'true' }));
+      expect(bodyText(on)).toContain('メールで連携する（LINEの中で完結）');
+
+      const proxyOnly = loadSandbox(await scriptWith(PROXY_ENV));
+      const t2 = bodyText(proxyOnly);
+      expect(t2).toContain('プロフィール写真');
+      expect(t2).not.toContain('メールで連携する（LINEの中で完結）');
+
+      const none = loadSandbox(await scriptWith({}));
+      expect(bodyText(none)).toContain('ご案内メール');
+    });
   });
 
   it('🚨連携済みと分かっている面には導線を出さない (既連携者を外部ブラウザへ往復させない)', () => {

@@ -201,7 +201,7 @@ const RANK_HERO_JS: string = [
   '    label += "（通常購入 " + Math.floor(pct) + "% OFFクーポン）";',
   '  }',
   '  // 🚨 「1 回のお買い物で〜になります」と**約束しない**。 purchase ingest (PR #280) が効くのは',
-  '  //    連携済みの顧客だけで、 この面の閲覧者の大多数は未連携 (本番 6,618 人中 10 人)。',
+  '  //    連携済みの顧客だけで、 この面の閲覧者の大多数は未連携。',
   '  //    ここで述べてよいのは**制度の条件**だけ (次はどのランクで、何が付いて、いくら足りないか)。',
   '  p.appendChild(document.createTextNode("次のランク "));',
   '  p.appendChild(rhNode("b", "", label));',

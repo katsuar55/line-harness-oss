@@ -39,20 +39,39 @@ function fakeDb(opts: FakeOpts = {}) {
       const respond = () => {
         // authMiddleware の staff_members 照合 → 不在 (env API_KEY fallback 経路を使う)
         if (sql.includes('staff_members')) return null;
-        // linkFunnel (2026-08-26): 経路別の試行/成立を audit_logs から集計する
+        // linkFunnel (2026-08-26): 経路別の試行/成立を audit_logs から集計する (3 クエリ)
         if (sql.includes('FROM audit_logs')) {
+          // magic-link バッチ発行の SUM (母集団: 採点ループ MED — 発行列の欠落防止)
+          if (sql.includes("'account_link.sub_link_batch_generated'")) {
+            requirePredicates(["json_extract(metadata, '$.count')", "result = 'success'"]);
+            return { total: 500, last7d: 500 };
+          }
+          // preview/redeem の kind 分離 (shop = App Proxy / mail = magic-link)
+          if (sql.includes("'account_link.sub_link_previewed'")) {
+            requirePredicates([
+              "json_extract(metadata, '$.kind')",
+              "json_extract(metadata, '$.batchId')",
+              "'account_link.sub_link_redeemed'",
+              "result = 'success'",
+              // 成立列の冪等再 redeem 除外 (成立 > 実連携の膨張防止)
+              "json_extract(metadata, '$.idempotent') = 0",
+            ]);
+            return [
+              { action: 'account_link.sub_link_previewed', k: 'shop', total: 2, last7d: 1 },
+              { action: 'account_link.sub_link_previewed', k: 'mail', total: 40, last7d: 40 },
+              { action: 'account_link.sub_link_redeemed', k: 'mail', total: 25, last7d: 25 },
+            ];
+          }
           requirePredicates([
             "'account_link.code_requested'",
             "'account_link.linked'",
             "'account_link.app_proxy_token_issued'",
-            "'account_link.sub_link_previewed'",
-            "'account_link.sub_link_redeemed'",
             "result = 'success'",
           ]);
           return [
-            { action: 'account_link.code_requested', total: 7, last7d: 2, last: '2026-08-25T10:00:00.000+09:00' },
-            { action: 'account_link.linked', total: 4, last7d: 1, last: '2026-08-25T10:05:00.000+09:00' },
-            { action: 'account_link.app_proxy_token_issued', total: 3, last7d: 1, last: '2026-08-22T21:04:07.867+09:00' },
+            { action: 'account_link.code_requested', total: 7, last7d: 2 },
+            { action: 'account_link.linked', total: 4, last7d: 1 },
+            { action: 'account_link.app_proxy_token_issued', total: 3, last7d: 1 },
           ];
         }
         // 連携済み friend 数 (linkFunnel / memberIngest 共用の COUNT)。
@@ -373,7 +392,7 @@ describe('GET /api/admin/dashboard', () => {
     expect(features.find((f) => f.label.includes('定期便データの収集'))?.dynamic).toBe('subscriptionIngest');
   });
 
-  it('linkFunnel: 経路別の試行/成立を audit_logs 集計で返す (2026-08-26 連携ファネル観測)', async () => {
+  it('linkFunnel: 経路別 (OTP / ストアログイン / メールリンク) に母集団を分けて返す', async () => {
     const app = createApp();
     const res = await app.request(
       'http://localhost/api/admin/dashboard',
@@ -383,12 +402,23 @@ describe('GET /api/admin/dashboard', () => {
     const json = (await res.json()) as { data: Record<string, any> };
     expect(json.data.linkFunnel).toEqual({
       linkedFriends: 10,
-      otpRequested: { total: 7, last7d: 2, last: '2026-08-25T10:00:00.000+09:00' },
-      otpLinked: { total: 4, last7d: 1, last: '2026-08-25T10:05:00.000+09:00' },
-      appProxyTokenIssued: { total: 3, last7d: 1, last: '2026-08-22T21:04:07.867+09:00' },
-      // audit に 1 行も無い action は 0 で返る (undefined を client に渡さない)
-      slkPreviewed: { total: 0, last7d: 0, last: null },
-      slkRedeemed: { total: 0, last7d: 0, last: null },
+      otpRequested: { total: 7, last7d: 2 },
+      otpLinked: { total: 4, last7d: 1 },
+      // shop (App Proxy): 発行 = app_proxy_token_issued、到達/成立 = kind='shop' のみ
+      shop: {
+        issued: { total: 3, last7d: 1 },
+        previewed: { total: 2, last7d: 1 },
+        // audit に 1 行も無い段は 0 で返る (undefined を client に渡さない)
+        redeemed: { total: 0, last7d: 0 },
+      },
+      // mail (magic-link): 発行 = バッチ audit の SUM、到達/成立 = kind='mail' のみ
+      // (= 発行 500 → 到達 40 → 成立 25 の整合したファネルになる。分離しないと
+      //    「発行 3 → 到達 42」の矛盾表示だった)
+      mail: {
+        issued: { total: 500, last7d: 500 },
+        previewed: { total: 40, last7d: 40 },
+        redeemed: { total: 25, last7d: 25 },
+      },
     });
     const features = json.data.features as Array<{ label: string; on: boolean; dynamic?: string; offText: string }>;
     const row = features.find((f) => f.label.includes('アカウント連携の受付'));
@@ -396,7 +426,7 @@ describe('GET /api/admin/dashboard', () => {
     expect(row?.dynamic).toBe('linkFunnel');
   });
 
-  it('linkFunnel features 行: 両 gate off なら off (offText = 顧客は連携できません)', async () => {
+  it('linkFunnel features 行: 全 gate off なら off (offText = 顧客は連携できません)', async () => {
     const app = createApp();
     const res = await app.request(
       'http://localhost/api/admin/dashboard',
@@ -408,6 +438,20 @@ describe('GET /api/admin/dashboard', () => {
     expect(row?.on).toBe(false);
     expect(row?.offText).toContain('連携できません');
   });
+
+  it.each([['ACCOUNT_LINK_ENABLED'], ['APP_PROXY_LINK_ENABLED'], ['SUB_LINK_ENABLED']])(
+    'linkFunnel features 行: %s 単独 on でも「稼働中」(採点ループ MED: SUB_LINK 欠落で magic-link 稼働中に「連携できません」と嘘)',
+    async (gate) => {
+      const app = createApp();
+      const res = await app.request(
+        'http://localhost/api/admin/dashboard',
+        { method: 'GET', headers: { Authorization: `Bearer ${API_KEY}` } },
+        ENV(fakeDb(), { [gate]: 'true' }),
+      );
+      const json = (await res.json()) as { data: { features: Array<{ label: string; on: boolean }> } };
+      expect(json.data.features.find((f) => f.label.includes('アカウント連携の受付'))?.on).toBe(true);
+    },
+  );
 
   it('よく使う画面: 定期便マイページは /account (旧 /apps/subscription は本番 400 の死にリンク)', async () => {
     const app = createApp();
@@ -479,11 +523,18 @@ describe('GET /api/admin/dashboard', () => {
       ],
       linkFunnel: {
         linkedFriends: 10,
-        otpRequested: { total: 7, last7d: 2, last: null },
-        otpLinked: { total: 4, last7d: 1, last: null },
-        appProxyTokenIssued: { total: 3, last7d: 1, last: null },
-        slkPreviewed: { total: 0, last7d: 0, last: null },
-        slkRedeemed: { total: 0, last7d: 0, last: null },
+        otpRequested: { total: 7, last7d: 2 },
+        otpLinked: { total: 4, last7d: 1 },
+        shop: {
+          issued: { total: 3, last7d: 1 },
+          previewed: { total: 0, last7d: 0 },
+          redeemed: { total: 0, last7d: 0 },
+        },
+        mail: {
+          issued: { total: 500, last7d: 500 },
+          previewed: { total: 40, last7d: 40 },
+          redeemed: { total: 25, last7d: 25 },
+        },
       },
     });
     const fhtml = els['features']!.innerHTML;
@@ -491,8 +542,10 @@ describe('GET /api/admin/dashboard', () => {
     expect(fhtml).toContain('連携済み 10 人');
     expect(fhtml).toContain('コード請求 7 (2)');
     expect(fhtml).toContain('成立 4 (1)');
-    expect(fhtml).toContain('リンク発行 3 (1)');
+    expect(fhtml).toContain('ストアログイン 発行 3 (1)');
     expect(fhtml).toContain('LINE到達 0 (0)');
+    expect(fhtml).toContain('メールリンク 発行 500 (500)');
+    expect(fhtml).toContain('成立 25 (25)');
   });
 
   it('🚨render 実行: linkFunnel 取得失敗時は「取得できませんでした」pill (gate だけの緑に落とさない)', async () => {

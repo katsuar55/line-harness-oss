@@ -60,20 +60,71 @@ describe('連携フォーム UX', () => {
 // ─── backfill gate 連動の文言 (2026-08-26) ───
 // MEMBER_BACKFILL_ENABLED off では連携しても過去分が 1 円も反映されないため、
 // 「これまでの購入履歴を反映」は memberBackfillOn のときだけ書く。
-describe('連携カード文言の backfill gate 連動', () => {
-  it('タイトル/説明とも d.memberBackfillOn で分岐する', () => {
-    const m = src.match(/function renderLink\(d\)\{[\s\S]*?\n\}/);
-    expect(m).not.toBeNull();
-    const fn = m![0];
-    // 分岐が存在し、on 側だけが過去反映を約束する
-    expect(fn).toContain('d.memberBackfillOn');
-    expect(fn).toContain('これまでのお買い物をランクに反映');
-    expect(fn).toContain('お買い物アカウントと連携');
-    expect(fn).toContain('これまでの購入履歴を会員ランクに反映します');
-    expect(fn).toContain('お客様のご注文アカウントとこのLINEを連携します');
-    // off 側の説明にも「メルマガとは別」の区別が残る (分岐で落とすと不安が再発する)
-    const offBody = fn.split('お客様のご注文アカウントとこのLINEを連携します')[1] ?? '';
-    expect(offBody).toContain('メールマガジンの配信登録とは別');
+//
+// 🚨 検証は**実行ベース** (採点ループ MED: 文字列 contains だけだと「両アームの文字列は
+// 残っているが ternary のアームが入れ替わっている」= gate off で過去反映を約束する嘘、が
+// 全緑で通る)。renderLink を実際に走らせ、合成後の innerHTML を観測する。
+interface FakeCard {
+  style: Record<string, string>;
+  className: string;
+  innerHTML: string;
+  classListAdds: string[];
+  scrolled: boolean;
+  classList: { add: (c: string) => void };
+  scrollIntoView: () => void;
+}
+
+function runRenderLink(
+  d: Record<string, unknown>,
+  opts: { hash?: string; win?: Record<string, unknown> } = {},
+): { card: FakeCard; win: Record<string, unknown> } {
+  const m = src.match(/function renderLink\(d\)\{[\s\S]*?\n\}/);
+  expect(m).not.toBeNull();
+  const card: FakeCard = {
+    style: {},
+    className: '',
+    innerHTML: '',
+    classListAdds: [],
+    scrolled: false,
+    classList: { add(c: string) { card.classListAdds.push(c); } },
+    scrollIntoView() { card.scrolled = true; },
+  };
+  const doc = { getElementById: (id: string) => (id === 'link-card' ? card : null) };
+  const win = opts.win ?? {};
+  const loc = { hash: opts.hash ?? '' };
+  // setTimeout は即時実行 (= #link 着地のスクロールを同期的に観測する)
+  const immediate = (fn: () => void) => { fn(); return 0; };
+  new Function('document', 'window', 'location', 'setTimeout', 'd', m![0] + '\nrenderLink(d);')(
+    doc, win, loc, immediate, d,
+  );
+  return { card, win };
+}
+
+describe('連携カード文言の backfill gate 連動 (実行ベース)', () => {
+  const base = { accountLinkEnabled: true, linked: false };
+
+  it('memberBackfillOn=true → 過去反映を約束する文言', () => {
+    const { card } = runRenderLink({ ...base, memberBackfillOn: true });
+    expect(card.style.display).toBe('block');
+    expect(card.innerHTML).toContain('これまでのお買い物をランクに反映');
+    expect(card.innerHTML).toContain('これまでの購入履歴を会員ランクに反映します');
+    expect(card.innerHTML).toContain('メールマガジンの配信登録とは別');
+  });
+
+  it('🚨memberBackfillOn=false → 過去反映の約束を 1 文字も出さない (アーム入替の嘘を殺す)', () => {
+    const { card } = runRenderLink({ ...base, memberBackfillOn: false });
+    expect(card.style.display).toBe('block');
+    expect(card.innerHTML).toContain('お買い物アカウントと連携');
+    expect(card.innerHTML).toContain('お客様のご注文アカウントとこのLINEを連携します');
+    expect(card.innerHTML).not.toContain('これまでのお買い物をランクに反映');
+    expect(card.innerHTML).not.toContain('購入履歴を会員ランクに反映');
+    // off 側にも「メルマガとは別」の区別が残る (落とすと不安が再発する)
+    expect(card.innerHTML).toContain('メールマガジンの配信登録とは別');
+  });
+
+  it('既連携 / gate off ではカードを出さない', () => {
+    expect(runRenderLink({ accountLinkEnabled: true, linked: true }).card.style.display).toBe('none');
+    expect(runRenderLink({ accountLinkEnabled: false, linked: false }).card.style.display).toBe('none');
   });
 
   it('demo データは memberBackfillOn: true (デモは全機能 on の見た目)', () => {
@@ -83,16 +134,28 @@ describe('連携カード文言の backfill gate 連動', () => {
 
 // ─── #link 着地 (ホーム/マイアカウントの「メールで連携する」から) ───
 describe('#link 着地の受け (連携カードへスクロール + 強調)', () => {
-  it("renderLink が location.hash==='#link' で連携カードへスクロールし .link-focus を付ける", () => {
-    const m = src.match(/function renderLink\(d\)\{[\s\S]*?\n\}/);
-    expect(m).not.toBeNull();
-    const fn = m![0];
-    expect(fn).toContain("location.hash==='#link'");
-    expect(fn).toContain('scrollIntoView');
-    expect(fn).toContain("classList.add('link-focus')");
-    // 1 回だけ (再 render で毎回スクロールし直さない)
-    expect(fn).toContain('window.__linkFocusDone');
-    // reduced-motion では smooth を落とす
+  it("#link で着地 → スクロール + .link-focus (実行ベース)", () => {
+    const { card, win } = runRenderLink(
+      { accountLinkEnabled: true, linked: false, memberBackfillOn: true },
+      { hash: '#link' },
+    );
+    expect(card.scrolled).toBe(true);
+    expect(card.classListAdds).toContain('link-focus');
+    expect(win.__linkFocusDone).toBe(true);
+  });
+
+  it('hash 無し / 既に focus 済みならスクロールしない (再 render で毎回動かさない)', () => {
+    const noHash = runRenderLink({ accountLinkEnabled: true, linked: false, memberBackfillOn: true });
+    expect(noHash.card.scrolled).toBe(false);
+    const done = runRenderLink(
+      { accountLinkEnabled: true, linked: false, memberBackfillOn: true },
+      { hash: '#link', win: { __linkFocusDone: true } },
+    );
+    expect(done.card.scrolled).toBe(false);
+  });
+
+  it('reduced-motion では smooth を落とす (ソース検証)', () => {
+    const fn = src.match(/function renderLink\(d\)\{[\s\S]*?\n\}/)![0];
     expect(fn).toContain('prefers-reduced-motion');
   });
 

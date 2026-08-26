@@ -23,9 +23,9 @@
  *   linking (= FRIEND_LINK_ENABLED) とは **別 gate**。 Katsu が link を検証後に backfill を別途有効化する
  *   (= 非 money の linking と money の backfill を分離。 PR5 RANK_DISCOUNT_ENABLED と同方式)。
  *
- * ⚠️ scope 制約 (= 2026-06-05 本番 token 確認): read_all_orders 未付与 → orders は **直近60日のみ閲覧可**。
- *   60日より前の注文は取得できず under-count (= 安全方向の不完全さ)。 完全な trailing-12mo backfill には
- *   read_all_orders scope の追加 (= Shopify アプリ再認証) が必要。 取得できた分のみ backfill する (= graceful)。
+ * scope (2026-08-26 更新): `read_all_orders` は 2026-07-03 に本番付与済み (shopify_tokens.scope 実測) →
+ *   trailing-12mo 窓の注文は全件取得できる。scope が失われた場合は Shopify 側が直近 60 日へ縮小するが、
+ *   その場合も取得できた分のみ backfill する (= graceful、under-count は安全方向)。
  *
  * セキュリティ / 既知トラップ:
  *   - accessToken は呼び出し側 (= linker cron) が 1 回取得して渡す (= per-friend の token 再取得を避ける)。
@@ -40,6 +40,7 @@
  */
 import { addPurchaseEvent, isoMonthsAgo, jstNow } from '@line-crm/db';
 import { auditSystem } from './audit-logger.js';
+import { getShopifyAccessToken } from './shopify-token.js';
 
 // ============================================================
 // 定数
@@ -326,6 +327,119 @@ export async function backfillCustomerOrders(
 }
 
 // ============================================================
+// sweep: 未完了 backfill の自己収束 cron (2026-08-26 採点ループ HIGH の恒久対策)
+// ============================================================
+
+/**
+ * 「連携済みだが backfill が完遂していない friend」を 5 分毎に 1 人ずつ処理する sweep。
+ *
+ * なぜ要るか (採点ループ HIGH):
+ *   redeem / OTP verify のインライン backfill は同一 invocation の subrequest 予算
+ *   (無料プラン 50、D1 も 1 query = 1 subrequest) を認証・redeem 本体・クーポン発行と
+ *   分け合う。支配項はページ取得でなく **注文ごとの addPurchaseEvent (~5 D1/新規適用)** で、
+ *   直近 12 ヶ月に 7 注文以上ある顧客 (= 定期便顧客はほぼ全員) では途中で予算が尽き、
+ *   「これまでのお買い物が反映」の約束に反する部分反映のまま残る。
+ *
+ * 収束の仕組み:
+ *   - 対象 = 連携済み ∧ 成功 audit (loyalty_purchase_backfill.completed/success) 無し
+ *     ∧ 失敗 audit < SWEEP_FAILURE_CAP。1 run 1 friend (= 専用 invocation の予算をフルに使う)。
+ *   - backfill は冪等 (shopify_order_id UNIQUE + CAS)。途中死しても適用済み分は残り、
+ *     次の run では適用済み注文が ~1 D1 の duplicate skip になるため、run を重ねるたびに
+ *     前進して必ず収束する。完遂すると成功 audit が付き対象から外れる。
+ *   - 予算切れは addPurchaseEvent 単位の catch で errors に計上され、その run の完了 audit
+ *     自体が書けなくても pending に残る = 取りこぼさない。
+ *   - 恒常エラーの friend (例: Shopify 側の顧客消滅) は失敗 audit が CAP に達した時点で
+ *     retry を止める (= 5 分毎の無限 retry を作らない)。audit_logs に痕跡が残る。
+ */
+const SWEEP_FAILURE_CAP = 5;
+
+export interface BackfillSweepEnv extends BackfillEnv {
+  DB: D1Database;
+  SHOPIFY_CLIENT_ID?: string;
+  SHOPIFY_CLIENT_SECRET?: string;
+  SHOPIFY_TOKEN_ENCRYPTION_KEY?: string;
+}
+
+export interface BackfillSweepResult {
+  readonly skippedGating: boolean;
+  /** sweep 対象として残っている friend 数 (処理前) */
+  readonly pending: number;
+  /** この run で処理した friend 数 (0 or 1) */
+  readonly processed: number;
+  readonly friendId: string | null;
+  readonly backfilled: number;
+  readonly alreadyApplied: number;
+  readonly errors: number;
+}
+
+const SWEEP_PENDING_PREDICATE = `
+  FROM friends f
+ WHERE f.shopify_customer_id IS NOT NULL
+   AND NOT EXISTS (
+     SELECT 1 FROM audit_logs a
+      WHERE a.action = 'loyalty_purchase_backfill.completed'
+        AND a.target_type = 'friend' AND a.target_id = f.id AND a.result = 'success'
+   )
+   AND (
+     SELECT COUNT(*) FROM audit_logs a2
+      WHERE a2.action = 'loyalty_purchase_backfill.completed'
+        AND a2.target_type = 'friend' AND a2.target_id = f.id AND a2.result = 'failure'
+   ) < ${SWEEP_FAILURE_CAP}`;
+
+export async function processMemberBackfillSweep(
+  env: BackfillSweepEnv,
+  deps: {
+    /** test 用注入 (default: getShopifyAccessToken)。 */
+    getTokenImpl?: (db: D1Database, env: Record<string, string | undefined>) => Promise<string>;
+    /** test 用注入 (default: backfillCustomerOrders)。 */
+    backfillImpl?: typeof backfillCustomerOrders;
+  } = {},
+): Promise<BackfillSweepResult> {
+  const empty = (skippedGating: boolean, pending = 0): BackfillSweepResult => ({
+    skippedGating, pending, processed: 0, friendId: null, backfilled: 0, alreadyApplied: 0, errors: 0,
+  });
+  if (env.MEMBER_BACKFILL_ENABLED !== 'true') return empty(true);
+
+  const db = env.DB;
+  const pendingRow = await db
+    .prepare(`SELECT COUNT(*) AS n ${SWEEP_PENDING_PREDICATE}`)
+    .first<{ n: number }>();
+  const pending = pendingRow?.n ?? 0;
+  if (pending === 0) return empty(false, 0);
+
+  const target = await db
+    .prepare(`SELECT f.id, f.shopify_customer_id ${SWEEP_PENDING_PREDICATE} ORDER BY f.updated_at DESC LIMIT 1`)
+    .first<{ id: string; shopify_customer_id: string }>();
+  if (!target) return empty(false, pending);
+
+  let accessToken: string;
+  try {
+    // static import (= CLAUDE.md テストルール: vi.mock 対象 module 内の dynamic import は禁止)
+    const getToken = deps.getTokenImpl ?? getShopifyAccessToken;
+    accessToken = await getToken(db, env as unknown as Record<string, string | undefined>);
+  } catch (err) {
+    console.error('[member-backfill-sweep] shopify token unavailable:', err instanceof Error ? err.message : 'unknown');
+    return { ...empty(false, pending), errors: 1 };
+  }
+
+  const backfill = deps.backfillImpl ?? backfillCustomerOrders;
+  const r = await backfill(
+    db,
+    { SHOPIFY_STORE_DOMAIN: env.SHOPIFY_STORE_DOMAIN, MEMBER_BACKFILL_ENABLED: env.MEMBER_BACKFILL_ENABLED },
+    { customerId: String(target.shopify_customer_id), friendId: target.id, accessToken },
+  );
+  return {
+    skippedGating: false,
+    pending,
+    processed: 1,
+    friendId: target.id,
+    backfilled: r.backfilled,
+    alreadyApplied: r.alreadyApplied,
+    errors: r.errors,
+  };
+}
+
+// ============================================================
 // test 用 export
 // ============================================================
 
@@ -336,4 +450,6 @@ export const __test__ = {
   MAX_PAGES,
   BACKFILL_LOOKBACK_MONTHS,
   ORDERS_QUERY,
+  SWEEP_FAILURE_CAP,
+  SWEEP_PENDING_PREDICATE,
 };

@@ -30,11 +30,15 @@ import { backfillCustomerOrders } from '../services/member-purchase-backfill.js'
 import { getShopifyAccessToken } from '../services/shopify-token.js';
 
 /**
- * redeem 経由の backfill のページ上限。
- * redeem の同一 invocation は D1 (redeem 本体 ~8) + 連携特典クーポン発行 (Shopify ~5) も使うため、
- * 無料プランの subrequest 上限 (50/invocation) に収まるよう既定 6 より絞る。
- * 2 ページ = 100 注文/12ヶ月 で naturism の実顧客 (最大 59 注文/生涯) を必ず覆う。
- * 万一 cap に達しても backfill は冪等で、admin op (backfill-linked) が同じ friend を再走できる。
+ * redeem 経由のインライン backfill のページ上限。
+ *
+ * 🚨 予算の支配項はページ取得 (fetch) ではなく **注文ごとの addPurchaseEvent (~5 D1/新規適用)**
+ * (採点ループ 2026-08-26 HIGH)。redeem invocation の固定費 (認証 + redeem 本体 + クーポン発行)
+ * ~20 subrequest を引くと、無料プラン 50/invocation では新規適用 ~6 注文で予算が尽きる。
+ * つまりこのインライン backfill は「注文の少ない典型顧客に即時のランク反映を見せる第一走」で
+ * あって、完遂の保証ではない。**完遂は member-backfill-sweep cron が保証する** — backfill は
+ * 冪等 (shopify_order_id UNIQUE) なので途中死しても sweep が数分内に残りを収束させる。
+ * ページ上限 2 は fetch 側の無駄 (どうせ D1 予算が先に尽きる) を抑えるだけの値。
  */
 const REDEEM_BACKFILL_MAX_PAGES = 2;
 
@@ -192,34 +196,42 @@ subLink.post('/api/liff/sub-link/redeem', async (c) => {
           ),
         );
         try { c.executionCtx.waitUntil(issueP); } catch { /* no exec ctx in tests */ }
-        // 過去 paid 注文の backfill (= 「連携するとこれまでのお買い物がランクに反映」を
+        // 過去 paid 注文のインライン backfill (= 「連携するとこれまでのお買い物がランクに反映」を
         // App Proxy / magic-link 経路でも成立させる)。OTP 経路は verifyAccountLinkCode が
         // service 内で同じ backfill を呼ぶが、この経路には無かった (= slk で連携した人だけ
         // ランクが ¥0 のままになる設計ギャップ、2026-08-26 修正)。
-        // best-effort + waitUntil: backfill は Shopify GraphQL 最大 2 ページ (8s timeout/頁) を
-        // 伴うため、redeem 応答 (= 確認カードの完了表示) をそれで待たせない。
-        // gate は backfillCustomerOrders 側でも二重判定するが、off のとき token 取得の
-        // subrequest すら使わないようここでも先に判定する。
+        // - waitUntil: redeem 応答 (= 確認カードの完了表示) を backfill で待たせない。
+        // - 🚨 クーポン発行 (issueP) の**後**に直列化する (採点ループ HIGH): 両者は同一
+        //   invocation の subrequest 予算を共有するため、並行させると backfill の D1 バーストが
+        //   ¥300 クーポン発行の Shopify fetch / 台帳 INSERT を「Too many subrequests」で
+        //   巻き添えにしうる (台帳だけ落ちると幽霊コード → 再発行で 2 枚目の実費)。
+        //   顧客可視の報酬を先に確定させ、backfill は残り予算での第一走に徹する。
+        //   予算切れで途中死しても member-backfill-sweep cron (5 分毎) が収束させる。
+        // - gate は backfillCustomerOrders 側でも二重判定するが、off のとき token 取得の
+        //   subrequest すら使わないようここでも先に判定する。
         const envRecord = c.env as unknown as Record<string, string | undefined>;
         if (envRecord.MEMBER_BACKFILL_ENABLED === 'true') {
           const friendId = user.friendId;
           const customerId = result.summary.customerId;
-          const backfillP = (async () => {
-            const accessToken = await getShopifyAccessToken(c.env.DB, envRecord);
-            await backfillCustomerOrders(
-              c.env.DB,
-              {
-                SHOPIFY_STORE_DOMAIN: envRecord.SHOPIFY_STORE_DOMAIN,
-                MEMBER_BACKFILL_ENABLED: envRecord.MEMBER_BACKFILL_ENABLED,
-              },
-              { customerId, friendId, accessToken, maxPages: REDEEM_BACKFILL_MAX_PAGES },
+          // issueP は上で .catch 済み = ここでは常に resolve する (失敗でも backfill は走らせる)
+          const backfillP = issueP
+            .then(async () => {
+              const accessToken = await getShopifyAccessToken(c.env.DB, envRecord);
+              await backfillCustomerOrders(
+                c.env.DB,
+                {
+                  SHOPIFY_STORE_DOMAIN: envRecord.SHOPIFY_STORE_DOMAIN,
+                  MEMBER_BACKFILL_ENABLED: envRecord.MEMBER_BACKFILL_ENABLED,
+                },
+                { customerId, friendId, accessToken, maxPages: REDEEM_BACKFILL_MAX_PAGES },
+              );
+            })
+            .catch((err) =>
+              console.error(
+                '[sub-link] purchase backfill failed:',
+                err instanceof Error ? err.message : 'unknown',
+              ),
             );
-          })().catch((err) =>
-            console.error(
-              '[sub-link] purchase backfill failed:',
-              err instanceof Error ? err.message : 'unknown',
-            ),
-          );
           try { c.executionCtx.waitUntil(backfillP); } catch { /* no exec ctx in tests */ }
         }
       }

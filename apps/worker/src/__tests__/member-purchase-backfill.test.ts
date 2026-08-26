@@ -304,3 +304,132 @@ describe('backfillCustomerOrders — error handling (link を壊さない)', () 
     expect(r.totalJpy).toBe(2000);
   });
 });
+
+// ============================================================
+// processMemberBackfillSweep (2026-08-26 採点ループ HIGH の恒久対策)
+//   インライン backfill (redeem / OTP verify) が subrequest 予算切れで途中死した friend を
+//   専用 invocation で収束させる cron。1 run 1 friend・成功 audit で対象から外れる。
+// ============================================================
+
+import { processMemberBackfillSweep, __test__ } from '../services/member-purchase-backfill.js';
+
+function sweepDb(opts: { pending?: number; target?: { id: string; shopify_customer_id: string } | null } = {}) {
+  const seen: string[] = [];
+  const db = {
+    prepare(sql: string) {
+      seen.push(sql);
+      const respond = () => {
+        if (sql.includes('COUNT(*) AS n')) return { n: opts.pending ?? 0 };
+        if (sql.includes('LIMIT 1')) return opts.target ?? null;
+        return null;
+      };
+      return {
+        bind: () => ({ first: async () => respond(), all: async () => ({ results: [] }), run: async () => ({ success: true }) }),
+        first: async () => respond(),
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true }),
+      };
+    },
+  };
+  return { db: db as unknown as D1Database, seen };
+}
+
+const SWEEP_ENV_ON = {
+  SHOPIFY_STORE_DOMAIN: 'shop.myshopify.com',
+  MEMBER_BACKFILL_ENABLED: 'true',
+};
+
+describe('processMemberBackfillSweep — gating', () => {
+  it.each([[undefined], ['false'], ['TRUE'], ['true\r'], ['']])(
+    "MEMBER_BACKFILL_ENABLED=%j → skippedGating (D1 に 1 query も触れない)",
+    async (gate) => {
+      const { db, seen } = sweepDb();
+      const r = await processMemberBackfillSweep(
+        { DB: db, SHOPIFY_STORE_DOMAIN: 'x', ...(gate === undefined ? {} : { MEMBER_BACKFILL_ENABLED: gate }) },
+        { getTokenImpl: vi.fn(), backfillImpl: vi.fn() as unknown as typeof backfillCustomerOrders },
+      );
+      expect(r.skippedGating).toBe(true);
+      expect(r.processed).toBe(0);
+      // 観測点は「触れていないこと」(status だけ見ると「読んでから捨てる」実装で緑になる)
+      expect(seen).toHaveLength(0);
+    },
+  );
+});
+
+describe('processMemberBackfillSweep — 対象選定と実行', () => {
+  it('pending 0 → 何もしない (token 取得もしない)', async () => {
+    const { db } = sweepDb({ pending: 0 });
+    const getTokenImpl = vi.fn();
+    const r = await processMemberBackfillSweep(
+      { DB: db, ...SWEEP_ENV_ON },
+      { getTokenImpl, backfillImpl: vi.fn() as unknown as typeof backfillCustomerOrders },
+    );
+    expect(r).toMatchObject({ skippedGating: false, pending: 0, processed: 0, friendId: null });
+    expect(getTokenImpl).not.toHaveBeenCalled();
+  });
+
+  it('🚨pending あり → 1 friend を取得済 token で backfill (maxPages 指定なし = 専用予算をフルに使う)', async () => {
+    const { db } = sweepDb({ pending: 3, target: { id: 'f9', shopify_customer_id: '777' } });
+    const getTokenImpl = vi.fn(async () => 'tok-1');
+    const backfillImpl = vi.fn(async () => ({
+      skipped: false, scanned: 5, backfilled: 4, alreadyApplied: 1, errors: 0, totalJpy: 9000, capped: false,
+    }));
+    const r = await processMemberBackfillSweep(
+      { DB: db, ...SWEEP_ENV_ON },
+      { getTokenImpl, backfillImpl: backfillImpl as unknown as typeof backfillCustomerOrders },
+    );
+    expect(r).toMatchObject({ skippedGating: false, pending: 3, processed: 1, friendId: 'f9', backfilled: 4, alreadyApplied: 1, errors: 0 });
+    expect(backfillImpl).toHaveBeenCalledTimes(1);
+    const [, env, opts] = backfillImpl.mock.calls[0] as unknown as [unknown, Record<string, string>, Record<string, unknown>];
+    expect(env).toMatchObject({ SHOPIFY_STORE_DOMAIN: 'shop.myshopify.com', MEMBER_BACKFILL_ENABLED: 'true' });
+    expect(opts).toMatchObject({ customerId: '777', friendId: 'f9', accessToken: 'tok-1' });
+    // インライン (redeem) と違い専用 invocation なので既定ページ数のまま (= 絞らない)
+    expect(opts.maxPages).toBeUndefined();
+  });
+
+  it('token 取得失敗 → errors 1・backfill を呼ばず pending に残す (次 run で retry)', async () => {
+    const { db } = sweepDb({ pending: 1, target: { id: 'f9', shopify_customer_id: '777' } });
+    const backfillImpl = vi.fn();
+    const r = await processMemberBackfillSweep(
+      { DB: db, ...SWEEP_ENV_ON },
+      { getTokenImpl: vi.fn(async () => { throw new Error('token down'); }), backfillImpl: backfillImpl as unknown as typeof backfillCustomerOrders },
+    );
+    expect(r).toMatchObject({ processed: 0, errors: 1, pending: 1 });
+    expect(backfillImpl).not.toHaveBeenCalled();
+  });
+
+  it('🚨対象述語: 成功 audit 除外・失敗 CAP・連携済み限定が SQL に実在する (fake が守り続ける偽緑の防止)', async () => {
+    const { db, seen } = sweepDb({ pending: 1, target: { id: 'f9', shopify_customer_id: '777' } });
+    await processMemberBackfillSweep(
+      { DB: db, ...SWEEP_ENV_ON },
+      { getTokenImpl: vi.fn(async () => 't'), backfillImpl: vi.fn(async () => ({ skipped: false, scanned: 0, backfilled: 0, alreadyApplied: 0, errors: 0, totalJpy: 0, capped: false })) as unknown as typeof backfillCustomerOrders },
+    );
+    const predicateSql = seen.find((s) => s.includes('LIMIT 1'));
+    expect(predicateSql).toBeTruthy();
+    for (const p of [
+      'shopify_customer_id IS NOT NULL',
+      "a.action = 'loyalty_purchase_backfill.completed'",
+      "a.result = 'success'",
+      "a2.result = 'failure'",
+      `< ${__test__.SWEEP_FAILURE_CAP}`,
+    ]) {
+      expect(predicateSql, p).toContain(p);
+    }
+  });
+});
+
+// ─── cron 配線 (index.ts) — 配線が消えたら落ちるテスト (鮮度ルールの「手配線だけにしない」と同旨) ───
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+describe('member-backfill-sweep の cron 配線', () => {
+  it('scheduled handler に withHeartbeat 付きで配線されている', () => {
+    const root = dirname(fileURLToPath(import.meta.url));
+    const idx = readFileSync(join(root, '..', 'index.ts'), 'utf8');
+    expect(idx).toContain("withHeartbeat(env.DB, 'member-backfill-sweep'");
+    expect(idx).toMatch(/processMemberBackfillSweep\(/);
+    // metrics に pending / skippedGating が入る (= dashboard/cron_run_logs から生存が見える)
+    expect(idx).toMatch(/pending: r\.pending[\s\S]{0,200}skippedGating: r\.skippedGating/);
+  });
+});
