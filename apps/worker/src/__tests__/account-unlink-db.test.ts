@@ -25,7 +25,9 @@ interface Store {
     total_purchase_jpy: number;
     last_purchase_at: string | null;
     total_referral_count: number;
+    current_tier_id: string;
   }>;
+  subscription_reminders: Array<{ id: string; friend_id: string; is_active: number }>;
   loyalty_rank_discounts: Array<{ id: string; friend_id: string; status: string; superseded_at: string | null }>;
   line_link_coupons: Array<{ friend_id: string; shopify_customer_id: string; coupon_code: string }>;
 }
@@ -36,7 +38,12 @@ function seed(): Store {
       { id: 'f1', shopify_customer_id: '900' },
       { id: 'f2', shopify_customer_id: null },
     ],
-    shopify_customers: [{ shopify_customer_id: '900', friend_id: 'f1' }],
+    shopify_customers: [
+      { shopify_customer_id: '900', friend_id: 'f1' },
+      // 過去の連携 / webhook の取りこぼしで残った別行 (絞ると漏れ続ける)
+      { shopify_customer_id: '800', friend_id: 'f1' },
+      { shopify_customer_id: '700', friend_id: 'other' },
+    ],
     shopify_orders: [
       { id: 'o1', shopify_customer_id: '900', friend_id: 'f1' },
       { id: 'o2', shopify_customer_id: '900', friend_id: 'f1' },
@@ -51,13 +58,17 @@ function seed(): Store {
       { id: 'e2', friend_id: 'other', applied_at: '2026-08-01T00:00:00.000+09:00' },
     ],
     members: [
-      { friend_id: 'f1', total_purchase_jpy: 3000, last_purchase_at: '2026-08-01', total_referral_count: 2 },
+      { friend_id: 'f1', total_purchase_jpy: 3000, last_purchase_at: '2026-08-01', total_referral_count: 2, current_tier_id: 'gold' },
     ],
     loyalty_rank_discounts: [
       { id: 'd1', friend_id: 'f1', status: 'active', superseded_at: null },
       { id: 'd2', friend_id: 'f1', status: 'superseded', superseded_at: '2026-07-01' },
     ],
     line_link_coupons: [{ friend_id: 'f1', shopify_customer_id: '900', coupon_code: 'NLINK-ABC' }],
+    subscription_reminders: [
+      { id: 'sr1', friend_id: 'f1', is_active: 1 },
+      { id: 'sr2', friend_id: 'other', is_active: 1 },
+    ],
   };
 }
 
@@ -79,10 +90,14 @@ function makeDb(store: Store): D1Database {
         }
       }
     } else if (sql.includes('UPDATE shopify_customers')) {
-      const cid = b[1] as string;
-      const fid = b[2] as string;
+      // 🚨 WHERE 句を解釈する (採点ループ HIGH: fake がガードをハードコードすると
+      //    実装から述語を消しても緑のままになる)。連携先 1 行に絞る変異を殺すため、
+      //    「customer 指定があるか」も SQL から読む。
+      const scopedToCustomer = /shopify_customer_id\s*=\s*\?/.test(sql);
+      const fid = b[1] as string;
       for (const c of store.shopify_customers) {
-        if (c.shopify_customer_id === cid && c.friend_id === fid) {
+        if (scopedToCustomer) continue; // 絞る実装 = 他の customer 行が残る (テストが検出する)
+        if (c.friend_id === fid) {
           c.friend_id = null;
           changes++;
         }
@@ -121,11 +136,22 @@ function makeDb(store: Store): D1Database {
       // 同上: SET 句を解釈する (累計だけ戻して last_purchase_at を忘れる変異を殺す)
       const clearsTotal = /total_purchase_jpy\s*=\s*0/i.test(sql);
       const clearsLast = /last_purchase_at\s*=\s*NULL/i.test(sql);
+      const resetsTier = /current_tier_id\s*=\s*'bronze'/i.test(sql);
       const fid = b[1] as string;
       for (const m of store.members) {
         if (m.friend_id === fid) {
           if (clearsTotal) m.total_purchase_jpy = 0;
           if (clearsLast) m.last_purchase_at = null;
+          if (resetsTier) m.current_tier_id = 'bronze';
+          changes++;
+        }
+      }
+    } else if (sql.includes('UPDATE subscription_reminders')) {
+      const fid = b[1] as string;
+      const onlyActive = /is_active\s*=\s*1/.test(sql);
+      for (const r of store.subscription_reminders) {
+        if (r.friend_id === fid && (!onlyActive || r.is_active === 1)) {
+          r.is_active = 0;
           changes++;
         }
       }
@@ -222,6 +248,33 @@ describe('unlinkFriendFromShopifyCustomer', () => {
     expect(m.total_purchase_jpy).toBe(0);
     expect(m.last_purchase_at).toBeNull();
     expect(m.total_referral_count).toBe(2);
+  });
+
+  it('🚨 tier も既定へ戻す (¥0 なのに上位 tier で凍結させない・セグメント配信にも残さない)', async () => {
+    const store = seed();
+    expect(store.members[0].current_tier_id).toBe('gold');
+    await unlinkFriendFromShopifyCustomer(makeDb(store), 'f1');
+    expect(store.members[0].current_tier_id).toBe('bronze');
+  });
+
+  it('🚨 その friend を指す shopify_customers 行を全部外す (連携先 1 行に絞ると購入額が漏れ続ける)', async () => {
+    const store = seed();
+    await unlinkFriendFromShopifyCustomer(makeDb(store), 'f1');
+    // '900' (連携先) だけでなく '800' (過去の取りこぼし) も外れる
+    expect(store.shopify_customers.filter((c) => c.friend_id === 'f1')).toHaveLength(0);
+    // 他人の行は無傷
+    expect(store.shopify_customers.find((c) => c.shopify_customer_id === '700')!.friend_id).toBe('other');
+  });
+
+  it('🚨 再注文リマインダーを止める (残すと稼働定期便への「再購入時期です」push の抑止が反転して発火する)', async () => {
+    const store = seed();
+    const r = await unlinkFriendFromShopifyCustomer(makeDb(store), 'f1');
+    expect(r.cleared.reorderReminders).toBe(1);
+    expect(store.subscription_reminders.find((x) => x.id === 'sr1')!.is_active).toBe(0);
+    // 他人のリマインダーは触らない
+    expect(store.subscription_reminders.find((x) => x.id === 'sr2')!.is_active).toBe(1);
+    // 行は消さない (顧客が再設定できる・監査も残る)
+    expect(store.subscription_reminders).toHaveLength(2);
   });
 
   it('active なランク割引だけ superseded にする (既に superseded の行は触らない)', async () => {

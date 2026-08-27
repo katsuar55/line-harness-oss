@@ -48,23 +48,28 @@ interface FCode {
 function makeDb(
   friends: FFriend[] = [],
   opts: { linkBehavior?: 'ok' | 'changes0' | 'throw' } = {},
-): D1Database & { friends: FFriend[]; codes: FCode[]; sqls: string[] } {
+): D1Database & { friends: FFriend[]; codes: FCode[]; sqls: string[]; binds: Array<{ sql: string; args: unknown[] }> } {
   const linkBehavior = opts.linkBehavior ?? 'ok';
   const f = friends.map((x) => ({ ...x }));
   const codes: FCode[] = [];
   // 実行された SQL の記録。「呼ばれていないこと」を観測できないと、
   // 逆方向リンク (shopify_orders.friend_id) の欠落のような **無言の欠陥** が素通りする。
   const sqls: string[] = [];
+  // bind 値も記録する: SQL の存在だけだと引数の入れ違い (customerId と friendId を逆に渡す)
+  // を検出できず、**他人の注文を紐付ける**変異が生き残る (採点ループ HIGH)。
+  const binds: Array<{ sql: string; args: unknown[] }> = [];
   const db = {
     friends: f,
     codes,
     sqls,
+    binds,
     prepare(sql: string) {
       sqls.push(sql);
       const stmt = {
         _b: [] as unknown[],
         bind(...args: unknown[]) {
           stmt._b = args;
+          binds.push({ sql, args });
           return stmt;
         },
         async first<T>(): Promise<T | null> {
@@ -148,7 +153,7 @@ function makeDb(
       return stmt;
     },
   };
-  return db as unknown as D1Database & { friends: FFriend[]; codes: FCode[]; sqls: string[] };
+  return db as unknown as D1Database & { friends: FFriend[]; codes: FCode[]; sqls: string[]; binds: Array<{ sql: string; args: unknown[] }> };
 }
 
 // ============================================================
@@ -565,6 +570,13 @@ describe('verifyAccountLinkCode', () => {
     // 観測点は「その SQL が実行されたこと」— 状態だけ見ると fake が飲んで素通りする
     expect(db.sqls.some((q) => q.includes('UPDATE shopify_customers SET friend_id'))).toBe(true);
     expect(db.sqls.some((q) => q.includes('UPDATE shopify_orders SET friend_id'))).toBe(true);
+    // 🚨 SQL の存在だけでは引数の入れ違いを検出できない (採点ループ HIGH)。
+    //    linkShopifyCustomerToFriend(db, shopifyCustomerId, friendId) の順を逆にすると
+    //    **他人の注文を紐付ける**ので、bind 値まで観測する。
+    const bind = db.binds.find((b) => b.sql.includes('UPDATE shopify_orders SET friend_id'));
+    expect(bind, 'shopify_orders の bind が記録されていない').toBeDefined();
+    expect(bind!.args[0], 'friend_id に friendId が入ること').toBe(FRIEND_ID);
+    expect(bind!.args[1], 'WHERE には customerId が入ること').toBe('777');
   });
 
   it('連携しなかったとき (customer 不在) は逆方向リンクを呼ばない', async () => {

@@ -149,7 +149,9 @@ describe('連携カード文言の backfill gate 連動 (実行ベース)', () =
     // 何を失い、何が残るかを両方書く
     expect(card.innerHTML).toContain('会員ランクが表示されなくなります');
     expect(card.innerHTML).toContain('お手持ちのクーポンはそのままご利用いただけます');
-    expect(card.innerHTML).toContain('もう一度連携すれば元に戻ります');
+    expect(card.innerHTML).toContain('あらためて連携していただくこともできます');
+    // 「元に戻ります」と断定しない (復元は cron が数分かけて行うので即時ではない)
+    expect(card.innerHTML).not.toContain('元に戻ります');
   });
 
   it('demo データは memberBackfillOn: true (デモは全機能 on の見た目)', () => {

@@ -30,6 +30,7 @@
  * | members                            | 累計 0 / last_purchase_at NULL   | member_purchase_events の applied_at を戻すので、二重加算を避けるには累計もゼロに戻す必要がある。紹介カウントは購入と無関係なので温存 |
  * | loyalty_rank_discounts             | status='superseded'              | ランクが 0 に戻る以上、会員証に出し続けない (Shopify 側のコード無効化は別 op — 顧客限定なので放置しても他人は使えない) |
  * | **line_link_coupons**              | **残す**                          | 🚨 消すと連携特典 ¥300 の「生涯 1 枚」保証が壊れ、解除→再連携で 2 枚目が出る = 実費。冪等キーそのものなので絶対に消さない |
+ * | subscription_reminders             | is_active=0                       | 🚨 連携由来の自動生成。残すと /liff/reorder に他人の商品名が出続けるうえ、稼働定期便への再注文 push の抑止が **反転して発火する** (抑止は friends.shopify_customer_id 経由の JOIN なので解除で空になる) |
  * | audit_logs                         | 残す                              | 誰がいつ解除したかの記録 |
  *
  * ## 冪等性
@@ -67,26 +68,46 @@ export interface BacklinkRepairResult {
   readonly friendId: string | null;
   readonly customers: number;
   readonly orders: number;
+  /** 配送追跡の復元件数 (shopify_order_id 経由で結び直す)。 */
+  readonly fulfillments: number;
 }
 
-/** 連携済みなのに shopify_customers 側の逆リンクが欠けている friend を 1 件修復する。 */
+/** 連携済みなのに逆リンク (customers / orders / fulfillments) が欠けている friend を 1 件修復する。 */
 export async function repairMissingBacklink(db: D1Database): Promise<BacklinkRepairResult> {
-  // 「連携済み ∧ その customer 行の friend_id が自分になっていない」= 取りこぼし。
-  // shopify_customers に行が無いケース (webhook 未達) は修復対象にしない — 埋める先が無い。
+  // 🚨 検知は shopify_customers だけでは足りない (採点ループ HIGH)。
+  //    customers 側が埋まっていても **orders 側が NULL のまま**なら注文一覧は 0 件で、
+  //    顧客から見た症状 (「連携済みなのに注文が出ない」) はまったく同じ。
+  //    両方を OR で拾う。EXISTS は index (shopify_customer_id) が効く形にしてある。
   const PENDING = `
     FROM friends f
-    JOIN shopify_customers sc ON sc.shopify_customer_id = f.shopify_customer_id
    WHERE f.shopify_customer_id IS NOT NULL
-     AND (sc.friend_id IS NULL OR sc.friend_id != f.id)`;
+     AND (
+       EXISTS (
+         SELECT 1 FROM shopify_customers sc
+          WHERE sc.shopify_customer_id = f.shopify_customer_id
+            AND (sc.friend_id IS NULL OR sc.friend_id != f.id)
+       )
+       OR EXISTS (
+         SELECT 1 FROM shopify_orders so
+          WHERE so.shopify_customer_id = f.shopify_customer_id
+            AND so.friend_id IS NULL
+       )
+       OR EXISTS (
+         SELECT 1 FROM shopify_fulfillments sf
+           JOIN shopify_orders so2 ON so2.shopify_order_id = sf.shopify_order_id
+          WHERE so2.shopify_customer_id = f.shopify_customer_id
+            AND sf.friend_id IS NULL
+       )
+     )`;
 
   const row = await db.prepare(`SELECT COUNT(*) AS n ${PENDING}`).first<{ n: number }>();
   const pending = row?.n ?? 0;
-  if (pending === 0) return { pending: 0, repaired: 0, friendId: null, customers: 0, orders: 0 };
+  if (pending === 0) return { pending: 0, repaired: 0, friendId: null, customers: 0, orders: 0, fulfillments: 0 };
 
   const target = await db
     .prepare(`SELECT f.id, f.shopify_customer_id ${PENDING} ORDER BY f.updated_at DESC LIMIT 1`)
     .first<{ id: string; shopify_customer_id: string }>();
-  if (!target) return { pending, repaired: 0, friendId: null, customers: 0, orders: 0 };
+  if (!target) return { pending, repaired: 0, friendId: null, customers: 0, orders: 0, fulfillments: 0 };
 
   const now = jstNow();
   const cid = String(target.shopify_customer_id);
@@ -96,6 +117,14 @@ export async function repairMissingBacklink(db: D1Database): Promise<BacklinkRep
       .bind(target.id, now, cid),
     db.prepare(`UPDATE shopify_orders SET friend_id = ? WHERE shopify_customer_id = ? AND friend_id IS NULL`)
       .bind(target.id, cid),
+    // 🚨 配送追跡も戻す (採点ループ HIGH)。shopify_fulfillments には customer 列が無いが
+    //    shopify_order_id で shopify_orders に結べるので復元できる。これが無いと
+    //    「もう一度連携すれば元に戻ります」という顧客への約束が配送追跡だけ守れない。
+    db.prepare(
+      `UPDATE shopify_fulfillments SET friend_id = ?, updated_at = ?
+        WHERE friend_id IS NULL
+          AND shopify_order_id IN (SELECT shopify_order_id FROM shopify_orders WHERE shopify_customer_id = ?)`,
+    ).bind(target.id, now, cid),
   ]);
 
   return {
@@ -104,6 +133,7 @@ export async function repairMissingBacklink(db: D1Database): Promise<BacklinkRep
     friendId: target.id,
     customers: res[0]?.meta?.changes ?? 0,
     orders: res[1]?.meta?.changes ?? 0,
+    fulfillments: res[2]?.meta?.changes ?? 0,
   };
 }
 
@@ -120,6 +150,8 @@ export interface UnlinkResult {
     readonly purchaseEvents: number;
     readonly members: number;
     readonly rankDiscounts: number;
+    /** 停止した再注文リマインダー件数 (連携由来の自動生成分)。 */
+    readonly reorderReminders: number;
   };
 }
 
@@ -135,7 +167,7 @@ export async function unlinkFriendFromShopifyCustomer(
   const empty: UnlinkResult = {
     unlinked: false,
     shopifyCustomerId: null,
-    cleared: { customers: 0, orders: 0, fulfillments: 0, purchaseEvents: 0, members: 0, rankDiscounts: 0 },
+    cleared: { customers: 0, orders: 0, fulfillments: 0, purchaseEvents: 0, members: 0, rankDiscounts: 0, reorderReminders: 0 },
   };
 
   const friend = await db
@@ -151,8 +183,11 @@ export async function unlinkFriendFromShopifyCustomer(
   const results = await db.batch([
     db.prepare(`UPDATE friends SET shopify_customer_id = NULL, updated_at = ? WHERE id = ?`)
       .bind(now, friendId),
-    db.prepare(`UPDATE shopify_customers SET friend_id = NULL, updated_at = ? WHERE shopify_customer_id = ? AND friend_id = ?`)
-      .bind(now, customerId, friendId),
+    // 🚨 「連携先 1 行」に絞らない (採点ループ MED)。過去の連携や webhook の取りこぼしで
+    //    別の customer 行が同じ friend_id を持っていることがあり、絞ると購入額が漏れ続ける。
+    //    その friend を指す行は**全部**外す。
+    db.prepare(`UPDATE shopify_customers SET friend_id = NULL, updated_at = ? WHERE friend_id = ?`)
+      .bind(now, friendId),
     db.prepare(`UPDATE shopify_orders SET friend_id = NULL WHERE friend_id = ?`)
       .bind(friendId),
     db.prepare(`UPDATE shopify_fulfillments SET friend_id = NULL, updated_at = ? WHERE friend_id = ?`)
@@ -160,10 +195,27 @@ export async function unlinkFriendFromShopifyCustomer(
     // ランクの原資を外す。行は消さない (監査保全) が applied_at も戻して再連携で復元できるようにする
     db.prepare(`UPDATE member_purchase_events SET friend_id = NULL, applied_at = NULL, updated_at = ? WHERE friend_id = ?`)
       .bind(now, friendId),
-    // applied_at を戻した以上、累計も戻さないと再連携時に二重加算になる
-    db.prepare(`UPDATE members SET total_purchase_jpy = 0, last_purchase_at = NULL, updated_at = ? WHERE friend_id = ?`)
-      .bind(now, friendId),
+    // applied_at を戻した以上、累計も戻さないと再連携時に二重加算になる。
+    // 🚨 current_tier_id も既定へ戻す (採点ループ MED)。累計だけ 0 にして tier を残すと、
+    //    「¥0 なのに上位 tier」の行が永久に凍結し、tier セグメント配信にも残り続ける。
+    db.prepare(
+      `UPDATE members SET total_purchase_jpy = 0, last_purchase_at = NULL,
+              current_tier_id = 'bronze', updated_at = ?
+        WHERE friend_id = ?`,
+    ).bind(now, friendId),
     db.prepare(`UPDATE loyalty_rank_discounts SET status = 'superseded', superseded_at = ? WHERE friend_id = ? AND status = 'active'`)
+      .bind(now, friendId),
+    // 🚨 再注文リマインダーを止める (採点ループ HIGH)。
+    //    これらは連携由来で自動生成される (routes/shopify.ts → enrollSubscriptionsFromOrder)。
+    //    行を残すと二重の害がある:
+    //      ① /liff/reorder が解除後も連携先の購入商品名を出し続ける (誤連携の是正にならない)
+    //      ② services/subscription-reminder.ts の「稼働定期便には送らない」抑止は
+    //         `JOIN subscription_contracts ON c.shopify_customer_id = f.shopify_customer_id`
+    //         を通るため、解除で NULL になると NOT EXISTS が **TRUE に反転**し、
+    //         稼働中の定期便顧客へ「再購入時期になりました」を送り始める (= 二重注文の促し)。
+    //         2026-08-18 / 08-23 に 2 度入れたガードを、解除が無言で外してしまう。
+    //    行は消さず is_active=0 にする (顧客が再設定すれば戻る・監査も残る)。
+    db.prepare(`UPDATE subscription_reminders SET is_active = 0, updated_at = ? WHERE friend_id = ? AND is_active = 1`)
       .bind(now, friendId),
   ]);
 
@@ -178,6 +230,7 @@ export async function unlinkFriendFromShopifyCustomer(
       purchaseEvents: changes(4),
       members: changes(5),
       rankDiscounts: changes(6),
+      reorderReminders: changes(7),
     },
   };
 }

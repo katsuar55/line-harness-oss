@@ -18,7 +18,8 @@ import { repairMissingBacklink } from '@line-crm/db';
 interface Store {
   friends: Array<{ id: string; shopify_customer_id: string | null; updated_at: string }>;
   shopify_customers: Array<{ shopify_customer_id: string; friend_id: string | null }>;
-  shopify_orders: Array<{ id: string; shopify_customer_id: string; friend_id: string | null }>;
+  shopify_orders: Array<{ id: string; shopify_order_id: string; shopify_customer_id: string; friend_id: string | null }>;
+  shopify_fulfillments: Array<{ id: string; shopify_order_id: string; friend_id: string | null }>;
 }
 
 interface FakeStmt {
@@ -27,22 +28,42 @@ interface FakeStmt {
 }
 
 function makeDb(store: Store): D1Database {
-  /** 「連携済み ∧ その customer 行の friend_id が自分でない」= 修復対象。 */
+  /**
+   * 修復対象 = 連携済み ∧ (customers が自分でない ∨ orders が NULL ∨ fulfillments が NULL)。
+   * 🚨 customers だけを見ると「注文が出ない」状態の大半を取り逃がす (採点ループ HIGH)。
+   *    fake も 3 条件の OR にしておかないと、実装から条件を削っても緑のままになる。
+   */
   const pending = () =>
     store.friends
       .filter((f) => f.shopify_customer_id !== null)
-      .map((f) => ({ f, sc: store.shopify_customers.find((c) => c.shopify_customer_id === f.shopify_customer_id) }))
-      // shopify_customers に行が無い friend は JOIN で落ちる (埋める先が無いので対象外)
-      .filter((x) => x.sc !== undefined && (x.sc!.friend_id === null || x.sc!.friend_id !== x.f.id));
+      .filter((f) => {
+        const cid = f.shopify_customer_id as string;
+        const sc = store.shopify_customers.find((c) => c.shopify_customer_id === cid);
+        const customersMissing = sc !== undefined && (sc.friend_id === null || sc.friend_id !== f.id);
+        const ordersMissing = store.shopify_orders.some(
+          (o) => o.shopify_customer_id === cid && o.friend_id === null,
+        );
+        const orderIds = new Set(
+          store.shopify_orders.filter((o) => o.shopify_customer_id === cid).map((o) => o.shopify_order_id),
+        );
+        const fulfillmentsMissing = store.shopify_fulfillments.some(
+          (sf) => orderIds.has(sf.shopify_order_id) && sf.friend_id === null,
+        );
+        return customersMissing || ordersMissing || fulfillmentsMissing;
+      })
+      .map((f) => ({ f }));
 
   const run = (sql: string, b: unknown[]): { meta: { changes: number } } => {
     let changes = 0;
+    // 🚨 fake は WHERE 句を**実際に解釈する**。ガードをハードコードすると、
+    //    実装から `AND friend_id IS NULL` を消しても緑のまま = mutation が生き残る
+    //    (2026-08-28 の mutation ドリル M4 で実測。fake と本物の乖離による false green)。
+    const guardsNull = /AND\s+friend_id\s+IS\s+NULL/i.test(sql);
     if (sql.includes('UPDATE shopify_customers')) {
       const fid = b[0] as string;
       const cid = b[2] as string;
-      // 🚨 friend_id IS NULL 限定 (奪わない)
       for (const c of store.shopify_customers) {
-        if (c.shopify_customer_id === cid && c.friend_id === null) {
+        if (c.shopify_customer_id === cid && (!guardsNull || c.friend_id === null)) {
           c.friend_id = fid;
           changes++;
         }
@@ -51,8 +72,21 @@ function makeDb(store: Store): D1Database {
       const fid = b[0] as string;
       const cid = b[1] as string;
       for (const o of store.shopify_orders) {
-        if (o.shopify_customer_id === cid && o.friend_id === null) {
+        if (o.shopify_customer_id === cid && (!guardsNull || o.friend_id === null)) {
           o.friend_id = fid;
+          changes++;
+        }
+      }
+    } else if (sql.includes('UPDATE shopify_fulfillments')) {
+      // 配送追跡は customer 列を持たないので shopify_order_id 経由で結ぶ
+      const fid = b[0] as string;
+      const cid = b[2] as string;
+      const orderIds = new Set(
+        store.shopify_orders.filter((o) => o.shopify_customer_id === cid).map((o) => o.shopify_order_id),
+      );
+      for (const f of store.shopify_fulfillments) {
+        if (orderIds.has(f.shopify_order_id) && (!guardsNull || f.friend_id === null)) {
+          f.friend_id = fid;
           changes++;
         }
       }
@@ -102,9 +136,10 @@ describe('repairMissingBacklink', () => {
       friends: [{ id: 'f1', shopify_customer_id: '900', updated_at: '2026-08-28' }],
       shopify_customers: [{ shopify_customer_id: '900', friend_id: null }],
       shopify_orders: [
-        { id: 'o1', shopify_customer_id: '900', friend_id: null },
-        { id: 'o2', shopify_customer_id: '900', friend_id: null },
+        { id: 'o1', shopify_order_id: 'so-o1', shopify_customer_id: '900', friend_id: null },
+        { id: 'o2', shopify_order_id: 'so-o2', shopify_customer_id: '900', friend_id: null },
       ],
+      shopify_fulfillments: [],
     };
     const r = await repairMissingBacklink(makeDb(store));
 
@@ -117,11 +152,42 @@ describe('repairMissingBacklink', () => {
     expect(store.shopify_orders.every((o) => o.friend_id === 'f1')).toBe(true);
   });
 
+  it('🚨 配送追跡も復元する (customer 列が無いので shopify_order_id 経由で結ぶ)', async () => {
+    const store: Store = {
+      friends: [{ id: 'f1', shopify_customer_id: '900', updated_at: '2026-08-28' }],
+      shopify_customers: [{ shopify_customer_id: '900', friend_id: null }],
+      shopify_orders: [{ id: 'o1', shopify_order_id: 'so-o1', shopify_customer_id: '900', friend_id: null }],
+      shopify_fulfillments: [
+        { id: 'ff1', shopify_order_id: 'so-o1', friend_id: null },
+        // 別 customer の注文に属する荷物は触らない
+        { id: 'ff2', shopify_order_id: 'so-zzz', friend_id: null },
+      ],
+    };
+    const r = await repairMissingBacklink(makeDb(store));
+    expect(r.fulfillments).toBe(1);
+    // 配送追跡 (WHERE sf.friend_id = ?) が引ける状態に戻る
+    expect(store.shopify_fulfillments.find((f) => f.id === 'ff1')!.friend_id).toBe('f1');
+    expect(store.shopify_fulfillments.find((f) => f.id === 'ff2')!.friend_id).toBeNull();
+  });
+
+  it('🚨 配送追跡だけ欠けている friend も検知する (customers/orders が埋まっていても拾う)', async () => {
+    const store: Store = {
+      friends: [{ id: 'f1', shopify_customer_id: '900', updated_at: '2026-08-28' }],
+      shopify_customers: [{ shopify_customer_id: '900', friend_id: 'f1' }],
+      shopify_orders: [{ id: 'o1', shopify_order_id: 'so-o1', shopify_customer_id: '900', friend_id: 'f1' }],
+      shopify_fulfillments: [{ id: 'ff1', shopify_order_id: 'so-o1', friend_id: null }],
+    };
+    const r = await repairMissingBacklink(makeDb(store));
+    expect(r.pending).toBe(1);
+    expect(r.fulfillments).toBe(1);
+  });
+
   it('欠けが無ければ no-op (書込ゼロ)', async () => {
     const store: Store = {
       friends: [{ id: 'f1', shopify_customer_id: '900', updated_at: '2026-08-28' }],
       shopify_customers: [{ shopify_customer_id: '900', friend_id: 'f1' }],
-      shopify_orders: [{ id: 'o1', shopify_customer_id: '900', friend_id: 'f1' }],
+      shopify_orders: [{ id: 'o1', shopify_order_id: 'so-o1', shopify_customer_id: '900', friend_id: 'f1' }],
+      shopify_fulfillments: [],
     };
     const r = await repairMissingBacklink(makeDb(store));
     expect(r).toMatchObject({ pending: 0, repaired: 0, friendId: null });
@@ -131,7 +197,8 @@ describe('repairMissingBacklink', () => {
     const store: Store = {
       friends: [{ id: 'f1', shopify_customer_id: null, updated_at: '2026-08-28' }],
       shopify_customers: [{ shopify_customer_id: '900', friend_id: null }],
-      shopify_orders: [{ id: 'o1', shopify_customer_id: '900', friend_id: null }],
+      shopify_orders: [{ id: 'o1', shopify_order_id: 'so-o1', shopify_customer_id: '900', friend_id: null }],
+      shopify_fulfillments: [],
     };
     const r = await repairMissingBacklink(makeDb(store));
     expect(r.repaired).toBe(0);
@@ -143,7 +210,8 @@ describe('repairMissingBacklink', () => {
       friends: [{ id: 'f1', shopify_customer_id: '900', updated_at: '2026-08-28' }],
       // customer 行は別 friend が持っている (= 修復対象として拾われるが、奪ってはいけない)
       shopify_customers: [{ shopify_customer_id: '900', friend_id: 'other' }],
-      shopify_orders: [{ id: 'o1', shopify_customer_id: '900', friend_id: 'other' }],
+      shopify_orders: [{ id: 'o1', shopify_order_id: 'so-o1', shopify_customer_id: '900', friend_id: 'other' }],
+      shopify_fulfillments: [],
     };
     const r = await repairMissingBacklink(makeDb(store));
     // 拾いはするが 0 行更新 (IS NULL 限定なので奪わない)
@@ -158,20 +226,39 @@ describe('repairMissingBacklink', () => {
       friends: [{ id: 'f1', shopify_customer_id: '900', updated_at: '2026-08-28' }],
       shopify_customers: [{ shopify_customer_id: '900', friend_id: null }],
       shopify_orders: [
-        { id: 'o1', shopify_customer_id: '900', friend_id: null },
-        { id: 'o2', shopify_customer_id: '999', friend_id: null },
+        { id: 'o1', shopify_order_id: 'so-o1', shopify_customer_id: '900', friend_id: null },
+        { id: 'o2', shopify_order_id: 'so-o2', shopify_customer_id: '999', friend_id: null },
       ],
+      shopify_fulfillments: [],
     };
     await repairMissingBacklink(makeDb(store));
     expect(store.shopify_orders.find((o) => o.id === 'o1')!.friend_id).toBe('f1');
     expect(store.shopify_orders.find((o) => o.id === 'o2')!.friend_id).toBeNull();
   });
 
-  it('shopify_customers に行が無い friend は対象外 (埋める先が無い)', async () => {
+  // 2026-08-28 (採点ループ HIGH): 検知を customers 単独から 3 条件の OR へ広げた結果、
+  // 「customers 行は無いが orders は埋められる」ケースも修復できるようになった。
+  // 顧客から見た症状 (注文が出ない) が直るので、これは契約の改善。
+  it('customers 行が無くても orders は修復する (注文一覧が引けるようになる)', async () => {
     const store: Store = {
       friends: [{ id: 'f1', shopify_customer_id: '900', updated_at: '2026-08-28' }],
       shopify_customers: [],
-      shopify_orders: [{ id: 'o1', shopify_customer_id: '900', friend_id: null }],
+      shopify_orders: [{ id: 'o1', shopify_order_id: 'so-o1', shopify_customer_id: '900', friend_id: null }],
+      shopify_fulfillments: [],
+    };
+    const r = await repairMissingBacklink(makeDb(store));
+    expect(r.repaired).toBe(1);
+    expect(r.customers).toBe(0); // 埋める先が無いので 0
+    expect(r.orders).toBe(1);
+    expect(store.shopify_orders[0].friend_id).toBe('f1');
+  });
+
+  it('修復すべき列が 1 つも無ければ対象外 (連携先のデータが 1 行も無い)', async () => {
+    const store: Store = {
+      friends: [{ id: 'f1', shopify_customer_id: '900', updated_at: '2026-08-28' }],
+      shopify_customers: [],
+      shopify_orders: [],
+      shopify_fulfillments: [],
     };
     const r = await repairMissingBacklink(makeDb(store));
     expect(r).toMatchObject({ pending: 0, repaired: 0 });
@@ -181,7 +268,8 @@ describe('repairMissingBacklink', () => {
     const store: Store = {
       friends: [{ id: 'f1', shopify_customer_id: '900', updated_at: '2026-08-28' }],
       shopify_customers: [{ shopify_customer_id: '900', friend_id: null }],
-      shopify_orders: [{ id: 'o1', shopify_customer_id: '900', friend_id: null }],
+      shopify_orders: [{ id: 'o1', shopify_order_id: 'so-o1', shopify_customer_id: '900', friend_id: null }],
+      shopify_fulfillments: [],
     };
     const db = makeDb(store);
     expect((await repairMissingBacklink(db)).repaired).toBe(1);
@@ -199,6 +287,7 @@ describe('repairMissingBacklink', () => {
         { shopify_customer_id: '901', friend_id: null },
       ],
       shopify_orders: [],
+      shopify_fulfillments: [],
     };
     const r = await repairMissingBacklink(makeDb(store));
     expect(r.pending).toBe(2);

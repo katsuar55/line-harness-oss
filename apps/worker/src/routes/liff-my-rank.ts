@@ -571,7 +571,9 @@ function renderUnlink(card){
     '<button type="button" id="unlink-open" class="tap w-full text-xs py-3 rounded-xl" ' +
       'style="background:#f8fafc;border:1px solid #e2e8f0;color:#64748b">連携を解除する</button>' +
     '<div id="unlink-confirm" style="display:none;margin-top:10px">' +
-      '<p class="text-xs text-gray-600 leading-relaxed mb-2">解除すると、ご注文の確認・再注文と、これまでのお買い物にもとづく<b>会員ランクが表示されなくなります</b>。お手持ちのクーポンはそのままご利用いただけます。もう一度連携すれば元に戻ります。</p>' +
+      // 🚨 「元に戻ります」と断定しない (採点ループ HIGH)。復元は再連携後の
+      //    backlink-repair cron が数分かけて行うので即時ではない。守れる範囲だけ書く。
+      '<p class="text-xs text-gray-600 leading-relaxed mb-2">解除すると、ご注文の確認・再注文と、これまでのお買い物にもとづく<b>会員ランクが表示されなくなります</b>。お手持ちのクーポンはそのままご利用いただけます。あらためて連携していただくこともできます。</p>' +
       '<button type="button" id="unlink-do" class="tap w-full text-white text-sm font-bold py-2.5 rounded-xl shadow" style="background:#b84a2e">解除する</button>' +
       '<button type="button" id="unlink-cancel" class="tap w-full text-xs text-gray-600 mt-2 py-3 rounded-xl" style="background:#f8fafc;border:1px solid #e2e8f0">やめる</button>' +
     '</div>' +
