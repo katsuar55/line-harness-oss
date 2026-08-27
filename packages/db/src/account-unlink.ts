@@ -38,6 +38,75 @@
  */
 import { jstNow } from './utils';
 
+/**
+ * 逆方向リンクの取りこぼしを自己修復する (2026-08-28, Codex P1)。
+ *
+ * ## なぜ要るか
+ * 連携の書込は 2 段構えになっている:
+ *   ① friends.shopify_customer_id を set-once CAS で立てる (= 連携の真実源)
+ *   ② shopify_customers.friend_id / shopify_orders.friend_id を埋める (= 注文一覧の唯一のキー)
+ * ②が transient な D1 エラーで落ちても、①は既に立っていて **set-once なので二度と書けない**。
+ * OTP をやり直しても `already_linked` で弾かれるだけなので、顧客は
+ * 「連携済みなのに注文が 1 件も出ない」状態から自力で抜け出せない。
+ *
+ * ## なぜ sweep で直せるか
+ * 修復に必要な情報は friends.shopify_customer_id に**既に永続化されている**。
+ * ②は純粋な導出なので、後からいくらでも冪等に再実行できる。
+ * したがって「連携済みなのに backlink が無い」行を拾って埋め直すだけでよい。
+ *
+ * ## 安全性
+ * - 更新は `friend_id IS NULL` 限定 = 他人に紐付いた行を奪わない。
+ * - 対象は「friends が指している customer」だけ = 誤った紐付けを新たに作らない。
+ * - 冪等。修復対象が無ければ 0 行更新で終わる。
+ */
+export interface BacklinkRepairResult {
+  /** 修復対象として残っていた friend 数 (処理前)。 */
+  readonly pending: number;
+  /** この run で修復した friend 数 (0 or 1)。 */
+  readonly repaired: number;
+  readonly friendId: string | null;
+  readonly customers: number;
+  readonly orders: number;
+}
+
+/** 連携済みなのに shopify_customers 側の逆リンクが欠けている friend を 1 件修復する。 */
+export async function repairMissingBacklink(db: D1Database): Promise<BacklinkRepairResult> {
+  // 「連携済み ∧ その customer 行の friend_id が自分になっていない」= 取りこぼし。
+  // shopify_customers に行が無いケース (webhook 未達) は修復対象にしない — 埋める先が無い。
+  const PENDING = `
+    FROM friends f
+    JOIN shopify_customers sc ON sc.shopify_customer_id = f.shopify_customer_id
+   WHERE f.shopify_customer_id IS NOT NULL
+     AND (sc.friend_id IS NULL OR sc.friend_id != f.id)`;
+
+  const row = await db.prepare(`SELECT COUNT(*) AS n ${PENDING}`).first<{ n: number }>();
+  const pending = row?.n ?? 0;
+  if (pending === 0) return { pending: 0, repaired: 0, friendId: null, customers: 0, orders: 0 };
+
+  const target = await db
+    .prepare(`SELECT f.id, f.shopify_customer_id ${PENDING} ORDER BY f.updated_at DESC LIMIT 1`)
+    .first<{ id: string; shopify_customer_id: string }>();
+  if (!target) return { pending, repaired: 0, friendId: null, customers: 0, orders: 0 };
+
+  const now = jstNow();
+  const cid = String(target.shopify_customer_id);
+  const res = await db.batch([
+    // friend_id IS NULL 限定 = 別 friend に紐付いた行は奪わない (奪うと他人のデータが見える)
+    db.prepare(`UPDATE shopify_customers SET friend_id = ?, updated_at = ? WHERE shopify_customer_id = ? AND friend_id IS NULL`)
+      .bind(target.id, now, cid),
+    db.prepare(`UPDATE shopify_orders SET friend_id = ? WHERE shopify_customer_id = ? AND friend_id IS NULL`)
+      .bind(target.id, cid),
+  ]);
+
+  return {
+    pending,
+    repaired: 1,
+    friendId: target.id,
+    customers: res[0]?.meta?.changes ?? 0,
+    orders: res[1]?.meta?.changes ?? 0,
+  };
+}
+
 export interface UnlinkResult {
   /** 解除を実行したか (false = もともと未連携)。 */
   readonly unlinked: boolean;

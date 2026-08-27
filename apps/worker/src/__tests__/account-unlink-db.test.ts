@@ -104,20 +104,28 @@ function makeDb(store: Store): D1Database {
         }
       }
     } else if (sql.includes('UPDATE member_purchase_events')) {
+      // 🚨 fake は SQL の SET 句を**実際に解釈する**。無条件に両方 NULL にすると、
+      //    実装から `applied_at = NULL` を消しても緑のまま = mutation が生き残る
+      //    (2026-08-28 の mutation ドリルで実測。fake と本物の乖離による false green)。
+      const clearsFriend = /SET[^W]*friend_id\s*=\s*NULL/i.test(sql);
+      const clearsApplied = /applied_at\s*=\s*NULL/i.test(sql);
       const fid = b[1] as string;
       for (const e of store.member_purchase_events) {
         if (e.friend_id === fid) {
-          e.friend_id = null;
-          e.applied_at = null;
+          if (clearsApplied) e.applied_at = null;
+          if (clearsFriend) e.friend_id = null;
           changes++;
         }
       }
     } else if (sql.includes('UPDATE members')) {
+      // 同上: SET 句を解釈する (累計だけ戻して last_purchase_at を忘れる変異を殺す)
+      const clearsTotal = /total_purchase_jpy\s*=\s*0/i.test(sql);
+      const clearsLast = /last_purchase_at\s*=\s*NULL/i.test(sql);
       const fid = b[1] as string;
       for (const m of store.members) {
         if (m.friend_id === fid) {
-          m.total_purchase_jpy = 0;
-          m.last_purchase_at = null;
+          if (clearsTotal) m.total_purchase_jpy = 0;
+          if (clearsLast) m.last_purchase_at = null;
           changes++;
         }
       }

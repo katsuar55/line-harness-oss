@@ -7,10 +7,11 @@
  * ## 🚨 metafield を消さないと cron が連携を復活させうる
  * OTP 連携は成功時に Shopify customer の metafield へ line_user_id を書く
  * (services/account-link.ts の setCustomerLineUserIdMetafield)。一方 friend-customer-linker cron は
- * metafield を逆引きして friends.shopify_customer_id を埋め直す。両者の namespace は現状の本番設定では
- * 別 (cron=FRIEND_LINK_METAFIELD_* / OTP=ACCOUNT_LINK_METAFIELD_*) なので**今すぐ復活はしない**が、
- * 統合 op を実行した後は同一 namespace になり「解除したのに翌 02:00 に戻る」が成立する。
- * 将来の地雷を踏まないため、解除時に metafield も消しておく (best-effort)。
+ * metafield を逆引きして friends.shopify_customer_id を埋め直す。
+ * 両者の namespace は本番で別 (cron=FRIEND_LINK_METAFIELD_* / OTP=ACCOUNT_LINK_METAFIELD_*) だが、
+ * **どちらの経路で連携したかは解除時点では判別できない**。片方だけ消すと、cron 由来で連携した顧客の
+ * metafield が残って翌 02:00 に連携が復活する (本番の連携 10 件のうち 1 件は実際に cron 由来)。
+ * したがって解除時は **2 系統とも消す** (best-effort、同値なら 1 回だけ)。
  *
  * ## 実行者の記録
  * 顧客自身の解除 (LIFF) と運用者の解除 (admin) を audit の actor で区別する。
@@ -30,8 +31,15 @@ export interface UnlinkEnv {
   SHOPIFY_CLIENT_ID?: string;
   SHOPIFY_CLIENT_SECRET?: string;
   SHOPIFY_TOKEN_ENCRYPTION_KEY?: string;
+  /** OTP 連携が書き込む metafield (services/account-link.ts)。 */
   ACCOUNT_LINK_METAFIELD_NAMESPACE?: string;
   ACCOUNT_LINK_METAFIELD_KEY?: string;
+  /**
+   * cron (services/friend-customer-linker.ts) が**逆引きに使う** metafield。
+   * ACCOUNT_LINK_* と別値のことがあるため、解除時は両方消す (= cron による復活の阻止)。
+   */
+  FRIEND_LINK_METAFIELD_NAMESPACE?: string;
+  FRIEND_LINK_METAFIELD_KEY?: string;
 }
 
 export interface UnlinkOptions {
@@ -57,20 +65,40 @@ export async function unlinkAccount(env: UnlinkEnv, options: UnlinkOptions): Pro
   if (!result.unlinked) return { ...result, metafieldDeleted: false };
 
   // metafield の後始末 (best-effort)。ここで失敗しても D1 の解除は既に成立している。
+  //
+  // 🚨 **2 系統ぶん消す** (Codex P1 2026-08-28)。
+  //   OTP 連携は ACCOUNT_LINK_METAFIELD_* に書き、cron (friend-customer-linker) は
+  //   FRIEND_LINK_METAFIELD_* を読んで自動連携する。本番ではこの 2 つが別の値なので、
+  //   ACCOUNT_LINK 側だけ消すと **cron 由来で連携した顧客の metafield が残り、翌 02:00 の
+  //   cron が解除したはずの連携を復活させる**。本番の連携 10 件のうち 1 件は実際に cron 由来。
+  //   どちらの経路で連携したかは解除時点では判別できないので、両方消すのが唯一安全な選択。
   let metafieldDeleted = false;
   try {
     if (env.SHOPIFY_STORE_DOMAIN) {
       const token = await getShopifyAccessToken(env.DB, env as unknown as Record<string, string | undefined>);
       const del = options.deleteMetafieldImpl ?? deleteCustomerLineUserIdMetafield;
-      const r = await del(
-        env.SHOPIFY_STORE_DOMAIN,
-        token,
-        result.shopifyCustomerId as string,
+      const fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
+      const customerId = result.shopifyCustomerId as string;
+
+      // 重複を除いた (namespace, key) の集合。同値なら 1 回だけ呼ぶ。
+      const targets = new Map<string, { ns: string; key: string }>();
+      const add = (ns: string, key: string) => targets.set(`${ns} ${key}`, { ns, key });
+      add(
         env.ACCOUNT_LINK_METAFIELD_NAMESPACE || DEFAULT_METAFIELD_NAMESPACE,
         env.ACCOUNT_LINK_METAFIELD_KEY || DEFAULT_METAFIELD_KEY,
-        options.fetchImpl ?? fetch.bind(globalThis),
       );
-      metafieldDeleted = r.ok;
+      add(
+        env.FRIEND_LINK_METAFIELD_NAMESPACE || DEFAULT_METAFIELD_NAMESPACE,
+        env.FRIEND_LINK_METAFIELD_KEY || DEFAULT_METAFIELD_KEY,
+      );
+
+      // 全部消せて初めて true (1 つでも残ると cron に復活させられる余地が残る)
+      let allOk = true;
+      for (const { ns, key } of targets.values()) {
+        const r = await del(env.SHOPIFY_STORE_DOMAIN, token, customerId, ns, key, fetchImpl);
+        if (!r.ok) allOk = false;
+      }
+      metafieldDeleted = allOk;
     }
   } catch (err) {
     console.warn('[account-unlink] metafield delete failed (non-fatal):', err instanceof Error ? err.message : 'unknown');

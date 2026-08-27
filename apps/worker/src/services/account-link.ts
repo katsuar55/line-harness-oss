@@ -377,7 +377,14 @@ export async function verifyAccountLinkCode(
   //   「ご注文の状況確認や、過去のご注文からの再注文もこの画面でできるようになります」と
   //   約束しているので、これを呼ばないと約束が嘘になる (2026-08-28 修正)。
   //   slk 経路 (services/sub-link.ts の backlink) は最初から呼んでいた = OTP 経路だけの欠落だった。
-  //   best-effort: 失敗しても連携本体 (friends 側 = 真実源) は成立済みなので verify を落とさない。
+  //
+  //   best-effort でよい理由 (Codex P1 2026-08-28 への回答):
+  //   ここで落とすと「連携は成立したのに verify が失敗」になり、OTP は set-once なので
+  //   顧客はやり直しても already_linked で弾かれて詰む。逆に成功を返して backlink だけ
+  //   失敗した場合は、必要な情報 (friends.shopify_customer_id) が既に永続化されているので
+  //   **完全に導出で復旧できる**。その復旧は backlink-repair cron
+  //   (packages/db repairMissingBacklink、5 分毎・冪等) が保証する。
+  //   したがって「落とさず、後で必ず直す」が正しい倒し方。
   try {
     await linkShopifyCustomerToFriend(env.DB, found.customerId, input.friendId);
   } catch (err) {

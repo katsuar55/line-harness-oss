@@ -138,6 +138,70 @@ describe('unlinkAccount (service)', () => {
     expect(args[3]).toBe('naturism'); // namespace 既定
     expect(args[4]).toBe('line_user_id'); // key 既定
   });
+
+  // 🚨 Codex P1 (2026-08-28): cron (friend-customer-linker) は FRIEND_LINK_METAFIELD_* を
+  //    逆引きして自動連携する。ACCOUNT_LINK_* だけ消すと、cron 由来で連携した顧客の
+  //    metafield が残り、翌 02:00 の cron が解除したはずの連携を復活させる。
+  it('🚨 2 系統の metafield を両方消す (片方だけだと cron が連携を復活させる)', async () => {
+    unlinkDbMock.mockResolvedValue(LINKED);
+    const del = vi.fn(async () => ({ ok: true, userErrors: [] }));
+    await unlinkAccount(
+      {
+        ...ENV,
+        ACCOUNT_LINK_METAFIELD_NAMESPACE: 'naturism',
+        ACCOUNT_LINK_METAFIELD_KEY: 'line_user_id',
+        FRIEND_LINK_METAFIELD_NAMESPACE: 'socialplus',
+        FRIEND_LINK_METAFIELD_KEY: 'line',
+      },
+      { friendId: 'f1', actor: 'admin', deleteMetafieldImpl: del },
+    );
+    expect(del).toHaveBeenCalledTimes(2);
+    const pairs = del.mock.calls.map((c) => {
+      const a = c as unknown as unknown[];
+      return `${a[3]} ${a[4]}`;
+    });
+    expect(pairs).toContain('naturism line_user_id'); // OTP が書いた側
+    expect(pairs).toContain('socialplus line'); // cron が読む側
+  });
+
+  it('2 系統が同値なら 1 回だけ呼ぶ (無駄な subrequest を撃たない)', async () => {
+    unlinkDbMock.mockResolvedValue(LINKED);
+    const del = vi.fn(async () => ({ ok: true, userErrors: [] }));
+    await unlinkAccount(
+      {
+        ...ENV,
+        ACCOUNT_LINK_METAFIELD_NAMESPACE: 'naturism',
+        ACCOUNT_LINK_METAFIELD_KEY: 'line_user_id',
+        FRIEND_LINK_METAFIELD_NAMESPACE: 'naturism',
+        FRIEND_LINK_METAFIELD_KEY: 'line_user_id',
+      },
+      { friendId: 'f1', actor: 'admin', deleteMetafieldImpl: del },
+    );
+    expect(del).toHaveBeenCalledTimes(1);
+  });
+
+  it('🚨 片方でも消せなければ metafieldDeleted=false (「全部消せた」と偽らない)', async () => {
+    unlinkDbMock.mockResolvedValue(LINKED);
+    let n = 0;
+    const del = vi.fn(async () => {
+      n += 1;
+      return n === 1 ? { ok: true, userErrors: [] } : { ok: false, userErrors: ['nope'] };
+    });
+    const r = await unlinkAccount(
+      {
+        ...ENV,
+        ACCOUNT_LINK_METAFIELD_NAMESPACE: 'naturism',
+        ACCOUNT_LINK_METAFIELD_KEY: 'line_user_id',
+        FRIEND_LINK_METAFIELD_NAMESPACE: 'socialplus',
+        FRIEND_LINK_METAFIELD_KEY: 'line',
+      },
+      { friendId: 'f1', actor: 'admin', deleteMetafieldImpl: del },
+    );
+    expect(del).toHaveBeenCalledTimes(2);
+    expect(r.metafieldDeleted).toBe(false);
+    // 解除本体は成立している (metafield は best-effort)
+    expect(r.unlinked).toBe(true);
+  });
 });
 
 describe('POST /api/admin/account-link/unlink', () => {
