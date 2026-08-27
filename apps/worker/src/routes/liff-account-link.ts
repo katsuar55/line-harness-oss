@@ -4,6 +4,7 @@
  * 役割:
  *   - POST /api/liff/link/request-code — friend が入力した email に 6桁 OTP を送る
  *   - POST /api/liff/link/verify-code  — OTP 検証 → email の Shopify customer を friend に紐付け
+ *   - POST /api/liff/link/unlink       — 連携解除 (本人のみ・冪等・2026-08-28)
  *
  * 認証:
  *   - liffAuthMiddleware で LINE idToken 検証済 (= c.get('liffUser') から friendId/lineUserId 取得)。
@@ -26,6 +27,7 @@ import {
 } from '../services/account-link.js';
 import type { Env } from '../index.js';
 import { issueLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
+import { unlinkAccount } from '../services/account-unlink.js';
 
 const liffAccountLink = new Hono<Env>();
 
@@ -165,6 +167,43 @@ liffAccountLink.post('/api/liff/link/verify-code', async (c) => {
     },
     m.status as never,
   );
+});
+
+// ============================================================
+// POST /api/liff/link/unlink — 顧客自身による連携解除
+// ============================================================
+//
+// なぜ顧客に開くか: 誤連携 (家族共有のメール / 旧メール) を本人が直せないと、
+// 他人の購買履歴が見え続ける。サポートに回しても運用側に押せるボタンが無かった。
+// 個人情報保護法の「利用の停止」請求にプライバシーポリシーで応じると明記しているのに
+// 応じる手段が無い、という状態も解消する。
+//
+// gate: 連携の受付 (ACCOUNT_LINK_ENABLED) とは **独立して常に開ける**。
+//   受付を止めた後に「解除だけできない」状態を作らないため (kill switch は一方通行にしない)。
+//
+// 冪等: 未連携なら unlinked:false を 200 で返す (= 二度押しでエラーを出さない)。
+
+liffAccountLink.post('/api/liff/link/unlink', async (c) => {
+  const user = getLiffUser(c);
+  if (!user) return c.json({ success: false, error: 'Unauthorized' }, 401);
+
+  try {
+    // friendId は middleware が idToken から解決したものだけを使う (client 申告は信用しない)
+    const outcome = await unlinkAccount(c.env as unknown as Parameters<typeof unlinkAccount>[0], {
+      friendId: user.friendId,
+      actor: 'customer',
+    });
+    return c.json({
+      success: true,
+      data: { unlinked: outcome.unlinked },
+      message: outcome.unlinked
+        ? 'オンラインストアとの連携を解除しました。'
+        : 'このLINEアカウントは、現在ストアと連携されていません。',
+    });
+  } catch (err) {
+    console.error('POST /api/liff/link/unlink error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
 });
 
 export { liffAccountLink };

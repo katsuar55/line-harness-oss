@@ -48,14 +48,19 @@ interface FCode {
 function makeDb(
   friends: FFriend[] = [],
   opts: { linkBehavior?: 'ok' | 'changes0' | 'throw' } = {},
-): D1Database & { friends: FFriend[]; codes: FCode[] } {
+): D1Database & { friends: FFriend[]; codes: FCode[]; sqls: string[] } {
   const linkBehavior = opts.linkBehavior ?? 'ok';
   const f = friends.map((x) => ({ ...x }));
   const codes: FCode[] = [];
+  // 実行された SQL の記録。「呼ばれていないこと」を観測できないと、
+  // 逆方向リンク (shopify_orders.friend_id) の欠落のような **無言の欠陥** が素通りする。
+  const sqls: string[] = [];
   const db = {
     friends: f,
     codes,
+    sqls,
     prepare(sql: string) {
+      sqls.push(sql);
       const stmt = {
         _b: [] as unknown[],
         bind(...args: unknown[]) {
@@ -143,7 +148,7 @@ function makeDb(
       return stmt;
     },
   };
-  return db as unknown as D1Database & { friends: FFriend[]; codes: FCode[] };
+  return db as unknown as D1Database & { friends: FFriend[]; codes: FCode[]; sqls: string[] };
 }
 
 // ============================================================
@@ -534,6 +539,45 @@ describe('verifyAccountLinkCode', () => {
     );
     expect(r).toMatchObject({ ok: true, customerId: '777', backfilled: 0 });
     expect(db.friends[0].shopify_customer_id).toBe('777');
+  });
+
+  // 🚨 2026-08-28 修正の回帰テスト。
+  //    OTP 経路は friends.shopify_customer_id を埋めるだけで linkShopifyCustomerToFriend を
+  //    呼んでおらず、shopify_orders.friend_id / shopify_customers.friend_id が NULL のままだった。
+  //    注文一覧は `FROM shopify_orders WHERE friend_id = ?` で引く (routes/liff-portal.ts) ので、
+  //    メール OTP で連携した顧客には注文が 1 件も出ない = ホーム CTA の
+  //    「ご注文の状況確認や、過去のご注文からの再注文もこの画面でできるようになります」が嘘になっていた。
+  it('🚨 連携成立時に逆方向リンク (shopify_customers / shopify_orders の friend_id) も埋める', async () => {
+    const db = makeDb([{ id: FRIEND_ID, line_user_id: LINE_ID, shopify_customer_id: null }]);
+    const env = { ...baseEnv(), DB: db };
+    await seedCode(db, env);
+    const r = await verifyAccountLinkCode(
+      env,
+      { friendId: FRIEND_ID, lineUserId: LINE_ID, email: EMAIL, code: '123456' },
+      {
+        now: () => NOW,
+        findCustomerImpl: vi.fn(async () => ({ customerId: '777' })),
+        setMetafieldImpl: vi.fn(async () => ({ ok: true, userErrors: [] as string[] })),
+        backfillImpl: okBackfill(1),
+      },
+    );
+    expect(r.ok).toBe(true);
+    // 観測点は「その SQL が実行されたこと」— 状態だけ見ると fake が飲んで素通りする
+    expect(db.sqls.some((q) => q.includes('UPDATE shopify_customers SET friend_id'))).toBe(true);
+    expect(db.sqls.some((q) => q.includes('UPDATE shopify_orders SET friend_id'))).toBe(true);
+  });
+
+  it('連携しなかったとき (customer 不在) は逆方向リンクを呼ばない', async () => {
+    const db = makeDb([{ id: FRIEND_ID, line_user_id: LINE_ID, shopify_customer_id: null }]);
+    const env = { ...baseEnv(), DB: db };
+    await seedCode(db, env);
+    const r = await verifyAccountLinkCode(
+      env,
+      { friendId: FRIEND_ID, lineUserId: LINE_ID, email: EMAIL, code: '123456' },
+      { now: () => NOW, findCustomerImpl: vi.fn(async () => null) },
+    );
+    expect(r).toEqual({ ok: false, code: 'customer_not_found' });
+    expect(db.sqls.some((q) => q.includes('UPDATE shopify_orders SET friend_id'))).toBe(false);
   });
 
   it('end-to-end: request → verify(正コード) で linked、 再 verify は already_linked', async () => {

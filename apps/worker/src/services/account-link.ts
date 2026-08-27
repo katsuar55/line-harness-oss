@@ -31,6 +31,7 @@ import {
   getFriendById,
   getFriendByShopifyCustomerId,
   setFriendShopifyCustomerId,
+  linkShopifyCustomerToFriend,
   insertAccountLinkCode,
   invalidatePriorAccountLinkCodes,
   countRecentAccountLinkCodes,
@@ -368,6 +369,20 @@ export async function verifyAccountLinkCode(
   // link 試行は確定 (= success / already_linked いずれも terminal) → 消費
   await consumeAccountLinkCode(env.DB, row.id, nowIso);
   if (!linked) return { ok: false, code: 'already_linked' }; // 並行 link 済 (= 競合)
+
+  // 🚨 逆方向リンク (= customer 起点の denormalized 列を埋める)。
+  //   これが無いと friends.shopify_customer_id は入るのに shopify_orders.friend_id が NULL のままになり、
+  //   注文一覧 (routes/liff-portal.ts の `WHERE friend_id = ?`) と配送追跡が **0 件のまま**になる。
+  //   = 顧客には「連携したのに何も変わらない」と見える。ホームの連携 CTA は
+  //   「ご注文の状況確認や、過去のご注文からの再注文もこの画面でできるようになります」と
+  //   約束しているので、これを呼ばないと約束が嘘になる (2026-08-28 修正)。
+  //   slk 経路 (services/sub-link.ts の backlink) は最初から呼んでいた = OTP 経路だけの欠落だった。
+  //   best-effort: 失敗しても連携本体 (friends 側 = 真実源) は成立済みなので verify を落とさない。
+  try {
+    await linkShopifyCustomerToFriend(env.DB, found.customerId, input.friendId);
+  } catch (err) {
+    console.warn('[account-link] customer backlink failed (non-fatal):', err instanceof Error ? err.message : 'unknown');
+  }
 
   // 自前 metafield 書込 (= best-effort、 失敗しても link は成立)
   let metafieldWritten = false;

@@ -558,11 +558,68 @@ async function linkVerify(){
   }catch(e){ linkMsg('通信エラーが発生しました', true); }
   finally{ setLinkBusy('link-verify-btn', false); }
 }
+// ─── 連携解除 (2026-08-28) ───
+// 二段確認にする: 1 タップで消えると、ランクと注文履歴を意図せず失う事故になる。
+// 文言は「何が起きるか」を具体的に書く (「解除します」だけだと何を失うか分からない)。
+function renderUnlink(card){
+  card.className='card p-5 rise';
+  card.style.display='block';
+  card.innerHTML =
+    '<div class="flex items-center gap-2 mb-1.5"><span class="text-base">&#x2705;</span>' +
+      '<p class="text-sm font-bold text-gray-700">オンラインストアと連携済み</p></div>' +
+    '<p class="text-xs text-gray-500 leading-relaxed mb-3">ご注文の確認や会員ランクは、連携されたご注文アカウントの情報から表示しています。</p>' +
+    '<button type="button" id="unlink-open" class="tap w-full text-xs py-3 rounded-xl" ' +
+      'style="background:#f8fafc;border:1px solid #e2e8f0;color:#64748b">連携を解除する</button>' +
+    '<div id="unlink-confirm" style="display:none;margin-top:10px">' +
+      '<p class="text-xs text-gray-600 leading-relaxed mb-2">解除すると、ご注文の確認・再注文と、これまでのお買い物にもとづく<b>会員ランクが表示されなくなります</b>。お手持ちのクーポンはそのままご利用いただけます。もう一度連携すれば元に戻ります。</p>' +
+      '<button type="button" id="unlink-do" class="tap w-full text-white text-sm font-bold py-2.5 rounded-xl shadow" style="background:#b84a2e">解除する</button>' +
+      '<button type="button" id="unlink-cancel" class="tap w-full text-xs text-gray-600 mt-2 py-3 rounded-xl" style="background:#f8fafc;border:1px solid #e2e8f0">やめる</button>' +
+    '</div>' +
+    '<p id="unlink-msg" role="status" aria-live="polite" style="display:none;font-size:12px;margin-top:8px;text-align:center"></p>';
+  var open=document.getElementById('unlink-open');
+  if(open) open.addEventListener('click', function(){
+    var c=document.getElementById('unlink-confirm'); if(c) c.style.display='block';
+    open.style.display='none';
+  });
+  var cancel=document.getElementById('unlink-cancel');
+  if(cancel) cancel.addEventListener('click', function(){
+    var c=document.getElementById('unlink-confirm'); if(c) c.style.display='none';
+    if(open) open.style.display='block';
+  });
+  var go=document.getElementById('unlink-do');
+  if(go) go.addEventListener('click', unlinkAccount);
+}
+
+function unlinkMsg(text, isError){
+  var m=document.getElementById('unlink-msg'); if(!m) return;
+  if(!text){ m.style.display='none'; m.textContent=''; return; }
+  m.style.display='block'; m.style.color=isError?'#b84a2e':'#0f766e'; m.textContent=text;
+}
+
+async function unlinkAccount(){
+  unlinkMsg('', false); setLinkBusy('unlink-do', true, '解除中…');
+  try{
+    var res=await fetch(API_BASE+'/api/liff/link/unlink', { method:'POST', headers:linkHeaders(), body:'{}' });
+    var body=await res.json().catch(function(){ return null; });
+    if(res.status===200 && body && body.success){
+      showToast((body && body.message) || '連携を解除しました');
+      loadRank(); // 会員証全体を引き直す (ランク・注文・クーポンが同時に変わるため)
+      return;
+    }
+    unlinkMsg('解除に失敗しました。時間をおいてお試しください', true);
+  }catch(e){ unlinkMsg('通信エラーが発生しました', true); }
+  finally{ setLinkBusy('unlink-do', false); }
+}
+
 function renderLink(d){
   var card=document.getElementById('link-card');
   if(!card) return;
-  // gated: 機能が有効 かつ 未連携 のときのみ表示 (= ACCOUNT_LINK_ENABLED 未設定なら常に非表示)
-  if(!(d && d.accountLinkEnabled && !d.linked)){ card.style.display='none'; return; }
+  if(!d){ card.style.display='none'; return; }
+  // 連携済みなら「解除」を出す (2026-08-28)。誤連携 (家族共有のメール等) を本人が直せないと
+  // 他人の購買履歴が見え続けるため、受付 gate とは独立に常に出す。
+  if(d.linked){ renderUnlink(card); return; }
+  // 未連携: 受付 gate が有効なときだけ連携フォームを出す (= 押した先が 404 の死んだボタンを作らない)
+  if(!d.accountLinkEnabled){ card.style.display='none'; return; }
   card.className='card p-5 rise';
   card.style.display='block';
   // a11y: 各 input に aria-label (placeholder だけだと入力開始で消える + SR が名前として読まない)。
