@@ -27,7 +27,7 @@
  * | shopify_orders.friend_id           | NULL  | 注文一覧の唯一のキー |
  * | shopify_fulfillments.friend_id     | NULL  | 配送追跡の唯一のキー |
  * | member_purchase_events             | friend_id=NULL / applied_at=NULL | ランクの原資。行は消さず外すだけ (監査保全)。applied_at も戻すのは、再連携時に addPurchaseEvent の CAS (`WHERE applied_at IS NULL`) が再 claim してランクを復元できるようにするため |
- * | members                            | 累計 0 / last_purchase_at NULL   | member_purchase_events の applied_at を戻すので、二重加算を避けるには累計もゼロに戻す必要がある。紹介カウントは購入と無関係なので温存 |
+ * | members                            | 累計 0 / last_purchase_at NULL / tier は**再計算** | applied_at を戻すので二重加算を避けるには累計もゼロに戻す必要がある。紹介カウントは購入と無関係なので温存。tier は bronze 決め打ちにせず、購入額 0 の状態でまだ満たす最上位を選び直す — 昇格は `purchaseOk \|\| (minReferralCount > 0 && referralOk)` の選択的経路なので、**紹介だけで得た tier を奪ってはいけない** (Codex P1) |
  * | loyalty_rank_discounts             | status='superseded'              | ランクが 0 に戻る以上、会員証に出し続けない (Shopify 側のコード無効化は別 op — 顧客限定なので放置しても他人は使えない) |
  * | **line_link_coupons**              | **残す**                          | 🚨 消すと連携特典 ¥300 の「生涯 1 枚」保証が壊れ、解除→再連携で 2 枚目が出る = 実費。冪等キーそのものなので絶対に消さない |
  * | subscription_reminders             | is_active=0                       | 🚨 連携由来の自動生成。残すと /liff/reorder に他人の商品名が出続けるうえ、稼働定期便への再注文 push の抑止が **反転して発火する** (抑止は friends.shopify_customer_id 経由の JOIN なので解除で空になる) |
@@ -196,11 +196,34 @@ export async function unlinkFriendFromShopifyCustomer(
     db.prepare(`UPDATE member_purchase_events SET friend_id = NULL, applied_at = NULL, updated_at = ? WHERE friend_id = ?`)
       .bind(now, friendId),
     // applied_at を戻した以上、累計も戻さないと再連携時に二重加算になる。
-    // 🚨 current_tier_id も既定へ戻す (採点ループ MED)。累計だけ 0 にして tier を残すと、
-    //    「¥0 なのに上位 tier」の行が永久に凍結し、tier セグメント配信にも残り続ける。
+    //
+    // 🚨 tier は **再計算** する。bronze 決め打ちにしない (Codex P1 2026-08-28)。
+    //   membership の昇格条件は `purchaseOk || (minReferralCount > 0 && referralOk)` の
+    //   **選択的経路** (packages/db/src/membership.ts determineEligibleTier) で、
+    //   購入ゼロでも紹介人数だけで上位 tier に到達できる。紹介実績は連携と無関係なので
+    //   total_referral_count は温存しているのに、それで得た tier を潰すのは矛盾している。
+    //   逆に tier を触らないと「¥0 なのに上位 tier」で凍結する (採点ループ MED)。
+    //   → 購入額 0 の状態で **まだ満たしている最上位 tier** を選び直すのが唯一正しい。
+    //   determineEligibleTier と同じ判定を SQL で写す:
+    //     purchaseOk (= 0 >= min_total_purchase_jpy) または
+    //     min_referral_count > 0 かつ total_referral_count >= min_referral_count
+    //   該当が無ければ最低 tier (display_order 最小) に落とす。
     db.prepare(
-      `UPDATE members SET total_purchase_jpy = 0, last_purchase_at = NULL,
-              current_tier_id = 'bronze', updated_at = ?
+      `UPDATE members
+          SET total_purchase_jpy = 0,
+              last_purchase_at = NULL,
+              current_tier_id = COALESCE(
+                (SELECT t.id FROM membership_tiers t
+                  WHERE t.is_active = 1
+                    AND (
+                      t.min_total_purchase_jpy <= 0
+                      OR (t.min_referral_count > 0 AND t.min_referral_count <= members.total_referral_count)
+                    )
+                  ORDER BY t.display_order DESC LIMIT 1),
+                (SELECT t2.id FROM membership_tiers t2 WHERE t2.is_active = 1 ORDER BY t2.display_order ASC LIMIT 1),
+                current_tier_id
+              ),
+              updated_at = ?
         WHERE friend_id = ?`,
     ).bind(now, friendId),
     db.prepare(`UPDATE loyalty_rank_discounts SET status = 'superseded', superseded_at = ? WHERE friend_id = ? AND status = 'active'`)

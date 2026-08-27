@@ -28,6 +28,7 @@ interface Store {
     current_tier_id: string;
   }>;
   subscription_reminders: Array<{ id: string; friend_id: string; is_active: number }>;
+  membership_tiers: Array<{ id: string; display_order: number; min_total_purchase_jpy: number; min_referral_count: number }>;
   loyalty_rank_discounts: Array<{ id: string; friend_id: string; status: string; superseded_at: string | null }>;
   line_link_coupons: Array<{ friend_id: string; shopify_customer_id: string; coupon_code: string }>;
 }
@@ -68,6 +69,12 @@ function seed(): Store {
     subscription_reminders: [
       { id: 'sr1', friend_id: 'f1', is_active: 1 },
       { id: 'sr2', friend_id: 'other', is_active: 1 },
+    ],
+    // 紹介だけでも到達できる tier を含む (= 選択的経路。silver は紹介 3 人で到達可)
+    membership_tiers: [
+      { id: 'bronze', display_order: 1, min_total_purchase_jpy: 0, min_referral_count: 0 },
+      { id: 'silver', display_order: 2, min_total_purchase_jpy: 12000, min_referral_count: 3 },
+      { id: 'gold', display_order: 3, min_total_purchase_jpy: 24000, min_referral_count: 0 },
     ],
   };
 }
@@ -136,13 +143,21 @@ function makeDb(store: Store): D1Database {
       // 同上: SET 句を解釈する (累計だけ戻して last_purchase_at を忘れる変異を殺す)
       const clearsTotal = /total_purchase_jpy\s*=\s*0/i.test(sql);
       const clearsLast = /last_purchase_at\s*=\s*NULL/i.test(sql);
-      const resetsTier = /current_tier_id\s*=\s*'bronze'/i.test(sql);
+      // 🚨 tier は再計算する実装。fake も determineEligibleTier と同じ判定を写す
+      //    (bronze 決め打ちを期待すると、紹介で得た tier を奪う実装が緑になる)
+      const recomputesTier = /current_tier_id\s*=\s*COALESCE/i.test(sql);
       const fid = b[1] as string;
       for (const m of store.members) {
         if (m.friend_id === fid) {
           if (clearsTotal) m.total_purchase_jpy = 0;
           if (clearsLast) m.last_purchase_at = null;
-          if (resetsTier) m.current_tier_id = 'bronze';
+          if (recomputesTier) {
+            const eligible = store.membership_tiers
+              .filter((t) => t.min_total_purchase_jpy <= 0 || (t.min_referral_count > 0 && t.min_referral_count <= m.total_referral_count))
+              .sort((a, b) => b.display_order - a.display_order)[0];
+            const lowest = [...store.membership_tiers].sort((a, b) => a.display_order - b.display_order)[0];
+            m.current_tier_id = (eligible ?? lowest)?.id ?? m.current_tier_id;
+          }
           changes++;
         }
       }
@@ -250,11 +265,22 @@ describe('unlinkFriendFromShopifyCustomer', () => {
     expect(m.total_referral_count).toBe(2);
   });
 
-  it('🚨 tier も既定へ戻す (¥0 なのに上位 tier で凍結させない・セグメント配信にも残さない)', async () => {
+  it('🚨 購入で得た tier は落ちる (¥0 なのに上位 tier で凍結させない)', async () => {
     const store = seed();
+    // 紹介 2 人 = silver の閾値 (3 人) に届かない → 購入額 0 では bronze まで落ちる
     expect(store.members[0].current_tier_id).toBe('gold');
     await unlinkFriendFromShopifyCustomer(makeDb(store), 'f1');
     expect(store.members[0].current_tier_id).toBe('bronze');
+  });
+
+  it('🚨 紹介で得た tier は奪わない (tier は再計算する。bronze 決め打ちにしない)', async () => {
+    const store = seed();
+    // 紹介 3 人 = silver の閾値を満たす → 購入額 0 でも silver は維持されるべき
+    store.members[0].total_referral_count = 3;
+    await unlinkFriendFromShopifyCustomer(makeDb(store), 'f1');
+    expect(store.members[0].current_tier_id).toBe('silver');
+    // 紹介実績そのものも温存 (連携と無関係なので)
+    expect(store.members[0].total_referral_count).toBe(3);
   });
 
   it('🚨 その friend を指す shopify_customers 行を全部外す (連携先 1 行に絞ると購入額が漏れ続ける)', async () => {
