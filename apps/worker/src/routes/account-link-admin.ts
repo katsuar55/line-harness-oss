@@ -16,6 +16,11 @@
  *   backfill 側と二重)。 Workers subrequest 上限対策で 1 呼び出し最大 10 人 (既定 3)。
  *   remaining が 0 になるまで繰り返し呼ぶ運用。
  *
+ * POST /api/admin/account-link/unlink (2026-08-28)
+ *   連携を解除する (誤連携の是正 / 顧客からの利用停止請求の代行)。
+ *   ⚠️ 顧客データの露出を止める操作なので friendId 必須・冪等・監査あり。
+ *   連携特典 ¥300 の台帳は残す (= 解除→再連携で 2 枚目を出さない)。
+ *
  * 認証: /api/* は authMiddleware (API_KEY bearer) 配下。
  */
 
@@ -24,6 +29,7 @@ import { getAccountLinkStats } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { processDmmRankImport, type DmmImportEntry } from '../services/dmm-rank-import.js';
 import { backfillCustomerOrders } from '../services/member-purchase-backfill.js';
+import { unlinkAccount } from '../services/account-unlink.js';
 import { getShopifyAccessToken } from '../services/shopify-token.js';
 
 // Workers の subrequest 予算 (無料プラン 50/invocation、 D1 query も消費) に収める保守値。
@@ -227,6 +233,28 @@ accountLinkAdmin.post('/api/admin/account-link/backfill-linked', async (c) => {
     return c.json({ success: true, data: { processed, pendingBefore, remaining } });
   } catch (err) {
     console.error('POST /api/admin/account-link/backfill-linked error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ========== POST /api/admin/account-link/unlink ==========
+
+accountLinkAdmin.post('/api/admin/account-link/unlink', async (c) => {
+  try {
+    const body = await c.req.json<{ friendId?: unknown }>().catch(() => null);
+    const friendId = typeof body?.friendId === 'string' ? body.friendId.trim() : '';
+    if (!friendId) {
+      return c.json({ success: false, error: 'friendId (string) is required' }, 400);
+    }
+
+    const outcome = await unlinkAccount(c.env as unknown as Parameters<typeof unlinkAccount>[0], {
+      friendId,
+      actor: 'admin',
+    });
+    // 未連携は 200 + unlinked:false (= 冪等。404 にすると運用が「消えた」と誤解する)
+    return c.json({ success: true, data: outcome });
+  } catch (err) {
+    console.error('POST /api/admin/account-link/unlink error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

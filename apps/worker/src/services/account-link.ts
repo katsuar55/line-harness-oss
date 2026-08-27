@@ -31,6 +31,7 @@ import {
   getFriendById,
   getFriendByShopifyCustomerId,
   setFriendShopifyCustomerId,
+  linkShopifyCustomerToFriend,
   insertAccountLinkCode,
   invalidatePriorAccountLinkCodes,
   countRecentAccountLinkCodes,
@@ -368,6 +369,27 @@ export async function verifyAccountLinkCode(
   // link 試行は確定 (= success / already_linked いずれも terminal) → 消費
   await consumeAccountLinkCode(env.DB, row.id, nowIso);
   if (!linked) return { ok: false, code: 'already_linked' }; // 並行 link 済 (= 競合)
+
+  // 🚨 逆方向リンク (= customer 起点の denormalized 列を埋める)。
+  //   これが無いと friends.shopify_customer_id は入るのに shopify_orders.friend_id が NULL のままになり、
+  //   注文一覧 (routes/liff-portal.ts の `WHERE friend_id = ?`) と配送追跡が **0 件のまま**になる。
+  //   = 顧客には「連携したのに何も変わらない」と見える。ホームの連携 CTA は
+  //   「ご注文の状況確認や、過去のご注文からの再注文もこの画面でできるようになります」と
+  //   約束しているので、これを呼ばないと約束が嘘になる (2026-08-28 修正)。
+  //   slk 経路 (services/sub-link.ts の backlink) は最初から呼んでいた = OTP 経路だけの欠落だった。
+  //
+  //   best-effort でよい理由 (Codex P1 2026-08-28 への回答):
+  //   ここで落とすと「連携は成立したのに verify が失敗」になり、OTP は set-once なので
+  //   顧客はやり直しても already_linked で弾かれて詰む。逆に成功を返して backlink だけ
+  //   失敗した場合は、必要な情報 (friends.shopify_customer_id) が既に永続化されているので
+  //   **完全に導出で復旧できる**。その復旧は backlink-repair cron
+  //   (packages/db repairMissingBacklink、5 分毎・冪等) が保証する。
+  //   したがって「落とさず、後で必ず直す」が正しい倒し方。
+  try {
+    await linkShopifyCustomerToFriend(env.DB, found.customerId, input.friendId);
+  } catch (err) {
+    console.warn('[account-link] customer backlink failed (non-fatal):', err instanceof Error ? err.message : 'unknown');
+  }
 
   // 自前 metafield 書込 (= best-effort、 失敗しても link は成立)
   let metafieldWritten = false;

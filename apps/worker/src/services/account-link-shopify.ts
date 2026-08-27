@@ -77,6 +77,16 @@ interface MetafieldsSetResponse {
   errors?: Array<{ message: string }>;
 }
 
+interface MetafieldsDeleteResponse {
+  data?: {
+    metafieldsDelete?: {
+      deletedMetafields?: Array<{ key?: string; namespace?: string; ownerId?: string }> | null;
+      userErrors?: Array<{ field?: string[] | null; message?: string }> | null;
+    } | null;
+  };
+  errors?: Array<{ message: string }>;
+}
+
 // ============================================================
 // shared fetch helper
 // ============================================================
@@ -214,6 +224,58 @@ export async function setCustomerLineUserIdMetafield(
   }
 
   const userErrors = (body.data?.metafieldsSet?.userErrors ?? [])
+    .map((e) => e.message ?? 'unknown')
+    .filter((m): m is string => typeof m === 'string');
+  return { ok: userErrors.length === 0, userErrors };
+}
+
+/**
+ * customer の LINE ID metafield を削除する (= 連携解除の後始末、 2026-08-28)。
+ *
+ * これを消さないと、metafield 逆引き cron (services/friend-customer-linker.ts) が
+ * 「解除したはずの連携」を翌 02:00 に復活させうる。現状は cron と OTP で namespace が
+ * 別なので即座には起きないが、統合 op を実行した後は同一になるため先に塞いでおく。
+ *
+ * metafieldsDelete は「存在しない metafield」に対しても userErrors 無しで成功する
+ * (= 冪等)。transport/GraphQL エラーは throw、 userErrors は ok:false で返す (書込と同じ流儀)。
+ */
+export async function deleteCustomerLineUserIdMetafield(
+  storeDomain: string,
+  accessToken: string,
+  customerId: string,
+  namespace: string,
+  key: string,
+  fetchImpl: typeof fetch,
+): Promise<MetafieldWriteResult> {
+  if (!storeDomain) return { ok: false, userErrors: ['store_not_configured'] };
+  if (!/^\d+$/.test(customerId)) return { ok: false, userErrors: ['invalid_customer_id'] };
+  if (!SAFE_METAFIELD_PART.test(namespace) || !SAFE_METAFIELD_PART.test(key)) {
+    return { ok: false, userErrors: ['invalid_metafield'] };
+  }
+
+  const mutation = `
+    mutation deleteCustomerLineId($metafields: [MetafieldIdentifierInput!]!) {
+      metafieldsDelete(metafields: $metafields) {
+        deletedMetafields { key namespace ownerId }
+        userErrors { field message }
+      }
+    }
+  `;
+  const variables = {
+    metafields: [
+      { ownerId: `gid://shopify/Customer/${customerId}`, namespace, key },
+    ],
+  };
+
+  const res = await shopifyGraphql(storeDomain, accessToken, { query: mutation, variables }, fetchImpl);
+  if (!res.ok) throw new Error(`Shopify metafieldsDelete failed: HTTP ${res.status}`);
+
+  const body = (await res.json()) as MetafieldsDeleteResponse;
+  if (body.errors && body.errors.length > 0) {
+    throw new Error(`Shopify metafieldsDelete errors: ${body.errors.map((e) => e.message).join('; ')}`);
+  }
+
+  const userErrors = (body.data?.metafieldsDelete?.userErrors ?? [])
     .map((e) => e.message ?? 'unknown')
     .filter((m): m is string => typeof m === 'string');
   return { ok: userErrors.length === 0, userErrors };

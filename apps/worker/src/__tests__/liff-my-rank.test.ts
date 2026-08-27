@@ -366,8 +366,17 @@ describe('GET /liff/my-rank (会員証ページ HTML)', () => {
     expect(r.body).toContain('これまでのお買い物をランクに反映'); // 2026-07-07 顧客利益ベースの文言へ (採点R3 myrank_link)
     expect(r.body).toContain('/api/liff/link/request-code');
     expect(r.body).toContain('/api/liff/link/verify-code');
-    // gated: accountLinkEnabled && !linked のときのみ表示する条件分岐
-    expect(r.body).toContain('d.accountLinkEnabled && !d.linked');
+    // gated (2026-08-28 改訂): 3 分岐になった。
+    //   linked=true            → 解除カード (受付 gate に依存しない = 受付停止中でも解除できる)
+    //   !linked && gate on     → 連携フォーム
+    //   !linked && gate off    → 非表示
+    // 🚨 引用符のネストを書かない (CLAUDE.md: 単一バックスラッシュ+クォートは
+    //    emit 時に潰れて文字列が途中終端する)。regex か二重引用符で受ける。
+    expect(r.body).toContain('if(d.linked){ renderUnlink(card); return; }');
+    expect(r.body).toMatch(/if\(!d\.accountLinkEnabled\)\{ card\.style\.display='none'; return; \}/);
+    // 解除経路が顧客可視面に存在すること
+    expect(r.body).toContain('function renderUnlink');
+    expect(r.body).toContain('/api/liff/link/unlink');
   });
 
   it('アカウント連携 UI の a11y 対応 (aria-label / aria-live / enterkeyhint) を含む', async () => {

@@ -80,6 +80,10 @@ function runRenderLink(
 ): { card: FakeCard; win: Record<string, unknown> } {
   const m = src.match(/function renderLink\(d\)\{[\s\S]*?\n\}/);
   expect(m).not.toBeNull();
+  // renderLink は既連携時に renderUnlink を呼ぶ (2026-08-28)。
+  // 抽出しないと ReferenceError になるので、同じ sandbox に両方を載せる。
+  const mu = src.match(/function renderUnlink\(card\)\{[\s\S]*?\n\}/);
+  expect(mu).not.toBeNull();
   const card: FakeCard = {
     style: {},
     className: '',
@@ -94,7 +98,7 @@ function runRenderLink(
   const loc = { hash: opts.hash ?? '' };
   // setTimeout は即時実行 (= #link 着地のスクロールを同期的に観測する)
   const immediate = (fn: () => void) => { fn(); return 0; };
-  new Function('document', 'window', 'location', 'setTimeout', 'd', m![0] + '\nrenderLink(d);')(
+  new Function('document', 'window', 'location', 'setTimeout', 'd', mu![0] + '\n' + m![0] + '\nrenderLink(d);')(
     doc, win, loc, immediate, d,
   );
   return { card, win };
@@ -122,9 +126,32 @@ describe('連携カード文言の backfill gate 連動 (実行ベース)', () =
     expect(card.innerHTML).toContain('メールマガジンの配信登録とは別');
   });
 
-  it('既連携 / gate off ではカードを出さない', () => {
-    expect(runRenderLink({ accountLinkEnabled: true, linked: true }).card.style.display).toBe('none');
+  // 2026-08-28: 既連携は「非表示」から「解除カード」へ変わった (連携解除機能の追加)。
+  // テストを弱めるのではなく、新しい契約を逐語で固定する。
+  it('未連携 + 受付 gate off ではカードを出さない', () => {
     expect(runRenderLink({ accountLinkEnabled: false, linked: false }).card.style.display).toBe('none');
+  });
+
+  it('🚨 既連携なら解除カードを出す (受付 gate の on/off に依存しない)', () => {
+    for (const gate of [true, false]) {
+      const { card } = runRenderLink({ accountLinkEnabled: gate, linked: true });
+      expect(card.style.display, 'gate=' + gate).toBe('block');
+      expect(card.innerHTML).toContain('連携を解除する');
+      // 連携フォームは出さない (解除画面に「連携する」が混ざらない)
+      expect(card.innerHTML).not.toContain('確認コードを送信');
+    }
+  });
+
+  it('解除は二段確認で、失うものを具体的に伝える', () => {
+    const { card } = runRenderLink({ accountLinkEnabled: true, linked: true });
+    // 一段目では確認ブロックが隠れている (実 markup は style="display:none;margin-top:10px")
+    expect(card.innerHTML).toMatch(/id="unlink-confirm"[^>]*display:none/);
+    // 何を失い、何が残るかを両方書く
+    expect(card.innerHTML).toContain('会員ランクが表示されなくなります');
+    expect(card.innerHTML).toContain('お手持ちのクーポンはそのままご利用いただけます');
+    expect(card.innerHTML).toContain('あらためて連携していただくこともできます');
+    // 「元に戻ります」と断定しない (復元は cron が数分かけて行うので即時ではない)
+    expect(card.innerHTML).not.toContain('元に戻ります');
   });
 
   it('demo データは memberBackfillOn: true (デモは全機能 on の見た目)', () => {

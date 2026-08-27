@@ -222,6 +222,8 @@ on:
           - apply-migration-080
           - enable-coupon-sweep
           - enable-link-reward
+          - disable-link-reward
+          - unlink-account
           - enable-subscription-menu
           - enable-subscription-reminder
           - cron-failure-diagnose
@@ -249,6 +251,10 @@ on:
         type: string
       storefront_url:
         description: 'enable-app-proxy-link 用: storefront 公開 URL (例 https://naturism-diet.com)。省略時は gate のみ ON'
+        required: false
+        type: string
+      friend_id:
+        description: 'unlink-account 用: 解除する friend の UUID (friends.id)。⚠️ 顧客データの表示が止まります'
         required: false
         type: string
       force:
@@ -913,6 +919,54 @@ jobs:
           echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
           npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
           echo '⚠️ これ以降、顧客が自分で連携を完了すると ¥300 クーポンが実発行されます。実機で 1 件確認してください。' >> "$GITHUB_STEP_SUMMARY"
+
+      # 🚨 連携特典 ¥300 の kill switch。enable と対で必ず持つ (2026-08-28)。
+      # これが無いと「¥300 が想定外に出ている」ときにワンクリックで止められず、
+      # 手元ターミナルの wrangler (OAuth 切れの可能性あり) に依存することになる。
+      - name: Disable link reward coupon (LINK_REWARD_ENABLED=false)
+        if: inputs.op == 'disable-link-reward'
+        working-directory: apps/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # gate は === 'true' の厳密一致なので 'false' で確実に止まる (issuer は no-op を返す)。
+          TMP="$RUNNER_TEMP/secrets.link-reward-off.json"
+          printf '{"LINK_REWARD_ENABLED":"false"}' > "$TMP"
+          npx wrangler secret bulk "$TMP"
+          rm -f "$TMP"
+          echo '✅ 連携特典 ¥300 の発行を停止しました (既発行のクーポンは有効なまま)。' >> "$GITHUB_STEP_SUMMARY"
+          echo '### Secrets (names only)' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler secret list >> "$GITHUB_STEP_SUMMARY"
+
+      # 🚨 アカウント連携の解除 (誤連携の是正 / 利用停止請求の代行)。2026-08-28。
+      # 連携は 2026-08-27 まで一方通行で、NULL へ戻す経路が存在しなかった。
+      # friends だけでなく shopify_orders / shopify_fulfillments の friend_id も外さないと
+      # 注文履歴と配送追跡が見え続ける (= 露出が止まらない) ため、API 側で 1 batch にしてある。
+      - name: Unlink account (admin)
+        if: inputs.op == 'unlink-account'
+        working-directory: apps/worker
+        env:
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+        run: |
+          set -euo pipefail
+          FID="${{ inputs.friend_id }}"
+          # 全文検証 (grep は行単位なので改行入り入力が素通りする — case で全体を見る)
+          case "$FID" in
+            [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
+            *) echo '❌ friend_id が UUID 形式ではありません' | tee -a "$GITHUB_STEP_SUMMARY"; exit 1 ;;
+          esac
+          # 応答は件数のみ (PII なし) だが、念のため summary には件数だけを出す
+          RES=$(curl -sS -X POST "$WORKER_URL/api/admin/account-link/unlink"             -H "Authorization: Bearer $ADMIN_API_KEY"             -H 'Content-Type: application/json'             -d "{\"friendId\":\"$FID\"}") || true
+          echo "$RES" | grep -q '"success":true' || { echo '❌ 解除 API が失敗しました' | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; }
+          if echo "$RES" | grep -q '"unlinked":true'; then
+            echo '✅ 連携を解除しました (注文履歴・配送追跡・会員ランクの表示が停止します)。' >> "$GITHUB_STEP_SUMMARY"
+            echo '連携特典 ¥300 の台帳は意図的に残しています (再連携で 2 枚目を出さないため)。' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'ℹ️ この friend は連携されていませんでした (何も変更していません)。' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       # 顧客可視面 (契約カード) の開放。2026-08-11 Katsu 承認済み。
       - name: Enable subscription MENU (SUBSCRIPTION_MENU_ENABLED=true)

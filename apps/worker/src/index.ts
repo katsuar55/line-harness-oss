@@ -121,6 +121,7 @@ import { processMembershipPromotionSanity } from './services/membership-promotio
 import { processLoyaltyRankReeval } from './services/loyalty-rank-cron.js';
 import { processFriendCustomerLink } from './services/friend-customer-linker.js';
 import { processMemberBackfillSweep } from './services/member-purchase-backfill.js';
+import { repairMissingBacklink } from '@line-crm/db';
 import { syncAiModelsCatalog } from './services/ai-models-catalog.js';
 import { syncCloudflareChangelog } from './services/cloudflare-changelog-sync.js';
 import { processEmailFailureMonitor } from './services/email-failure-monitor.js';
@@ -911,6 +912,23 @@ async function scheduled(
       }
     }).catch((err) =>
       console.error('member-backfill-sweep failed', err instanceof Error ? err.name : 'unknown'),
+    ),
+  );
+
+  // 逆方向リンクの自己修復 (2026-08-28, Codex P1)。
+  //   連携は ①friends の set-once CAS → ②shopify_customers/orders の friend_id 埋め の 2 段。
+  //   ② が transient エラーで落ちると ① は set-once なのでやり直せず、顧客は
+  //   「連携済みなのに注文が 1 件も出ない」状態に固定される。② は friends から完全に導出できるので、
+  //   ここで拾って冪等に埋め直す。gate 不要 (実費ゼロ・表示の整合を戻すだけ)。
+  jobs.push(
+    withHeartbeat(env.DB, 'backlink-repair', () => repairMissingBacklink(env.DB),
+      (r) => ({ pending: r.pending, repaired: r.repaired, customers: r.customers, orders: r.orders }),
+    ).then((r) => {
+      if (r.repaired > 0) {
+        console.info(`backlink-repair: friend=${r.friendId} customers=${r.customers} orders=${r.orders} pending=${r.pending}`);
+      }
+    }).catch((err) =>
+      console.error('backlink-repair failed', err instanceof Error ? err.name : 'unknown'),
     ),
   );
 
