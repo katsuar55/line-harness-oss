@@ -28,6 +28,16 @@ import {
 import type { Env } from '../index.js';
 import { issueLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
 import { unlinkAccount } from '../services/account-unlink.js';
+import { backfillCustomerOrders } from '../services/member-purchase-backfill.js';
+import { getShopifyAccessToken } from '../services/shopify-token.js';
+
+/**
+ * OTP 連携後のインライン backfill のページ上限。sub-link (redeem) の
+ * REDEEM_BACKFILL_MAX_PAGES と同じ値・同じ理由: 予算の支配項は fetch でなく
+ * 注文ごとの addPurchaseEvent (~5 D1/新規適用) なので、ページ側の無駄を抑えるだけの値。
+ * 完遂は member-backfill-sweep cron が保証する。
+ */
+const OTP_BACKFILL_MAX_PAGES = 2;
 
 const liffAccountLink = new Hono<Env>();
 
@@ -125,12 +135,19 @@ liffAccountLink.post('/api/liff/link/verify-code', async (c) => {
     return c.json({ success: false, error: 'Invalid request body' }, 400);
   }
 
-  const result = await verifyAccountLinkCode(c.env, {
-    friendId: user.friendId,
-    lineUserId: user.lineUserId,
-    email: parsed.data.email,
-    code: parsed.data.code,
-  });
+  // 🚨 backfill は service にやらせない (deferBackfillToCaller)。同一 invocation の
+  //    subrequest 予算をクーポン発行と食い合い、注文の多い顧客ほど確実に ¥300 が無言で消える。
+  //    下でクーポン発行の**後**に直列化する (sub-link の redeem 経路と同じ形)。
+  const result = await verifyAccountLinkCode(
+    c.env,
+    {
+      friendId: user.friendId,
+      lineUserId: user.lineUserId,
+      email: parsed.data.email,
+      code: parsed.data.code,
+    },
+    { deferBackfillToCaller: true },
+  );
 
   if (result.ok) {
     // 連携特典クーポン (Sprint A-1): OTP 連携の成立時に発行。verifyAccountLinkCode の
@@ -147,12 +164,47 @@ liffAccountLink.post('/api/liff/link/verify-code', async (c) => {
       ),
     );
     try { c.executionCtx.waitUntil(issueP); } catch { /* no exec ctx in tests */ }
+
+    // 過去注文 backfill を**クーポン発行の後**に直列化する (2026-08-28)。
+    //   - 顧客可視の報酬 (¥300) を先に確定させ、backfill は残り予算での第一走に徹する。
+    //   - issueP は上で .catch 済み = 常に resolve する (発行失敗でも backfill は走らせる)。
+    //   - gate は backfillCustomerOrders 側でも二重判定するが、off のとき token 取得の
+    //     subrequest すら使わないようここでも先に判定する。
+    //   - 予算切れで途中死しても member-backfill-sweep cron (5 分毎・冪等) が収束させる。
+    const envRecord = c.env as unknown as Record<string, string | undefined>;
+    if (envRecord.MEMBER_BACKFILL_ENABLED === 'true') {
+      const friendId = user.friendId;
+      const customerId = result.customerId;
+      const backfillP = issueP
+        .then(async () => {
+          const accessToken = await getShopifyAccessToken(c.env.DB, envRecord);
+          await backfillCustomerOrders(
+            c.env.DB,
+            {
+              SHOPIFY_STORE_DOMAIN: envRecord.SHOPIFY_STORE_DOMAIN,
+              MEMBER_BACKFILL_ENABLED: envRecord.MEMBER_BACKFILL_ENABLED,
+            },
+            { customerId, friendId, accessToken, maxPages: OTP_BACKFILL_MAX_PAGES },
+          );
+        })
+        .catch((err) =>
+          console.error(
+            '[account-link] purchase backfill failed:',
+            err instanceof Error ? err.message : 'unknown',
+          ),
+        );
+      try { c.executionCtx.waitUntil(backfillP); } catch { /* no exec ctx in tests */ }
+    }
+
     return c.json({
       success: true,
       data: {
         linked: true,
         customerId: result.customerId,
-        backfilled: result.backfilled,
+        // backfill は上で waitUntil に載せた = 応答時点では未完了。0 固定にせず
+        // service の戻り (defer 時は常に 0) をそのまま返すと「0 件反映」の誤読を生むため、
+        // 「応答後に走る」ことが分かる null を返す。
+        backfilled: null,
         metafieldWritten: result.metafieldWritten,
       },
     });

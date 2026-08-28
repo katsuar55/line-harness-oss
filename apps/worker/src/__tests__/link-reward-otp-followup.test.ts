@@ -1,0 +1,178 @@
+/**
+ * ¥300 連携特典を **LINE 内メール OTP で連携した本人に見せる** 経路の恒久ガード (2026-08-28)。
+ *
+ * ## なぜこのテストが要るか (本番初実行の直前に見つかった欠陥)
+ * ホームの第一候補 CTA `openAccountLinkCard()` は `window.location.href` で会員証
+ * (/liff/my-rank) へ**フルページ遷移**する。ポータルの `#link-coupon-card` と後追い取得
+ * `refreshLinkCouponAfterLink` はそこで破棄されるため、OTP で連携した本人は
+ *   - 特典カードを一度も見ず
+ *   - しかも会員証の一覧は別台帳 (shopify_coupon_assignments) しか読まないので
+ *     「保有クーポン 0枚 / 利用できるクーポンはまだありません」と**持っているのに無いと言う**
+ * 状態だった。台帳 `line_link_coupons` は本番 0 行 = この経路は一度も実行されていないため、
+ * 実行されるまで誰も気づけない種類の欠陥である。
+ *
+ * ## 観測点
+ * 「合成後」を見る (= [[feedback_observe_composed_string]])。片側だけ rename されたら落ちること:
+ *   - `renderCoupons` が実際に吐く属性 と `linkCouponVisible` が実際に引くセレクタ
+ *   - 空状態の文言は**逐語**照合 (連携直後に「ありません」と断定しない)
+ */
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const root = dirname(fileURLToPath(import.meta.url));
+// CRLF のまま正規表現を当てると `\n}` 系のアンカーが外れ、「ブロックが無い」で
+// テストが構造的に無力化する (= 変異を検出できない測定器になる)。読み込み時に正規化する。
+const src = readFileSync(join(root, '..', 'routes', 'liff-my-rank.ts'), 'utf8').replace(/\r\n/g, '\n');
+
+function grab(re: RegExp, label: string): string {
+  const m = src.match(re);
+  if (!m) throw new Error(`${label} not found in liff-my-rank.ts`);
+  return m[0];
+}
+
+const escSrc = grab(/^function esc\(s\)\{.*$/m, 'esc');
+const yenSrc = grab(/^function yen\(n\)\{.*$/m, 'yen');
+const fmtMdSrc = grab(/^function fmtMd\(s\)\{.*$/m, 'fmtMd');
+const labelSrc = grab(/^function couponValueLabel\(cp\)\{.*$/m, 'couponValueLabel');
+const renderSrc = grab(/function renderCoupons\(d\)\{[\s\S]*?\n\}/, 'renderCoupons');
+const visibleSrc = grab(/function linkCouponVisible\(\)\{[\s\S]*?\n\}/, 'linkCouponVisible');
+
+interface FakeCard {
+  className: string;
+  style: { display: string };
+  innerHTML: string;
+  querySelectorAll: () => never[];
+}
+
+/** renderCoupons を実際に走らせて、吐かれた HTML を返す (ロジックを test 側で再実装しない) */
+function render(coupons: unknown[], opts: { pending?: boolean } = {}): string {
+  const card: FakeCard = {
+    className: '',
+    style: { display: 'none' },
+    innerHTML: '',
+    querySelectorAll: () => [],
+  };
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  const factory = new Function(
+    'document',
+    'linkCouponPending',
+    `${escSrc}\n${yenSrc}\n${fmtMdSrc}\n${labelSrc}\n${renderSrc}\nreturn renderCoupons;`,
+  ) as (d: unknown, pending: boolean) => (data: unknown) => void;
+  const renderCoupons = factory(
+    { getElementById: (id: string) => (id === 'coupons-card' ? card : null) },
+    Boolean(opts.pending),
+  );
+  renderCoupons({ coupons });
+  return card.innerHTML;
+}
+
+const LINK_ROW = {
+  kind: 'link_reward',
+  code: 'NLINK-ABCD1234',
+  title: '🔗 連携特典（¥2,000以上のご注文で）',
+  discountType: 'fixed_amount',
+  discountValue: 300,
+  expiresAt: '2026-09-27T00:00:00.000Z',
+};
+
+describe('連携特典を会員証 (my-rank) で見せる', () => {
+  it('連携特典の行に data-coupon-kind が付く (= 後追い取得が「出た」と判定できる)', () => {
+    const html = render([LINK_ROW]);
+    expect(html).toContain('data-coupon-kind="link_reward"');
+  });
+
+  it('通常クーポンには kind 属性を付けない (= 誤検出で後追いが早期終了しない)', () => {
+    const html = render([
+      { kind: null, code: 'LINE-X', title: '友だちクーポン', discountType: 'fixed_amount', discountValue: 500, expiresAt: null },
+    ]);
+    expect(html).not.toContain('data-coupon-kind');
+  });
+
+  it('🚨 合成: renderCoupons が吐く属性を linkCouponVisible のセレクタが実際に含む', () => {
+    // 片側だけ rename されたら落ちる。ラベル単体を見ていると両者の乖離が見えない。
+    const attr = render([LINK_ROW]).match(/data-coupon-kind="([^"]+)"/);
+    expect(attr).not.toBeNull();
+    expect(visibleSrc).toContain(`[data-coupon-kind="${attr![1]}"]`);
+    // 引き先のカード id も、renderCoupons が実際に書き込む要素と同じであること
+    expect(renderSrc).toContain("getElementById('coupons-card')");
+    expect(visibleSrc).toContain('#coupons-card');
+  });
+
+  it('金額は台帳の実値をそのまま出す (既定額 ¥300 にフォールバックしない)', () => {
+    // 既発行の ¥500 券を ¥300 と表示する類の嘘を防ぐ
+    const html = render([{ ...LINK_ROW, discountValue: 500 }]);
+    expect(html).toContain('¥500 OFF');
+    expect(html).not.toContain('¥300');
+  });
+
+  it('枚数は連携特典を含めて数える', () => {
+    expect(render([LINK_ROW])).toContain('>1枚<');
+    expect(render([LINK_ROW, { kind: null, code: 'LINE-X', title: 'x', discountType: 'fixed_amount', discountValue: 500, expiresAt: null }])).toContain('>2枚<');
+  });
+});
+
+describe('連携直後の空状態 (発行は waitUntil で応答の後)', () => {
+  it('🚨 連携直後は「ありません」と断定しない (= 届く直前に否定する嘘)', () => {
+    const html = render([], { pending: true });
+    expect(html).toContain('特典クーポンをご用意しています…');
+    expect(html).not.toContain('利用できるクーポンはまだありません');
+  });
+
+  it('通常の空 (連携していない) は従来どおりの文言', () => {
+    const html = render([], { pending: false });
+    expect(html).toContain('利用できるクーポンはまだありません');
+    expect(html).not.toContain('特典クーポンをご用意しています');
+  });
+});
+
+describe('OTP 成功時の後追い取得の配線', () => {
+  const verifySrc = (() => {
+    const m = src.match(/async function linkVerify\(\)\{[\s\S]*?\n\}/);
+    if (!m) throw new Error('linkVerify not found');
+    return m[0];
+  })();
+
+  it('成功分岐が後追い取得を起動する', () => {
+    // 200 成功分岐の中に居ること (失敗分岐に紛れていたら意味がない)
+    const ok = verifySrc.match(/if\(res\.status===200[\s\S]*?return;\n\s*\}/);
+    expect(ok).not.toBeNull();
+    expect(ok![0]).toContain('refreshLinkCouponAfterLink(0)');
+    expect(ok![0]).toContain('linkCouponPending = true');
+  });
+
+  it('後追いは階段状にリトライし、諦めたら pending を畳む', () => {
+    expect(src).toContain('var LINK_COUPON_RETRY_MS = [1500, 4000, 9000];');
+    const refresh = src.match(/function refreshLinkCouponAfterLink\(attempt\)\{[\s\S]*?\n\}/);
+    expect(refresh).not.toBeNull();
+    // 上限到達で pending を false に戻して再描画する (「ご用意しています…」の固着防止)
+    expect(refresh![0]).toContain('n >= LINK_COUPON_RETRY_MS.length');
+    expect(refresh![0]).toContain('linkCouponPending = false');
+    expect(refresh![0]).toContain('loadRank()');
+  });
+
+  it('完了告知に金額を書かない (正は台帳を出すクーポン行)', () => {
+    const announce = src.match(/function announceLinkCoupon\(\)\{[\s\S]*?\n\}/);
+    expect(announce).not.toBeNull();
+    expect(announce![0]).not.toMatch(/[¥￥]\s*\d/);
+    expect(announce![0]).toContain('連携特典クーポンをお届けしました');
+  });
+});
+
+describe('inline script の配線', () => {
+  it('🚨 pending フラグと利用側が同じ script ブロックに居る (var の巻き上げが効く)', () => {
+    // 別ブロックに分かれると巻き上げが効かず renderCoupons が ReferenceError で落ちる。
+    // parse 検証 (liff-script-syntax) は**どちらでも通る**ので、ここで固定する。
+    const opens = [...src.matchAll(/<script/g)].map((m) => m.index ?? 0);
+    const blockOf = (needle: string) => {
+      const i = src.indexOf(needle);
+      expect(i).toBeGreaterThan(-1);
+      return opens.filter((o) => o < i).length;
+    };
+    const home = blockOf('var linkCouponPending');
+    expect(blockOf('function renderCoupons(d){')).toBe(home);
+    expect(blockOf('async function linkVerify(){')).toBe(home);
+    expect(blockOf('function linkCouponVisible(){')).toBe(home);
+  });
+});

@@ -19,19 +19,37 @@ vi.mock('../services/link-reward-coupon-issuer.js', () => ({
   issueLinkRewardCoupon: vi.fn(async () => null),
 }));
 
+// 過去注文 backfill は 2026-08-28 に service から route へ移した (クーポン発行の後に直列化)。
+// 順序が観測点なので、呼ばれたか/いつ呼ばれたかを見るために mock する。
+vi.mock('../services/member-purchase-backfill.js', () => ({
+  backfillCustomerOrders: vi.fn(async () => ({ backfilled: 0 })),
+}));
+vi.mock('../services/shopify-token.js', () => ({
+  getShopifyAccessToken: vi.fn(async () => 'tok'),
+}));
+
 import { liffAccountLink } from '../routes/liff-account-link.js';
 import { requestAccountLinkCode, verifyAccountLinkCode } from '../services/account-link.js';
 import { issueLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
+import { backfillCustomerOrders } from '../services/member-purchase-backfill.js';
+import { getShopifyAccessToken } from '../services/shopify-token.js';
 import type { Env } from '../index.js';
 
 const mockedRequest = vi.mocked(requestAccountLinkCode);
 const mockedVerify = vi.mocked(verifyAccountLinkCode);
 const mockedIssueLinkReward = vi.mocked(issueLinkRewardCoupon);
+const mockedBackfill = vi.mocked(backfillCustomerOrders);
+const mockedToken = vi.mocked(getShopifyAccessToken);
 
-function makeApp(opts: { liffUser?: { lineUserId: string; friendId: string } | null } = {}): Hono<Env> {
+function makeApp(
+  opts: {
+    liffUser?: { lineUserId: string; friendId: string } | null;
+    env?: Record<string, string>;
+  } = {},
+): Hono<Env> {
   const app = new Hono<Env>();
   app.use('*', async (c, next) => {
-    c.env = { DB: {} as D1Database, ACCOUNT_LINK_ENABLED: 'true' } as unknown as Env['Bindings'];
+    c.env = { DB: {} as D1Database, ACCOUNT_LINK_ENABLED: 'true', ...(opts.env ?? {}) } as unknown as Env['Bindings'];
     if (opts.liffUser !== null) {
       const user = opts.liffUser ?? { lineUserId: 'U-test', friendId: 'friend-1' };
       (c as { set: (k: string, v: unknown) => void }).set('liffUser', user);
@@ -55,6 +73,73 @@ beforeEach(() => {
   mockedVerify.mockReset();
   mockedIssueLinkReward.mockReset();
   mockedIssueLinkReward.mockResolvedValue(null);
+  mockedBackfill.mockReset();
+  mockedBackfill.mockResolvedValue({ backfilled: 0 } as Awaited<ReturnType<typeof backfillCustomerOrders>>);
+  mockedToken.mockReset();
+  mockedToken.mockResolvedValue('tok');
+});
+
+// ============================================================
+// 🚨 ¥300 連携特典 と backfill の順序 (2026-08-28)
+// ============================================================
+// 両者は同一 invocation の subrequest 予算 (無料プラン 50) を共有する。支配項は注文ごとの
+// addPurchaseEvent (~5 D1/新規適用) なので、注文の多い顧客 (= 定期便顧客はほぼ全員) では
+// backfill を先に走らせるとクーポン発行が「Too many subrequests」で無言で消える。
+// sub-link (App Proxy / magic-link) 経路は同じ危険を採点ループ HIGH として潰済みで、
+// OTP 経路にだけ保護が無かった (= 本番の第一候補 CTA がこちら)。
+describe('verify-code: 連携特典の発行を backfill より先に確定させる', () => {
+  const OK = { ok: true as const, customerId: '777', backfilled: 0, metafieldWritten: true };
+
+  it('service にインライン backfill をさせない (deferBackfillToCaller)', async () => {
+    mockedVerify.mockResolvedValue(OK);
+    const app = makeApp({ env: { MEMBER_BACKFILL_ENABLED: 'true' } });
+    await postJson(app, '/api/liff/link/verify-code', { email: 'a@x.com', code: '123456' });
+    expect(mockedVerify).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { deferBackfillToCaller: true },
+    );
+  });
+
+  it('🚨 backfill はクーポン発行が終わるまで始まらない', async () => {
+    let releaseIssue: (v: null) => void = () => {};
+    mockedVerify.mockResolvedValue(OK);
+    mockedIssueLinkReward.mockReturnValue(
+      new Promise<null>((resolve) => {
+        releaseIssue = resolve;
+      }),
+    );
+    const app = makeApp({ env: { MEMBER_BACKFILL_ENABLED: 'true' } });
+    const res = await postJson(app, '/api/liff/link/verify-code', { email: 'a@x.com', code: '123456' });
+    expect(res.status).toBe(200);
+    // 応答時点で発行はまだ走っている = backfill は 1 度も呼ばれていない
+    expect(mockedIssueLinkReward).toHaveBeenCalledTimes(1);
+    expect(mockedBackfill).not.toHaveBeenCalled();
+    expect(mockedToken).not.toHaveBeenCalled();
+    // 発行が終わって初めて backfill が動く
+    releaseIssue(null);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedBackfill).toHaveBeenCalledTimes(1);
+    expect(mockedBackfill.mock.calls[0][2]).toMatchObject({ customerId: '777', friendId: 'friend-1', maxPages: 2 });
+  });
+
+  it('発行が失敗しても backfill は走る (best-effort の連鎖を切らない)', async () => {
+    mockedVerify.mockResolvedValue(OK);
+    mockedIssueLinkReward.mockRejectedValue(new Error('boom'));
+    const app = makeApp({ env: { MEMBER_BACKFILL_ENABLED: 'true' } });
+    await postJson(app, '/api/liff/link/verify-code', { email: 'a@x.com', code: '123456' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedBackfill).toHaveBeenCalledTimes(1);
+  });
+
+  it('backfill gate off では token 取得の subrequest すら使わない', async () => {
+    mockedVerify.mockResolvedValue(OK);
+    const app = makeApp();
+    await postJson(app, '/api/liff/link/verify-code', { email: 'a@x.com', code: '123456' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedBackfill).not.toHaveBeenCalled();
+    expect(mockedToken).not.toHaveBeenCalled();
+  });
 });
 
 // ============================================================
@@ -133,11 +218,16 @@ describe('POST /api/liff/link/verify-code', () => {
     const app = makeApp({ liffUser: { lineUserId: 'U_x', friendId: 'f_x' } });
     const res = await postJson(app, '/api/liff/link/verify-code', { email: 'a@x.com', code: '123456' });
     expect(res.status).toBe(200);
-    const json = await res.json<{ success: boolean; data: { linked: boolean; customerId: string; backfilled: number } }>();
-    expect(json.data).toMatchObject({ linked: true, customerId: '777', backfilled: 2 });
-    expect(mockedVerify).toHaveBeenCalledWith(expect.anything(), {
-      friendId: 'f_x', lineUserId: 'U_x', email: 'a@x.com', code: '123456',
-    });
+    const json = await res.json<{ success: boolean; data: { linked: boolean; customerId: string; backfilled: number | null } }>();
+    // backfilled は応答後に waitUntil で走る (2026-08-28 に発行の後ろへ直列化) ため常に null。
+    // service の戻り (defer 時は 0) をそのまま返すと「0 件反映」の誤読を生む。
+    expect(json.data).toMatchObject({ linked: true, customerId: '777', backfilled: null });
+    expect(mockedVerify).toHaveBeenCalledWith(
+      expect.anything(),
+      { friendId: 'f_x', lineUserId: 'U_x', email: 'a@x.com', code: '123456' },
+      // 🚨 backfill を service にやらせない = ¥300 発行と subrequest 予算を食い合わせない
+      { deferBackfillToCaller: true },
+    );
   });
 
   it('invalid_code → 400 + attemptsRemaining passthrough', async () => {

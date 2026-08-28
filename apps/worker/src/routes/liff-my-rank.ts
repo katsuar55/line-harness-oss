@@ -16,9 +16,13 @@ import { parseSubscriptionRankFromTags } from '../services/subscription-rank.js'
 import { buildCartPermalink, buildDiscountApplyUrl } from '../services/cart-permalink.js';
 import { issueRankDiscountForFriend } from '../services/rank-discount-issuer.js';
 import { MIN_SUBTOTAL_JPY } from '../services/shopify-coupon-issuer.js';
+import { getActiveLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
 
 // 顧客向けストアフロント (= 公式ドメイン)。SHOPIFY_STORE_DOMAIN は Admin/API 用なので使わない。
 const STORE_DOMAIN = 'naturism-diet.com';
+// 最低購入金額の表示用ラベル。Workers ランタイムの Intl に依存させないため
+// toLocaleString は使わず千区切りを自前で作る (サーバ側で組み立てる文字列のため)。
+const MIN_SUBTOTAL_LABEL = MIN_SUBTOTAL_JPY.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 const QUICK_BUY_LIMIT = 3;
 
 /**
@@ -77,6 +81,19 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
   } catch {
     coupons = [];
   }
+
+  // ─── 連携特典 ¥300 を保有クーポンに合流させる (2026-08-28) ───
+  // 🚨 これが無いと、LINE 内メール OTP で連携した本人が特典を一度も見ない:
+  //   ① ホームの第一候補 CTA (openAccountLinkCard) は window.location.href でこの会員証へ
+  //      **フルページ遷移**する = ポータルの #link-coupon-card は破棄される
+  //   ② ¥300 は line_link_coupons にしか無く、上の一覧が読む shopify_coupon_assignments には
+  //      構造的に載らない → 「保有クーポン 0枚 / 利用できるクーポンはまだありません」と
+  //      **持っているのに無いと言う**状態だった (本番初実行の直前 2026-08-28 に発見)
+  // gate off では読まない (= portal-read と同じ扱い。kill switch で顧客画面からも消える)。
+  const linkRewardCoupon =
+    c.env.LINK_REWARD_ENABLED === 'true'
+      ? await getActiveLinkRewardCoupon(c.env.DB, liffUser.friendId)
+      : null;
   const p = resolved.progress;
 
   // ─── 3タップ購入 (= PR5-5b): ランク割引コード + cart permalink ───
@@ -198,14 +215,31 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
       official: snapshot
         ? { rankId: snapshot.rankId, period: snapshot.period, direction: snapshot.direction }
         : null,
-      // 保有クーポン (発行済み・未使用)
-      coupons: coupons.map((a) => ({
-        code: a.code ?? null,
-        title: a.title ?? null,
-        discountType: a.discount_type ?? null,
-        discountValue: a.discount_value ?? null,
-        expiresAt: a.expires_at ?? null,
-      })),
+      // 保有クーポン (発行済み・未使用)。連携特典は別台帳 (line_link_coupons) なので先頭に合流。
+      //   🚨 金額・期限は**台帳の実値のみ**を載せる (定数を書かない = portal-read と同じ規約)。
+      //   min ¥2,000 は callLinkDiscountCreate が実際に Shopify へ設定している値 (MIN_SUBTOTAL_JPY)。
+      coupons: [
+        ...(linkRewardCoupon
+          ? [
+              {
+                kind: 'link_reward',
+                code: linkRewardCoupon.code,
+                title: `🔗 連携特典（¥${MIN_SUBTOTAL_LABEL}以上のご注文で）`,
+                discountType: 'fixed_amount',
+                discountValue: linkRewardCoupon.discountValue,
+                expiresAt: linkRewardCoupon.expiresAt,
+              },
+            ]
+          : []),
+        ...coupons.map((a) => ({
+          kind: null,
+          code: a.code ?? null,
+          title: a.title ?? null,
+          discountType: a.discount_type ?? null,
+          discountValue: a.discount_value ?? null,
+          expiresAt: a.expires_at ?? null,
+        })),
+      ],
       // ランク表 (= 会員ランクについて accordion 用、 multi-brand 対応で defs 由来)
       ladder: NATURISM_RANK_DEFS.map((r) => ({
         id: r.id,
@@ -546,7 +580,9 @@ async function linkVerify(){
     if(res.status===200 && body && body.success){
       showToast('アカウント連携が完了しました');
       var card=document.getElementById('link-card'); if(card) card.style.display='none';
+      linkCouponPending = true;
       loadRank();
+      refreshLinkCouponAfterLink(0);
       return;
     }
     var err=body && body.error;
@@ -557,6 +593,41 @@ async function linkVerify(){
     linkMsg(msg, true);
   }catch(e){ linkMsg('通信エラーが発生しました', true); }
   finally{ setLinkBusy('link-verify-btn', false); }
+}
+
+// 連携特典 ¥300 の後追い取得 (2026-08-28)。
+// verify の HTTP 応答の**後**に waitUntil で Shopify 発行 → 台帳 INSERT が走るため、
+// 応答直後の loadRank() だけではまだ 0 枚。後追いしないと
+// **LINE 内メール OTP で連携した本人が特典を一度も見ない** (ポータル側の
+// refreshLinkCouponAfterLink と同じ役割・同じ階段)。gate off / 発行失敗なら API は
+// 連携特典を返さない = 何度呼んでも出ない (無害)。
+var LINK_COUPON_RETRY_MS = [1500, 4000, 9000];
+var linkCouponPending = false;
+function linkCouponVisible(){
+  return !!document.querySelector('#coupons-card [data-coupon-kind="link_reward"]');
+}
+function refreshLinkCouponAfterLink(attempt){
+  var n = attempt || 0;
+  if (linkCouponVisible()){ linkCouponPending = false; announceLinkCoupon(); return; }
+  if (n >= LINK_COUPON_RETRY_MS.length){
+    // 諦める (= 次に会員証を開いたときに出る)。「ご用意しています…」を残したままにしない。
+    linkCouponPending = false;
+    try { loadRank(); } catch (e) {}
+    return;
+  }
+  setTimeout(function(){
+    var p = null;
+    try { p = loadRank(); } catch (e) { p = null; }
+    var next = function(){
+      if (linkCouponVisible()){ linkCouponPending = false; announceLinkCoupon(); }
+      else { refreshLinkCouponAfterLink(n + 1); }
+    };
+    if (p && typeof p.then === 'function'){ p.then(next, next); } else { next(); }
+  }, LINK_COUPON_RETRY_MS[n]);
+}
+function announceLinkCoupon(){
+  // **金額は書かない** — 正はクーポン行 (台帳の実値)。ここに数字を置くと二重管理の嘘になる。
+  showToast('🎁 連携特典クーポンをお届けしました');
 }
 // ─── 連携解除 (2026-08-28) ───
 // 二段確認にする: 1 タップで消えると、ランクと注文履歴を意図せず失う事故になる。
@@ -720,12 +791,16 @@ function renderCoupons(d){
   var list = (d.coupons || []).filter(function(c){ return c && c.code; });
   var head = '<div class="flex items-center justify-between mb-3"><p class="text-sm font-bold text-gray-700">&#x1F39F;&#xFE0F; 保有クーポン</p><span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:#eef7f7;color:#0f766e">'+list.length+'枚</span></div>';
   if (list.length === 0){
-    card.innerHTML = head + '<p class="text-xs text-gray-400 text-center py-3">利用できるクーポンはまだありません</p>';
+    // 連携直後は発行 (waitUntil) 待ちなので「ありません」と断定しない (= 届く直前に否定する嘘)
+    card.innerHTML = head + (linkCouponPending
+      ? '<p class="text-xs text-gray-400 text-center py-3">特典クーポンをご用意しています…</p>'
+      : '<p class="text-xs text-gray-400 text-center py-3">利用できるクーポンはまだありません</p>');
     return;
   }
   var rows = list.map(function(c){
     var exp = fmtMd(c.expiresAt);
-    return '<div class="flex items-center gap-3 p-3 rounded-xl" style="background:linear-gradient(135deg,#f0fdfa,#faf5ff);border:1px solid #e2e8f0">' +
+    var kindAttr = c.kind ? ' data-coupon-kind="' + esc(c.kind) + '"' : '';
+    return '<div' + kindAttr + ' class="flex items-center gap-3 p-3 rounded-xl" style="background:linear-gradient(135deg,#f0fdfa,#faf5ff);border:1px solid #e2e8f0">' +
       '<div class="flex-1 min-w-0">' +
         '<p class="text-sm font-bold text-gray-800 truncate">'+esc(c.title || 'クーポン')+'</p>' +
         '<p class="text-xs font-bold mt-0.5" style="color:#0f766e">'+esc(couponValueLabel(c))+(exp ? ' <span class="text-gray-400 font-normal">/ '+esc(exp)+'まで</span>' : '')+'</p>' +

@@ -528,6 +528,51 @@ describe('verifyAccountLinkCode', () => {
     expect(db.friends[0].shopify_customer_id).toBe('777'); // link は成立
   });
 
+  // 🚨 2026-08-28: deferBackfillToCaller の回帰テスト。
+  //    route 側の「呼び出しに flag を渡している」テストだけだと、service がこの分岐を
+  //    無視するよう変えられても緑のままになる (= 呼び出し規約だけ守って中身が守らない)。
+  //    ここは **backfillImpl が 1 度も呼ばれないこと** を観測点にする。
+  it('🚨 deferBackfillToCaller=true → インライン backfill を呼ばない (呼び出し元が発行の後に走らせる)', async () => {
+    const db = makeDb([{ id: FRIEND_ID, line_user_id: LINE_ID, shopify_customer_id: null }]);
+    const env = { ...baseEnv(), DB: db };
+    await seedCode(db, env);
+    const backfill = okBackfill(3);
+    const r = await verifyAccountLinkCode(
+      env,
+      { friendId: FRIEND_ID, lineUserId: LINE_ID, email: EMAIL, code: '123456' },
+      {
+        now: () => NOW,
+        findCustomerImpl: vi.fn(async () => ({ customerId: '777' })),
+        setMetafieldImpl: vi.fn(async () => ({ ok: true, userErrors: [] as string[] })),
+        backfillImpl: backfill,
+        deferBackfillToCaller: true,
+      },
+    );
+    expect(r).toMatchObject({ ok: true, customerId: '777', backfilled: 0 });
+    expect(backfill).not.toHaveBeenCalled();
+    // 連携そのものは成立している (backfill を止めただけ)
+    expect(db.friends[0].shopify_customer_id).toBe('777');
+  });
+
+  it('deferBackfillToCaller 未指定は従来どおりインライン backfill する', async () => {
+    const db = makeDb([{ id: FRIEND_ID, line_user_id: LINE_ID, shopify_customer_id: null }]);
+    const env = { ...baseEnv(), DB: db };
+    await seedCode(db, env);
+    const backfill = okBackfill(3);
+    const r = await verifyAccountLinkCode(
+      env,
+      { friendId: FRIEND_ID, lineUserId: LINE_ID, email: EMAIL, code: '123456' },
+      {
+        now: () => NOW,
+        findCustomerImpl: vi.fn(async () => ({ customerId: '777' })),
+        setMetafieldImpl: vi.fn(async () => ({ ok: true, userErrors: [] as string[] })),
+        backfillImpl: backfill,
+      },
+    );
+    expect(backfill).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ ok: true, backfilled: 3 });
+  });
+
   it('backfill 失敗は best-effort (= link は成功、 backfilled=0)', async () => {
     const db = makeDb([{ id: FRIEND_ID, line_user_id: LINE_ID, shopify_customer_id: null }]);
     const env = { ...baseEnv(), DB: db };
