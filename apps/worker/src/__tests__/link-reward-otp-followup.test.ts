@@ -176,3 +176,62 @@ describe('inline script の配線', () => {
     expect(blockOf('function linkCouponVisible(){')).toBe(home);
   });
 });
+
+describe('loadRank の応答追い越し (Codex P2 / 2026-08-28)', () => {
+  // 正規表現に改行エスケープを書くと、生成側で潰れて「Unterminated regular expression」に
+  // なりやすい。ここは indexOf で素直に切り出す。
+  const loadRankSrc = (() => {
+    const start = src.indexOf('var loadRankSeq = 0;');
+    expect(start).toBeGreaterThan(-1);
+    const end = src.indexOf('\n}', src.indexOf('async function loadRank(){', start));
+    expect(end).toBeGreaterThan(start);
+    return src.slice(start, end + 2);
+  })();
+
+  /** 2 本の loadRank を投げ、応答の到着順を指定して描画結果を観測する */
+  async function raceRenders(arrival: Array<{ seq: number; coupons: unknown[] }>) {
+    const rendered: unknown[][] = [];
+    const resolvers: Array<(v: unknown) => void> = [];
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const factory = new Function(
+      'fetch', 'API_BASE', 'idToken', 'showError', 'renderAll',
+      loadRankSrc + '\nreturn loadRank;',
+    ) as (...a: unknown[]) => () => Promise<void>;
+    const loadRank = factory(
+      () => new Promise((resolve) => { resolvers.push(resolve); }),
+      '', '',
+      () => {},
+      (d: { coupons: unknown[] }) => rendered.push(d.coupons),
+    );
+    const p1 = loadRank(); // seq 1 (古い = 発行前)
+    const p2 = loadRank(); // seq 2 (新しい)
+    for (const step of arrival) {
+      resolvers[step.seq - 1]({
+        status: 200,
+        json: async () => ({ success: true, data: { coupons: step.coupons } }),
+      });
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    await Promise.all([p1, p2]);
+    return rendered;
+  }
+
+  it('🚨 古い応答が後から着いても、新しい応答の描画を上書きしない', async () => {
+    // これが無いと、いったん出た ¥300 が消えて「ありません」に戻る (= 直した嘘の再発)
+    const rendered = await raceRenders([
+      { seq: 2, coupons: [LINK_ROW] },
+      { seq: 1, coupons: [] },
+    ]);
+    expect(rendered).toHaveLength(1);
+    expect(rendered[0]).toEqual([LINK_ROW]);
+  });
+
+  it('最後に投げた応答は (古い応答が先に着いた場合でも) 反映される', async () => {
+    const rendered = await raceRenders([
+      { seq: 1, coupons: [] },
+      { seq: 2, coupons: [LINK_ROW] },
+    ]);
+    expect(rendered).toHaveLength(1);
+    expect(rendered[0]).toEqual([LINK_ROW]);
+  });
+});

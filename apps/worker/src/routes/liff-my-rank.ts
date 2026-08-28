@@ -899,16 +899,25 @@ function showError(msg){
   if (jp) document.getElementById('error-detail').textContent = jp;
 }
 
+// 🚨 応答の追い越し対策 (2026-08-28)。連携直後は loadRank が重なる
+// (成功分岐の即時 1 本 + 後追いの階段 1500/4000/9000ms)。遅い方が後に着くと、
+// **発行前のスナップショットで上書きされ、いったん出た ¥300 が消えて
+// 「利用できるクーポンはまだありません」に戻る** (= 直したはずの嘘が再発する)。
+// 最後に発行した要求以外の応答は捨てる。
+var loadRankSeq = 0;
 async function loadRank(){
+  var seq = ++loadRankSeq;
   try {
     var res = await fetch(API_BASE + '/api/liff/my-rank', { headers: idToken ? { 'Authorization': 'Bearer ' + idToken } : {} });
     var body = await res.json().catch(function(){ return null; });
+    if (seq !== loadRankSeq) return; // 追い越された = この応答は古い
     if (res.status !== 200 || !body || !body.success){
       showError(body && body.error ? body.error : null);
       return;
     }
     renderAll(body.data);
   } catch (e) {
+    if (seq !== loadRankSeq) return;
     showError(null);
   }
 }
