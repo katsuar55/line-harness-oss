@@ -1035,34 +1035,39 @@ function portalPage(
       <!-- Official Links -->
       <div class="card p-4">
         <p class="text-xs text-gray-500 font-bold mb-3">オフィシャルリンク</p>
+        <!-- 🚨 アイコンは絵文字の代用でなく **公式マーク** を使う (2026-08-31 Katsu 指示)。
+             各社のブランドマークは「自社の公式アカウントへ誘導するリンク」に使う限り
+             ガイドライン上の想定内。単色 (currentColor) にして地色だけブランド色にする。
+             ストアだけは他社マークではないので、実物のファビコンを R2 から出す
+             (Shopify CDN の URL は テーマ更新で ?v= が変わり切れるため取り込み済み)。 -->
         <div class="space-y-2">
-          <a href="https://naturism.jp" target="_blank" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
-            <span class="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center text-sm">🌿</span>
-            <div class="flex-1"><p class="text-sm font-bold text-gray-800">公式サイト</p><p class="text-xs text-gray-400">naturism.jp</p></div>
+          <!-- 公式サイト = オンラインストア。旧「公式サイト (naturism.jp)」は DNS 解決不能の
+               リンク切れ、旧「オンラインストア」は naturism-diet.com へ転送されるだけだったので
+               1 行に統合した (2026-08-31 Katsu 指示・実測で確認)。 -->
+          <a href="https://naturism-diet.com" target="_blank" rel="noopener" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+            <span class="w-8 h-8 rounded-full bg-white flex items-center justify-center overflow-hidden" style="border:1px solid #e2e8f0">
+              <img src="/images/brand-favicon-v1.png" alt="" width="24" height="24" style="width:24px;height:24px;object-fit:contain">
+            </span>
+            <div class="flex-1"><p class="text-sm font-bold text-gray-800">公式サイト</p><p class="text-xs text-gray-400">naturism-diet.com</p></div>
             <span class="text-gray-300 text-sm">→</span>
           </a>
-          <a href="https://xn-0ckn0a9fxa4a.myshopify.com" target="_blank" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
-            <span class="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-sm">🛒</span>
-            <div class="flex-1"><p class="text-sm font-bold text-gray-800">オンラインストア</p><p class="text-xs text-gray-400">Shopify公式ストア</p></div>
-            <span class="text-gray-300 text-sm">→</span>
-          </a>
-          <a href="https://www.instagram.com/naturism_supplement/" target="_blank" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
-            <span class="w-8 h-8 rounded-full bg-pink-100 flex items-center justify-center text-sm">📸</span>
+          <a href="https://www.instagram.com/naturism_supplement/" target="_blank" rel="noopener" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+            <span class="w-8 h-8 rounded-full flex items-center justify-center text-white" style="background:linear-gradient(45deg,#f09433,#e6683c 25%,#dc2743 50%,#cc2366 75%,#bc1888)"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 2.16c3.2 0 3.58.01 4.85.07 1.17.05 1.8.25 2.23.41.56.22.96.48 1.38.9.42.42.68.82.9 1.38.16.42.36 1.06.41 2.23.06 1.27.07 1.65.07 4.85s-.01 3.58-.07 4.85c-.05 1.17-.25 1.8-.41 2.23-.22.56-.48.96-.9 1.38-.42.42-.82.68-1.38.9-.42.16-1.06.36-2.23.41-1.27.06-1.65.07-4.85.07s-3.58-.01-4.85-.07c-1.17-.05-1.8-.25-2.23-.41-.56-.22-.96-.48-1.38-.9-.42-.42-.68-.82-.9-1.38-.16-.42-.36-1.06-.41-2.23C2.17 15.58 2.16 15.2 2.16 12s.01-3.58.07-4.85c.05-1.17.25-1.8.41-2.23.22-.56.48-.96.9-1.38.42-.42.82-.68 1.38-.9.42-.16 1.06-.36 2.23-.41C8.42 2.17 8.8 2.16 12 2.16zm0 5.68a4.16 4.16 0 100 8.32 4.16 4.16 0 000-8.32zm0 6.86a2.7 2.7 0 110-5.4 2.7 2.7 0 010 5.4zm5.3-7.02a.97.97 0 11-1.94 0 .97.97 0 011.94 0z"/></svg></span>
             <div class="flex-1"><p class="text-sm font-bold text-gray-800">Instagram</p><p class="text-xs text-gray-400">@naturism_supplement</p></div>
             <span class="text-gray-300 text-sm">→</span>
           </a>
-          <a href="https://x.com/naturism_diet" target="_blank" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
-            <span class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-sm">𝕏</span>
+          <a href="https://x.com/naturism_diet" target="_blank" rel="noopener" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+            <span class="w-8 h-8 rounded-full flex items-center justify-center text-white" style="background:#000"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M18.24 2.25h3.31l-7.23 8.26 8.5 11.24h-6.66l-5.21-6.82-5.96 6.82H1.68l7.73-8.84L1.25 2.25h6.83l4.71 6.23zm-1.16 17.52h1.83L7.08 4.13H5.11z"/></svg></span>
             <div class="flex-1"><p class="text-sm font-bold text-gray-800">X (Twitter)</p><p class="text-xs text-gray-400">@naturism_diet</p></div>
             <span class="text-gray-300 text-sm">→</span>
           </a>
-          <a href="https://www.tiktok.com/@naturism_official" target="_blank" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
-            <span class="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-sm text-white">♪</span>
+          <a href="https://www.tiktok.com/@naturism_official" target="_blank" rel="noopener" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+            <span class="w-8 h-8 rounded-full flex items-center justify-center text-white" style="background:#000"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M16.6 5.82A4.28 4.28 0 0115.54 3h-3.09v12.4a2.59 2.59 0 01-2.59 2.5 2.59 2.59 0 01-2.59-2.59 2.59 2.59 0 013.4-2.46V9.7a5.72 5.72 0 00-.81-.06A5.68 5.68 0 004.2 15.3a5.68 5.68 0 005.66 5.66 5.68 5.68 0 005.66-5.66V9.01a7.35 7.35 0 004.3 1.38V7.3a4.28 4.28 0 01-3.22-1.48z"/></svg></span>
             <div class="flex-1"><p class="text-sm font-bold text-gray-800">TikTok</p><p class="text-xs text-gray-400">@naturism_official</p></div>
             <span class="text-gray-300 text-sm">→</span>
           </a>
-          <a href="https://www.youtube.com/@naturism-diet" target="_blank" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
-            <span class="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center text-sm">▶</span>
+          <a href="https://www.youtube.com/@naturism-diet" target="_blank" rel="noopener" class="tap flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+            <span class="w-8 h-8 rounded-full flex items-center justify-center text-white" style="background:#FF0000"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M23.5 6.19a3.02 3.02 0 00-2.12-2.14C19.5 3.55 12 3.55 12 3.55s-7.5 0-9.38.5A3.02 3.02 0 00.5 6.19C0 8.08 0 12 0 12s0 3.92.5 5.81a3.02 3.02 0 002.12 2.14c1.88.5 9.38.5 9.38.5s7.5 0 9.38-.5a3.02 3.02 0 002.12-2.14C24 15.92 24 12 24 12s0-3.92-.5-5.81zM9.55 15.57V8.43L15.82 12z"/></svg></span>
             <div class="flex-1"><p class="text-sm font-bold text-gray-800">YouTube</p><p class="text-xs text-gray-400">@naturism-diet</p></div>
             <span class="text-gray-300 text-sm">→</span>
           </a>

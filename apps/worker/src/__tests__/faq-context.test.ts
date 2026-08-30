@@ -48,8 +48,8 @@ const throwingDb = {
 } as unknown as D1Database;
 
 describe('faq-context', () => {
-  it('DEFAULT_FAQ_ENTRIES は 21 件 (現行ハードコードと同数)', () => {
-    expect(DEFAULT_FAQ_ENTRIES).toHaveLength(21);
+  it('DEFAULT_FAQ_ENTRIES は 20 件 (現行ハードコードと同数)', () => {
+    expect(DEFAULT_FAQ_ENTRIES).toHaveLength(20);
   });
 
   it('buildFaqSection: ヘッダと「Q.質問→ 回答」形式', () => {
@@ -83,8 +83,11 @@ describe('faq-context', () => {
     ]);
     const s = await getFaqSection(db);
     expect(s).toContain('Q.カスタム質問→ カスタム回答');
-    // default の固定文 (芸能人) は含まない = 動的セットに置き換わっている
-    expect(s).not.toContain('Kep1er（公式ミューズ）');
+    // default の固定文は含まない = 動的セットに置き換わっている
+    // ⚠／ DEFAULT に **実在する** 文字列を使うこと。削除された行を指すと
+    //    not.toContain が常に真 = 検証が空になる (2026-08-31 の芸能人行削除で実際に起きた)
+    expect(getDefaultFaqSection()).toContain('ドン・キホーテ');
+    expect(s).not.toContain('ドン・キホーテ');
   });
 
   it('getFaqSection: 読込エラー (テーブル欠落等) でも throw せず DEFAULT に fallback', async () => {

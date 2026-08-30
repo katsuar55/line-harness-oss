@@ -49,7 +49,6 @@ export const DEFAULT_FAQ_ENTRIES: ReadonlyArray<FaqEntry> = [
   { category: 'support', question: '営業時間は？', answer: 'お問い合わせ受付は平日10:00〜17:00（土日祝・年末年始を除く）。電話 03-6411-5513' },
   { category: 'product', question: '1日いくら？', answer: 'Blue約¥64/日、Pink約¥75/日、Premium約¥149/日' },
   { category: 'usage', question: 'どのくらい続ければ？', answer: '個人差がありますが、毎日の習慣として3ヶ月程度の継続をおすすめしています' },
-  { category: 'product', question: '芸能人は？', answer: 'Kep1er（公式ミューズ）、ウィニー・ハーロウ、藤井夏恋、明日花キララ、田中里奈ほか' },
 ];
 
 const FAQ_HEADER = '## よくある質問（FAQ）';
