@@ -161,6 +161,24 @@ describe('OTP 成功時の後追い取得の配線', () => {
     expect(ok![0]).toContain('linkCouponPending = true');
   });
 
+  // 🚨 2026-08-31 採点ループ P2: 解除しても ¥300 の台帳は意図的に残り (二重発行防止の
+  //    冪等キー)、その表示は linked を条件にしない。よって **解除 → 再連携** の瞬間、
+  //    画面には前の描画の link_reward 行が残っている。状態をリセットせずに判定すると
+  //    「もう出ている」と誤読して階段が 0 回で終わり、「集計中…」が固着する。
+  it('🚨 再連携でも追従が動くよう、状態をリセットしてから始める', () => {
+    const ok = verifySrc.match(/if\(res\.status===200[\s\S]*?return;\n\s*\}/);
+    expect(ok).not.toBeNull();
+    const body = ok![0];
+    // 前回の連携で立った 3 つのフラグを畳む
+    expect(body).toContain('linkCouponAnnounced = false');
+    expect(body).toContain('linkCouponTimedOut = false');
+    // 未知のうちは「追いかける」側に倒す (false のままだと 0 回目で return する)
+    expect(body).toContain('lastImportPending = true');
+    // 判定は**新しい応答の後**。loadRank を投げっぱなしにして即判定しない
+    expect(body).toContain('firstLoad.then(startFollowUp, startFollowUp)');
+    expect(body).not.toMatch(/loadRank\(\);\s*\n\s*refreshLinkCouponAfterLink\(0\);/);
+  });
+
   it('後追いは階段状にリトライし、諦めたら pending を畳む', () => {
     expect(src).toContain('var LINK_COUPON_RETRY_MS = [1500, 4000, 9000, 20000];');
     const refresh = src.match(/function refreshLinkCouponAfterLink\(attempt\)\{[\s\S]*?\n\}/);

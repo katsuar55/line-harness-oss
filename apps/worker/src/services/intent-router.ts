@@ -300,7 +300,13 @@ export async function buildMessagesForIntentAsync(
         {
           type: 'flex',
           altText: `🎁 マイクーポン ${coupon.couponCode}`,
-          contents: buildMyCouponFlex(coupon.couponCode, coupon.discountValue),
+          // 🚨 期限と種別を**必ず渡す** (2026-08-31 採点ループ P1)。渡さないと Flex 側の
+        //    既定文言「発行から 7 日間有効 / (友だち限定)」が出て、¥300 連携特典 (30 日) を
+        //    23 日短く偽る。既存客は保有 1 枚 = この経路なので被害が既存客に偏る。
+        contents: buildMyCouponFlex(coupon.couponCode, coupon.discountValue, {
+          expiresAt: coupon.expiresAt,
+          label: coupon.label,
+        }),
         },
         // 5/26 user feedback: クーポンコードは copy したいので **別 text message として送る** (= reply 内、 push 0 通追加)
         // LINE では text message を長押しで copy 可能

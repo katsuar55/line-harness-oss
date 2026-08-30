@@ -29,6 +29,7 @@
 
 import type { LineClient, FlexContainer, Message } from '@line-crm/line-sdk';
 import { auditSystem } from './audit-logger.js';
+import { WELCOME_VALID_DAYS } from './shopify-coupon-issuer.js';
 
 const AGE_GROUPS = ['10s', '20s', '30s', '40s', '50s', '60s', '70+'] as const;
 type AgeGroup = (typeof AGE_GROUPS)[number];
@@ -202,14 +203,45 @@ export function buildProductCompareFlex(): FlexContainer {
  * 🚨 割引額は**台帳の値 (discountValueJpy) が唯一の正**。ここに定数を書かないこと
  *   (2026-08-24): 既発行の ¥300 券を持つ人にこの吹き出しが「500 円 OFF」と言ってしまう。
  *   額が取れないときは金額を出さず条件だけ伝える (既定額で埋めない)。
- *   期限の「7 日」は webhook の follow ハンドラが validDays:7 で発行しているのと対。
+ *
+ * 🚨 **期限と種別も同じ理由で定数にしない** (2026-08-31 採点ループ P1)。
+ *   「発行から 7 日間有効」「(友だち限定)」を直書きしていたため、トークの my_coupon が
+ *   3 台帳を見るようになった途端、**¥300 連携特典 (30 日) を「7 日間有効」と 23 日短く
+ *   偽り、種別も「友だち限定」と誤表示**するようになった。既存客は友だち追加特典が
+ *   期限切れで保有 1 枚 = この Flex 経路に入るため、**被害は既存客に偏る**。
+ *   期限は expiresAt (台帳の実値) を最優先。無ければ validDays。どちらも無ければ
+ *   **日数を主張しない** (既定で 7 を埋めると同じ事故が再発する)。
  */
 export function buildMyCouponFlex(
   couponCode: string | null,
   discountValueJpy?: number | null,
+  options?: {
+    /** 台帳の実期限 (ISO)。最優先 */
+    readonly expiresAt?: string | null;
+    /** 実期限が取れないときの発行日数 (発行側の定数を渡す) */
+    readonly validDays?: number | null;
+    /** 見出しの種別名 (例: 「アカウント連携特典」) */
+    readonly label?: string | null;
+  },
 ): FlexContainer {
   const rawValue = Number(discountValueJpy);
   const value = Number.isFinite(rawValue) && rawValue > 0 ? Math.round(rawValue) : null;
+  // 期限: 台帳の実値 > 発行日数 > 何も主張しない (定数で埋めない)
+  const expiryLine = (() => {
+    const iso = options?.expiresAt;
+    if (iso) {
+      const m = /(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+      if (m) {
+        return `${Number.parseInt(m[2], 10)}月${Number.parseInt(m[3], 10)}日まで有効 / naturism-diet.com`;
+      }
+    }
+    const days = Number(options?.validDays);
+    if (Number.isFinite(days) && days > 0) {
+      return `発行から ${Math.round(days)} 日間有効 / naturism-diet.com`;
+    }
+    return 'naturism-diet.com でご利用いただけます';
+  })();
+  const headerLine = options?.label ? `🎁 ${options.label}` : '🎁 マイクーポン (友だち限定)';
   const couponSection = couponCode
     ? [
         {
@@ -222,7 +254,7 @@ export function buildMyCouponFlex(
           contents: [
             { type: 'text' as const, text: 'クーポンコード', size: 'xxs' as const, color: '#92400e', align: 'center' as const },
             { type: 'text' as const, text: couponCode, size: 'xl' as const, weight: 'bold' as const, color: '#06C755', align: 'center' as const, margin: 'sm' as const },
-            { type: 'text' as const, text: '発行から 7 日間有効 / naturism-diet.com', size: 'xxs' as const, color: '#78350f', align: 'center' as const, wrap: true },
+            { type: 'text' as const, text: expiryLine, size: 'xxs' as const, color: '#78350f', align: 'center' as const, wrap: true },
           ],
         },
         // 利用条件は必ず併記する (2026-08-24): 全券共通の最低購入 ¥2,000 を書かないと
@@ -249,7 +281,7 @@ export function buildMyCouponFlex(
       backgroundColor: '#fef3c7',
       paddingAll: '14px',
       contents: [
-        { type: 'text', text: '🎁 マイクーポン (友だち限定)', size: 'sm', weight: 'bold', color: '#92400e', align: 'center' },
+        { type: 'text', text: headerLine, size: 'sm', weight: 'bold', color: '#92400e', align: 'center' },
       ],
     },
     body: {
@@ -405,7 +437,8 @@ export async function handleWelcomeAgeGroup(
     {
       type: 'flex',
       altText: 'マイクーポン (友だち限定)',
-      contents: buildMyCouponFlex(couponCode, couponValue),
+      // 友だち追加特典は 7 日。定数をここに書かず**発行側の値**を渡す
+      contents: buildMyCouponFlex(couponCode, couponValue, { validDays: WELCOME_VALID_DAYS }),
     },
   ];
   await lineClient.replyMessage(replyToken, messages);

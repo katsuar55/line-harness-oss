@@ -318,6 +318,64 @@ describe('intent-router — buildMessagesForIntentAsync (my_coupon)', () => {
     if (r[1]?.type === 'text') expect(r[1].text).toContain('NLINK-ABCD1234');
   });
 
+  // 🚨 2026-08-31 採点ループ P1: 1 枚のときの Flex は welcome 専用で、期限「発行から 7 日間有効」と
+  //    種別「(友だち限定)」が直書きだった。3 台帳を見るようにした途端、¥300 連携特典 (30 日) を
+  //    **23 日短く偽る**。既存客は友だち追加特典が期限切れで保有 1 枚 = この経路に入るため、
+  //    被害が既存客に偏る。観測点は **Flex の中身 (r[0])** — 前回はコード文字列しか見ておらず素通りした。
+  it('🚨 Flex が台帳の実期限と種別を出す (7 日を決め打ちしない)', async () => {
+    const db = ledgerDb({
+      link: {
+        coupon_code: 'NLINK-ABCD1234',
+        discount_value: 300,
+        discount_currency: 'JPY',
+        expires_at: '2026-09-27T23:59:59+09:00',
+      },
+    });
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    expect(r[0]?.type).toBe('flex');
+    const flex = JSON.stringify((r[0] as { contents: unknown }).contents);
+    expect(flex).toContain('9月27日まで有効');
+    expect(flex).toContain('アカウント連携特典');
+    // 嘘の 2 点が消えていること
+    expect(flex).not.toContain('7 日間有効');
+    expect(flex).not.toContain('友だち限定');
+  });
+
+  it('紹介特典 1 枚でも種別と期限が正しい (60 日券)', async () => {
+    const db = ledgerDb({
+      referral: {
+        coupon_code: 'NREF-EFGH5678',
+        discount_value: 500,
+        discount_currency: 'JPY',
+        expires_at: '2026-10-27T23:59:59+09:00',
+      },
+    });
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    const flex = JSON.stringify((r[0] as { contents: unknown }).contents);
+    expect(flex).toContain('10月27日まで有効');
+    expect(flex).toContain('ご紹介特典');
+    expect(flex).not.toContain('7 日間有効');
+  });
+
+  it('期限が無い券は日数を主張しない (既定の 7 日で埋めない)', async () => {
+    const db = ledgerDb({
+      link: { coupon_code: 'NLINK-NOEXP', discount_value: 300, discount_currency: 'JPY', expires_at: null },
+    });
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    const flex = JSON.stringify((r[0] as { contents: unknown }).contents);
+    expect(flex).not.toContain('日間有効');
+    expect(flex).toContain('naturism-diet.com');
+  });
+
   it('複数枚は 1 通に全部載せる (Flex 1 枚だと「1 枚しか無い」と誤読させる)', async () => {
     const db = ledgerDb({
       friend: { coupon_code: 'LINE-W', discount_value: 500, discount_currency: 'JPY', expires_at: '2026-09-04T23:59:59+09:00' },

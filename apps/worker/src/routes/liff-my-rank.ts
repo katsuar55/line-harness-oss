@@ -596,9 +596,22 @@ async function linkVerify(){
     if(res.status===200 && body && body.success){
       showToast('アカウント連携が完了しました');
       var card=document.getElementById('link-card'); if(card) card.style.display='none';
+      // 🚨 追従の状態を毎回リセットしてから始める (2026-08-31 採点ループ P2)。
+      //    解除しても ¥300 の台帳は意図的に残り (二重発行防止の冪等キー)、その表示は
+      //    linked を条件にしない。よって **解除 → 再連携** の瞬間、画面には前の描画の
+      //    link_reward 行が残っており、リセットしないと refreshLinkCouponAfterLink(0) が
+      //    「もう出ている」と誤判定して **0 回目で return** する。階段が 1 度も走らず、
+      //    直後の 1 本だけが取り込み中を描いて「集計中…」がセッション中固着する。
       linkCouponPending = true;
-      loadRank();
-      refreshLinkCouponAfterLink(0);
+      linkCouponAnnounced = false;
+      linkCouponTimedOut = false;
+      lastImportPending = true; // 未知のうちは「追いかける」側に倒す
+      // 🚨 判定は**新しい応答の後**に行う。古い DOM / 古いフラグで判断させない。
+      var firstLoad = null;
+      try { firstLoad = loadRank(); } catch (e) { firstLoad = null; }
+      var startFollowUp = function(){ refreshLinkCouponAfterLink(0); };
+      if (firstLoad && typeof firstLoad.then === 'function'){ firstLoad.then(startFollowUp, startFollowUp); }
+      else { startFollowUp(); }
       return;
     }
     var err=body && body.error;
