@@ -26,6 +26,17 @@ const root = dirname(fileURLToPath(import.meta.url));
 // テストが構造的に無力化する (= 変異を検出できない測定器になる)。読み込み時に正規化する。
 const src = readFileSync(join(root, '..', 'routes', 'liff-my-rank.ts'), 'utf8').replace(/\r\n/g, '\n');
 
+/**
+ * 🚨 行コメントを落としてから検証する (2026-08-31 mutation で SURVIVED した反省)。
+ * 実装から呼び出しを消しても、**説明コメントに同じ文字列が残っていれば** toContain が
+ * 通ってしまい、「配線が生きている」という検証が成立しなくなる。
+ * 実際 `refreshLinkCouponAfterLink(0)` はコメントにも書いてあり、M7 (後追いの起動を消す)
+ * を検出できていなかった。
+ */
+function code(text: string): string {
+  return text.replace(/\/\/[^\n]*/g, '');
+}
+
 function grab(re: RegExp, label: string): string {
   const m = src.match(re);
   if (!m) throw new Error(`${label} not found in liff-my-rank.ts`);
@@ -157,8 +168,10 @@ describe('OTP 成功時の後追い取得の配線', () => {
     // 200 成功分岐の中に居ること (失敗分岐に紛れていたら意味がない)
     const ok = verifySrc.match(/if\(res\.status===200[\s\S]*?return;\n\s*\}/);
     expect(ok).not.toBeNull();
-    expect(ok![0]).toContain('refreshLinkCouponAfterLink(0)');
-    expect(ok![0]).toContain('linkCouponPending = true');
+    // コメントを落としてから見る (コメントに同じ文字列が在ると配線が消えても通る)
+    const body = code(ok![0]);
+    expect(body).toContain('refreshLinkCouponAfterLink(0)');
+    expect(body).toContain('linkCouponPending = true');
   });
 
   // 🚨 2026-08-31 採点ループ P2: 解除しても ¥300 の台帳は意図的に残り (二重発行防止の
@@ -168,7 +181,7 @@ describe('OTP 成功時の後追い取得の配線', () => {
   it('🚨 再連携でも追従が動くよう、状態をリセットしてから始める', () => {
     const ok = verifySrc.match(/if\(res\.status===200[\s\S]*?return;\n\s*\}/);
     expect(ok).not.toBeNull();
-    const body = ok![0];
+    const body = code(ok![0]);
     // 前回の連携で立った 3 つのフラグを畳む
     expect(body).toContain('linkCouponAnnounced = false');
     expect(body).toContain('linkCouponTimedOut = false');
@@ -183,11 +196,12 @@ describe('OTP 成功時の後追い取得の配線', () => {
     expect(src).toContain('var LINK_COUPON_RETRY_MS = [1500, 4000, 9000, 20000];');
     const refresh = src.match(/function refreshLinkCouponAfterLink\(attempt\)\{[\s\S]*?\n\}/);
     expect(refresh).not.toBeNull();
-    expect(refresh![0]).toContain('n >= LINK_COUPON_RETRY_MS.length');
-    expect(refresh![0]).toContain('linkCouponPending = false');
-    expect(refresh![0]).toContain('loadRank()');
+    const rf = code(refresh![0]);
+    expect(rf).toContain('n >= LINK_COUPON_RETRY_MS.length');
+    expect(rf).toContain('linkCouponPending = false');
+    expect(rf).toContain('loadRank()');
     // 打ち切り時は断定に戻さず「時間がかかっています」へ切り替える
-    expect(refresh![0]).toContain('linkCouponTimedOut = true');
+    expect(rf).toContain('linkCouponTimedOut = true');
   });
 
   // 🚨 2026-08-28 採点ループ P1: クーポンだけを終了条件にすると、backfill も応答の後に
@@ -195,9 +209,10 @@ describe('OTP 成功時の後追い取得の配線', () => {
   it('🚨 クーポンが出ても取り込み中なら追い続ける (ランクが ¥0 で固着しない)', () => {
     const refresh = src.match(/function refreshLinkCouponAfterLink\(attempt\)\{[\s\S]*?\n\}/);
     expect(refresh).not.toBeNull();
-    expect(refresh![0]).toContain('if (got && !lastImportPending) return;');
+    const rf = code(refresh![0]);
+    expect(rf).toContain('if (got && !lastImportPending) return;');
     // 告知は 1 回だけ (追い続けても毎 tick トーストしない)
-    expect(refresh![0]).toContain('linkCouponAnnounced');
+    expect(rf).toContain('linkCouponAnnounced');
     // この画面に他の再取得トリガーが無いことも固定する (あるなら終了条件を緩めてよい)
     expect(src).not.toMatch(/addEventListener\('(visibilitychange|pageshow|focus)'/);
     expect(src).not.toContain('setInterval(');
