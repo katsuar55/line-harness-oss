@@ -31,6 +31,7 @@ interface LedgerRow {
  */
 function createLedgerDb(
   rows: Partial<Record<'friend' | 'link' | 'referral', LedgerRow | LedgerRow[] | Error | null>>,
+  seen?: string[],
 ): D1Database {
   const pick = (sql: string) => {
     if (sql.includes('line_friend_coupons')) return rows.friend ?? null;
@@ -46,7 +47,7 @@ function createLedgerDb(
   };
   return {
     prepare: (sql: string) => ({
-      bind: () => ({
+      bind: () => (seen?.push(sql), {
         all: async () => {
           const r = pick(sql);
           if (r instanceof Error) throw r;
@@ -56,6 +57,11 @@ function createLedgerDb(
         first: async () => {
           const r = pick(sql);
           if (r instanceof Error) throw r;
+          // 総数の問い合わせ (表示上限を超えたときだけ走る) は **全件** を数える
+          if (/SELECT\s+COUNT\(\*\)/i.test(sql)) {
+            const rows = r === null ? [] : Array.isArray(r) ? r : [r];
+            return { n: rows.length } as unknown as LedgerRow;
+          }
           return Array.isArray(r) ? (r[0] ?? null) : r;
         },
       }),
@@ -301,9 +307,13 @@ describe('ai-fact-context — 3 台帳のクーポン', () => {
   });
 
   it('listFriendActiveCoupons は台帳順に種別ラベルつきで返す', async () => {
-    const list = await listFriendActiveCoupons(createLedgerDb({ link: LINK, referral: REF }), 'f1');
-    expect(list.map((c) => c.label)).toEqual(['アカウント連携特典', 'ご紹介特典']);
-    expect(list.map((c) => c.couponCode)).toEqual(['NLINK-ABCD1234', 'NREF-EFGH5678']);
+    const { coupons, total } = await listFriendActiveCoupons(
+      createLedgerDb({ link: LINK, referral: REF }),
+      'f1',
+    );
+    expect(coupons.map((c) => c.label)).toEqual(['アカウント連携特典', 'ご紹介特典']);
+    expect(coupons.map((c) => c.couponCode)).toEqual(['NLINK-ABCD1234', 'NREF-EFGH5678']);
+    expect(total).toBe(2);
   });
 
   it('getFriendActiveCoupon は連携特典しか無くても null を返さない', async () => {
@@ -357,8 +367,51 @@ describe('ai-fact-context — 紹介特典は 1 人が複数枚', () => {
   });
 
   it('listFriendActiveCoupons も複数枚を返す', async () => {
-    const list = await listFriendActiveCoupons(createLedgerDb({ referral: [ref(1), ref(2)] }), 'f1');
-    expect(list).toHaveLength(2);
-    expect(list.every((c) => c.label === 'ご紹介特典')).toBe(true);
+    const { coupons, total } = await listFriendActiveCoupons(
+      createLedgerDb({ referral: [ref(1), ref(2)] }),
+      'f1',
+    );
+    expect(coupons).toHaveLength(2);
+    expect(total).toBe(2);
+    expect(coupons.every((c) => c.label === 'ご紹介特典')).toBe(true);
+  });
+});
+
+// 🚨 Codex P2 (2026-08-28): 固定上限 (20) で打ち切ると 21 枚持つ人には 20 と表示され、
+//    warn を出しても**顧客に見える数字は間違ったまま**。表示は有界にしつつ、
+//    枚数だけは COUNT で正確に取り直す設計にした。その配線を固定する。
+describe('ai-fact-context — 枚数だけは常に正確', () => {
+  const ref = (n: number) => ({
+    coupon_code: `NREF-${n}`,
+    discount_value: 500,
+    discount_currency: 'JPY',
+    expires_at: null,
+  });
+
+  it('表示上限以内なら COUNT を撃たない (無駄なクエリを増やさない)', () => {
+    const seen: string[] = [];
+    return getFriendCouponContext(createLedgerDb({ referral: [ref(1), ref(2)] }, seen), 'f1').then(
+      (text) => {
+        expect(text).toContain('(お持ちのクーポン 2 枚)');
+        expect(seen.some((q) => /SELECT\s+COUNT\(\*\)/i.test(q))).toBe(false);
+      },
+    );
+  });
+
+  it('🚨 表示上限を超えたら COUNT で正確な総数を出す (20 枚の壁を作らない)', async () => {
+    const seen: string[] = [];
+    const many = Array.from({ length: 30 }, (_, i) => ref(i + 1));
+    const text = await getFriendCouponContext(createLedgerDb({ referral: many }, seen), 'f1');
+    // 固定上限で切ると 20 になっていた数字
+    expect(text).toContain('(お持ちのクーポン 30 枚)');
+    expect(text).toContain('ほか 25 枚');
+    expect(seen.some((q) => /SELECT\s+COUNT\(\*\)/i.test(q))).toBe(true);
+  });
+
+  it('取得は有界のまま (30 枚あっても列挙は 5 件)', async () => {
+    const many = Array.from({ length: 30 }, (_, i) => ref(i + 1));
+    const { coupons, total } = await listFriendActiveCoupons(createLedgerDb({ referral: many }), 'f1');
+    expect(total).toBe(30);
+    expect(coupons.length).toBeLessThanOrEqual(6); // 表示上限 5 + 判定用 1
   });
 });

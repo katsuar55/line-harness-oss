@@ -283,8 +283,8 @@ export async function buildMessagesForIntentAsync(
     // 🚨 3 台帳すべてを見る (2026-08-28)。長らく友だち追加特典 (line_friend_coupons) だけを
     //    見ており、¥300 連携特典 / ¥500 紹介特典を**持っている顧客に「ございません」と断定**して
     //    いた。友だち追加特典は 7 日で切れるので、既存顧客ではほぼ確実にこの嘘を踏む。
-    const coupons = await listFriendActiveCoupons(ctx.db, ctx.friendId);
-    if (coupons.length === 0) {
+    const { coupons, total } = await listFriendActiveCoupons(ctx.db, ctx.friendId);
+    if (total === 0) {
       return [
         {
           type: 'text',
@@ -294,7 +294,7 @@ export async function buildMessagesForIntentAsync(
     }
     // 1 枚のときは従来どおり (Flex カード + コピー用 text)。複数枚は Flex が
     // 「1 枚しか無い」と誤読させるので、全部を 1 通の text で列挙する (reply は 5 通まで)。
-    if (coupons.length === 1) {
+    if (total === 1) {
       const coupon = coupons[0];
       return [
         {
@@ -322,14 +322,14 @@ export async function buildMessagesForIntentAsync(
       })
       .join('\n\n');
     const omitted =
-      coupons.length > shown.length
-        ? `\n\n▼ ほか ${coupons.length - shown.length}枚\nミニアプリのホームでご確認いただけます`
+      total > shown.length
+        ? `\n\n▼ ほか ${total - shown.length}枚\nミニアプリのホームでご確認いただけます`
         : '';
     return [
       {
         type: 'text',
         text:
-          `🎁 お持ちのクーポン ${coupons.length}枚\n\n${blocks}${omitted}\n\n` +
+          `🎁 お持ちのクーポン ${total}枚\n\n${blocks}${omitted}\n\n` +
           `↑ コードを長押しでコピーして公式ストアでご利用ください💝\n` +
           `※ ¥${MIN_SUBTOTAL_JPY.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')} 以上のご注文でご利用いただけます`,
       },

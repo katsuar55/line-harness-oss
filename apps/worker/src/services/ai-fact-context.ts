@@ -69,14 +69,24 @@ const COUPON_LEDGERS: ReadonlyArray<{ readonly table: string; readonly label: st
 ];
 
 /**
- * 1 台帳あたりの取得上限。
+ * 1 台帳あたりの取得枚数。表示上限 (CONTEXT_COUPON_LIMIT) + 1 だけ引く。
+ *
  * 🚨 **LIMIT 1 にしてはいけない** (2026-08-28 Codex P1): line_referral_coupons は
  * 「referrer は何度でも紹介でき、紹介先が購入するたびに ¥500」なので friend_id が UNIQUE でない。
- * 1 枚しか引かないと、リピート紹介者に対して**持っている枚数を過少申告**する
- * (= 「N 枚」がそのまま嘘になる)。friend_coupons / link_coupons は UNIQUE なので常に 1 枚。
- * 上限に達したら silent に切り捨てず warn を出す (CLAUDE.md「no silent caps」)。
+ * friend_coupons / link_coupons は UNIQUE なので常に 1 枚。
+ *
+ * 🚨 **固定上限で打ち切ると枚数が嘘になる** (2026-08-28 Codex P2): 上限を 20 にしても
+ * 21 枚持つ人には 20 と表示され、warn を出しても**顧客に見える数字は間違ったまま**。
+ * そこで「表示分 +1」だけ引き、+1 が返った (= まだ在る) ときだけ COUNT で**正確な総数**を取る。
+ * 通常は 1 台帳 1 クエリ、多枚数のときだけ +1 クエリ。行数は常に有界。
  */
-const LEDGER_FETCH_LIMIT = 20;
+const LEDGER_FETCH_LIMIT = CONTEXT_COUPON_LIMIT + 1;
+
+/** 台帳 1 つの取得結果。coupons は表示用 (有界)、total は**常に正確な総数**。 */
+interface LedgerResult {
+  readonly coupons: ActiveCoupon[];
+  readonly total: number;
+}
 
 /** 1 台帳から有効なクーポンを引く。失敗しても他の台帳を巻き込まない (fail-safe)。 */
 async function queryCouponLedger(
@@ -85,54 +95,68 @@ async function queryCouponLedger(
   label: string,
   friendId: string,
   nowIso: string,
-): Promise<ActiveCoupon[]> {
+): Promise<LedgerResult> {
+  const activeWhere = `WHERE friend_id = ? AND status = 'issued'
+           AND (expires_at IS NULL OR expires_at >= ?)`;
   try {
     const res = await db
       .prepare(
         `SELECT coupon_code, discount_value, discount_currency, expires_at
          FROM ${table}
-         WHERE friend_id = ? AND status = 'issued'
-           AND (expires_at IS NULL OR expires_at >= ?)
+         ${activeWhere}
          ORDER BY issued_at DESC LIMIT ${LEDGER_FETCH_LIMIT}`,
       )
       .bind(friendId, nowIso)
       .all<CouponRow>();
     const rows = res.results ?? [];
+    let total = rows.length;
     if (rows.length >= LEDGER_FETCH_LIMIT) {
-      console.warn(
-        `[ai-fact-context] coupon ledger ${table} hit fetch limit ${LEDGER_FETCH_LIMIT} for friend=${friendId} (枚数が過少申告になりうる)`,
-      );
+      // 表示上限を超えている = 「N 枚」を嘘にしないため正確な総数を取り直す
+      const c = await db
+        .prepare(`SELECT COUNT(*) AS n FROM ${table} ${activeWhere}`)
+        .bind(friendId, nowIso)
+        .first<{ n: number }>();
+      total = Math.max(total, Number(c?.n ?? total));
     }
-    return rows.map((row) => ({
-      couponCode: row.coupon_code,
-      discountValue: row.discount_value,
-      discountCurrency: row.discount_currency,
-      expiresAt: row.expires_at,
-      label,
-    }));
+    return {
+      coupons: rows.map((row) => ({
+        couponCode: row.coupon_code,
+        discountValue: row.discount_value,
+        discountCurrency: row.discount_currency,
+        expiresAt: row.expires_at,
+        label,
+      })),
+      total,
+    };
   } catch (err) {
     console.error(
       `[ai-fact-context] coupon ledger ${table} failed:`,
       err instanceof Error ? err.message : String(err),
     );
-    return [];
+    return { coupons: [], total: 0 };
   }
 }
 
 /**
- * friend が保有する有効なクーポンを全台帳から集めて返す (発行が新しい順ではなく台帳順)。
- * 1 つも無ければ空配列。台帳単位で fail-safe。
+ * friend が保有する有効なクーポンを全台帳から集めて返す (台帳順)。
+ *
+ * `coupons` は表示用なので**有界** (台帳ごとに CONTEXT_COUPON_LIMIT + 1 枚まで)。
+ * `total` は **常に正確な総数** — 「お持ちのクーポン N 枚」を嘘にしないため
+ * (2026-08-28 Codex P2)。台帳単位で fail-safe。
  */
 export async function listFriendActiveCoupons(
   db: D1Database,
   friendId: string,
-): Promise<ActiveCoupon[]> {
+): Promise<LedgerResult> {
   const nowIso = jstIsoFromDate(new Date());
-  const found: ActiveCoupon[] = [];
+  const coupons: ActiveCoupon[] = [];
+  let total = 0;
   for (const ledger of COUPON_LEDGERS) {
-    found.push(...(await queryCouponLedger(db, ledger.table, ledger.label, friendId, nowIso)));
+    const r = await queryCouponLedger(db, ledger.table, ledger.label, friendId, nowIso);
+    coupons.push(...r.coupons);
+    total += r.total;
   }
-  return found;
+  return { coupons, total };
 }
 
 /**
@@ -144,8 +168,8 @@ export async function getFriendActiveCoupon(
   db: D1Database,
   friendId: string,
 ): Promise<ActiveCoupon | null> {
-  const all = await listFriendActiveCoupons(db, friendId);
-  return all[0] ?? null;
+  const { coupons } = await listFriendActiveCoupons(db, friendId);
+  return coupons[0] ?? null;
 }
 
 /**
@@ -227,8 +251,8 @@ export async function getFriendCouponContext(
   try {
     // 🚨 3 台帳すべてを見る (2026-08-28)。友だち追加特典だけを見ていたため、¥300 連携特典 /
     //    ¥500 紹介特典を持つ顧客に「現在お持ちのクーポンはございません」と断定していた。
-    const coupons = await listFriendActiveCoupons(db, friendId);
-    if (coupons.length === 0) return '';
+    const { coupons, total } = await listFriendActiveCoupons(db, friendId);
+    if (total === 0) return '';
 
     // prompt 肥大化を防ぐため列挙は 5 枚まで。**枚数は実数を出す** (省略した分は明示する)。
     const shown = coupons.slice(0, CONTEXT_COUPON_LIMIT);
@@ -237,19 +261,17 @@ export async function getFriendCouponContext(
       const currency = c.discountCurrency === 'JPY' ? '¥' : c.discountCurrency + ' ';
       return `${i + 1}. ${c.label} — コード: ${c.couponCode} / 値引: ${currency}${c.discountValue} OFF / 有効期限: ${expiry}`;
     });
-    if (coupons.length > shown.length) {
-      lines.push(
-        `- ほか ${coupons.length - shown.length} 枚 (すべてミニアプリのホームでご確認いただけます)`,
-      );
+    if (total > shown.length) {
+      lines.push(`- ほか ${total - shown.length} 枚 (すべてミニアプリのホームでご確認いただけます)`);
     }
     // 🚨 利用条件は**この fact block に載せる**こと (2026-08-24)。system prompt 側のルール文だけだと
     //   LLM はデータ側を優先して転記し、最低購入が落ちた回答になる。値は発行側の定数が唯一の正。
     // 🚨 「併用できます」は**まだ書かない** — 流通中の旧コードへの遡及 op が未実施のため
     //   (docs/SPRINT_C_MAGIC_LINK_MAIL.md §6 / CLAUDE.md の順序厳守)。
     return (
-      `\n## あなた専用クーポン (有効)\n(お持ちのクーポン ${coupons.length} 枚)\n` +
+      `\n## あなた専用クーポン (有効)\n(お持ちのクーポン ${total} 枚)\n` +
       lines.join('\n') +
-      `\n- ご利用条件: ${coupons.length > 1 ? 'いずれも ' : ''}¥${formatThousands(MIN_SUBTOTAL_JPY)} 以上のご注文` +
+      `\n- ご利用条件: ${total > 1 ? 'いずれも ' : ''}¥${formatThousands(MIN_SUBTOTAL_JPY)} 以上のご注文` +
       `\n- 利用先: 公式ストア naturism-diet.com`
     );
   } catch (err) {
