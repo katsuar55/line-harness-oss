@@ -338,6 +338,30 @@ export async function backfillCustomerOrders(
 
 // ============================================================
 /**
+ * 「直近の連携解除より後」の記録だけを数えるための相関サブクエリ (2026-08-28 Codex P1)。
+ *
+ * 🚨 なぜ要るか: 連携解除 (#282) は member_purchase_events の friend_id / applied_at を戻し
+ * members の累計も 0 にするため、**再連携直後のランクは本当に ¥0 に戻る**。ところが
+ * audit_logs は設計どおり append-only で解除時も消さないので、「完了 audit が存在するか」
+ * だけで判定すると **前回の連携の完了記録**が当たってしまう。結果:
+ *   ① 顧客画面は「取り込み中」と言わず ¥0 のランクを断定する (この PR で潰した嘘が再発)
+ *   ② sweep がその friend を「完了済み」とみなして**二度と拾わない** = 再連携後に
+ *      インライン backfill が落ちると復旧経路が無い (#282 以来の既存の穴)
+ * しかも解除→再連携は **こちらから案内している復旧手順** なので、確実に踏む。
+ *
+ * `> ''` は「解除記録が無ければ全ての audit が対象」を意味する (COALESCE の既定)。
+ * created_at は JST ISO 文字列なので辞書順比較で正しい。target_id には
+ * idx_audit_logs_target があるので相関でも引ける。
+ */
+const SINCE_LAST_UNLINK = (friendCol: string) => `
+  a.created_at > COALESCE((
+    SELECT MAX(u.created_at) FROM audit_logs u
+     WHERE u.action = 'account_link.unlinked'
+       AND u.target_type = 'friend' AND u.target_id = ${friendCol}
+       AND u.result = 'success'
+  ), '')`;
+
+/**
  * この friend の「過去注文の取り込み」がまだ完了していないか (2026-08-28)。
  *
  * 🚨 なぜ顧客画面が要るか: 連携直後は member_purchase_events が 0 行なので、会員証は必ず
@@ -354,12 +378,13 @@ export async function isPurchaseImportPending(db: D1Database, friendId: string):
   try {
     const row = await db
       .prepare(
-        `SELECT 1 AS n FROM audit_logs
-          WHERE action = 'loyalty_purchase_backfill.completed'
-            AND target_type = 'friend' AND target_id = ? AND result = 'success'
+        `SELECT 1 AS n FROM audit_logs a
+          WHERE a.action = 'loyalty_purchase_backfill.completed'
+            AND a.target_type = 'friend' AND a.target_id = ? AND a.result = 'success'
+            AND ${SINCE_LAST_UNLINK('?')}
           LIMIT 1`,
       )
-      .bind(friendId)
+      .bind(friendId, friendId)
       .first<{ n: number }>();
     return !row;
   } catch (err) {
@@ -423,6 +448,10 @@ export interface BackfillSweepResult {
   readonly errors: number;
 }
 
+// 🚨 成功・失敗とも「直近の解除より後」に限定する (2026-08-28 Codex P1)。
+//    限定しないと、解除→再連携した friend は前回の完了 audit に当たって**二度と拾われない**
+//    (= 再連携後にインライン backfill が落ちるとランクが永久に ¥0 のまま)。
+//    失敗側も限定しないと、前回の連携で貯まった失敗が CAP を埋めて新しい連携を封じる。
 const SWEEP_PENDING_PREDICATE = `
   FROM friends f
  WHERE f.shopify_customer_id IS NOT NULL
@@ -430,11 +459,13 @@ const SWEEP_PENDING_PREDICATE = `
      SELECT 1 FROM audit_logs a
       WHERE a.action = 'loyalty_purchase_backfill.completed'
         AND a.target_type = 'friend' AND a.target_id = f.id AND a.result = 'success'
+        AND ${SINCE_LAST_UNLINK('f.id')}
    )
    AND (
-     SELECT COUNT(*) FROM audit_logs a2
-      WHERE a2.action = 'loyalty_purchase_backfill.completed'
-        AND a2.target_type = 'friend' AND a2.target_id = f.id AND a2.result = 'failure'
+     SELECT COUNT(*) FROM audit_logs a
+      WHERE a.action = 'loyalty_purchase_backfill.completed'
+        AND a.target_type = 'friend' AND a.target_id = f.id AND a.result = 'failure'
+        AND ${SINCE_LAST_UNLINK('f.id')}
    ) < ${SWEEP_FAILURE_CAP}`;
 
 export async function processMemberBackfillSweep(
