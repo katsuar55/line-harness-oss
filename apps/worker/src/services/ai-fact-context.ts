@@ -42,23 +42,44 @@ export interface ActiveCoupon {
   readonly discountValue: number;
   readonly discountCurrency: string;
   readonly expiresAt: string | null;
+  /** 顧客に見せる種別名 (例: 「アカウント連携特典」) */
+  readonly label: string;
 }
 
 /**
- * friend の active coupon を 1 件返す (= row 形式、 intent-router 等で再利用)。
- * 「active」 = status='issued' AND (expires_at IS NULL OR expires_at >= now)。
- * 失敗時 / 無い時は null (fail-safe)。
+ * 顧客が「自分のクーポン」と認識する 3 台帳 (2026-08-28)。
+ *
+ * 🚨 なぜ 3 つ要るか: ここは長らく line_friend_coupons (友だち追加特典) しか見ておらず、
+ * ¥300 連携特典 / ¥500 紹介特典を**持っている顧客に対して公式アカウントが
+ * 「現在お持ちのクーポンはございません」と断定**していた。友だち追加特典は 7 日で切れるので、
+ * 既存顧客 (= 連携を試す層) ではほぼ確実にこの嘘を踏む。
+ *
+ * 3 台帳とも列は同形 (coupon_code / discount_value / discount_currency / expires_at /
+ * status / issued_at / friend_id)、最低購入は 3 つとも ¥2,000。
+ *
+ * ⚠️ table 名は**この定数配列だけ**が供給源 (リクエスト由来の文字列は絶対に入れない)。
+ * ⚠️ 台帳ごとに独立の try/catch にする — 1 テーブルが未 migration でも他は返す
+ *    (UNION にすると 1 つ欠けた瞬間に全部が空になり、既存の友だち追加特典まで見えなくなる)。
  */
-export async function getFriendActiveCoupon(
+const COUPON_LEDGERS: ReadonlyArray<{ readonly table: string; readonly label: string }> = [
+  { table: 'line_friend_coupons', label: '友だち追加特典' },
+  { table: 'line_link_coupons', label: 'アカウント連携特典' },
+  { table: 'line_referral_coupons', label: 'ご紹介特典' },
+];
+
+/** 1 台帳から有効な 1 枚を引く。失敗しても他の台帳を巻き込まない (fail-safe)。 */
+async function queryCouponLedger(
   db: D1Database,
+  table: string,
+  label: string,
   friendId: string,
+  nowIso: string,
 ): Promise<ActiveCoupon | null> {
   try {
-    const nowIso = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, -1) + '+09:00';
     const row = await db
       .prepare(
         `SELECT coupon_code, discount_value, discount_currency, expires_at
-         FROM line_friend_coupons
+         FROM ${table}
          WHERE friend_id = ? AND status = 'issued'
            AND (expires_at IS NULL OR expires_at >= ?)
          ORDER BY issued_at DESC LIMIT 1`,
@@ -71,14 +92,45 @@ export async function getFriendActiveCoupon(
       discountValue: row.discount_value,
       discountCurrency: row.discount_currency,
       expiresAt: row.expires_at,
+      label,
     };
   } catch (err) {
     console.error(
-      '[ai-fact-context] getFriendActiveCoupon failed:',
+      `[ai-fact-context] coupon ledger ${table} failed:`,
       err instanceof Error ? err.message : String(err),
     );
     return null;
   }
+}
+
+/**
+ * friend が保有する有効なクーポンを全台帳から集めて返す (発行が新しい順ではなく台帳順)。
+ * 1 つも無ければ空配列。台帳単位で fail-safe。
+ */
+export async function listFriendActiveCoupons(
+  db: D1Database,
+  friendId: string,
+): Promise<ActiveCoupon[]> {
+  const nowIso = jstIsoFromDate(new Date());
+  const found: ActiveCoupon[] = [];
+  for (const ledger of COUPON_LEDGERS) {
+    const c = await queryCouponLedger(db, ledger.table, ledger.label, friendId, nowIso);
+    if (c) found.push(c);
+  }
+  return found;
+}
+
+/**
+ * friend の active coupon を 1 件返す (= row 形式、 intent-router 等で再利用)。
+ * 「active」 = status='issued' AND (expires_at IS NULL OR expires_at >= now)。
+ * 失敗時 / 無い時は null (fail-safe)。
+ */
+export async function getFriendActiveCoupon(
+  db: D1Database,
+  friendId: string,
+): Promise<ActiveCoupon | null> {
+  const all = await listFriendActiveCoupons(db, friendId);
+  return all[0] ?? null;
 }
 
 /**
@@ -158,24 +210,26 @@ export async function getFriendCouponContext(
   friendId: string,
 ): Promise<string> {
   try {
-    const nowIso = jstIsoFromDate(new Date());
-    const row = await db
-      .prepare(
-        `SELECT coupon_code, discount_value, discount_currency, expires_at
-         FROM line_friend_coupons
-         WHERE friend_id = ? AND status = 'issued'
-           AND (expires_at IS NULL OR expires_at >= ?)
-         ORDER BY issued_at DESC LIMIT 1`,
-      )
-      .bind(friendId, nowIso)
-      .first<CouponRow>();
-    if (!row) return '';
+    // 🚨 3 台帳すべてを見る (2026-08-28)。友だち追加特典だけを見ていたため、¥300 連携特典 /
+    //    ¥500 紹介特典を持つ顧客に「現在お持ちのクーポンはございません」と断定していた。
+    const coupons = await listFriendActiveCoupons(db, friendId);
+    if (coupons.length === 0) return '';
 
-    const expiry = row.expires_at ? formatJstDate(row.expires_at) + ' まで有効' : '無期限';
-    const currency = row.discount_currency === 'JPY' ? '¥' : row.discount_currency + ' ';
+    const lines = coupons.map((c, i) => {
+      const expiry = c.expiresAt ? formatJstDate(c.expiresAt) + ' まで有効' : '無期限';
+      const currency = c.discountCurrency === 'JPY' ? '¥' : c.discountCurrency + ' ';
+      return `${i + 1}. ${c.label} — コード: ${c.couponCode} / 値引: ${currency}${c.discountValue} OFF / 有効期限: ${expiry}`;
+    });
     // 🚨 利用条件は**この fact block に載せる**こと (2026-08-24)。system prompt 側のルール文だけだと
     //   LLM はデータ側を優先して転記し、最低購入が落ちた回答になる。値は発行側の定数が唯一の正。
-    return `\n## あなた専用クーポン (有効)\n- コード: ${row.coupon_code}\n- 値引: ${currency}${row.discount_value} OFF\n- 有効期限: ${expiry}\n- ご利用条件: ¥${MIN_SUBTOTAL_JPY.toLocaleString('en-US')} 以上のご注文\n- 利用先: 公式ストア naturism-diet.com`;
+    // 🚨 「併用できます」は**まだ書かない** — 流通中の旧コードへの遡及 op が未実施のため
+    //   (docs/SPRINT_C_MAGIC_LINK_MAIL.md §6 / CLAUDE.md の順序厳守)。
+    return (
+      `\n## あなた専用クーポン (有効)\n(お持ちのクーポン ${coupons.length} 枚)\n` +
+      lines.join('\n') +
+      `\n- ご利用条件: ${coupons.length > 1 ? 'いずれも ' : ''}¥${formatThousands(MIN_SUBTOTAL_JPY)} 以上のご注文` +
+      `\n- 利用先: 公式ストア naturism-diet.com`
+    );
   } catch (err) {
     console.error(
       '[ai-fact-context] getFriendCouponContext failed:',
@@ -189,6 +243,11 @@ export async function getFriendCouponContext(
 // helpers
 // ============================================================
 
+/** 千区切り。Workers ランタイムの Intl に依存させないため toLocaleString は使わない。 */
+function formatThousands(n: number): string {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
 /** Date → JST '+09:00' suffix の ISO 8601 string (= D1 TEXT timestamps と整合) */
 function jstIsoFromDate(date: Date): string {
   const jstMs = date.getTime() + 9 * 60 * 60 * 1000;
@@ -196,7 +255,7 @@ function jstIsoFromDate(date: Date): string {
 }
 
 /** ISO 8601 timestamp → '6月15日' 等の表示用 string (= 年は省略、 月日のみ) */
-function formatJstDate(iso: string | null): string {
+export function formatJstDate(iso: string | null): string {
   if (!iso) return '日時未定';
   const match = /(\d{4})-(\d{2})-(\d{2})/.exec(iso);
   if (!match) return iso;

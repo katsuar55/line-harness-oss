@@ -132,7 +132,7 @@ describe('連携直後の空状態 (発行は waitUntil で応答の後)', () =>
 
   it('打ち切り後も断定に戻さない (発行失敗と発行中は画面で区別できない)', () => {
     const html = render([], { timedOut: true });
-    expect(html).toContain('特典クーポンの反映に時間がかかっています');
+    expect(html).toContain('特典クーポンがまだ届いていません');
     expect(html).not.toContain('利用できるクーポンはまだありません');
     expect(html).not.toContain('0枚');
   });
@@ -280,5 +280,57 @@ describe('loadRank の応答追い越し (Codex P2 / 2026-08-28)', () => {
     ]);
     expect(rendered).toHaveLength(1);
     expect(rendered[0]).toEqual([LINK_ROW]);
+  });
+});
+
+// ============================================================
+// 発行に失敗したときの復旧導線 (2026-08-28 Katsu 指示)
+// ============================================================
+// 画面では「発行中」と「発行失敗」を区別できない (証跡は audit_logs だけ)。
+// 台帳が空のままなら「解除 → 再連携」で冪等チェックが空振りして再発行されるので、
+// 打ち切り後はその手順へ案内する。ただし解除は会員ランク表示を失うため、
+// ボタンは**既存の二段確認を開くだけ**にする。
+describe('¥300 が届かなかったときの復旧導線', () => {
+  it('打ち切り後の空状態に復旧の案内とボタンが出る', () => {
+    const html = render([], { timedOut: true });
+    expect(html).toContain('特典クーポンがまだ届いていません');
+    expect(html).toContain('連携をやり直すと再発行されます');
+    expect(html).toContain('連携をやり直す方法を見る');
+    // LIFF ルール: onclick には**名前付き関数の呼び出しだけ**を書く (引用符ネスト禁止)
+    expect(html).toContain('onclick="showRelinkHelp()"');
+  });
+
+  it('発行中・通常時には復旧導線を出さない (不安を煽らない)', () => {
+    expect(render([], { pending: true })).not.toContain('連携をやり直す');
+    expect(render([], {})).not.toContain('連携をやり直す');
+    expect(render([LINK_ROW], {})).not.toContain('連携をやり直す');
+  });
+
+  it('🚨 showRelinkHelp は解除しない — 二段確認を開くだけ', () => {
+    const fnSrc = (() => {
+      const start = src.indexOf('function showRelinkHelp(){');
+      expect(start).toBeGreaterThan(-1);
+      const end = src.indexOf('\n}', start);
+      return src.slice(start, end + 2);
+    })();
+    // 解除 API も解除関数も呼ばない
+    expect(fnSrc).not.toContain('unlinkAccount');
+    expect(fnSrc).not.toContain('/api/liff/link/unlink');
+
+    const els: Record<string, { style: { display: string }; scrollIntoView?: () => void }> = {
+      'unlink-open': { style: { display: 'block' } },
+      'unlink-confirm': { style: { display: 'none' } },
+      'link-card': { style: { display: 'block' }, scrollIntoView: () => { scrolled = true; } },
+    };
+    let scrolled = false;
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const factory = new Function('document', fnSrc + '\nreturn showRelinkHelp;') as (
+      d: unknown,
+    ) => () => void;
+    factory({ getElementById: (id: string) => els[id] ?? null })();
+
+    expect(els['unlink-confirm'].style.display).toBe('block'); // 確認が開く
+    expect(els['unlink-open'].style.display).toBe('none');     // トグルの整合
+    expect(scrolled).toBe(true);                                // その場所まで運ぶ
   });
 });

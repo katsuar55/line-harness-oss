@@ -656,6 +656,19 @@ function announceLinkCoupon(){
   // **金額は書かない** — 正はクーポン行 (台帳の実値)。ここに数字を置くと二重管理の嘘になる。
   showToast('🎁 連携特典クーポンをお届けしました');
 }
+// 連携特典が届かなかったときの復旧導線 (2026-08-28)。
+// 🚨 ここでは解除しない — 解除は会員ランク表示を失うので、既存の二段確認を開いて
+//    「何が起きるか」を読んでもらってから本人に決めてもらう。
+function showRelinkHelp(){
+  var open = document.getElementById('unlink-open');
+  var confirm = document.getElementById('unlink-confirm');
+  if (confirm) confirm.style.display = 'block';
+  if (open) open.style.display = 'none';
+  var card = document.getElementById('link-card');
+  if (card && card.scrollIntoView) {
+    try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { card.scrollIntoView(); }
+  }
+}
 // ─── 連携解除 (2026-08-28) ───
 // 二段確認にする: 1 タップで消えると、ランクと注文履歴を意図せず失う事故になる。
 // 文言は「何が起きるか」を具体的に書く (「解除します」だけだと何を失うか分からない)。
@@ -824,12 +837,21 @@ function renderCoupons(d){
   if (list.length === 0){
     // 連携直後は発行 (waitUntil) 待ちなので「ありません」と断定しない (= 届く直前に否定する嘘)。
     // 打ち切り後も断定に戻さない — 失敗と発行中を画面で区別できないため (audit_logs が唯一の証跡)。
-    var emptyText = linkCouponPending
-      ? '特典クーポンをご用意しています…'
-      : (linkCouponTimedOut
-        ? '特典クーポンの反映に時間がかかっています。しばらくしてからもう一度お開きください'
-        : '利用できるクーポンはまだありません');
-    card.innerHTML = head + '<p class="text-xs text-gray-400 text-center py-3">'+emptyText+'</p>';
+    var emptyHtml;
+    if (linkCouponPending){
+      emptyHtml = '<p class="text-xs text-gray-400 text-center py-3">特典クーポンをご用意しています…</p>';
+    } else if (linkCouponTimedOut){
+      // 発行が失敗したときの復旧口。台帳が空なら「解除 → 再連携」で冪等チェックが
+      // 空振りして再発行される (#282 の解除機能)。ただし解除は会員ランク表示を失うので、
+      // このボタンは**既存の二段確認を開くだけ**にする (ここでは解除しない)。
+      emptyHtml =
+        '<p class="text-xs text-gray-500 text-center pt-3">特典クーポンがまだ届いていません</p>' +
+        '<p class="text-[11px] text-gray-400 text-center mt-1.5 leading-relaxed">ミニアプリを開き直すと表示されることがあります。<br>それでも表示されない場合は、連携をやり直すと再発行されます。</p>' +
+        '<button type="button" onclick="showRelinkHelp()" class="tap w-full text-xs font-bold py-3 rounded-xl mt-3" style="background:#f8fafc;border:1px solid #e2e8f0;color:#0f766e">連携をやり直す方法を見る</button>';
+    } else {
+      emptyHtml = '<p class="text-xs text-gray-400 text-center py-3">利用できるクーポンはまだありません</p>';
+    }
+    card.innerHTML = head + emptyHtml;
     return;
   }
   var rows = list.map(function(c){

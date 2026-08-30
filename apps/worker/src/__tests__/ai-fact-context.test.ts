@@ -11,8 +11,45 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   getActiveBroadcastsContext,
   getFriendCouponContext,
+  getFriendActiveCoupon,
+  listFriendActiveCoupons,
   __test__,
 } from '../services/ai-fact-context.js';
+
+interface LedgerRow {
+  coupon_code: string;
+  discount_value: number;
+  discount_currency: string;
+  expires_at: string | null;
+}
+
+/**
+ * 台帳ごとに別の行を返す mock (2026-08-28)。
+ * 🚨 全 prepare が同じ stmt を返す mock だと、3 台帳が**同じ 1 枚を 3 回**返してしまい、
+ *    「3 台帳を見ている」ことも「台帳ごとに fail-safe」なことも検証できない。
+ */
+function createLedgerDb(
+  rows: Partial<Record<'friend' | 'link' | 'referral', LedgerRow | Error | null>>,
+): D1Database {
+  const pick = (sql: string) => {
+    if (sql.includes('line_friend_coupons')) return rows.friend ?? null;
+    if (sql.includes('line_link_coupons')) return rows.link ?? null;
+    if (sql.includes('line_referral_coupons')) return rows.referral ?? null;
+    return null;
+  };
+  return {
+    prepare: (sql: string) => ({
+      bind: () => ({
+        first: async () => {
+          const r = pick(sql);
+          if (r instanceof Error) throw r;
+          return r;
+        },
+        all: async () => ({ results: [] }),
+      }),
+    }),
+  } as unknown as D1Database;
+}
 
 interface MockStmt {
   bind: ReturnType<typeof vi.fn>;
@@ -110,49 +147,43 @@ describe('ai-fact-context — getFriendCouponContext', () => {
   });
 
   it('returns formatted section with coupon info when active coupon exists', async () => {
-    stmt.first.mockResolvedValue({
-      coupon_code: 'LINE-ABC12345',
-      discount_value: 500,
-      discount_currency: 'JPY',
-      expires_at: '2026-05-27T23:59:59+09:00',
+    const db = createLedgerDb({
+      friend: {
+        coupon_code: 'LINE-ABC12345',
+        discount_value: 500,
+        discount_currency: 'JPY',
+        expires_at: '2026-05-27T23:59:59+09:00',
+      },
     });
-    const db = createMockDb(stmt);
     const text = await getFriendCouponContext(db, 'friend-1');
     expect(text).toContain('## あなた専用クーポン');
     expect(text).toContain('LINE-ABC12345');
     expect(text).toContain('¥500 OFF');
     expect(text).toContain('5月27日 まで有効');
     expect(text).toContain('naturism-diet.com');
+    // 最低購入は fact block 側に載せる (system prompt のルール文だけだと落ちる)
+    expect(text).toContain('¥2,000 以上のご注文');
   });
 
   it('returns empty string when no active coupon', async () => {
-    stmt.first.mockResolvedValue(null);
-    const db = createMockDb(stmt);
+    const db = createLedgerDb({});
     const text = await getFriendCouponContext(db, 'friend-no-coupon');
     expect(text).toBe('');
   });
 
   it('handles coupon without expiry (= 無期限)', async () => {
-    stmt.first.mockResolvedValue({
-      coupon_code: 'LINE-XYZ',
-      discount_value: 1000,
-      discount_currency: 'JPY',
-      expires_at: null,
+    const db = createLedgerDb({
+      friend: { coupon_code: 'LINE-XYZ', discount_value: 1000, discount_currency: 'JPY', expires_at: null },
     });
-    const db = createMockDb(stmt);
     const text = await getFriendCouponContext(db, 'friend-1');
     expect(text).toContain('LINE-XYZ');
     expect(text).toContain('無期限');
   });
 
   it('handles non-JPY currency', async () => {
-    stmt.first.mockResolvedValue({
-      coupon_code: 'LINE-USD',
-      discount_value: 10,
-      discount_currency: 'USD',
-      expires_at: null,
+    const db = createLedgerDb({
+      friend: { coupon_code: 'LINE-USD', discount_value: 10, discount_currency: 'USD', expires_at: null },
     });
-    const db = createMockDb(stmt);
     const text = await getFriendCouponContext(db, 'friend-1');
     expect(text).toContain('USD 10 OFF');
   });
@@ -187,5 +218,84 @@ describe('ai-fact-context — helpers', () => {
   it('constants are sane (= broadcasts window 1 week + limit 3)', () => {
     expect(__test__.ACTIVE_BROADCAST_WINDOW_DAYS).toBe(7);
     expect(__test__.BROADCAST_LIMIT).toBe(3);
+  });
+});
+
+// ============================================================
+// 🚨 3 台帳を見る (2026-08-28)
+// ============================================================
+// 長らく line_friend_coupons だけを見ており、¥300 連携特典 / ¥500 紹介特典を**持っている顧客に
+// 対して公式アカウントが「現在お持ちのクーポンはございません」と断定**していた。
+// 友だち追加特典は 7 日で切れるので、既存顧客 (= 連携を試す層) ではほぼ確実に踏む。
+describe('ai-fact-context — 3 台帳のクーポン', () => {
+  const LINK = {
+    coupon_code: 'NLINK-ABCD1234',
+    discount_value: 300,
+    discount_currency: 'JPY',
+    expires_at: '2026-09-27T23:59:59+09:00',
+  };
+  const REF = {
+    coupon_code: 'NREF-EFGH5678',
+    discount_value: 500,
+    discount_currency: 'JPY',
+    expires_at: null,
+  };
+  const WELCOME = {
+    coupon_code: 'LINE-IJKL9012',
+    discount_value: 500,
+    discount_currency: 'JPY',
+    expires_at: '2026-09-04T23:59:59+09:00',
+  };
+
+  it('🚨 連携特典しか持っていなくても「ございません」にならない', async () => {
+    const text = await getFriendCouponContext(createLedgerDb({ link: LINK }), 'f1');
+    expect(text).not.toBe('');
+    expect(text).toContain('NLINK-ABCD1234');
+    expect(text).toContain('アカウント連携特典');
+    expect(text).toContain('¥300 OFF');
+  });
+
+  it('紹介特典しか持っていなくても出る', async () => {
+    const text = await getFriendCouponContext(createLedgerDb({ referral: REF }), 'f1');
+    expect(text).toContain('NREF-EFGH5678');
+    expect(text).toContain('ご紹介特典');
+  });
+
+  it('🚨 合成: 3 枚持っていたら 3 枚とも種別つきで載り、枚数も一致する', async () => {
+    const text = await getFriendCouponContext(
+      createLedgerDb({ friend: WELCOME, link: LINK, referral: REF }),
+      'f1',
+    );
+    expect(text).toContain('(お持ちのクーポン 3 枚)');
+    expect(text).toContain('1. 友だち追加特典 — コード: LINE-IJKL9012');
+    expect(text).toContain('2. アカウント連携特典 — コード: NLINK-ABCD1234');
+    expect(text).toContain('3. ご紹介特典 — コード: NREF-EFGH5678');
+    expect(text).toContain('いずれも ¥2,000 以上のご注文');
+    // 🚨 「併用できます」は遡及 op が済むまで**書かない** (CLAUDE.md の順序厳守)
+    expect(text).not.toContain('併用');
+  });
+
+  it('🚨 1 台帳が落ちても他の台帳は返る (UNION にしない理由)', async () => {
+    const text = await getFriendCouponContext(
+      createLedgerDb({ friend: new Error('no such table'), link: LINK }),
+      'f1',
+    );
+    expect(text).toContain('NLINK-ABCD1234');
+    expect(text).toContain('(お持ちのクーポン 1 枚)');
+  });
+
+  it('全台帳が空なら空文字 (= AI は「ございません」と答えてよい)', async () => {
+    expect(await getFriendCouponContext(createLedgerDb({}), 'f1')).toBe('');
+  });
+
+  it('listFriendActiveCoupons は台帳順に種別ラベルつきで返す', async () => {
+    const list = await listFriendActiveCoupons(createLedgerDb({ link: LINK, referral: REF }), 'f1');
+    expect(list.map((c) => c.label)).toEqual(['アカウント連携特典', 'ご紹介特典']);
+    expect(list.map((c) => c.couponCode)).toEqual(['NLINK-ABCD1234', 'NREF-EFGH5678']);
+  });
+
+  it('getFriendActiveCoupon は連携特典しか無くても null を返さない', async () => {
+    const c = await getFriendActiveCoupon(createLedgerDb({ link: LINK }), 'f1');
+    expect(c?.couponCode).toBe('NLINK-ABCD1234');
   });
 });
