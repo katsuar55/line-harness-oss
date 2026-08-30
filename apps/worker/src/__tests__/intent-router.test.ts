@@ -251,7 +251,10 @@ describe('intent-router — buildMessagesForIntentAsync (my_coupon)', () => {
           all: async <T,>(): Promise<{ results: T[] }> => {
             const r = pick(sql);
             if (r === null) return { results: [] as T[] };
-            return { results: (Array.isArray(r) ? r : [r]) as T[] };
+            const rows = Array.isArray(r) ? r : [r];
+            // 🚨 SQL の LIMIT を実際に効かせる (無視すると「LIMIT 1 に戻す」変異を検出できない)
+            const m = sql.match(/LIMIT\s+(\d+)/i);
+            return { results: (m ? rows.slice(0, Number(m[1])) : rows) as T[] };
           },
           first: async <T,>(): Promise<T | null> => {
             const r = pick(sql);

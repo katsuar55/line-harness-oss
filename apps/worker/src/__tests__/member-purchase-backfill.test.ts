@@ -436,7 +436,9 @@ describe('processMemberBackfillSweep — 対象選定と実行', () => {
     );
     const predicateSql = seen.find((s) => s.includes('LIMIT 1')) ?? '';
     // 解除時刻より後、という条件が成功側と失敗側の**両方**に入っていること
-    expect(predicateSql).toContain("u.action = 'account_link.unlinked'");
+    // 境界の正は**解除の batch 内**で書かれる unlink_boundary (worker 側の unlinked は best-effort)。
+    // 旧記録との互換のため両方見る。
+    expect(predicateSql).toContain("u.action IN ('account_link.unlink_boundary', 'account_link.unlinked')");
     const occurrences = predicateSql.split('MAX(u.created_at)').length - 1;
     expect(occurrences).toBe(2);
     // 解除記録が無い friend を弾かないための既定値
@@ -545,7 +547,7 @@ describe('isPurchaseImportPending', () => {
     await isPurchaseImportPending(db, 'f-target');
     const sql = sqls[0] ?? '';
     expect(sql).toContain("a.action = 'loyalty_purchase_backfill.completed'");
-    expect(sql).toContain("u.action = 'account_link.unlinked'");
+    expect(sql).toContain("u.action IN ('account_link.unlink_boundary', 'account_link.unlinked')");
     expect(sql).toContain('MAX(u.created_at)');
     // 解除記録が無い friend を弾かないための既定値
     expect(sql).toContain("), '')");

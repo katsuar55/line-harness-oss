@@ -38,6 +38,12 @@ function createLedgerDb(
     if (sql.includes('line_referral_coupons')) return rows.referral ?? null;
     return null;
   };
+  // 🚨 偽 DB は **SQL の LIMIT を実際に効かせる** (2026-08-28 mutation で SURVIVED した反省)。
+  //    無視すると「LIMIT 1 に戻す」変異をテストが検出できず、実装ではなく偽物を検証してしまう。
+  const applyLimit = (sql: string, rows: LedgerRow[]) => {
+    const m = sql.match(/LIMIT\s+(\d+)/i);
+    return m ? rows.slice(0, Number(m[1])) : rows;
+  };
   return {
     prepare: (sql: string) => ({
       bind: () => ({
@@ -45,7 +51,7 @@ function createLedgerDb(
           const r = pick(sql);
           if (r instanceof Error) throw r;
           if (r === null) return { results: [] };
-          return { results: Array.isArray(r) ? r : [r] };
+          return { results: applyLimit(sql, Array.isArray(r) ? r : [r]) };
         },
         first: async () => {
           const r = pick(sql);

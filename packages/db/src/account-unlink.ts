@@ -240,6 +240,19 @@ export async function unlinkFriendFromShopifyCustomer(
     //    行は消さず is_active=0 にする (顧客が再設定すれば戻る・監査も残る)。
     db.prepare(`UPDATE subscription_reminders SET is_active = 0, updated_at = ? WHERE friend_id = ? AND is_active = 1`)
       .bind(now, friendId),
+    // 🚨 解除の「境界マーカー」を **この batch の中で** 書く (2026-08-28 Codex P1)。
+    //    ランク取り込みの完了判定は「直近の解除より後の完了記録だけを数える」設計だが、
+    //    その境界を worker 側の auditSystem (= 失敗を握りつぶす best-effort) に依存させると、
+    //    「解除は成功したのに記録だけ書けなかった」瞬間に境界が消え、再連携後の判定が
+    //    **前回の完了記録**を拾ってランクが永久に ¥0 のままになる。しかも解除→再連携は
+    //    「¥300 が届かないときの復旧手順」として顧客に案内している経路。
+    //    batch に入れれば状態変更と原子的 = 解除が成立したなら必ず境界が在る。
+    //    人間が読む詳細な監査 (account_link.unlinked) は従来どおり best-effort のままでよい。
+    //    ⚠️ 末尾に置くこと。前に挿すと下の changes(1..7) の位置がずれる。
+    db.prepare(
+      `INSERT INTO audit_logs (id, actor_type, action, target_type, target_id, result, metadata, created_at)
+       VALUES (?, 'system', 'account_link.unlink_boundary', 'friend', ?, 'success', '{}', ?)`,
+    ).bind(crypto.randomUUID(), friendId, now),
   ]);
 
   const changes = (i: number): number => results[i]?.meta?.changes ?? 0;

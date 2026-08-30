@@ -349,6 +349,10 @@ export async function backfillCustomerOrders(
  *      インライン backfill が落ちると復旧経路が無い (#282 以来の既存の穴)
  * しかも解除→再連携は **こちらから案内している復旧手順** なので、確実に踏む。
  *
+ * 境界は **解除の batch 内で書かれる `account_link.unlink_boundary`** を正とする
+ * (worker 側の `account_link.unlinked` は best-effort = 書けないことがあるため。Codex P1)。
+ * 旧記録との互換のため両方を見る — どちらか新しい方が境界になる。
+ *
  * `> ''` は「解除記録が無ければ全ての audit が対象」を意味する (COALESCE の既定)。
  * created_at は JST ISO 文字列なので辞書順比較で正しい。target_id には
  * idx_audit_logs_target があるので相関でも引ける。
@@ -356,7 +360,7 @@ export async function backfillCustomerOrders(
 const SINCE_LAST_UNLINK = (friendCol: string) => `
   a.created_at > COALESCE((
     SELECT MAX(u.created_at) FROM audit_logs u
-     WHERE u.action = 'account_link.unlinked'
+     WHERE u.action IN ('account_link.unlink_boundary', 'account_link.unlinked')
        AND u.target_type = 'friend' AND u.target_id = ${friendCol}
        AND u.result = 'success'
   ), '')`;
