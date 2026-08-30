@@ -47,7 +47,7 @@ interface FakeCard {
 }
 
 /** renderCoupons を実際に走らせて、吐かれた HTML を返す (ロジックを test 側で再実装しない) */
-function render(coupons: unknown[], opts: { pending?: boolean } = {}): string {
+function render(coupons: unknown[], opts: { pending?: boolean; timedOut?: boolean } = {}): string {
   const card: FakeCard = {
     className: '',
     style: { display: 'none' },
@@ -58,11 +58,13 @@ function render(coupons: unknown[], opts: { pending?: boolean } = {}): string {
   const factory = new Function(
     'document',
     'linkCouponPending',
+    'linkCouponTimedOut',
     `${escSrc}\n${yenSrc}\n${fmtMdSrc}\n${labelSrc}\n${renderSrc}\nreturn renderCoupons;`,
-  ) as (d: unknown, pending: boolean) => (data: unknown) => void;
+  ) as (d: unknown, pending: boolean, timedOut: boolean) => (data: unknown) => void;
   const renderCoupons = factory(
     { getElementById: (id: string) => (id === 'coupons-card' ? card : null) },
     Boolean(opts.pending),
+    Boolean(opts.timedOut),
   );
   renderCoupons({ coupons });
   return card.innerHTML;
@@ -120,10 +122,27 @@ describe('連携直後の空状態 (発行は waitUntil で応答の後)', () =>
     expect(html).not.toContain('利用できるクーポンはまだありません');
   });
 
-  it('通常の空 (連携していない) は従来どおりの文言', () => {
+  // 🚨 2026-08-28 採点ループ P2: 本文だけ直しても、枚数バッジが先に組まれていたため
+  //    「ご用意しています…」の真上で「0枚」と言い続けていた。観測点を**合成後**に置く。
+  it('🚨 合成: 待機中に「0枚」と言わない (本文だけでなくバッジも見る)', () => {
+    const html = render([], { pending: true });
+    expect(html).not.toContain('0枚');
+    expect(html).toContain('準備中');
+  });
+
+  it('打ち切り後も断定に戻さない (発行失敗と発行中は画面で区別できない)', () => {
+    const html = render([], { timedOut: true });
+    expect(html).toContain('特典クーポンの反映に時間がかかっています');
+    expect(html).not.toContain('利用できるクーポンはまだありません');
+    expect(html).not.toContain('0枚');
+  });
+
+  it('通常の空 (連携していない) は従来どおりの文言 + 0枚', () => {
     const html = render([], { pending: false });
     expect(html).toContain('利用できるクーポンはまだありません');
+    expect(html).toContain('0枚');
     expect(html).not.toContain('特典クーポンをご用意しています');
+    expect(html).not.toContain('準備中');
   });
 });
 
@@ -143,13 +162,41 @@ describe('OTP 成功時の後追い取得の配線', () => {
   });
 
   it('後追いは階段状にリトライし、諦めたら pending を畳む', () => {
-    expect(src).toContain('var LINK_COUPON_RETRY_MS = [1500, 4000, 9000];');
+    expect(src).toContain('var LINK_COUPON_RETRY_MS = [1500, 4000, 9000, 20000];');
     const refresh = src.match(/function refreshLinkCouponAfterLink\(attempt\)\{[\s\S]*?\n\}/);
     expect(refresh).not.toBeNull();
-    // 上限到達で pending を false に戻して再描画する (「ご用意しています…」の固着防止)
     expect(refresh![0]).toContain('n >= LINK_COUPON_RETRY_MS.length');
     expect(refresh![0]).toContain('linkCouponPending = false');
     expect(refresh![0]).toContain('loadRank()');
+    // 打ち切り時は断定に戻さず「時間がかかっています」へ切り替える
+    expect(refresh![0]).toContain('linkCouponTimedOut = true');
+  });
+
+  // 🚨 2026-08-28 採点ループ P1: クーポンだけを終了条件にすると、backfill も応答の後に
+  //    走るため会員証が「レギュラー / ¥0 / まずは1回のお買い物で」でセッション中固着する。
+  it('🚨 クーポンが出ても取り込み中なら追い続ける (ランクが ¥0 で固着しない)', () => {
+    const refresh = src.match(/function refreshLinkCouponAfterLink\(attempt\)\{[\s\S]*?\n\}/);
+    expect(refresh).not.toBeNull();
+    expect(refresh![0]).toContain('if (got && !lastImportPending) return;');
+    // 告知は 1 回だけ (追い続けても毎 tick トーストしない)
+    expect(refresh![0]).toContain('linkCouponAnnounced');
+    // この画面に他の再取得トリガーが無いことも固定する (あるなら終了条件を緩めてよい)
+    expect(src).not.toMatch(/addEventListener\('(visibilitychange|pageshow|focus)'/);
+    expect(src).not.toContain('setInterval(');
+  });
+
+  // 取り込み中の正直な文言 (逐語)。ソース照合なのは renderRank / renderProgress が
+  // medal / 進捗バー等の依存を多く持ち、切り出して走らせると測定器の方が複雑になるため。
+  it('🚨 取り込み中はランク・進捗で断定しない (逐語)', () => {
+    expect(src).toContain('これまでのお買い物を反映しています…');
+    expect(src).toContain('これまでのお買い物を反映しています（数分かかる場合があります）');
+    expect(src).toContain("(d.purchaseImportPending ? '集計中…' : esc(yen(d.trailing12moJpy)))");
+    // 断定側は「取り込み中でないとき」だけに残っていること
+    const hero = src.slice(src.indexOf('function renderRank('), src.indexOf('function renderProgress('));
+    const i = hero.indexOf('これまでのお買い物を反映しています…');
+    const j = hero.indexOf('まずは1回のお買い物でブロンズ会員に');
+    expect(i).toBeGreaterThan(-1);
+    expect(j).toBeGreaterThan(i); // pending 分岐が先 = 断定は else 側
   });
 
   it('完了告知に金額を書かない (正は台帳を出すクーポン行)', () => {

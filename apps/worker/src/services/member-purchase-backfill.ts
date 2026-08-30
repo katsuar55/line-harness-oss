@@ -337,6 +337,40 @@ export async function backfillCustomerOrders(
 }
 
 // ============================================================
+/**
+ * この friend の「過去注文の取り込み」がまだ完了していないか (2026-08-28)。
+ *
+ * 🚨 なぜ顧客画面が要るか: 連携直後は member_purchase_events が 0 行なので、会員証は必ず
+ * 「レギュラー会員 / 直近12ヶ月 ¥0 / まずは1回のお買い物でブロンズ会員に」を出す。
+ * 連携カードは「これまでのお買い物が会員ランクに反映されます」と約束しているので、
+ * 取り込み中にこの文言を出すと**既存客ほど直後に嘘を見る**。
+ *
+ * 判定は sweep の対象条件と同じ「完了 audit が無い」。完了 audit は
+ * **取り込み 0 件でも success で必ず書かれる** (addPurchaseEvent が 1 件も無い顧客でも付く)
+ * ので、購入の無い顧客が永久に「取り込み中」になることはない。
+ * 判定できないときは false (= 余計なことを言わない fail-honest)。
+ */
+export async function isPurchaseImportPending(db: D1Database, friendId: string): Promise<boolean> {
+  try {
+    const row = await db
+      .prepare(
+        `SELECT 1 AS n FROM audit_logs
+          WHERE action = 'loyalty_purchase_backfill.completed'
+            AND target_type = 'friend' AND target_id = ? AND result = 'success'
+          LIMIT 1`,
+      )
+      .bind(friendId)
+      .first<{ n: number }>();
+    return !row;
+  } catch (err) {
+    console.error(
+      '[member-backfill] isPurchaseImportPending failed (fail-honest false):',
+      err instanceof Error ? err.name : 'unknown',
+    );
+    return false;
+  }
+}
+
 // sweep: 未完了 backfill の自己収束 cron (2026-08-26 採点ループ HIGH の恒久対策)
 // ============================================================
 

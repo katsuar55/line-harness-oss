@@ -17,6 +17,7 @@ import { buildCartPermalink, buildDiscountApplyUrl } from '../services/cart-perm
 import { issueRankDiscountForFriend } from '../services/rank-discount-issuer.js';
 import { MIN_SUBTOTAL_JPY } from '../services/shopify-coupon-issuer.js';
 import { getActiveLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
+import { isPurchaseImportPending } from '../services/member-purchase-backfill.js';
 
 // 顧客向けストアフロント (= 公式ドメイン)。SHOPIFY_STORE_DOMAIN は Admin/API 用なので使わない。
 const STORE_DOMAIN = 'naturism-diet.com';
@@ -94,6 +95,15 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
     c.env.LINK_REWARD_ENABLED === 'true'
       ? await getActiveLinkRewardCoupon(c.env.DB, liffUser.friendId)
       : null;
+
+  // ─── 過去注文の取り込みが未完了か (2026-08-28) ───
+  // 🚨 backfill は連携応答の**後**に waitUntil で走る (¥300 発行と subrequest 予算を
+  //    食い合わせないため)。その間 member_purchase_events は 0 行なので、会員証は必ず
+  //    「レギュラー会員 / 直近12ヶ月 ¥0 / まずは1回のお買い物でブロンズ会員に」を出す。
+  //    連携カードは「これまでのお買い物が会員ランクに反映されます」と約束しているので、
+  //    このまま出すと**既存客ほど連携直後に嘘を見る**。取り込み中はそう言う。
+  const purchaseImportPending =
+    linked && memberBackfillOn ? await isPurchaseImportPending(c.env.DB, liffUser.friendId) : false;
   const p = resolved.progress;
 
   // ─── 3タップ購入 (= PR5-5b): ランク割引コード + cart permalink ───
@@ -258,6 +268,8 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
       linked,
       accountLinkEnabled,
       memberBackfillOn,
+      // 取り込み中は金額・次ランクの文言を「反映しています」に差し替える (嘘を出さない)
+      purchaseImportPending,
     },
   });
 });
@@ -467,9 +479,11 @@ function renderRank(d){
         '<p class="en text-xs tracking-[0.22em] font-semibold text-gray-500 mt-0.5">'+esc(enName(rank.id))+'</p>' +
         (pct > 0
           ? '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-sm font-bold shadow" style="background:linear-gradient(135deg,'+color+','+color+'cc);color:'+txt+'">通常購入 '+pct+'% OFFクーポン</div>'
-          : '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-gray-600 text-sm font-bold" style="background:#f1f5f9">まずは1回のお買い物でブロンズ会員に</div>') +
+          : (d.purchaseImportPending
+            ? '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-gray-600 text-sm font-bold" style="background:#f1f5f9">これまでのお買い物を反映しています…</div>'
+            : '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-gray-600 text-sm font-bold" style="background:#f1f5f9">まずは1回のお買い物でブロンズ会員に</div>')) +
       '</div>' +
-      '<p class="text-xs text-gray-400 text-center pb-5 pt-3">直近12ヶ月のお買い上げ <span class="font-bold text-gray-600">'+esc(yen(d.trailing12moJpy))+'</span></p>' +
+      '<p class="text-xs text-gray-400 text-center pb-5 pt-3">直近12ヶ月のお買い上げ <span class="font-bold text-gray-600">'+(d.purchaseImportPending ? '集計中…' : esc(yen(d.trailing12moJpy)))+'</span></p>' +
     '</div>';
   var bimg = document.getElementById('badge-img');
   if (bimg) {
@@ -500,9 +514,11 @@ function renderProgress(d){
     '<div class="w-full h-3 rounded-full overflow-hidden" style="background:#e2e8f0">' +
       '<div class="bar-fill h-3 rounded-full" id="bar" style="width:0%;background:linear-gradient(90deg,#2fa8ad,#80c8cd)"></div>' +
     '</div>' +
-    (d.next.remainingJpy <= 1
-      ? '<p class="text-xs text-gray-500 mt-2 text-center">まずは1回のお買い物で '+esc(d.next.name)+'会員へ</p>'
-      : '<p class="text-xs text-gray-500 mt-2 text-center">あと <span class="font-bold" style="color:#0f766e">'+esc(yen(d.next.remainingJpy))+'</span> で '+esc(d.next.name)+'にランクアップ</p>') +
+    (d.purchaseImportPending
+      ? '<p class="text-xs text-gray-500 mt-2 text-center">これまでのお買い物を反映しています（数分かかる場合があります）</p>'
+      : d.next.remainingJpy <= 1
+        ? '<p class="text-xs text-gray-500 mt-2 text-center">まずは1回のお買い物で '+esc(d.next.name)+'会員へ</p>'
+        : '<p class="text-xs text-gray-500 mt-2 text-center">あと <span class="font-bold" style="color:#0f766e">'+esc(yen(d.next.remainingJpy))+'</span> で '+esc(d.next.name)+'にランクアップ</p>') +
     evalLine;
   setTimeout(function(){ var b=document.getElementById('bar'); if(b) b.style.width = pctW + '%'; }, 80);
 }
@@ -601,27 +617,38 @@ async function linkVerify(){
 // **LINE 内メール OTP で連携した本人が特典を一度も見ない** (ポータル側の
 // refreshLinkCouponAfterLink と同じ役割・同じ階段)。gate off / 発行失敗なら API は
 // 連携特典を返さない = 何度呼んでも出ない (無害)。
-var LINK_COUPON_RETRY_MS = [1500, 4000, 9000];
-var linkCouponPending = false;
+// 🚨 クーポンが出た時点で打ち切ってはいけない (2026-08-28 採点ループ P1)。
+// backfill も応答の後に走るため、クーポンだけを終了条件にすると
+// **会員証が「レギュラー会員 / ¥0 / まずは1回のお買い物で」のままセッション中固着**する
+// (この画面には visibilitychange / pageshow / interval の再取得が 1 つも無い)。
+// 終了条件は「クーポンが出た **かつ** 取り込みが完了した」。
+var LINK_COUPON_RETRY_MS = [1500, 4000, 9000, 20000];
+var linkCouponPending = false;   // 発行待ち = 「ありません」と断定しない窓
+var linkCouponTimedOut = false;  // 打ち切り = 「時間がかかっています」に切り替える
+var linkCouponAnnounced = false; // 告知は 1 回だけ
+var lastImportPending = false;   // 直近の loadRank が返した取り込み状態
 function linkCouponVisible(){
   return !!document.querySelector('#coupons-card [data-coupon-kind="link_reward"]');
 }
 function refreshLinkCouponAfterLink(attempt){
   var n = attempt || 0;
-  if (linkCouponVisible()){ linkCouponPending = false; announceLinkCoupon(); return; }
-  if (n >= LINK_COUPON_RETRY_MS.length){
-    // 諦める (= 次に会員証を開いたときに出る)。「ご用意しています…」を残したままにしない。
+  var got = linkCouponVisible();
+  if (got){
     linkCouponPending = false;
+    if (!linkCouponAnnounced){ linkCouponAnnounced = true; announceLinkCoupon(); }
+  }
+  if (got && !lastImportPending) return; // 両方そろった = 追う理由がない
+  if (n >= LINK_COUPON_RETRY_MS.length){
+    // 打ち切り。「ご用意しています…」を残したままにせず、正直な待ち文言へ。
+    linkCouponPending = false;
+    if (!linkCouponVisible()) linkCouponTimedOut = true;
     try { loadRank(); } catch (e) {}
     return;
   }
   setTimeout(function(){
     var p = null;
     try { p = loadRank(); } catch (e) { p = null; }
-    var next = function(){
-      if (linkCouponVisible()){ linkCouponPending = false; announceLinkCoupon(); }
-      else { refreshLinkCouponAfterLink(n + 1); }
-    };
+    var next = function(){ refreshLinkCouponAfterLink(n + 1); };
     if (p && typeof p.then === 'function'){ p.then(next, next); } else { next(); }
   }, LINK_COUPON_RETRY_MS[n]);
 }
@@ -789,12 +816,20 @@ function renderCoupons(d){
   card.className = 'card p-5 rise';
   card.style.display = 'block';
   var list = (d.coupons || []).filter(function(c){ return c && c.code; });
-  var head = '<div class="flex items-center justify-between mb-3"><p class="text-sm font-bold text-gray-700">&#x1F39F;&#xFE0F; 保有クーポン</p><span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:#eef7f7;color:#0f766e">'+list.length+'枚</span></div>';
+  // 🚨 枚数バッジは pending 判定の**後**に組む。先に組むと「ご用意しています…」の真上で
+  //    「0枚」と言い続ける (= 本文だけ直しても合成後は嘘のまま。2026-08-28 採点ループ P2)。
+  var waiting = list.length === 0 && (linkCouponPending || linkCouponTimedOut);
+  var countLabel = waiting ? '準備中' : list.length + '枚';
+  var head = '<div class="flex items-center justify-between mb-3"><p class="text-sm font-bold text-gray-700">&#x1F39F;&#xFE0F; 保有クーポン</p><span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:#eef7f7;color:#0f766e">'+countLabel+'</span></div>';
   if (list.length === 0){
-    // 連携直後は発行 (waitUntil) 待ちなので「ありません」と断定しない (= 届く直前に否定する嘘)
-    card.innerHTML = head + (linkCouponPending
-      ? '<p class="text-xs text-gray-400 text-center py-3">特典クーポンをご用意しています…</p>'
-      : '<p class="text-xs text-gray-400 text-center py-3">利用できるクーポンはまだありません</p>');
+    // 連携直後は発行 (waitUntil) 待ちなので「ありません」と断定しない (= 届く直前に否定する嘘)。
+    // 打ち切り後も断定に戻さない — 失敗と発行中を画面で区別できないため (audit_logs が唯一の証跡)。
+    var emptyText = linkCouponPending
+      ? '特典クーポンをご用意しています…'
+      : (linkCouponTimedOut
+        ? '特典クーポンの反映に時間がかかっています。しばらくしてからもう一度お開きください'
+        : '利用できるクーポンはまだありません');
+    card.innerHTML = head + '<p class="text-xs text-gray-400 text-center py-3">'+emptyText+'</p>';
     return;
   }
   var rows = list.map(function(c){
@@ -863,6 +898,7 @@ function renderAbout(d){
 
 function renderAll(d){
   hasRendered = true;
+  lastImportPending = !!d.purchaseImportPending;
   document.getElementById('card-skeleton').style.display='none';
   renderRank(d);
   renderProgress(d);

@@ -62,6 +62,8 @@ function makeDb(
   linkOpts: {
     linkCoupon?: { coupon_code: string; discount_value: number; expires_at: string | null } | null;
     prepared?: string[];
+    /** 過去注文の取り込み完了 audit があるか (無い = 取り込み中) */
+    backfillCompleted?: boolean;
   } = {},
 ): D1Database {
   return {
@@ -87,6 +89,9 @@ function makeDb(
           }
           if (sql.includes('line_link_coupons')) {
             return (linkOpts.linkCoupon ?? null) as unknown as T | null;
+          }
+          if (sql.includes('loyalty_purchase_backfill.completed')) {
+            return (linkOpts.backfillCompleted ? { n: 1 } : null) as unknown as T | null;
           }
           return null;
         },
@@ -258,6 +263,48 @@ describe('GET /api/liff/my-rank', () => {
       { LINK_REWARD_ENABLED: 'true' } as Partial<Env['Bindings']>,
     );
     expect(body.data.coupons).toEqual([]);
+  });
+
+  // ─── 過去注文の取り込み中フラグ (2026-08-28 採点ループ P1) ───
+  // 🚨 backfill は連携応答の後に waitUntil で走る。その間ランクは必ず ¥0/regular なので、
+  //    「これまでのお買い物が反映されます」と約束した直後に嘘を見せないためのフラグ。
+  it('🚨 連携済み + 取り込み完了 audit なし → purchaseImportPending true', async () => {
+    const { body } = await callApi(
+      makeApp(USER),
+      makeDb(0, null, [], null, [], 'cust-1', { backfillCompleted: false }),
+      { MEMBER_BACKFILL_ENABLED: 'true' } as Partial<Env['Bindings']>,
+    );
+    expect(body.data.purchaseImportPending).toBe(true);
+  });
+
+  it('取り込み完了 audit あり → false (購入 0 件でも完了 audit は付く)', async () => {
+    const { body } = await callApi(
+      makeApp(USER),
+      makeDb(0, null, [], null, [], 'cust-1', { backfillCompleted: true }),
+      { MEMBER_BACKFILL_ENABLED: 'true' } as Partial<Env['Bindings']>,
+    );
+    expect(body.data.purchaseImportPending).toBe(false);
+  });
+
+  it('未連携なら判定しない (audit_logs を引かない)', async () => {
+    const prepared: string[] = [];
+    const { body } = await callApi(
+      makeApp(USER),
+      makeDb(0, null, [], null, [], null, { backfillCompleted: false, prepared }),
+      { MEMBER_BACKFILL_ENABLED: 'true' } as Partial<Env['Bindings']>,
+    );
+    expect(body.data.purchaseImportPending).toBe(false);
+    expect(prepared.some((q) => q.includes('loyalty_purchase_backfill.completed'))).toBe(false);
+  });
+
+  it('backfill gate off なら判定しない (audit_logs を引かない)', async () => {
+    const prepared: string[] = [];
+    const { body } = await callApi(
+      makeApp(USER),
+      makeDb(0, null, [], null, [], 'cust-1', { backfillCompleted: false, prepared }),
+    );
+    expect(body.data.purchaseImportPending).toBe(false);
+    expect(prepared.some((q) => q.includes('loyalty_purchase_backfill.completed'))).toBe(false);
   });
 
   it('coupons: 無い場合は空配列', async () => {
