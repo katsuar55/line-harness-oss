@@ -334,6 +334,18 @@ describe('実装と食い違う旧文言が復活しない', () => {
     expect(flex).toContain('naturism-diet.com');
   });
 
+  // 🚨 2026-08-31 mutation SURVIVED の反省: 下のテストは '+09:00' 表記しか使っておらず、
+  //    その場合 literal 読みと JST 読みの結果が**一致してしまう**ので時差のバグを検出できない。
+  //    台帳の実際の保存形式は `toISOString()` = UTC。境界値で固定する。
+  it('🚨 マイクーポン Flex: UTC 保存の期限を JST の暦日で出す (1 日短く言わない)', () => {
+    // 2026-09-26T20:00:00Z = JST **9/27** 05:00。literal 読みなら「9月26日」になる
+    const flex = JSON.stringify(
+      buildMyCouponFlex('NLINK-ABCD1234', 300, { expiresAt: '2026-09-26T20:00:00.000Z' }),
+    );
+    expect(flex).toContain('9月27日まで有効');
+    expect(flex).not.toContain('9月26日');
+  });
+
   it('🚨 マイクーポン Flex: 実期限が渡れば日数でなく日付を出す', () => {
     const flex = JSON.stringify(
       buildMyCouponFlex('NLINK-ABCD1234', 300, {
