@@ -237,15 +237,25 @@ describe('intent-router — buildMessagesForIntentAsync (my_coupon)', () => {
    * 🚨 台帳ごとに別の行を返す (2026-08-28)。全 prepare が同じ行を返す mock だと
    *    3 台帳が同じ 1 枚を 3 回返し、「何枚持っているか」の分岐を検証できない。
    */
-  function ledgerDb(rows: Partial<Record<'friend' | 'link' | 'referral', Row | null>>): D1Database {
+  // 🚨 紹介台帳は 1 friend が複数枚持てるので配列も渡せる形にする (Codex P1 2026-08-28)
+  function ledgerDb(rows: Partial<Record<'friend' | 'link' | 'referral', Row | Row[] | null>>): D1Database {
+    const pick = (sql: string): Row | Row[] | null => {
+      if (sql.includes('line_friend_coupons')) return rows.friend ?? null;
+      if (sql.includes('line_link_coupons')) return rows.link ?? null;
+      if (sql.includes('line_referral_coupons')) return rows.referral ?? null;
+      return null;
+    };
     return {
       prepare: (sql: string) => ({
         bind: () => ({
+          all: async <T,>(): Promise<{ results: T[] }> => {
+            const r = pick(sql);
+            if (r === null) return { results: [] as T[] };
+            return { results: (Array.isArray(r) ? r : [r]) as T[] };
+          },
           first: async <T,>(): Promise<T | null> => {
-            if (sql.includes('line_friend_coupons')) return (rows.friend ?? null) as T | null;
-            if (sql.includes('line_link_coupons')) return (rows.link ?? null) as T | null;
-            if (sql.includes('line_referral_coupons')) return (rows.referral ?? null) as T | null;
-            return null;
+            const r = pick(sql);
+            return (Array.isArray(r) ? (r[0] ?? null) : r) as T | null;
           },
         }),
       }),
@@ -321,6 +331,37 @@ describe('intent-router — buildMessagesForIntentAsync (my_coupon)', () => {
       expect(r[0].text).toContain('¥2,000 以上のご注文');
       // 遡及 op が済むまで「併用」は書かない
       expect(r[0].text).not.toContain('併用');
+    }
+  });
+
+  // 🚨 Codex P1 (2026-08-28): 紹介特典は 1 人が複数枚持てる
+  it('🚨 紹介特典を複数枚持っていたら全部出す (枚数も実数)', async () => {
+    const ref = (n: number) => ({ coupon_code: `NREF-${n}`, discount_value: 500, discount_currency: 'JPY', expires_at: null });
+    const db = ledgerDb({ referral: [ref(1), ref(2), ref(3)] });
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    expect(r).toHaveLength(1);
+    if (r[0]?.type === 'text') {
+      expect(r[0].text).toContain('お持ちのクーポン 3枚');
+      expect(r[0].text).toContain('NREF-1');
+      expect(r[0].text).toContain('NREF-3');
+    }
+  });
+
+  it('🚨 列挙は 5 枚までだが枚数は実数を出し、省略分を明示する', async () => {
+    const ref = (n: number) => ({ coupon_code: `NREF-${n}`, discount_value: 500, discount_currency: 'JPY', expires_at: null });
+    const db = ledgerDb({ referral: [ref(1), ref(2), ref(3), ref(4), ref(5), ref(6)] });
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    if (r[0]?.type === 'text') {
+      expect(r[0].text).toContain('お持ちのクーポン 6枚');
+      expect(r[0].text).toContain('NREF-5');
+      expect(r[0].text).not.toContain('NREF-6');
+      expect(r[0].text).toContain('ほか 1枚');
     }
   });
 

@@ -27,9 +27,10 @@ interface LedgerRow {
  * 台帳ごとに別の行を返す mock (2026-08-28)。
  * 🚨 全 prepare が同じ stmt を返す mock だと、3 台帳が**同じ 1 枚を 3 回**返してしまい、
  *    「3 台帳を見ている」ことも「台帳ごとに fail-safe」なことも検証できない。
+ * 🚨 紹介台帳は 1 friend が複数枚持てるので、**配列**を渡せる形にする (Codex P1 2026-08-28)。
  */
 function createLedgerDb(
-  rows: Partial<Record<'friend' | 'link' | 'referral', LedgerRow | Error | null>>,
+  rows: Partial<Record<'friend' | 'link' | 'referral', LedgerRow | LedgerRow[] | Error | null>>,
 ): D1Database {
   const pick = (sql: string) => {
     if (sql.includes('line_friend_coupons')) return rows.friend ?? null;
@@ -40,12 +41,17 @@ function createLedgerDb(
   return {
     prepare: (sql: string) => ({
       bind: () => ({
+        all: async () => {
+          const r = pick(sql);
+          if (r instanceof Error) throw r;
+          if (r === null) return { results: [] };
+          return { results: Array.isArray(r) ? r : [r] };
+        },
         first: async () => {
           const r = pick(sql);
           if (r instanceof Error) throw r;
-          return r;
+          return Array.isArray(r) ? (r[0] ?? null) : r;
         },
-        all: async () => ({ results: [] }),
       }),
     }),
   } as unknown as D1Database;
@@ -297,5 +303,56 @@ describe('ai-fact-context — 3 台帳のクーポン', () => {
   it('getFriendActiveCoupon は連携特典しか無くても null を返さない', async () => {
     const c = await getFriendActiveCoupon(createLedgerDb({ link: LINK }), 'f1');
     expect(c?.couponCode).toBe('NLINK-ABCD1234');
+  });
+});
+
+// 🚨 Codex P1 (2026-08-28): line_referral_coupons は「referrer は何度でも紹介でき、
+//    紹介先が購入するたびに ¥500」なので friend_id が UNIQUE でない。各台帳を LIMIT 1 で
+//    引くとリピート紹介者の**枚数がそのまま嘘になる**。
+describe('ai-fact-context — 紹介特典は 1 人が複数枚', () => {
+  const ref = (n: number) => ({
+    coupon_code: `NREF-${n}`,
+    discount_value: 500,
+    discount_currency: 'JPY',
+    expires_at: null,
+  });
+
+  it('🚨 紹介特典を 3 枚持っていたら 3 枚とも出る', async () => {
+    const text = await getFriendCouponContext(
+      createLedgerDb({ referral: [ref(1), ref(2), ref(3)] }),
+      'f1',
+    );
+    expect(text).toContain('(お持ちのクーポン 3 枚)');
+    expect(text).toContain('NREF-1');
+    expect(text).toContain('NREF-2');
+    expect(text).toContain('NREF-3');
+  });
+
+  it('台帳をまたいだ枚数も実数になる', async () => {
+    const text = await getFriendCouponContext(
+      createLedgerDb({
+        link: { coupon_code: 'NLINK-1', discount_value: 300, discount_currency: 'JPY', expires_at: null },
+        referral: [ref(1), ref(2)],
+      }),
+      'f1',
+    );
+    expect(text).toContain('(お持ちのクーポン 3 枚)');
+  });
+
+  it('🚨 列挙は 5 枚までだが枚数は実数を出し、省略分を明示する', async () => {
+    const text = await getFriendCouponContext(
+      createLedgerDb({ referral: [ref(1), ref(2), ref(3), ref(4), ref(5), ref(6), ref(7)] }),
+      'f1',
+    );
+    expect(text).toContain('(お持ちのクーポン 7 枚)'); // 枚数は嘘にしない
+    expect(text).toContain('NREF-5');
+    expect(text).not.toContain('NREF-6');
+    expect(text).toContain('ほか 2 枚');
+  });
+
+  it('listFriendActiveCoupons も複数枚を返す', async () => {
+    const list = await listFriendActiveCoupons(createLedgerDb({ referral: [ref(1), ref(2)] }), 'f1');
+    expect(list).toHaveLength(2);
+    expect(list.every((c) => c.label === 'ご紹介特典')).toBe(true);
   });
 });

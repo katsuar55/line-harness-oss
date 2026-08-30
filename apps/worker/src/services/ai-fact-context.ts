@@ -22,6 +22,7 @@ import { MIN_SUBTOTAL_JPY } from './shopify-coupon-issuer.js';
 
 const ACTIVE_BROADCAST_WINDOW_DAYS = 7; // 過去 N 日間に配信済 broadcast を「進行中」 として扱う
 const BROADCAST_LIMIT = 3; // prompt 肥大化防止
+const CONTEXT_COUPON_LIMIT = 5; // fact block に列挙する上限 (枚数自体は実数を出す)
 
 interface BroadcastRow {
   title: string;
@@ -67,39 +68,54 @@ const COUPON_LEDGERS: ReadonlyArray<{ readonly table: string; readonly label: st
   { table: 'line_referral_coupons', label: 'ご紹介特典' },
 ];
 
-/** 1 台帳から有効な 1 枚を引く。失敗しても他の台帳を巻き込まない (fail-safe)。 */
+/**
+ * 1 台帳あたりの取得上限。
+ * 🚨 **LIMIT 1 にしてはいけない** (2026-08-28 Codex P1): line_referral_coupons は
+ * 「referrer は何度でも紹介でき、紹介先が購入するたびに ¥500」なので friend_id が UNIQUE でない。
+ * 1 枚しか引かないと、リピート紹介者に対して**持っている枚数を過少申告**する
+ * (= 「N 枚」がそのまま嘘になる)。friend_coupons / link_coupons は UNIQUE なので常に 1 枚。
+ * 上限に達したら silent に切り捨てず warn を出す (CLAUDE.md「no silent caps」)。
+ */
+const LEDGER_FETCH_LIMIT = 20;
+
+/** 1 台帳から有効なクーポンを引く。失敗しても他の台帳を巻き込まない (fail-safe)。 */
 async function queryCouponLedger(
   db: D1Database,
   table: string,
   label: string,
   friendId: string,
   nowIso: string,
-): Promise<ActiveCoupon | null> {
+): Promise<ActiveCoupon[]> {
   try {
-    const row = await db
+    const res = await db
       .prepare(
         `SELECT coupon_code, discount_value, discount_currency, expires_at
          FROM ${table}
          WHERE friend_id = ? AND status = 'issued'
            AND (expires_at IS NULL OR expires_at >= ?)
-         ORDER BY issued_at DESC LIMIT 1`,
+         ORDER BY issued_at DESC LIMIT ${LEDGER_FETCH_LIMIT}`,
       )
       .bind(friendId, nowIso)
-      .first<CouponRow>();
-    if (!row) return null;
-    return {
+      .all<CouponRow>();
+    const rows = res.results ?? [];
+    if (rows.length >= LEDGER_FETCH_LIMIT) {
+      console.warn(
+        `[ai-fact-context] coupon ledger ${table} hit fetch limit ${LEDGER_FETCH_LIMIT} for friend=${friendId} (枚数が過少申告になりうる)`,
+      );
+    }
+    return rows.map((row) => ({
       couponCode: row.coupon_code,
       discountValue: row.discount_value,
       discountCurrency: row.discount_currency,
       expiresAt: row.expires_at,
       label,
-    };
+    }));
   } catch (err) {
     console.error(
       `[ai-fact-context] coupon ledger ${table} failed:`,
       err instanceof Error ? err.message : String(err),
     );
-    return null;
+    return [];
   }
 }
 
@@ -114,8 +130,7 @@ export async function listFriendActiveCoupons(
   const nowIso = jstIsoFromDate(new Date());
   const found: ActiveCoupon[] = [];
   for (const ledger of COUPON_LEDGERS) {
-    const c = await queryCouponLedger(db, ledger.table, ledger.label, friendId, nowIso);
-    if (c) found.push(c);
+    found.push(...(await queryCouponLedger(db, ledger.table, ledger.label, friendId, nowIso)));
   }
   return found;
 }
@@ -215,11 +230,18 @@ export async function getFriendCouponContext(
     const coupons = await listFriendActiveCoupons(db, friendId);
     if (coupons.length === 0) return '';
 
-    const lines = coupons.map((c, i) => {
+    // prompt 肥大化を防ぐため列挙は 5 枚まで。**枚数は実数を出す** (省略した分は明示する)。
+    const shown = coupons.slice(0, CONTEXT_COUPON_LIMIT);
+    const lines = shown.map((c, i) => {
       const expiry = c.expiresAt ? formatJstDate(c.expiresAt) + ' まで有効' : '無期限';
       const currency = c.discountCurrency === 'JPY' ? '¥' : c.discountCurrency + ' ';
       return `${i + 1}. ${c.label} — コード: ${c.couponCode} / 値引: ${currency}${c.discountValue} OFF / 有効期限: ${expiry}`;
     });
+    if (coupons.length > shown.length) {
+      lines.push(
+        `- ほか ${coupons.length - shown.length} 枚 (すべてミニアプリのホームでご確認いただけます)`,
+      );
+    }
     // 🚨 利用条件は**この fact block に載せる**こと (2026-08-24)。system prompt 側のルール文だけだと
     //   LLM はデータ側を優先して転記し、最低購入が落ちた回答になる。値は発行側の定数が唯一の正。
     // 🚨 「併用できます」は**まだ書かない** — 流通中の旧コードへの遡及 op が未実施のため

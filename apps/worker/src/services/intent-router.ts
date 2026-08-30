@@ -32,6 +32,9 @@ import { buildQuickQuizInviteMessage } from './quick-quiz.js';
 import { buildProductCompareFlex, buildMyCouponFlex } from './welcome-postback.js';
 import { listFriendActiveCoupons, formatJstDate } from './ai-fact-context.js';
 import { MIN_SUBTOTAL_JPY } from './shopify-coupon-issuer.js';
+
+/** トーク 1 通に列挙するクーポンの上限 (超過分は枚数だけ伝えてミニアプリへ誘導) */
+const TALK_COUPON_LIMIT = 5;
 import { buildSubscriptionMenuMessages, MYPAGE_URL } from './subscription-concierge.js';
 
 export type Intent =
@@ -308,18 +311,25 @@ export async function buildMessagesForIntentAsync(
       ];
     }
     // 🚨 「併用できます」は書かない — 流通中の旧コードへの遡及 op が未実施 (CLAUDE.md 順序厳守)
-    const blocks = coupons
+    // 🚨 紹介特典は 1 人が何枚も持てる (friend_id が UNIQUE でない)。LINE の 1 通は 5,000 文字
+    //    上限なので列挙は TALK_COUPON_LIMIT 枚までにし、**枚数は実数**を出して省略分を明示する。
+    const shown = coupons.slice(0, TALK_COUPON_LIMIT);
+    const blocks = shown
       .map((c) => {
         const cur = c.discountCurrency === 'JPY' ? '¥' : c.discountCurrency + ' ';
         const exp = c.expiresAt ? `${formatJstDate(c.expiresAt)} まで有効` : '無期限';
         return `▼ ${c.label}\n${c.couponCode}\n${cur}${c.discountValue} OFF / ${exp}`;
       })
       .join('\n\n');
+    const omitted =
+      coupons.length > shown.length
+        ? `\n\n▼ ほか ${coupons.length - shown.length}枚\nミニアプリのホームでご確認いただけます`
+        : '';
     return [
       {
         type: 'text',
         text:
-          `🎁 お持ちのクーポン ${coupons.length}枚\n\n${blocks}\n\n` +
+          `🎁 お持ちのクーポン ${coupons.length}枚\n\n${blocks}${omitted}\n\n` +
           `↑ コードを長押しでコピーして公式ストアでご利用ください💝\n` +
           `※ ¥${MIN_SUBTOTAL_JPY.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')} 以上のご注文でご利用いただけます`,
       },
