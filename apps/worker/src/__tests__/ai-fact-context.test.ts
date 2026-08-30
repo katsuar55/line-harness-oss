@@ -52,7 +52,13 @@ function createLedgerDb(
           const r = pick(sql);
           if (r instanceof Error) throw r;
           if (r === null) return { results: [] };
-          return { results: applyLimit(sql, Array.isArray(r) ? r : [r]) };
+          const rows = Array.isArray(r) ? r : [r];
+          // 🚨 `COUNT(*) OVER ()` は LIMIT の**前**の全該当行を数える。偽 DB もそう振る舞う
+          //    (LIMIT 後の件数にすると「総数が常に正確」を検証できなくなる)。
+          const withCount = sql.includes('COUNT(*) OVER ()')
+            ? rows.map((x) => ({ ...x, total_count: rows.length }))
+            : rows;
+          return { results: applyLimit(sql, withCount) };
         },
         first: async () => {
           const r = pick(sql);
@@ -388,24 +394,29 @@ describe('ai-fact-context — 枚数だけは常に正確', () => {
     expires_at: null,
   });
 
-  it('表示上限以内なら COUNT を撃たない (無駄なクエリを増やさない)', () => {
-    const seen: string[] = [];
-    return getFriendCouponContext(createLedgerDb({ referral: [ref(1), ref(2)] }, seen), 'f1').then(
-      (text) => {
-        expect(text).toContain('(お持ちのクーポン 2 枚)');
-        expect(seen.some((q) => /SELECT\s+COUNT\(\*\)/i.test(q))).toBe(false);
-      },
-    );
-  });
-
-  it('🚨 表示上限を超えたら COUNT で正確な総数を出す (20 枚の壁を作らない)', async () => {
+  it('🚨 台帳あたり 1 文だけ (行と総数を別クエリにしない)', async () => {
+    // 別々の 2 文だと、COUNT だけ失敗したときに取得済みの行ごと捨てて
+    // 「ございません」と言ってしまう / 2 文の間の使用・失効で総数がずれる (Codex P2 ×2)
     const seen: string[] = [];
     const many = Array.from({ length: 30 }, (_, i) => ref(i + 1));
-    const text = await getFriendCouponContext(createLedgerDb({ referral: many }, seen), 'f1');
+    await getFriendCouponContext(createLedgerDb({ referral: many }, seen), 'f1');
+    expect(seen).toHaveLength(3); // 台帳 3 つ = 3 文。COUNT の追い撃ちは無い
+    expect(seen.every((q) => q.includes('COUNT(*) OVER ()'))).toBe(true);
+    expect(seen.some((q) => /SELECT\s+COUNT\(\*\)\s+AS/i.test(q))).toBe(false);
+  });
+
+  it('🚨 表示上限を超えても総数は正確 (20 枚の壁を作らない)', async () => {
+    const many = Array.from({ length: 30 }, (_, i) => ref(i + 1));
+    const text = await getFriendCouponContext(createLedgerDb({ referral: many }), 'f1');
     // 固定上限で切ると 20 になっていた数字
     expect(text).toContain('(お持ちのクーポン 30 枚)');
     expect(text).toContain('ほか 25 枚');
-    expect(seen.some((q) => /SELECT\s+COUNT\(\*\)/i.test(q))).toBe(true);
+  });
+
+  it('少数枚でも総数は正確', async () => {
+    const text = await getFriendCouponContext(createLedgerDb({ referral: [ref(1), ref(2)] }), 'f1');
+    expect(text).toContain('(お持ちのクーポン 2 枚)');
+    expect(text).not.toContain('ほか');
   });
 
   it('取得は有界のまま (30 枚あっても列挙は 5 件)', async () => {

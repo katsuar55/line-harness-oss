@@ -69,18 +69,14 @@ const COUPON_LEDGERS: ReadonlyArray<{ readonly table: string; readonly label: st
 ];
 
 /**
- * 1 台帳あたりの取得枚数。表示上限 (CONTEXT_COUPON_LIMIT) + 1 だけ引く。
+ * 1 台帳あたりの取得枚数 (= 表示上限)。総数は同じクエリの window 関数から取るので、
+ * 取得行数は常に有界のまま「N 枚」を正確に出せる。
  *
  * 🚨 **LIMIT 1 にしてはいけない** (2026-08-28 Codex P1): line_referral_coupons は
  * 「referrer は何度でも紹介でき、紹介先が購入するたびに ¥500」なので friend_id が UNIQUE でない。
  * friend_coupons / link_coupons は UNIQUE なので常に 1 枚。
- *
- * 🚨 **固定上限で打ち切ると枚数が嘘になる** (2026-08-28 Codex P2): 上限を 20 にしても
- * 21 枚持つ人には 20 と表示され、warn を出しても**顧客に見える数字は間違ったまま**。
- * そこで「表示分 +1」だけ引き、+1 が返った (= まだ在る) ときだけ COUNT で**正確な総数**を取る。
- * 通常は 1 台帳 1 クエリ、多枚数のときだけ +1 クエリ。行数は常に有界。
  */
-const LEDGER_FETCH_LIMIT = CONTEXT_COUPON_LIMIT + 1;
+const LEDGER_FETCH_LIMIT = CONTEXT_COUPON_LIMIT;
 
 /** 台帳 1 つの取得結果。coupons は表示用 (有界)、total は**常に正確な総数**。 */
 interface LedgerResult {
@@ -96,28 +92,25 @@ async function queryCouponLedger(
   friendId: string,
   nowIso: string,
 ): Promise<LedgerResult> {
-  const activeWhere = `WHERE friend_id = ? AND status = 'issued'
-           AND (expires_at IS NULL OR expires_at >= ?)`;
   try {
+    // 🚨 行と総数を **1 文** で取る (2026-08-28 Codex P2 ×2)。
+    //   ① 別々の 2 クエリだと、COUNT だけが一時的に失敗したときに外側の catch が
+    //      **取得済みの行ごと捨てて**「クーポンはございません」と言ってしまう。
+    //   ② 2 文の間に使用・失効が起きると行と枚数が別スナップショットになり総数がずれる。
+    //   `COUNT(*) OVER ()` は LIMIT の**前**の全該当行を数える (本番 D1 で実測確認済み)。
     const res = await db
       .prepare(
-        `SELECT coupon_code, discount_value, discount_currency, expires_at
+        `SELECT coupon_code, discount_value, discount_currency, expires_at,
+                COUNT(*) OVER () AS total_count
          FROM ${table}
-         ${activeWhere}
+         WHERE friend_id = ? AND status = 'issued'
+           AND (expires_at IS NULL OR expires_at >= ?)
          ORDER BY issued_at DESC LIMIT ${LEDGER_FETCH_LIMIT}`,
       )
       .bind(friendId, nowIso)
-      .all<CouponRow>();
+      .all<CouponRow & { total_count: number }>();
     const rows = res.results ?? [];
-    let total = rows.length;
-    if (rows.length >= LEDGER_FETCH_LIMIT) {
-      // 表示上限を超えている = 「N 枚」を嘘にしないため正確な総数を取り直す
-      const c = await db
-        .prepare(`SELECT COUNT(*) AS n FROM ${table} ${activeWhere}`)
-        .bind(friendId, nowIso)
-        .first<{ n: number }>();
-      total = Math.max(total, Number(c?.n ?? total));
-    }
+    const total = rows.length > 0 ? Number(rows[0].total_count ?? rows.length) : 0;
     return {
       coupons: rows.map((row) => ({
         couponCode: row.coupon_code,

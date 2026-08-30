@@ -252,9 +252,13 @@ describe('intent-router — buildMessagesForIntentAsync (my_coupon)', () => {
             const r = pick(sql);
             if (r === null) return { results: [] as T[] };
             const rows = Array.isArray(r) ? r : [r];
+            // 🚨 `COUNT(*) OVER ()` は LIMIT の**前**の全該当行を数える。偽 DB もそう振る舞う。
+            const withCount = sql.includes('COUNT(*) OVER ()')
+              ? rows.map((x) => ({ ...x, total_count: rows.length }))
+              : rows;
             // 🚨 SQL の LIMIT を実際に効かせる (無視すると「LIMIT 1 に戻す」変異を検出できない)
             const m = sql.match(/LIMIT\s+(\d+)/i);
-            return { results: (m ? rows.slice(0, Number(m[1])) : rows) as T[] };
+            return { results: (m ? withCount.slice(0, Number(m[1])) : withCount) as T[] };
           },
           first: async <T,>(): Promise<T | null> => {
             const r = pick(sql);
