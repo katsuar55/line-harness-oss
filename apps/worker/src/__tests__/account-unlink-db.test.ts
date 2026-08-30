@@ -28,6 +28,8 @@ interface Store {
     current_tier_id: string;
   }>;
   subscription_reminders: Array<{ id: string; friend_id: string; is_active: number }>;
+  /** 解除の境界マーカー (batch 内で書かれる) */
+  audit_logs: Array<{ id: string; action: string; target_id: string; created_at: string; viaBatch: boolean }>;
   membership_tiers: Array<{ id: string; display_order: number; min_total_purchase_jpy: number; min_referral_count: number }>;
   loyalty_rank_discounts: Array<{ id: string; friend_id: string; status: string; superseded_at: string | null }>;
   line_link_coupons: Array<{ friend_id: string; shopify_customer_id: string; coupon_code: string }>;
@@ -66,6 +68,7 @@ function seed(): Store {
       { id: 'd2', friend_id: 'f1', status: 'superseded', superseded_at: '2026-07-01' },
     ],
     line_link_coupons: [{ friend_id: 'f1', shopify_customer_id: '900', coupon_code: 'NLINK-ABC' }],
+    audit_logs: [],
     subscription_reminders: [
       { id: 'sr1', friend_id: 'f1', is_active: 1 },
       { id: 'sr2', friend_id: 'other', is_active: 1 },
@@ -86,7 +89,7 @@ interface FakeStmt {
 
 /** SQL 文字列で分岐する fake D1。batch は本物と同じく順に適用する。 */
 function makeDb(store: Store): D1Database {
-  const run = (sql: string, b: unknown[]): { meta: { changes: number } } => {
+  const run = (sql: string, b: unknown[], viaBatch = false): { meta: { changes: number } } => {
     let changes = 0;
     if (sql.includes('UPDATE friends')) {
       const id = b[1] as string;
@@ -180,6 +183,16 @@ function makeDb(store: Store): D1Database {
           changes++;
         }
       }
+    } else if (sql.includes('INSERT INTO audit_logs')) {
+      // 🚨 解除の境界マーカー (2026-08-28 Codex P1)。**batch の中**で書かれることが要点。
+      store.audit_logs.push({
+        id: b[0] as string,
+        action: 'account_link.unlink_boundary',
+        target_id: b[1] as string,
+        created_at: b[2] as string,
+        viaBatch,
+      });
+      changes++;
     } else {
       throw new Error('unexpected SQL: ' + sql);
     }
@@ -204,7 +217,7 @@ function makeDb(store: Store): D1Database {
           throw new Error('unexpected first(): ' + sql);
         },
         async run() {
-          return run(sql, stmt._b);
+          return run(sql, stmt._b, false);
         },
       };
       return stmt as unknown as D1PreparedStatement;
@@ -212,7 +225,7 @@ function makeDb(store: Store): D1Database {
     async batch(stmts: unknown[]) {
       return stmts.map((s) => {
         const st = s as unknown as FakeStmt;
-        return run(st._sql, st._b);
+        return run(st._sql, st._b, true);
       });
     },
   };
@@ -338,5 +351,31 @@ describe('unlinkFriendFromShopifyCustomer', () => {
     await unlinkFriendFromShopifyCustomer(db, 'f1');
     const second = await unlinkFriendFromShopifyCustomer(db, 'f1');
     expect(second.unlinked).toBe(false);
+  });
+
+  // 🚨 2026-08-28 Codex P1: 境界マーカーを worker 側の auditSystem (best-effort) に任せると、
+  //    「解除は成功したのに記録だけ書けなかった」瞬間に境界が消え、再連携後の取り込み判定が
+  //    前回の完了記録を拾って**ランクが永久に ¥0** になる。解除→再連携は顧客に案内している
+  //    復旧手順なので、境界は状態変更と**原子的**でなければならない。
+  it('🚨 解除の境界マーカーを batch の中で書く (best-effort の監査に依存しない)', async () => {
+    const store = seed();
+    const r = await unlinkFriendFromShopifyCustomer(makeDb(store), 'f1');
+    expect(r.unlinked).toBe(true);
+
+    const boundary = store.audit_logs.filter((a) => a.action === 'account_link.unlink_boundary');
+    expect(boundary).toHaveLength(1);
+    expect(boundary[0].target_id).toBe('f1');
+    // 観測点は「batch を通ったこと」。単発 run() で書くと状態変更と原子的でなくなる。
+    expect(boundary[0].viaBatch).toBe(true);
+    // 取り込み判定は created_at の大小で比べるので、時刻が入っていること
+    expect(boundary[0].created_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('連携していない friend には境界マーカーを書かない (no-op)', async () => {
+    const store = seed();
+    store.friends.find((f) => f.id === 'f1')!.shopify_customer_id = null;
+    const r = await unlinkFriendFromShopifyCustomer(makeDb(store), 'f1');
+    expect(r.unlinked).toBe(false);
+    expect(store.audit_logs).toHaveLength(0);
   });
 });

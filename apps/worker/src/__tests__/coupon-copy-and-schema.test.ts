@@ -305,7 +305,9 @@ describe('割引額は台帳の値が正 (定数を書くと既発行の ¥300 �
     // welcome-postback.ts の SELECT と受け渡しが両方生きていること
     const src = srcOf('../services/welcome-postback.ts');
     expect(src).toContain('SELECT coupon_code, discount_value FROM line_friend_coupons');
-    expect(src).toContain('buildMyCouponFlex(couponCode, couponValue)');
+    expect(src).toContain('buildMyCouponFlex(couponCode, couponValue,');
+    // 🚨 期限も定数を直書きせず**発行側の値**を渡す (2026-08-31 採点ループ P1)
+    expect(src).toContain('validDays: WELCOME_VALID_DAYS');
   });
 });
 
@@ -316,9 +318,46 @@ describe('割引額は台帳の値が正 (定数を書くと既発行の ¥300 �
 describe('実装と食い違う旧文言が復活しない', () => {
   it('マイクーポン Flex: 期限は発行側の定数と同じ日数', () => {
     expect(WELCOME_VALID_DAYS).toBe(7);
-    const flex = JSON.stringify(buildMyCouponFlex('LINE-ABCD2345', 500));
+    const flex = JSON.stringify(
+      buildMyCouponFlex('LINE-ABCD2345', 500, { validDays: WELCOME_VALID_DAYS }),
+    );
     expect(flex).toContain(`${WELCOME_VALID_DAYS} 日間有効`);
     expect(flex).not.toContain('3 日間有効');
+  });
+
+  // 🚨 2026-08-31 採点ループ P1: 期限を既定で「7 日」と埋めていたため、トークが 3 台帳を
+  //    見るようになった途端に ¥300 連携特典 (30 日) を 23 日短く偽った。既定は**日数を
+  //    主張しない**に変え、実期限が渡ればそれを出す。種別も同様に定数化しない。
+  it('🚨 マイクーポン Flex: 何も渡さなければ日数を主張しない (既定の 7 日で埋めない)', () => {
+    const flex = JSON.stringify(buildMyCouponFlex('NLINK-ABCD1234', 300));
+    expect(flex).not.toContain('日間有効');
+    expect(flex).toContain('naturism-diet.com');
+  });
+
+  // 🚨 2026-08-31 mutation SURVIVED の反省: 下のテストは '+09:00' 表記しか使っておらず、
+  //    その場合 literal 読みと JST 読みの結果が**一致してしまう**ので時差のバグを検出できない。
+  //    台帳の実際の保存形式は `toISOString()` = UTC。境界値で固定する。
+  it('🚨 マイクーポン Flex: UTC 保存の期限を JST の暦日で出す (1 日短く言わない)', () => {
+    // 2026-09-26T20:00:00Z = JST **9/27** 05:00。literal 読みなら「9月26日」になる
+    const flex = JSON.stringify(
+      buildMyCouponFlex('NLINK-ABCD1234', 300, { expiresAt: '2026-09-26T20:00:00.000Z' }),
+    );
+    expect(flex).toContain('9月27日まで有効');
+    expect(flex).not.toContain('9月26日');
+  });
+
+  it('🚨 マイクーポン Flex: 実期限が渡れば日数でなく日付を出す', () => {
+    const flex = JSON.stringify(
+      buildMyCouponFlex('NLINK-ABCD1234', 300, {
+        expiresAt: '2026-09-27T23:59:59+09:00',
+        label: 'アカウント連携特典',
+      }),
+    );
+    expect(flex).toContain('9月27日まで有効');
+    expect(flex).toContain('アカウント連携特典');
+    // 7 日券専用の文言が残っていないこと
+    expect(flex).not.toContain('日間有効');
+    expect(flex).not.toContain('友だち限定');
   });
 
   it('follow ハンドラは日数を直書きせず定数を渡す', () => {

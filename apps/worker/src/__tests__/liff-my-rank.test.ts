@@ -57,9 +57,18 @@ function makeDb(
   rankDiscount: RankDiscountRowLike | null = null,
   products: ProductRowLike[] = [],
   shopifyCustomerId: string | null = null,
+  // 連携特典 ¥300 (別台帳 line_link_coupons)。prepared には実行された SQL を記録し、
+  // gate off で **台帳に触れていないこと** を観測点にできるようにする。
+  linkOpts: {
+    linkCoupon?: { coupon_code: string; discount_value: number; expires_at: string | null } | null;
+    prepared?: string[];
+    /** 過去注文の取り込み完了 audit があるか (無い = 取り込み中) */
+    backfillCompleted?: boolean;
+  } = {},
 ): D1Database {
   return {
     prepare(sql: string) {
+      if (linkOpts.prepared) linkOpts.prepared.push(sql);
       const stmt = {
         bind() {
           return stmt;
@@ -77,6 +86,12 @@ function makeDb(
           }
           if (sql.includes('loyalty_rank_discounts') && sql.includes("status = 'active'")) {
             return (rankDiscount ?? null) as unknown as T | null;
+          }
+          if (sql.includes('line_link_coupons')) {
+            return (linkOpts.linkCoupon ?? null) as unknown as T | null;
+          }
+          if (sql.includes('loyalty_purchase_backfill.completed')) {
+            return (linkOpts.backfillCompleted ? { n: 1 } : null) as unknown as T | null;
           }
           return null;
         },
@@ -186,8 +201,110 @@ describe('GET /api/liff/my-rank', () => {
     const { body } = await callApi(makeApp(USER), makeDb(15000, null, coupons));
     expect(body.data.coupons).toHaveLength(1);
     expect(body.data.coupons[0]).toEqual({
+      kind: null,
       code: 'LINE-ABC123', title: '友だちクーポン', discountType: 'fixed_amount', discountValue: 500, expiresAt: '2026-06-30T14:59:59Z',
     });
+  });
+
+  // ─── 連携特典 ¥300 (2026-08-28) ───
+  // 🚨 ホームの第一候補 CTA はこの会員証へフルページ遷移する。ここに合流させないと
+  //    OTP で連携した本人が特典を一度も見ないまま「保有クーポン 0枚」を見る。
+  it('連携特典: gate on + 台帳あり → 先頭に合流する', async () => {
+    const link = { coupon_code: 'NLINK-ABCD1234', discount_value: 300, expires_at: '2026-09-27T00:00:00.000Z' };
+    const others = [
+      { code: 'LINE-ABC123', title: '友だちクーポン', discount_type: 'fixed_amount', discount_value: 500, expires_at: null },
+    ];
+    const { body } = await callApi(
+      makeApp(USER),
+      makeDb(15000, null, others, null, [], null, { linkCoupon: link }),
+      { LINK_REWARD_ENABLED: 'true' } as Partial<Env['Bindings']>,
+    );
+    expect(body.data.coupons).toHaveLength(2);
+    expect(body.data.coupons[0]).toEqual({
+      kind: 'link_reward',
+      code: 'NLINK-ABCD1234',
+      // 逐語照合: 最低購入金額を落とすと有利誤認になる (ランク割引で実際にやらかした型)
+      title: '🔗 連携特典（¥2,000以上のご注文で）',
+      discountType: 'fixed_amount',
+      discountValue: 300,
+      expiresAt: '2026-09-27T00:00:00.000Z',
+    });
+    expect(body.data.coupons[1].code).toBe('LINE-ABC123');
+  });
+
+  it('連携特典: 金額・期限は台帳の実値 (既定額にフォールバックしない)', async () => {
+    const link = { coupon_code: 'NLINK-OLD', discount_value: 500, expires_at: null };
+    const { body } = await callApi(
+      makeApp(USER),
+      makeDb(15000, null, [], null, [], null, { linkCoupon: link }),
+      { LINK_REWARD_ENABLED: 'true' } as Partial<Env['Bindings']>,
+    );
+    expect(body.data.coupons[0].discountValue).toBe(500);
+    expect(body.data.coupons[0].expiresAt).toBeNull();
+  });
+
+  it('🚨 連携特典: gate off では台帳に一度も触れない (kill switch)', async () => {
+    const prepared: string[] = [];
+    const link = { coupon_code: 'NLINK-ABCD1234', discount_value: 300, expires_at: null };
+    const { body } = await callApi(
+      makeApp(USER),
+      makeDb(15000, null, [], null, [], null, { linkCoupon: link, prepared }),
+    );
+    expect(body.data.coupons).toEqual([]);
+    // ステータスや配列長だけを見ると「読んでから捨てる」実装でも緑になる。
+    // 観測点は **台帳を引いていないこと**。
+    expect(prepared.some((q) => q.includes('line_link_coupons'))).toBe(false);
+  });
+
+  it('連携特典: gate on でも台帳が空なら何も足さない', async () => {
+    const { body } = await callApi(
+      makeApp(USER),
+      makeDb(15000, null, [], null, [], null, { linkCoupon: null }),
+      { LINK_REWARD_ENABLED: 'true' } as Partial<Env['Bindings']>,
+    );
+    expect(body.data.coupons).toEqual([]);
+  });
+
+  // ─── 過去注文の取り込み中フラグ (2026-08-28 採点ループ P1) ───
+  // 🚨 backfill は連携応答の後に waitUntil で走る。その間ランクは必ず ¥0/regular なので、
+  //    「これまでのお買い物が反映されます」と約束した直後に嘘を見せないためのフラグ。
+  it('🚨 連携済み + 取り込み完了 audit なし → purchaseImportPending true', async () => {
+    const { body } = await callApi(
+      makeApp(USER),
+      makeDb(0, null, [], null, [], 'cust-1', { backfillCompleted: false }),
+      { MEMBER_BACKFILL_ENABLED: 'true' } as Partial<Env['Bindings']>,
+    );
+    expect(body.data.purchaseImportPending).toBe(true);
+  });
+
+  it('取り込み完了 audit あり → false (購入 0 件でも完了 audit は付く)', async () => {
+    const { body } = await callApi(
+      makeApp(USER),
+      makeDb(0, null, [], null, [], 'cust-1', { backfillCompleted: true }),
+      { MEMBER_BACKFILL_ENABLED: 'true' } as Partial<Env['Bindings']>,
+    );
+    expect(body.data.purchaseImportPending).toBe(false);
+  });
+
+  it('未連携なら判定しない (audit_logs を引かない)', async () => {
+    const prepared: string[] = [];
+    const { body } = await callApi(
+      makeApp(USER),
+      makeDb(0, null, [], null, [], null, { backfillCompleted: false, prepared }),
+      { MEMBER_BACKFILL_ENABLED: 'true' } as Partial<Env['Bindings']>,
+    );
+    expect(body.data.purchaseImportPending).toBe(false);
+    expect(prepared.some((q) => q.includes('loyalty_purchase_backfill.completed'))).toBe(false);
+  });
+
+  it('backfill gate off なら判定しない (audit_logs を引かない)', async () => {
+    const prepared: string[] = [];
+    const { body } = await callApi(
+      makeApp(USER),
+      makeDb(0, null, [], null, [], 'cust-1', { backfillCompleted: false, prepared }),
+    );
+    expect(body.data.purchaseImportPending).toBe(false);
+    expect(prepared.some((q) => q.includes('loyalty_purchase_backfill.completed'))).toBe(false);
   });
 
   it('coupons: 無い場合は空配列', async () => {

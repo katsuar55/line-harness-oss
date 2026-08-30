@@ -16,9 +16,14 @@ import { parseSubscriptionRankFromTags } from '../services/subscription-rank.js'
 import { buildCartPermalink, buildDiscountApplyUrl } from '../services/cart-permalink.js';
 import { issueRankDiscountForFriend } from '../services/rank-discount-issuer.js';
 import { MIN_SUBTOTAL_JPY } from '../services/shopify-coupon-issuer.js';
+import { getActiveLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
+import { isPurchaseImportPending } from '../services/member-purchase-backfill.js';
 
 // 顧客向けストアフロント (= 公式ドメイン)。SHOPIFY_STORE_DOMAIN は Admin/API 用なので使わない。
 const STORE_DOMAIN = 'naturism-diet.com';
+// 最低購入金額の表示用ラベル。Workers ランタイムの Intl に依存させないため
+// toLocaleString は使わず千区切りを自前で作る (サーバ側で組み立てる文字列のため)。
+const MIN_SUBTOTAL_LABEL = MIN_SUBTOTAL_JPY.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 const QUICK_BUY_LIMIT = 3;
 
 /**
@@ -77,6 +82,28 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
   } catch {
     coupons = [];
   }
+
+  // ─── 連携特典 ¥300 を保有クーポンに合流させる (2026-08-28) ───
+  // 🚨 これが無いと、LINE 内メール OTP で連携した本人が特典を一度も見ない:
+  //   ① ホームの第一候補 CTA (openAccountLinkCard) は window.location.href でこの会員証へ
+  //      **フルページ遷移**する = ポータルの #link-coupon-card は破棄される
+  //   ② ¥300 は line_link_coupons にしか無く、上の一覧が読む shopify_coupon_assignments には
+  //      構造的に載らない → 「保有クーポン 0枚 / 利用できるクーポンはまだありません」と
+  //      **持っているのに無いと言う**状態だった (本番初実行の直前 2026-08-28 に発見)
+  // gate off では読まない (= portal-read と同じ扱い。kill switch で顧客画面からも消える)。
+  const linkRewardCoupon =
+    c.env.LINK_REWARD_ENABLED === 'true'
+      ? await getActiveLinkRewardCoupon(c.env.DB, liffUser.friendId)
+      : null;
+
+  // ─── 過去注文の取り込みが未完了か (2026-08-28) ───
+  // 🚨 backfill は連携応答の**後**に waitUntil で走る (¥300 発行と subrequest 予算を
+  //    食い合わせないため)。その間 member_purchase_events は 0 行なので、会員証は必ず
+  //    「レギュラー会員 / 直近12ヶ月 ¥0 / まずは1回のお買い物でブロンズ会員に」を出す。
+  //    連携カードは「これまでのお買い物が会員ランクに反映されます」と約束しているので、
+  //    このまま出すと**既存客ほど連携直後に嘘を見る**。取り込み中はそう言う。
+  const purchaseImportPending =
+    linked && memberBackfillOn ? await isPurchaseImportPending(c.env.DB, liffUser.friendId) : false;
   const p = resolved.progress;
 
   // ─── 3タップ購入 (= PR5-5b): ランク割引コード + cart permalink ───
@@ -198,14 +225,31 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
       official: snapshot
         ? { rankId: snapshot.rankId, period: snapshot.period, direction: snapshot.direction }
         : null,
-      // 保有クーポン (発行済み・未使用)
-      coupons: coupons.map((a) => ({
-        code: a.code ?? null,
-        title: a.title ?? null,
-        discountType: a.discount_type ?? null,
-        discountValue: a.discount_value ?? null,
-        expiresAt: a.expires_at ?? null,
-      })),
+      // 保有クーポン (発行済み・未使用)。連携特典は別台帳 (line_link_coupons) なので先頭に合流。
+      //   🚨 金額・期限は**台帳の実値のみ**を載せる (定数を書かない = portal-read と同じ規約)。
+      //   min ¥2,000 は callLinkDiscountCreate が実際に Shopify へ設定している値 (MIN_SUBTOTAL_JPY)。
+      coupons: [
+        ...(linkRewardCoupon
+          ? [
+              {
+                kind: 'link_reward',
+                code: linkRewardCoupon.code,
+                title: `🔗 連携特典（¥${MIN_SUBTOTAL_LABEL}以上のご注文で）`,
+                discountType: 'fixed_amount',
+                discountValue: linkRewardCoupon.discountValue,
+                expiresAt: linkRewardCoupon.expiresAt,
+              },
+            ]
+          : []),
+        ...coupons.map((a) => ({
+          kind: null,
+          code: a.code ?? null,
+          title: a.title ?? null,
+          discountType: a.discount_type ?? null,
+          discountValue: a.discount_value ?? null,
+          expiresAt: a.expires_at ?? null,
+        })),
+      ],
       // ランク表 (= 会員ランクについて accordion 用、 multi-brand 対応で defs 由来)
       ladder: NATURISM_RANK_DEFS.map((r) => ({
         id: r.id,
@@ -224,6 +268,8 @@ liffMyRank.get('/api/liff/my-rank', async (c) => {
       linked,
       accountLinkEnabled,
       memberBackfillOn,
+      // 取り込み中は金額・次ランクの文言を「反映しています」に差し替える (嘘を出さない)
+      purchaseImportPending,
     },
   });
 });
@@ -433,9 +479,11 @@ function renderRank(d){
         '<p class="en text-xs tracking-[0.22em] font-semibold text-gray-500 mt-0.5">'+esc(enName(rank.id))+'</p>' +
         (pct > 0
           ? '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-sm font-bold shadow" style="background:linear-gradient(135deg,'+color+','+color+'cc);color:'+txt+'">通常購入 '+pct+'% OFFクーポン</div>'
-          : '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-gray-600 text-sm font-bold" style="background:#f1f5f9">まずは1回のお買い物でブロンズ会員に</div>') +
+          : (d.purchaseImportPending
+            ? '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-gray-600 text-sm font-bold" style="background:#f1f5f9">これまでのお買い物を反映しています…</div>'
+            : '<div class="inline-flex items-center gap-1 mt-3 px-4 py-1.5 rounded-full text-gray-600 text-sm font-bold" style="background:#f1f5f9">まずは1回のお買い物でブロンズ会員に</div>')) +
       '</div>' +
-      '<p class="text-xs text-gray-400 text-center pb-5 pt-3">直近12ヶ月のお買い上げ <span class="font-bold text-gray-600">'+esc(yen(d.trailing12moJpy))+'</span></p>' +
+      '<p class="text-xs text-gray-400 text-center pb-5 pt-3">直近12ヶ月のお買い上げ <span class="font-bold text-gray-600">'+(d.purchaseImportPending ? '集計中…' : esc(yen(d.trailing12moJpy)))+'</span></p>' +
     '</div>';
   var bimg = document.getElementById('badge-img');
   if (bimg) {
@@ -466,9 +514,11 @@ function renderProgress(d){
     '<div class="w-full h-3 rounded-full overflow-hidden" style="background:#e2e8f0">' +
       '<div class="bar-fill h-3 rounded-full" id="bar" style="width:0%;background:linear-gradient(90deg,#2fa8ad,#80c8cd)"></div>' +
     '</div>' +
-    (d.next.remainingJpy <= 1
-      ? '<p class="text-xs text-gray-500 mt-2 text-center">まずは1回のお買い物で '+esc(d.next.name)+'会員へ</p>'
-      : '<p class="text-xs text-gray-500 mt-2 text-center">あと <span class="font-bold" style="color:#0f766e">'+esc(yen(d.next.remainingJpy))+'</span> で '+esc(d.next.name)+'にランクアップ</p>') +
+    (d.purchaseImportPending
+      ? '<p class="text-xs text-gray-500 mt-2 text-center">これまでのお買い物を反映しています（数分かかる場合があります）</p>'
+      : d.next.remainingJpy <= 1
+        ? '<p class="text-xs text-gray-500 mt-2 text-center">まずは1回のお買い物で '+esc(d.next.name)+'会員へ</p>'
+        : '<p class="text-xs text-gray-500 mt-2 text-center">あと <span class="font-bold" style="color:#0f766e">'+esc(yen(d.next.remainingJpy))+'</span> で '+esc(d.next.name)+'にランクアップ</p>') +
     evalLine;
   setTimeout(function(){ var b=document.getElementById('bar'); if(b) b.style.width = pctW + '%'; }, 80);
 }
@@ -546,7 +596,22 @@ async function linkVerify(){
     if(res.status===200 && body && body.success){
       showToast('アカウント連携が完了しました');
       var card=document.getElementById('link-card'); if(card) card.style.display='none';
-      loadRank();
+      // 🚨 追従の状態を毎回リセットしてから始める (2026-08-31 採点ループ P2)。
+      //    解除しても ¥300 の台帳は意図的に残り (二重発行防止の冪等キー)、その表示は
+      //    linked を条件にしない。よって **解除 → 再連携** の瞬間、画面には前の描画の
+      //    link_reward 行が残っており、リセットしないと refreshLinkCouponAfterLink(0) が
+      //    「もう出ている」と誤判定して **0 回目で return** する。階段が 1 度も走らず、
+      //    直後の 1 本だけが取り込み中を描いて「集計中…」がセッション中固着する。
+      linkCouponPending = true;
+      linkCouponAnnounced = false;
+      linkCouponTimedOut = false;
+      lastImportPending = true; // 未知のうちは「追いかける」側に倒す
+      // 🚨 判定は**新しい応答の後**に行う。古い DOM / 古いフラグで判断させない。
+      var firstLoad = null;
+      try { firstLoad = loadRank(); } catch (e) { firstLoad = null; }
+      var startFollowUp = function(){ refreshLinkCouponAfterLink(0); };
+      if (firstLoad && typeof firstLoad.then === 'function'){ firstLoad.then(startFollowUp, startFollowUp); }
+      else { startFollowUp(); }
       return;
     }
     var err=body && body.error;
@@ -557,6 +622,65 @@ async function linkVerify(){
     linkMsg(msg, true);
   }catch(e){ linkMsg('通信エラーが発生しました', true); }
   finally{ setLinkBusy('link-verify-btn', false); }
+}
+
+// 連携特典 ¥300 の後追い取得 (2026-08-28)。
+// verify の HTTP 応答の**後**に waitUntil で Shopify 発行 → 台帳 INSERT が走るため、
+// 応答直後の loadRank() だけではまだ 0 枚。後追いしないと
+// **LINE 内メール OTP で連携した本人が特典を一度も見ない** (ポータル側の
+// refreshLinkCouponAfterLink と同じ役割・同じ階段)。gate off / 発行失敗なら API は
+// 連携特典を返さない = 何度呼んでも出ない (無害)。
+// 🚨 クーポンが出た時点で打ち切ってはいけない (2026-08-28 採点ループ P1)。
+// backfill も応答の後に走るため、クーポンだけを終了条件にすると
+// **会員証が「レギュラー会員 / ¥0 / まずは1回のお買い物で」のままセッション中固着**する
+// (この画面には visibilitychange / pageshow / interval の再取得が 1 つも無い)。
+// 終了条件は「クーポンが出た **かつ** 取り込みが完了した」。
+var LINK_COUPON_RETRY_MS = [1500, 4000, 9000, 20000];
+var linkCouponPending = false;   // 発行待ち = 「ありません」と断定しない窓
+var linkCouponTimedOut = false;  // 打ち切り = 「時間がかかっています」に切り替える
+var linkCouponAnnounced = false; // 告知は 1 回だけ
+var lastImportPending = false;   // 直近の loadRank が返した取り込み状態
+function linkCouponVisible(){
+  return !!document.querySelector('#coupons-card [data-coupon-kind="link_reward"]');
+}
+function refreshLinkCouponAfterLink(attempt){
+  var n = attempt || 0;
+  var got = linkCouponVisible();
+  if (got){
+    linkCouponPending = false;
+    if (!linkCouponAnnounced){ linkCouponAnnounced = true; announceLinkCoupon(); }
+  }
+  if (got && !lastImportPending) return; // 両方そろった = 追う理由がない
+  if (n >= LINK_COUPON_RETRY_MS.length){
+    // 打ち切り。「ご用意しています…」を残したままにせず、正直な待ち文言へ。
+    linkCouponPending = false;
+    if (!linkCouponVisible()) linkCouponTimedOut = true;
+    try { loadRank(); } catch (e) {}
+    return;
+  }
+  setTimeout(function(){
+    var p = null;
+    try { p = loadRank(); } catch (e) { p = null; }
+    var next = function(){ refreshLinkCouponAfterLink(n + 1); };
+    if (p && typeof p.then === 'function'){ p.then(next, next); } else { next(); }
+  }, LINK_COUPON_RETRY_MS[n]);
+}
+function announceLinkCoupon(){
+  // **金額は書かない** — 正はクーポン行 (台帳の実値)。ここに数字を置くと二重管理の嘘になる。
+  showToast('🎁 連携特典クーポンをお届けしました');
+}
+// 連携特典が届かなかったときの復旧導線 (2026-08-28)。
+// 🚨 ここでは解除しない — 解除は会員ランク表示を失うので、既存の二段確認を開いて
+//    「何が起きるか」を読んでもらってから本人に決めてもらう。
+function showRelinkHelp(){
+  var open = document.getElementById('unlink-open');
+  var confirm = document.getElementById('unlink-confirm');
+  if (confirm) confirm.style.display = 'block';
+  if (open) open.style.display = 'none';
+  var card = document.getElementById('link-card');
+  if (card && card.scrollIntoView) {
+    try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { card.scrollIntoView(); }
+  }
 }
 // ─── 連携解除 (2026-08-28) ───
 // 二段確認にする: 1 タップで消えると、ランクと注文履歴を意図せず失う事故になる。
@@ -718,14 +842,35 @@ function renderCoupons(d){
   card.className = 'card p-5 rise';
   card.style.display = 'block';
   var list = (d.coupons || []).filter(function(c){ return c && c.code; });
-  var head = '<div class="flex items-center justify-between mb-3"><p class="text-sm font-bold text-gray-700">&#x1F39F;&#xFE0F; 保有クーポン</p><span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:#eef7f7;color:#0f766e">'+list.length+'枚</span></div>';
+  // 🚨 枚数バッジは pending 判定の**後**に組む。先に組むと「ご用意しています…」の真上で
+  //    「0枚」と言い続ける (= 本文だけ直しても合成後は嘘のまま。2026-08-28 採点ループ P2)。
+  var waiting = list.length === 0 && (linkCouponPending || linkCouponTimedOut);
+  var countLabel = waiting ? '準備中' : list.length + '枚';
+  var head = '<div class="flex items-center justify-between mb-3"><p class="text-sm font-bold text-gray-700">&#x1F39F;&#xFE0F; 保有クーポン</p><span class="text-xs font-bold px-2 py-0.5 rounded-full" style="background:#eef7f7;color:#0f766e">'+countLabel+'</span></div>';
   if (list.length === 0){
-    card.innerHTML = head + '<p class="text-xs text-gray-400 text-center py-3">利用できるクーポンはまだありません</p>';
+    // 連携直後は発行 (waitUntil) 待ちなので「ありません」と断定しない (= 届く直前に否定する嘘)。
+    // 打ち切り後も断定に戻さない — 失敗と発行中を画面で区別できないため (audit_logs が唯一の証跡)。
+    var emptyHtml;
+    if (linkCouponPending){
+      emptyHtml = '<p class="text-xs text-gray-400 text-center py-3">特典クーポンをご用意しています…</p>';
+    } else if (linkCouponTimedOut){
+      // 発行が失敗したときの復旧口。台帳が空なら「解除 → 再連携」で冪等チェックが
+      // 空振りして再発行される (#282 の解除機能)。ただし解除は会員ランク表示を失うので、
+      // このボタンは**既存の二段確認を開くだけ**にする (ここでは解除しない)。
+      emptyHtml =
+        '<p class="text-xs text-gray-500 text-center pt-3">特典クーポンがまだ届いていません</p>' +
+        '<p class="text-[11px] text-gray-400 text-center mt-1.5 leading-relaxed">ミニアプリを開き直すと表示されることがあります。<br>それでも表示されない場合は、連携をやり直すと再発行されます。</p>' +
+        '<button type="button" onclick="showRelinkHelp()" class="tap w-full text-xs font-bold py-3 rounded-xl mt-3" style="background:#f8fafc;border:1px solid #e2e8f0;color:#0f766e">連携をやり直す方法を見る</button>';
+    } else {
+      emptyHtml = '<p class="text-xs text-gray-400 text-center py-3">利用できるクーポンはまだありません</p>';
+    }
+    card.innerHTML = head + emptyHtml;
     return;
   }
   var rows = list.map(function(c){
     var exp = fmtMd(c.expiresAt);
-    return '<div class="flex items-center gap-3 p-3 rounded-xl" style="background:linear-gradient(135deg,#f0fdfa,#faf5ff);border:1px solid #e2e8f0">' +
+    var kindAttr = c.kind ? ' data-coupon-kind="' + esc(c.kind) + '"' : '';
+    return '<div' + kindAttr + ' class="flex items-center gap-3 p-3 rounded-xl" style="background:linear-gradient(135deg,#f0fdfa,#faf5ff);border:1px solid #e2e8f0">' +
       '<div class="flex-1 min-w-0">' +
         '<p class="text-sm font-bold text-gray-800 truncate">'+esc(c.title || 'クーポン')+'</p>' +
         '<p class="text-xs font-bold mt-0.5" style="color:#0f766e">'+esc(couponValueLabel(c))+(exp ? ' <span class="text-gray-400 font-normal">/ '+esc(exp)+'まで</span>' : '')+'</p>' +
@@ -788,6 +933,7 @@ function renderAbout(d){
 
 function renderAll(d){
   hasRendered = true;
+  lastImportPending = !!d.purchaseImportPending;
   document.getElementById('card-skeleton').style.display='none';
   renderRank(d);
   renderProgress(d);
@@ -824,16 +970,25 @@ function showError(msg){
   if (jp) document.getElementById('error-detail').textContent = jp;
 }
 
+// 🚨 応答の追い越し対策 (2026-08-28)。連携直後は loadRank が重なる
+// (成功分岐の即時 1 本 + 後追いの階段 1500/4000/9000ms)。遅い方が後に着くと、
+// **発行前のスナップショットで上書きされ、いったん出た ¥300 が消えて
+// 「利用できるクーポンはまだありません」に戻る** (= 直したはずの嘘が再発する)。
+// 最後に発行した要求以外の応答は捨てる。
+var loadRankSeq = 0;
 async function loadRank(){
+  var seq = ++loadRankSeq;
   try {
     var res = await fetch(API_BASE + '/api/liff/my-rank', { headers: idToken ? { 'Authorization': 'Bearer ' + idToken } : {} });
     var body = await res.json().catch(function(){ return null; });
+    if (seq !== loadRankSeq) return; // 追い越された = この応答は古い
     if (res.status !== 200 || !body || !body.success){
       showError(body && body.error ? body.error : null);
       return;
     }
     renderAll(body.data);
   } catch (e) {
+    if (seq !== loadRankSeq) return;
     showError(null);
   }
 }

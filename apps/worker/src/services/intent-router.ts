@@ -30,7 +30,11 @@ import type { Message } from '@line-crm/line-sdk';
 import { buildPriceTableMessage } from './ai-message-builder.js';
 import { buildQuickQuizInviteMessage } from './quick-quiz.js';
 import { buildProductCompareFlex, buildMyCouponFlex } from './welcome-postback.js';
-import { getFriendActiveCoupon } from './ai-fact-context.js';
+import { listFriendActiveCoupons, formatJstDate } from './ai-fact-context.js';
+import { MIN_SUBTOTAL_JPY } from './shopify-coupon-issuer.js';
+
+/** トーク 1 通に列挙するクーポンの上限 (超過分は枚数だけ伝えてミニアプリへ誘導) */
+const TALK_COUPON_LIMIT = 5;
 import { buildSubscriptionMenuMessages, MYPAGE_URL } from './subscription-concierge.js';
 
 export type Intent =
@@ -276,8 +280,11 @@ export async function buildMessagesForIntentAsync(
   ctx: IntentBuildContext,
 ): Promise<ReadonlyArray<Message>> {
   if (intent.type === 'my_coupon') {
-    const coupon = await getFriendActiveCoupon(ctx.db, ctx.friendId);
-    if (!coupon) {
+    // 🚨 3 台帳すべてを見る (2026-08-28)。長らく友だち追加特典 (line_friend_coupons) だけを
+    //    見ており、¥300 連携特典 / ¥500 紹介特典を**持っている顧客に「ございません」と断定**して
+    //    いた。友だち追加特典は 7 日で切れるので、既存顧客ではほぼ確実にこの嘘を踏む。
+    const { coupons, total } = await listFriendActiveCoupons(ctx.db, ctx.friendId);
+    if (total === 0) {
       return [
         {
           type: 'text',
@@ -285,17 +292,52 @@ export async function buildMessagesForIntentAsync(
         },
       ];
     }
+    // 1 枚のときは従来どおり (Flex カード + コピー用 text)。複数枚は Flex が
+    // 「1 枚しか無い」と誤読させるので、全部を 1 通の text で列挙する (reply は 5 通まで)。
+    if (total === 1) {
+      const coupon = coupons[0];
+      return [
+        {
+          type: 'flex',
+          altText: `🎁 マイクーポン ${coupon.couponCode}`,
+          // 🚨 期限と種別を**必ず渡す** (2026-08-31 採点ループ P1)。渡さないと Flex 側の
+        //    既定文言「発行から 7 日間有効 / (友だち限定)」が出て、¥300 連携特典 (30 日) を
+        //    23 日短く偽る。既存客は保有 1 枚 = この経路なので被害が既存客に偏る。
+        contents: buildMyCouponFlex(coupon.couponCode, coupon.discountValue, {
+          expiresAt: coupon.expiresAt,
+          label: coupon.label,
+        }),
+        },
+        // 5/26 user feedback: クーポンコードは copy したいので **別 text message として送る** (= reply 内、 push 0 通追加)
+        // LINE では text message を長押しで copy 可能
+        {
+          type: 'text',
+          text: `🎁 クーポンコード：\n${coupon.couponCode}\n\n↑ 長押しでコピーして公式ストアでご利用ください💝`,
+        },
+      ];
+    }
+    // 🚨 「併用できます」は書かない — 流通中の旧コードへの遡及 op が未実施 (CLAUDE.md 順序厳守)
+    // 🚨 紹介特典は 1 人が何枚も持てる (friend_id が UNIQUE でない)。LINE の 1 通は 5,000 文字
+    //    上限なので列挙は TALK_COUPON_LIMIT 枚までにし、**枚数は実数**を出して省略分を明示する。
+    const shown = coupons.slice(0, TALK_COUPON_LIMIT);
+    const blocks = shown
+      .map((c) => {
+        const cur = c.discountCurrency === 'JPY' ? '¥' : c.discountCurrency + ' ';
+        const exp = c.expiresAt ? `${formatJstDate(c.expiresAt)} まで有効` : '無期限';
+        return `▼ ${c.label}\n${c.couponCode}\n${cur}${c.discountValue} OFF / ${exp}`;
+      })
+      .join('\n\n');
+    const omitted =
+      total > shown.length
+        ? `\n\n▼ ほか ${total - shown.length}枚\nミニアプリのホームでご確認いただけます`
+        : '';
     return [
       {
-        type: 'flex',
-        altText: `🎁 マイクーポン ${coupon.couponCode}`,
-        contents: buildMyCouponFlex(coupon.couponCode, coupon.discountValue),
-      },
-      // 5/26 user feedback: クーポンコードは copy したいので **別 text message として送る** (= reply 内、 push 0 通追加)
-      // LINE では text message を長押しで copy 可能
-      {
         type: 'text',
-        text: `🎁 クーポンコード：\n${coupon.couponCode}\n\n↑ 長押しでコピーして公式ストアでご利用ください💝`,
+        text:
+          `🎁 お持ちのクーポン ${total}枚\n\n${blocks}${omitted}\n\n` +
+          `↑ コードを長押しでコピーして公式ストアでご利用ください💝\n` +
+          `※ ¥${MIN_SUBTOTAL_JPY.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')} 以上のご注文でご利用いただけます`,
       },
     ];
   }

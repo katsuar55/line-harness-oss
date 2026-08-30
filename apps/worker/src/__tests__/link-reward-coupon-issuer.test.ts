@@ -51,6 +51,12 @@ class FakeDb {
   /** 同顧客の別 friend 並行発行 (UNIQUE(shopify_customer_id) 違反) を再現 */
   failInsertCustomerConflictOnce = false;
   auditActions: string[] = [];
+  /** audit INSERT の bind params (metadata JSON を含む) — stage の照合に使う */
+  auditParams: unknown[][] = [];
+  /** 冪等確認の SELECT で D1 が落ちる状況 (= 予算切れ Too many subrequests) を再現 */
+  throwOnFind = false;
+  /** audit の書き込み自体も落ちる状況 (= 予算切れなら audit も書けない) */
+  throwOnAudit = false;
 
   prepare(sql: string) {
     const isSelectActive =
@@ -70,6 +76,9 @@ class FakeDb {
     return {
       bind: (...params: unknown[]) => ({
         first: async () => {
+          if (this.throwOnFind && sql.includes('FROM line_link_coupons')) {
+            throw new Error('Too many subrequests.');
+          }
           if (isFindByFriend) {
             const friendId = params[0] as string;
             const row = this.rows.find((r) => r.friend_id === friendId);
@@ -171,10 +180,12 @@ class FakeDb {
             return { success: true, meta: { changes: 1 } };
           }
           if (isInsertAudit) {
+            if (this.throwOnAudit) throw new Error('Too many subrequests.');
             // audit_logs INSERT の action 列 (bind 順は audit-logger 実装依存のため
             // 文字列 param から link_reward.* を拾う緩い記録に留める)
             const act = params.find((p) => typeof p === 'string' && (p as string).startsWith('link_reward.'));
             if (act) this.auditActions.push(act as string);
+            this.auditParams.push(params);
             return { success: true, meta: { changes: 1 } };
           }
           return { success: true };
@@ -497,5 +508,58 @@ describe('findLinkRewardCoupon (friend_id)', () => {
     });
     expect((await findLinkRewardCoupon(db as unknown as D1Database, 'A'))!.coupon_code).toBe('NLINK-XYZ');
     expect(await findLinkRewardCoupon(db as unknown as D1Database, 'B')).toBeNull();
+  });
+});
+
+// ============================================================
+// 🚨 想定外例外でも証跡を残す (2026-08-28)
+// ============================================================
+// step 2 / 2b / 6 は裸の await なので、D1 が「Too many subrequests」等で落ちると
+// 例外が呼び出し元の .catch に飲まれ、**クーポン無し・台帳 0 行・audit 0 行・
+// 顧客画面は成功**という完全に無音の失敗になる。この経路は本番実行実績 0 のまま
+// gate が開いているため、初実行が無音で落ちると原因を特定する手段が 1 つも無い。
+describe('issueLinkRewardCoupon — 想定外例外', () => {
+  it('冪等確認の SELECT が落ちても throw せず null を返す', async () => {
+    const db = new FakeDb();
+    db.throwOnFind = true;
+    const fetchImpl = makeSuccessFetch();
+    const res = await issueLinkRewardCoupon(
+      db as unknown as D1Database,
+      makeEnv(),
+      issueOpts({ fetchImpl }),
+    );
+    expect(res).toBeNull();
+    // 巻き添えを避けるため Shopify も叩かない
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('🚨 想定外例外でも issue_failed(stage:unexpected) を必ず残す', async () => {
+    const db = new FakeDb();
+    db.throwOnFind = true;
+    await issueLinkRewardCoupon(
+      db as unknown as D1Database,
+      makeEnv(),
+      issueOpts({ fetchImpl: makeSuccessFetch() }),
+    );
+    expect(db.auditActions).toContain('link_reward.issue_failed');
+    // 「どこで落ちたか」まで残らないと初実行の失敗を後から特定できない。
+    // 観測点は action 名だけでなく metadata の中身 (= 合成後の行) に置く。
+    const meta = db.auditParams
+      .flat()
+      .filter((p): p is string => typeof p === 'string' && p.includes('"stage"'));
+    expect(meta.join(' ')).toContain('"stage":"unexpected"');
+  });
+
+  it('audit 自体も書けない状況でも throw しない (呼び出し元の waitUntil を殺さない)', async () => {
+    const db = new FakeDb();
+    db.throwOnFind = true;
+    db.throwOnAudit = true;
+    await expect(
+      issueLinkRewardCoupon(
+        db as unknown as D1Database,
+        makeEnv(),
+        issueOpts({ fetchImpl: makeSuccessFetch() }),
+      ),
+    ).resolves.toBeNull();
   });
 });

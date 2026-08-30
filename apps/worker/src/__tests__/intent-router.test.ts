@@ -231,15 +231,45 @@ describe('intent-router — my_coupon (= Step 3 UX、 sync sentinel)', () => {
 
 // async build の挙動 (= D1 mock + getFriendActiveCoupon)
 describe('intent-router — buildMessagesForIntentAsync (my_coupon)', () => {
-  function mockDb(coupon: { coupon_code: string; discount_value: number; discount_currency: string; expires_at: string | null } | null): D1Database {
+  interface Row { coupon_code: string; discount_value: number; discount_currency: string; expires_at: string | null }
+
+  /**
+   * 🚨 台帳ごとに別の行を返す (2026-08-28)。全 prepare が同じ行を返す mock だと
+   *    3 台帳が同じ 1 枚を 3 回返し、「何枚持っているか」の分岐を検証できない。
+   */
+  // 🚨 紹介台帳は 1 friend が複数枚持てるので配列も渡せる形にする (Codex P1 2026-08-28)
+  function ledgerDb(rows: Partial<Record<'friend' | 'link' | 'referral', Row | Row[] | null>>): D1Database {
+    const pick = (sql: string): Row | Row[] | null => {
+      if (sql.includes('line_friend_coupons')) return rows.friend ?? null;
+      if (sql.includes('line_link_coupons')) return rows.link ?? null;
+      if (sql.includes('line_referral_coupons')) return rows.referral ?? null;
+      return null;
+    };
     return {
-      prepare: () => ({
+      prepare: (sql: string) => ({
         bind: () => ({
-          first: async <T,>(): Promise<T | null> => coupon as T | null,
+          all: async <T,>(): Promise<{ results: T[] }> => {
+            const r = pick(sql);
+            if (r === null) return { results: [] as T[] };
+            const rows = Array.isArray(r) ? r : [r];
+            // 🚨 `COUNT(*) OVER ()` は LIMIT の**前**の全該当行を数える。偽 DB もそう振る舞う。
+            const withCount = sql.includes('COUNT(*) OVER ()')
+              ? rows.map((x) => ({ ...x, total_count: rows.length }))
+              : rows;
+            // 🚨 SQL の LIMIT を実際に効かせる (無視すると「LIMIT 1 に戻す」変異を検出できない)
+            const m = sql.match(/LIMIT\s+(\d+)/i);
+            return { results: (m ? withCount.slice(0, Number(m[1])) : withCount) as T[] };
+          },
+          first: async <T,>(): Promise<T | null> => {
+            const r = pick(sql);
+            return (Array.isArray(r) ? (r[0] ?? null) : r) as T | null;
+          },
         }),
       }),
     } as unknown as D1Database;
   }
+
+  const mockDb = (coupon: Row | null): D1Database => ledgerDb(coupon ? { friend: coupon } : {});
 
   it('returns 2 messages (= flex + text code) when coupon exists', async () => {
     const db = mockDb({
@@ -271,6 +301,132 @@ describe('intent-router — buildMessagesForIntentAsync (my_coupon)', () => {
     expect(r[0]?.type).toBe('text');
     if (r[0]?.type === 'text') {
       expect(r[0].text).toMatch(/お持ちのクーポンはございません/);
+    }
+  });
+
+  // 🚨 2026-08-28: 友だち追加特典だけを見ていたため、¥300 連携特典 / ¥500 紹介特典を
+  //    持っている顧客に「現在お持ちのクーポンはございません」と断定していた。
+  it('🚨 連携特典しか持っていなくても「ございません」にならない', async () => {
+    const db = ledgerDb({
+      link: { coupon_code: 'NLINK-ABCD1234', discount_value: 300, discount_currency: 'JPY', expires_at: null },
+    });
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    expect(r).toHaveLength(2);
+    if (r[1]?.type === 'text') expect(r[1].text).toContain('NLINK-ABCD1234');
+  });
+
+  // 🚨 2026-08-31 採点ループ P1: 1 枚のときの Flex は welcome 専用で、期限「発行から 7 日間有効」と
+  //    種別「(友だち限定)」が直書きだった。3 台帳を見るようにした途端、¥300 連携特典 (30 日) を
+  //    **23 日短く偽る**。既存客は友だち追加特典が期限切れで保有 1 枚 = この経路に入るため、
+  //    被害が既存客に偏る。観測点は **Flex の中身 (r[0])** — 前回はコード文字列しか見ておらず素通りした。
+  it('🚨 Flex が台帳の実期限と種別を出す (7 日を決め打ちしない)', async () => {
+    const db = ledgerDb({
+      link: {
+        coupon_code: 'NLINK-ABCD1234',
+        discount_value: 300,
+        discount_currency: 'JPY',
+        expires_at: '2026-09-27T23:59:59+09:00',
+      },
+    });
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    expect(r[0]?.type).toBe('flex');
+    const flex = JSON.stringify((r[0] as { contents: unknown }).contents);
+    expect(flex).toContain('9月27日まで有効');
+    expect(flex).toContain('アカウント連携特典');
+    // 嘘の 2 点が消えていること
+    expect(flex).not.toContain('7 日間有効');
+    expect(flex).not.toContain('友だち限定');
+  });
+
+  it('紹介特典 1 枚でも種別と期限が正しい (60 日券)', async () => {
+    const db = ledgerDb({
+      referral: {
+        coupon_code: 'NREF-EFGH5678',
+        discount_value: 500,
+        discount_currency: 'JPY',
+        expires_at: '2026-10-27T23:59:59+09:00',
+      },
+    });
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    const flex = JSON.stringify((r[0] as { contents: unknown }).contents);
+    expect(flex).toContain('10月27日まで有効');
+    expect(flex).toContain('ご紹介特典');
+    expect(flex).not.toContain('7 日間有効');
+  });
+
+  it('期限が無い券は日数を主張しない (既定の 7 日で埋めない)', async () => {
+    const db = ledgerDb({
+      link: { coupon_code: 'NLINK-NOEXP', discount_value: 300, discount_currency: 'JPY', expires_at: null },
+    });
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    const flex = JSON.stringify((r[0] as { contents: unknown }).contents);
+    expect(flex).not.toContain('日間有効');
+    expect(flex).toContain('naturism-diet.com');
+  });
+
+  it('複数枚は 1 通に全部載せる (Flex 1 枚だと「1 枚しか無い」と誤読させる)', async () => {
+    const db = ledgerDb({
+      friend: { coupon_code: 'LINE-W', discount_value: 500, discount_currency: 'JPY', expires_at: '2026-09-04T23:59:59+09:00' },
+      link: { coupon_code: 'NLINK-L', discount_value: 300, discount_currency: 'JPY', expires_at: null },
+    });
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0]?.type).toBe('text');
+    if (r[0]?.type === 'text') {
+      expect(r[0].text).toContain('お持ちのクーポン 2枚');
+      expect(r[0].text).toContain('▼ 友だち追加特典');
+      expect(r[0].text).toContain('LINE-W');
+      expect(r[0].text).toContain('▼ アカウント連携特典');
+      expect(r[0].text).toContain('NLINK-L');
+      expect(r[0].text).toContain('¥2,000 以上のご注文');
+      // 遡及 op が済むまで「併用」は書かない
+      expect(r[0].text).not.toContain('併用');
+    }
+  });
+
+  // 🚨 Codex P1 (2026-08-28): 紹介特典は 1 人が複数枚持てる
+  it('🚨 紹介特典を複数枚持っていたら全部出す (枚数も実数)', async () => {
+    const ref = (n: number) => ({ coupon_code: `NREF-${n}`, discount_value: 500, discount_currency: 'JPY', expires_at: null });
+    const db = ledgerDb({ referral: [ref(1), ref(2), ref(3)] });
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    expect(r).toHaveLength(1);
+    if (r[0]?.type === 'text') {
+      expect(r[0].text).toContain('お持ちのクーポン 3枚');
+      expect(r[0].text).toContain('NREF-1');
+      expect(r[0].text).toContain('NREF-3');
+    }
+  });
+
+  it('🚨 列挙は 5 枚までだが枚数は実数を出し、省略分を明示する', async () => {
+    const ref = (n: number) => ({ coupon_code: `NREF-${n}`, discount_value: 500, discount_currency: 'JPY', expires_at: null });
+    const db = ledgerDb({ referral: [ref(1), ref(2), ref(3), ref(4), ref(5), ref(6)] });
+    const r = await buildMessagesForIntentAsync(
+      { type: 'my_coupon', reason: 'test' },
+      { db, friendId: 'test-friend' },
+    );
+    if (r[0]?.type === 'text') {
+      expect(r[0].text).toContain('お持ちのクーポン 6枚');
+      expect(r[0].text).toContain('NREF-5');
+      expect(r[0].text).not.toContain('NREF-6');
+      expect(r[0].text).toContain('ほか 1枚');
     }
   });
 

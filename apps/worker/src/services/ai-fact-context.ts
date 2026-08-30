@@ -22,6 +22,7 @@ import { MIN_SUBTOTAL_JPY } from './shopify-coupon-issuer.js';
 
 const ACTIVE_BROADCAST_WINDOW_DAYS = 7; // 過去 N 日間に配信済 broadcast を「進行中」 として扱う
 const BROADCAST_LIMIT = 3; // prompt 肥大化防止
+const CONTEXT_COUPON_LIMIT = 5; // fact block に列挙する上限 (枚数自体は実数を出す)
 
 interface BroadcastRow {
   title: string;
@@ -42,6 +43,113 @@ export interface ActiveCoupon {
   readonly discountValue: number;
   readonly discountCurrency: string;
   readonly expiresAt: string | null;
+  /** 顧客に見せる種別名 (例: 「アカウント連携特典」) */
+  readonly label: string;
+}
+
+/**
+ * 顧客が「自分のクーポン」と認識する 3 台帳 (2026-08-28)。
+ *
+ * 🚨 なぜ 3 つ要るか: ここは長らく line_friend_coupons (友だち追加特典) しか見ておらず、
+ * ¥300 連携特典 / ¥500 紹介特典を**持っている顧客に対して公式アカウントが
+ * 「現在お持ちのクーポンはございません」と断定**していた。友だち追加特典は 7 日で切れるので、
+ * 既存顧客 (= 連携を試す層) ではほぼ確実にこの嘘を踏む。
+ *
+ * 3 台帳とも列は同形 (coupon_code / discount_value / discount_currency / expires_at /
+ * status / issued_at / friend_id)、最低購入は 3 つとも ¥2,000。
+ *
+ * ⚠️ table 名は**この定数配列だけ**が供給源 (リクエスト由来の文字列は絶対に入れない)。
+ * ⚠️ 台帳ごとに独立の try/catch にする — 1 テーブルが未 migration でも他は返す
+ *    (UNION にすると 1 つ欠けた瞬間に全部が空になり、既存の友だち追加特典まで見えなくなる)。
+ */
+const COUPON_LEDGERS: ReadonlyArray<{ readonly table: string; readonly label: string }> = [
+  { table: 'line_friend_coupons', label: '友だち追加特典' },
+  { table: 'line_link_coupons', label: 'アカウント連携特典' },
+  { table: 'line_referral_coupons', label: 'ご紹介特典' },
+];
+
+/**
+ * 1 台帳あたりの取得枚数 (= 表示上限)。総数は同じクエリの window 関数から取るので、
+ * 取得行数は常に有界のまま「N 枚」を正確に出せる。
+ *
+ * 🚨 **LIMIT 1 にしてはいけない** (2026-08-28 Codex P1): line_referral_coupons は
+ * 「referrer は何度でも紹介でき、紹介先が購入するたびに ¥500」なので friend_id が UNIQUE でない。
+ * friend_coupons / link_coupons は UNIQUE なので常に 1 枚。
+ */
+const LEDGER_FETCH_LIMIT = CONTEXT_COUPON_LIMIT;
+
+/** 台帳 1 つの取得結果。coupons は表示用 (有界)、total は**常に正確な総数**。 */
+interface LedgerResult {
+  readonly coupons: ActiveCoupon[];
+  readonly total: number;
+}
+
+/** 1 台帳から有効なクーポンを引く。失敗しても他の台帳を巻き込まない (fail-safe)。 */
+async function queryCouponLedger(
+  db: D1Database,
+  table: string,
+  label: string,
+  friendId: string,
+  nowIso: string,
+): Promise<LedgerResult> {
+  try {
+    // 🚨 行と総数を **1 文** で取る (2026-08-28 Codex P2 ×2)。
+    //   ① 別々の 2 クエリだと、COUNT だけが一時的に失敗したときに外側の catch が
+    //      **取得済みの行ごと捨てて**「クーポンはございません」と言ってしまう。
+    //   ② 2 文の間に使用・失効が起きると行と枚数が別スナップショットになり総数がずれる。
+    //   `COUNT(*) OVER ()` は LIMIT の**前**の全該当行を数える (本番 D1 で実測確認済み)。
+    const res = await db
+      .prepare(
+        `SELECT coupon_code, discount_value, discount_currency, expires_at,
+                COUNT(*) OVER () AS total_count
+         FROM ${table}
+         WHERE friend_id = ? AND status = 'issued'
+           AND (expires_at IS NULL OR expires_at >= ?)
+         ORDER BY issued_at DESC LIMIT ${LEDGER_FETCH_LIMIT}`,
+      )
+      .bind(friendId, nowIso)
+      .all<CouponRow & { total_count: number }>();
+    const rows = res.results ?? [];
+    const total = rows.length > 0 ? Number(rows[0].total_count ?? rows.length) : 0;
+    return {
+      coupons: rows.map((row) => ({
+        couponCode: row.coupon_code,
+        discountValue: row.discount_value,
+        discountCurrency: row.discount_currency,
+        expiresAt: row.expires_at,
+        label,
+      })),
+      total,
+    };
+  } catch (err) {
+    console.error(
+      `[ai-fact-context] coupon ledger ${table} failed:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return { coupons: [], total: 0 };
+  }
+}
+
+/**
+ * friend が保有する有効なクーポンを全台帳から集めて返す (台帳順)。
+ *
+ * `coupons` は表示用なので**有界** (台帳ごとに CONTEXT_COUPON_LIMIT + 1 枚まで)。
+ * `total` は **常に正確な総数** — 「お持ちのクーポン N 枚」を嘘にしないため
+ * (2026-08-28 Codex P2)。台帳単位で fail-safe。
+ */
+export async function listFriendActiveCoupons(
+  db: D1Database,
+  friendId: string,
+): Promise<LedgerResult> {
+  const nowIso = jstIsoFromDate(new Date());
+  const coupons: ActiveCoupon[] = [];
+  let total = 0;
+  for (const ledger of COUPON_LEDGERS) {
+    const r = await queryCouponLedger(db, ledger.table, ledger.label, friendId, nowIso);
+    coupons.push(...r.coupons);
+    total += r.total;
+  }
+  return { coupons, total };
 }
 
 /**
@@ -53,32 +161,8 @@ export async function getFriendActiveCoupon(
   db: D1Database,
   friendId: string,
 ): Promise<ActiveCoupon | null> {
-  try {
-    const nowIso = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, -1) + '+09:00';
-    const row = await db
-      .prepare(
-        `SELECT coupon_code, discount_value, discount_currency, expires_at
-         FROM line_friend_coupons
-         WHERE friend_id = ? AND status = 'issued'
-           AND (expires_at IS NULL OR expires_at >= ?)
-         ORDER BY issued_at DESC LIMIT 1`,
-      )
-      .bind(friendId, nowIso)
-      .first<CouponRow>();
-    if (!row) return null;
-    return {
-      couponCode: row.coupon_code,
-      discountValue: row.discount_value,
-      discountCurrency: row.discount_currency,
-      expiresAt: row.expires_at,
-    };
-  } catch (err) {
-    console.error(
-      '[ai-fact-context] getFriendActiveCoupon failed:',
-      err instanceof Error ? err.message : String(err),
-    );
-    return null;
-  }
+  const { coupons } = await listFriendActiveCoupons(db, friendId);
+  return coupons[0] ?? null;
 }
 
 /**
@@ -158,24 +242,31 @@ export async function getFriendCouponContext(
   friendId: string,
 ): Promise<string> {
   try {
-    const nowIso = jstIsoFromDate(new Date());
-    const row = await db
-      .prepare(
-        `SELECT coupon_code, discount_value, discount_currency, expires_at
-         FROM line_friend_coupons
-         WHERE friend_id = ? AND status = 'issued'
-           AND (expires_at IS NULL OR expires_at >= ?)
-         ORDER BY issued_at DESC LIMIT 1`,
-      )
-      .bind(friendId, nowIso)
-      .first<CouponRow>();
-    if (!row) return '';
+    // 🚨 3 台帳すべてを見る (2026-08-28)。友だち追加特典だけを見ていたため、¥300 連携特典 /
+    //    ¥500 紹介特典を持つ顧客に「現在お持ちのクーポンはございません」と断定していた。
+    const { coupons, total } = await listFriendActiveCoupons(db, friendId);
+    if (total === 0) return '';
 
-    const expiry = row.expires_at ? formatJstDate(row.expires_at) + ' まで有効' : '無期限';
-    const currency = row.discount_currency === 'JPY' ? '¥' : row.discount_currency + ' ';
+    // prompt 肥大化を防ぐため列挙は 5 枚まで。**枚数は実数を出す** (省略した分は明示する)。
+    const shown = coupons.slice(0, CONTEXT_COUPON_LIMIT);
+    const lines = shown.map((c, i) => {
+      const expiry = c.expiresAt ? formatJstDate(c.expiresAt) + ' まで有効' : '無期限';
+      const currency = c.discountCurrency === 'JPY' ? '¥' : c.discountCurrency + ' ';
+      return `${i + 1}. ${c.label} — コード: ${c.couponCode} / 値引: ${currency}${c.discountValue} OFF / 有効期限: ${expiry}`;
+    });
+    if (total > shown.length) {
+      lines.push(`- ほか ${total - shown.length} 枚 (すべてミニアプリのホームでご確認いただけます)`);
+    }
     // 🚨 利用条件は**この fact block に載せる**こと (2026-08-24)。system prompt 側のルール文だけだと
     //   LLM はデータ側を優先して転記し、最低購入が落ちた回答になる。値は発行側の定数が唯一の正。
-    return `\n## あなた専用クーポン (有効)\n- コード: ${row.coupon_code}\n- 値引: ${currency}${row.discount_value} OFF\n- 有効期限: ${expiry}\n- ご利用条件: ¥${MIN_SUBTOTAL_JPY.toLocaleString('en-US')} 以上のご注文\n- 利用先: 公式ストア naturism-diet.com`;
+    // 🚨 「併用できます」は**まだ書かない** — 流通中の旧コードへの遡及 op が未実施のため
+    //   (docs/SPRINT_C_MAGIC_LINK_MAIL.md §6 / CLAUDE.md の順序厳守)。
+    return (
+      `\n## あなた専用クーポン (有効)\n(お持ちのクーポン ${total} 枚)\n` +
+      lines.join('\n') +
+      `\n- ご利用条件: ${total > 1 ? 'いずれも ' : ''}¥${formatThousands(MIN_SUBTOTAL_JPY)} 以上のご注文` +
+      `\n- 利用先: 公式ストア naturism-diet.com`
+    );
   } catch (err) {
     console.error(
       '[ai-fact-context] getFriendCouponContext failed:',
@@ -189,6 +280,11 @@ export async function getFriendCouponContext(
 // helpers
 // ============================================================
 
+/** 千区切り。Workers ランタイムの Intl に依存させないため toLocaleString は使わない。 */
+function formatThousands(n: number): string {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
 /** Date → JST '+09:00' suffix の ISO 8601 string (= D1 TEXT timestamps と整合) */
 function jstIsoFromDate(date: Date): string {
   const jstMs = date.getTime() + 9 * 60 * 60 * 1000;
@@ -196,13 +292,17 @@ function jstIsoFromDate(date: Date): string {
 }
 
 /** ISO 8601 timestamp → '6月15日' 等の表示用 string (= 年は省略、 月日のみ) */
-function formatJstDate(iso: string | null): string {
+export function formatJstDate(iso: string | null): string {
   if (!iso) return '日時未定';
-  const match = /(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-  if (!match) return iso;
-  const month = Number.parseInt(match[2], 10);
-  const day = Number.parseInt(match[3], 10);
-  return `${month}月${day}日`;
+  // 🚨 文字列の Y-M-D をそのまま読んではいけない (2026-08-31 Codex P2)。
+  //   クーポンの expires_at は 3 台帳とも `toISOString()` = **UTC** で保存される
+  //   (link/welcome/referral の各 issuer)。JST 00:00-09:00 に発行された券は UTC 日付が
+  //   1 日前になるため、literal 読みだと**顧客に 1 日短く伝える**。
+  //   epoch へ直してから +9h し、JST の暦日を読む。'Z' でも '+09:00' でも正しい。
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return iso;
+  const jst = new Date(t + 9 * 60 * 60 * 1000);
+  return `${jst.getUTCMonth() + 1}月${jst.getUTCDate()}日`;
 }
 
 // テスト用 export

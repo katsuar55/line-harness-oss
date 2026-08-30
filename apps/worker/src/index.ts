@@ -226,7 +226,8 @@ export type Env = {
     //   ⚠️ 有効化前に migration 068 (line_referral_coupons) 適用が必要。
     REFERRAL_REWARD_ENABLED?: string;
     // 連携特典クーポン発行 gate (Sprint A-1 2026-08-11): 顧客自身が LINE⇔Shopify 連携を
-    //   完了した瞬間 (sub-link redeem 新規成功 / email OTP verify 成功) に ¥500 クーポン発行。
+    //   完了した瞬間 (sub-link redeem 新規成功 / email OTP verify 成功) に ¥300 クーポン発行
+    //   (DEFAULT_DISCOUNT_VALUE_JPY = 300。ここに ¥500 と書いてあったのは誤り、2026-08-28 訂正)。
     //   'true' で issueLinkRewardCoupon が本番 Shopify に書込 (= 未設定なら no-op、 本番未書込)。
     //   ⚠️ 有効化前に migration 078 (line_link_coupons) 適用が必要。
     LINK_REWARD_ENABLED?: string;

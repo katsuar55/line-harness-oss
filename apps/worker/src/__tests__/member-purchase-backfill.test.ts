@@ -416,11 +416,33 @@ describe('processMemberBackfillSweep — 対象選定と実行', () => {
       'shopify_customer_id IS NOT NULL',
       "a.action = 'loyalty_purchase_backfill.completed'",
       "a.result = 'success'",
-      "a2.result = 'failure'",
+      "a.result = 'failure'",
       `< ${__test__.SWEEP_FAILURE_CAP}`,
     ]) {
       expect(predicateSql, p).toContain(p);
     }
+  });
+
+  // 🚨 2026-08-28 Codex P1。解除 (#282) は member_purchase_events の applied_at を戻すので
+  //    再連携直後のランクは本当に ¥0 に戻る。一方 audit_logs は append-only で解除時も消さない。
+  //    「完了 audit が在るか」だけで見ると**前回の連携の完了記録**が当たり、sweep がその friend を
+  //    二度と拾わなくなる (= 再連携後にインライン backfill が落ちると復旧経路が消える)。
+  //    しかも解除→再連携は**こちらから案内している復旧手順**なので確実に踏む。
+  it('🚨対象述語: 成功も失敗も「直近の連携解除より後」に限定している', async () => {
+    const { db, seen } = sweepDb({ pending: 1, target: { id: 'f9', shopify_customer_id: '777' } });
+    await processMemberBackfillSweep(
+      { DB: db, ...SWEEP_ENV_ON },
+      { getTokenImpl: vi.fn(async () => 't'), backfillImpl: vi.fn(async () => ({ skipped: false, scanned: 0, backfilled: 0, alreadyApplied: 0, errors: 0, totalJpy: 0, capped: false })) as unknown as typeof backfillCustomerOrders },
+    );
+    const predicateSql = seen.find((s) => s.includes('LIMIT 1')) ?? '';
+    // 解除時刻より後、という条件が成功側と失敗側の**両方**に入っていること
+    // 境界の正は**解除の batch 内**で書かれる unlink_boundary (worker 側の unlinked は best-effort)。
+    // 旧記録との互換のため両方見る。
+    expect(predicateSql).toContain("u.action IN ('account_link.unlink_boundary', 'account_link.unlinked')");
+    const occurrences = predicateSql.split('MAX(u.created_at)').length - 1;
+    expect(occurrences).toBe(2);
+    // 解除記録が無い friend を弾かないための既定値
+    expect(predicateSql).toContain("), '')");
   });
 });
 
@@ -472,5 +494,66 @@ describe('backfillCustomerOrders — 完了 audit の result (capped は success
     const fetchImpl = mockOrdersFetch([{ nodes: [order('gid://shopify/Order/1', '1000', '2026-05-01T00:00:00Z')] }]);
     await backfillCustomerOrders(fakeDb, ENV_ON, { ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
     expect(auditCall()).toMatchObject({ result: 'failure' });
+  });
+});
+
+// ============================================================
+// isPurchaseImportPending — 「取り込み中」の判定 (2026-08-28)
+// ============================================================
+import { isPurchaseImportPending } from '../services/member-purchase-backfill.js';
+
+describe('isPurchaseImportPending', () => {
+  function spyDb(row: unknown, opts: { throws?: boolean } = {}) {
+    const sqls: string[] = [];
+    const binds: unknown[][] = [];
+    const db = {
+      prepare(sql: string) {
+        sqls.push(sql);
+        return {
+          bind: (...p: unknown[]) => {
+            binds.push(p);
+            return {
+              first: async () => {
+                if (opts.throws) throw new Error('D1 down');
+                return row;
+              },
+            };
+          },
+        };
+      },
+    } as unknown as D1Database;
+    return { db, sqls, binds };
+  }
+
+  it('完了 audit があれば false (= 取り込み済み)', async () => {
+    const { db } = spyDb({ n: 1 });
+    expect(await isPurchaseImportPending(db, 'f1')).toBe(false);
+  });
+
+  it('完了 audit が無ければ true (= 取り込み中)', async () => {
+    const { db } = spyDb(null);
+    expect(await isPurchaseImportPending(db, 'f1')).toBe(true);
+  });
+
+  it('判定できないときは false (= 余計なことを言わない fail-honest)', async () => {
+    const { db } = spyDb(null, { throws: true });
+    expect(await isPurchaseImportPending(db, 'f1')).toBe(false);
+  });
+
+  // 🚨 Codex P1 (2026-08-28)。解除→再連携は**こちらから案内している復旧手順**なので、
+  //    前回の連携の完了 audit を拾うと「取り込み中」と言わずに ¥0 のランクを断定する。
+  it('🚨 SQL が「直近の連携解除より後」に限定し、friendId を 2 回 bind する', async () => {
+    const { db, sqls, binds } = spyDb(null);
+    await isPurchaseImportPending(db, 'f-target');
+    const sql = sqls[0] ?? '';
+    expect(sql).toContain("a.action = 'loyalty_purchase_backfill.completed'");
+    expect(sql).toContain("u.action IN ('account_link.unlink_boundary', 'account_link.unlinked')");
+    expect(sql).toContain('MAX(u.created_at)');
+    // 解除記録が無い friend を弾かないための既定値
+    expect(sql).toContain("), '')");
+    // 外側 (a.target_id) と内側 (u.target_id) の 2 箇所に同じ friendId が要る。
+    // 1 回しか bind しないと内側が未束縛になり判定が壊れる。
+    expect(binds[0]).toEqual(['f-target', 'f-target']);
+    expect((sql.match(/target_id = \?/g) ?? []).length).toBe(2);
   });
 });

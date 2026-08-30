@@ -143,6 +143,19 @@ export interface VerifyCodeDeps {
   backfillImpl?: typeof backfillCustomerOrders;
   findCustomerImpl?: typeof findShopifyCustomerByEmail;
   setMetafieldImpl?: typeof setCustomerLineUserIdMetafield;
+  /**
+   * true にすると **インライン backfill を行わない** (呼び出し元が責任を持つ)。
+   *
+   * 🚨 なぜ要るか (2026-08-28): backfill とクーポン発行は同一 invocation の subrequest 予算
+   * (無料プラン 50) を共有する。支配項は注文ごとの addPurchaseEvent (~5 D1/新規適用) で、
+   * 直近 12ヶ月に 7 注文以上ある顧客 (= 定期便顧客はほぼ全員) では backfill だけで予算が尽きる。
+   * ここで backfill を先に await すると、後から waitUntil に載る ¥300 連携特典の発行が
+   * 「Too many subrequests」で巻き添えになり、**顧客可視の報酬が無言で消える**。
+   * sub-link (App Proxy / magic-link) 経路は同じ危険を採点ループ HIGH として
+   * 「クーポン発行の**後**に直列化」で潰済み。OTP 経路にだけ保護が無かった。
+   * 完遂は member-backfill-sweep cron (5 分毎・冪等) が保証するので情報は失われない。
+   */
+  deferBackfillToCaller?: boolean;
 }
 
 // ============================================================
@@ -404,19 +417,23 @@ export async function verifyAccountLinkCode(
     console.warn('[account-link] metafield write failed:', err instanceof Error ? err.message : 'unknown');
   }
 
-  // 過去注文 backfill (= gated MEMBER_BACKFILL_ENABLED、 best-effort、 link を壊さない)
+  // 過去注文 backfill (= gated MEMBER_BACKFILL_ENABLED、 best-effort、 link を壊さない)。
+  // deferBackfillToCaller=true のときは**ここで走らせない** — 呼び出し元がクーポン発行の
+  // 後に直列化する (理由は VerifyCodeDeps.deferBackfillToCaller の doc)。
   let backfilled = 0;
-  const backfill = deps.backfillImpl ?? backfillCustomerOrders;
-  try {
-    const bf = await backfill(env.DB, env, {
-      customerId: found.customerId,
-      friendId: input.friendId,
-      accessToken,
-      fetchImpl,
-    });
-    backfilled = bf.backfilled;
-  } catch (err) {
-    console.error('[account-link] backfill failed:', err instanceof Error ? err.message : 'unknown');
+  if (!deps.deferBackfillToCaller) {
+    const backfill = deps.backfillImpl ?? backfillCustomerOrders;
+    try {
+      const bf = await backfill(env.DB, env, {
+        customerId: found.customerId,
+        friendId: input.friendId,
+        accessToken,
+        fetchImpl,
+      });
+      backfilled = bf.backfilled;
+    } catch (err) {
+      console.error('[account-link] backfill failed:', err instanceof Error ? err.message : 'unknown');
+    }
   }
 
   await auditSystem(env.DB, {

@@ -308,7 +308,45 @@ async function callLinkDiscountCreate(
 // main: issueLinkRewardCoupon
 // ============================================================
 
+/**
+ * 想定外の例外でも**必ず audit を 1 行残す**ラッパ (2026-08-28)。
+ *
+ * 🚨 なぜ要るか: 本体の step 2 / 2b / 6 は裸の await で、D1 が
+ * 「Too many subrequests」等で落ちると例外が呼び出し元の .catch に飲まれ、
+ * **クーポン無し・台帳 0 行・audit 0 行・顧客画面は成功**という完全に無音の失敗になる。
+ * この経路は本番実行実績が 0 のまま gate が開いており、初実行が無音で落ちると
+ * 「なぜ出なかったのか」を後から特定する手段が 1 つも無い。
+ */
 export async function issueLinkRewardCoupon(
+  db: D1Database,
+  env: LinkRewardCouponEnv,
+  options: IssueLinkRewardCouponOptions,
+): Promise<IssuedLinkRewardCoupon | null> {
+  try {
+    return await issueLinkRewardCouponInner(db, env, options);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error('[link-reward-issuer] unexpected failure:', errMsg);
+    try {
+      await auditSystem(db, {
+        action: 'link_reward.issue_failed',
+        actorType: 'system',
+        targetType: 'friend',
+        targetId: options.friendId,
+        lineAccountId: options.lineAccountId ?? null,
+        result: 'failure',
+        errorMessage: errMsg,
+        metadata: { stage: 'unexpected', linkPath: options.linkPath },
+      });
+    } catch {
+      // 予算切れなら audit 自体も書けない (auditSystem も D1)。console が最後の記録。
+      console.error('[link-reward-issuer] audit of unexpected failure also failed');
+    }
+    return null;
+  }
+}
+
+async function issueLinkRewardCouponInner(
   db: D1Database,
   env: LinkRewardCouponEnv,
   options: IssueLinkRewardCouponOptions,
