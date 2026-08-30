@@ -30,6 +30,7 @@
 import type { LineClient, FlexContainer, Message } from '@line-crm/line-sdk';
 import { auditSystem } from './audit-logger.js';
 import { WELCOME_VALID_DAYS } from './shopify-coupon-issuer.js';
+import { formatJstDate } from './ai-fact-context.js';
 
 const AGE_GROUPS = ['10s', '20s', '30s', '40s', '50s', '60s', '70+'] as const;
 type AgeGroup = (typeof AGE_GROUPS)[number];
@@ -230,9 +231,11 @@ export function buildMyCouponFlex(
   const expiryLine = (() => {
     const iso = options?.expiresAt;
     if (iso) {
-      const m = /(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-      if (m) {
-        return `${Number.parseInt(m[2], 10)}月${Number.parseInt(m[3], 10)}日まで有効 / naturism-diet.com`;
+      // 🚨 JST の暦日で出す。台帳は UTC 保存なので literal 読みだと 1 日短く伝える
+      //    (2026-08-31 Codex P2)。整形は formatJstDate に一本化する (二重実装は必ずずれる)。
+      const md = formatJstDate(iso);
+      if (md !== iso && md !== '日時未定') {
+        return `${md}まで有効 / naturism-diet.com`;
       }
     }
     const days = Number(options?.validDays);

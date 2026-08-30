@@ -294,11 +294,15 @@ function jstIsoFromDate(date: Date): string {
 /** ISO 8601 timestamp → '6月15日' 等の表示用 string (= 年は省略、 月日のみ) */
 export function formatJstDate(iso: string | null): string {
   if (!iso) return '日時未定';
-  const match = /(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-  if (!match) return iso;
-  const month = Number.parseInt(match[2], 10);
-  const day = Number.parseInt(match[3], 10);
-  return `${month}月${day}日`;
+  // 🚨 文字列の Y-M-D をそのまま読んではいけない (2026-08-31 Codex P2)。
+  //   クーポンの expires_at は 3 台帳とも `toISOString()` = **UTC** で保存される
+  //   (link/welcome/referral の各 issuer)。JST 00:00-09:00 に発行された券は UTC 日付が
+  //   1 日前になるため、literal 読みだと**顧客に 1 日短く伝える**。
+  //   epoch へ直してから +9h し、JST の暦日を読む。'Z' でも '+09:00' でも正しい。
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return iso;
+  const jst = new Date(t + 9 * 60 * 60 * 1000);
+  return `${jst.getUTCMonth() + 1}月${jst.getUTCDate()}日`;
 }
 
 // テスト用 export

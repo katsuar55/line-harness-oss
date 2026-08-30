@@ -426,3 +426,29 @@ describe('ai-fact-context — 枚数だけは常に正確', () => {
     expect(coupons.length).toBeLessThanOrEqual(6); // 表示上限 5 + 判定用 1
   });
 });
+
+// 🚨 Codex P2 (2026-08-31): クーポンの expires_at は 3 台帳とも `toISOString()` = UTC 保存。
+//    文字列の Y-M-D を literal で読むと、JST 00:00-09:00 に発行された券を **1 日短く**伝える。
+describe('formatJstDate — JST の暦日で出す', () => {
+  const f = __test__.formatJstDate;
+
+  it('JST 表記 (+09:00) はそのままの日付', () => {
+    expect(f('2026-05-27T23:59:59+09:00')).toBe('5月27日');
+  });
+
+  it('UTC 表記 (Z) を JST の暦日へ直す', () => {
+    // 2026-09-27T00:00:00Z = JST 9/27 09:00
+    expect(f('2026-09-27T00:00:00.000Z')).toBe('9月27日');
+  });
+
+  it('🚨 境界: JST 早朝発行の券を 1 日短く言わない', () => {
+    // 2026-09-26T20:00:00Z = JST **9/27** 05:00。literal 読みだと「9月26日」になる
+    expect(f('2026-09-26T20:00:00.000Z')).toBe('9月27日');
+    expect(f('2026-09-26T20:00:00.000Z')).not.toBe('9月26日');
+  });
+
+  it('壊れた値・null は従来どおり', () => {
+    expect(f(null)).toBe('日時未定');
+    expect(f('not-a-date')).toBe('not-a-date');
+  });
+});
