@@ -573,7 +573,7 @@ function toHalfWidth(v){
 // 「名前 <a@b.com>」形式の貼り付けも受ける (メールアプリからのコピペで実際に混ざる)
 function normalizeEmailInput(v){
   var s = toHalfWidth(v).trim();
-  var m = /<([^<>]+)>\s*$/.exec(s);
+  var m = /<([^<>]+)>\\s*$/.exec(s);
   if (m) s = m[1].trim();
   return s;
 }
@@ -584,7 +584,14 @@ async function linkRequest(){
   if(emailEl && emailEl.value !== email) emailEl.value = email;
   if(!email){ linkMsg('メールアドレスを入力してください', true); return; }
   // 形式チェックはサーバ往復前に (不正フォーマットの往復待ちをなくす)
-  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ linkMsg('正しいメールアドレスをご入力ください（例: name@example.com）', true); return; }
+  // 🚨 バックスラッシュは **2 つ** 書くこと (2026-09-01 本番障害)。この inline JS は TS の
+  //    template literal から emit されるため、バックスラッシュ + s と書くと TS が潰して
+  //    **英字の s** だけが emit される。その結果「@ と空白以外」のつもりの文字クラスが
+  //    「@ と英字の s 以外」に化け、**s を含むメールアドレスが全員拒否**されていた
+  //    (katsu@… / info@shop… 等)。メール連携は誰も通れない状態だった。
+  //    正規表現は潰れても**構文的に妥当なまま**なので、parse 検証も typecheck も素通りする。
+  //    恒久ガード = liff-inline-regex-escape.test.ts (emit 後の HTML と突き合わせる)。
+  if(!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(email)){ linkMsg('正しいメールアドレスをご入力ください（例: name@example.com）', true); return; }
   linkMsg('', false); setLinkBusy('link-send-btn', true, '送信中…');
   try{
     var res=await fetch(API_BASE+'/api/liff/link/request-code', { method:'POST', headers:linkHeaders(), body:JSON.stringify({ email:email }) });
