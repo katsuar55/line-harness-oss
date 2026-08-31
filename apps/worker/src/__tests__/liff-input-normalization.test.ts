@@ -130,6 +130,18 @@ describe('「押しても無反応」を作らない', () => {
     expect(fb).toContain("createElement('a')");
     expect(fb).toContain('a.href = url');
   });
+
+  // 🚨 mutation で SURVIVED した穴 (2026-08-31)。上の toContain だけだと catch 側の
+  //    呼び出しが残るので通ってしまい、**肝心の「遷移しなかったことを後から検知する」配線**が
+  //    消えても気付けない。例外は出ないが遷移もしない経路 (LIFF の in-app browser 等) は
+  //    この後追いチェックでしか拾えないので、独立に固定する。
+  it('🚨 遷移後に「まだ同じ画面か」を確認する配線がある', () => {
+    expect(fn).toContain('setTimeout(');
+    expect(fn).toContain('location.href !== url');
+    // 後追いの中で fallback を出すこと (setTimeout が在るだけでは意味がない)
+    const after = fn.slice(fn.indexOf('setTimeout('));
+    expect(after).toContain('showLinkNavFallback(url)');
+  });
 });
 
 describe('マイアカウントからも連携を解除できる', () => {
