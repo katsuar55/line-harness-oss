@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { faqAdmin } from '../routes/faq-admin.js';
+import { DEFAULT_FAQ_ENTRIES } from '../services/faq-context.js';
 
 interface FaqRow {
   id: string;
@@ -120,11 +121,13 @@ describe('faq-admin route — CRUD/seed 挙動', () => {
     expect(res.status).toBe(400);
   });
 
-  it('POST /api/admin/faq/seed: 空なら 21 件投入、再実行は skip (冪等)', async () => {
+  it('POST /api/admin/faq/seed: 空なら 20 件投入、再実行は skip (冪等)', async () => {
     const { db } = makeFakeDb();
     const res = await faqAdmin.request('/api/admin/faq/seed', jsonInit('POST'), { DB: db });
     const j = (await res.json()) as { data: { seeded: number; skipped: boolean } };
-    expect(j.data.seeded).toBe(21);
+    // 件数は DEFAULT_FAQ_ENTRIES の実数を見る
+    // (ハードコードだと 1 行増減するたびに 2 ファイルの定数修正が必要になる)
+    expect(j.data.seeded).toBe(DEFAULT_FAQ_ENTRIES.length);
     expect(j.data.skipped).toBe(false);
     const again = await faqAdmin.request('/api/admin/faq/seed', jsonInit('POST'), { DB: db });
     const j2 = (await again.json()) as { data: { seeded: number; skipped: boolean } };

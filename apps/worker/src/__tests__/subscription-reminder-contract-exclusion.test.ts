@@ -28,6 +28,17 @@ const PAST = '2026-08-01T00:00:00.000Z';
  */
 const DUE_JUST_NOW = new Date(Date.now() - 60_000).toISOString();
 
+/**
+ * 「解約したて」の解約日。**相対**にすること (2026-08-31 に実際に壊れた)。
+ *
+ * 🚨 ここは固定日付 (PAST = 2026-08-01) を使っていた。書いた 8/23 時点では 22 日前で
+ * interval_days=30 の沈黙窓の内側だったが、**8/31 にちょうど 30 日前になり窓の外へ出た**。
+ * 結果、コードは 1 行も変えていないのに「解約直後はまだ復活しない」の判定が反転し、
+ * その日から CI が赤になった。上の DUE_JUST_NOW と同じ理由で、窓の内側を意味する日付は
+ * 現在時刻からの相対で置く。
+ */
+const CANCELLED_RECENTLY = new Date(Date.now() - 22 * 86_400_000).toISOString();
+
 function seed(
   db: SqliteDatabase,
   opts: { contractState: 'active' | 'cancelled' | 'paused' | 'none'; cancelledAt?: string },
@@ -47,7 +58,7 @@ function seed(
 
   if (opts.contractState !== 'none') {
     const cancelled =
-      opts.contractState === 'cancelled' ? `'${opts.cancelledAt ?? PAST}'` : 'NULL';
+      opts.contractState === 'cancelled' ? `'${opts.cancelledAt ?? CANCELLED_RECENTLY}'` : 'NULL';
     const paused = opts.contractState === 'paused' ? `'${PAST}'` : 'NULL';
     db.exec(`INSERT INTO subscription_contracts (contract_id, shopify_customer_id, cancelled_at, paused_at, created_at, updated_at)
              VALUES ('C1', 'SC1', ${cancelled}, ${paused}, '${PAST}', '${PAST}')`);
