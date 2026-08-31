@@ -159,7 +159,15 @@ describe('連携 CTA の顧客可視文言 (逐語)', () => {
   it('openAccountLinkCard は 会員証 (/liff/my-rank) の連携カード (#link) へ遷移する', async () => {
     const html = await fetchPortal({ ACCOUNT_LINK_ENABLED: 'true' });
     expect(html).toContain("'/liff/my-rank'");
-    expect(html).toMatch(/function openAccountLinkCard\(\)[\s\S]{0,220}#link/);
+    // 🚨 距離 (先頭から N 文字以内) で見ない (2026-08-31)。コメントを足しただけで落ちるうえ、
+    //    本体が変わっても近くに #link が在れば通ってしまう。**本体を切り出して**照合する。
+    const start = html.indexOf('function openAccountLinkCard()');
+    expect(start).toBeGreaterThan(-1);
+    const end = html.indexOf('\n}', start);
+    expect(end).toBeGreaterThan(start);
+    const body = html.slice(start, end + 2).replace(/\/\/[^\n]*/g, ''); // コメントは落とす
+    expect(body).toContain('/liff/my-rank');
+    expect(body).toContain('#link');
   });
 
   // slk 死路の復旧文言の gate 連動は liff-sublink-fastpath.test.ts で**実行ベース**に検証する

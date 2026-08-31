@@ -1196,10 +1196,16 @@ describe('C3: オンラインストア連携の導線', () => {
 
     expect(home.style.display).toBe('none'); // 空/ホームの導線は消す
     expect(home.getAttribute('data-linked')).toBe('1');
-    // 常設カードは「連携済み」へ差し替え (= 古いボタンが残らない)
+    // 常設カードは「連携済み」へ差し替え (= 古い**連携**ボタンが残らない)
     expect(textOf(account)).toContain('連携済み');
     expect(textOf(account)).not.toContain('ストアにログインして連携');
-    expect(buttonsOf(account)).toHaveLength(0);
+    expect(textOf(account)).not.toContain('メールで連携する');
+    // 🚨 2026-08-31: 解除の入口をここに足した (会員証にしか無く利用者が迷ったため)。
+    //    ガードの意図は「古い連携 CTA が残らない」ことなので、0 個ではなく
+    //    「解除の入口だけが在る」で固定する。
+    const accountBtns = buttonsOf(account);
+    expect(accountBtns).toHaveLength(1);
+    expect(accountBtns[0].textContent).toContain('連携の設定・解除');
     expect((sb.win as Record<string, unknown>).__shopifyLinked).toBe(true);
   });
 
