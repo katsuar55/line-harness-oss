@@ -561,12 +561,30 @@ function linkStep(step){
   if(e) e.style.display=(step==='email')?'block':'none';
   if(c) c.style.display=(step==='code')?'block':'none';
 }
+// 🚨 全角のまま入力された値を半角へ寄せる (2026-08-31 実機で発生)。
+// iOS の日本語キーボードは ＠ や ０-９ を全角のまま入れることがある。そのまま検証すると
+// 「正しいメールアドレスをご入力ください」で弾かれ、利用者は理由が分からず**詰む**。
+// 見た目が同じ文字で拒否されるので、本人には永久に原因が分からない種類の行き止まり。
+function toHalfWidth(v){
+  var s = (v === null || v === undefined) ? '' : String(v);
+  s = s.replace(/[！-～]/g, function(c){ return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); });
+  return s.replace(/\u3000/g, ' ');
+}
+// 「名前 <a@b.com>」形式の貼り付けも受ける (メールアプリからのコピペで実際に混ざる)
+function normalizeEmailInput(v){
+  var s = toHalfWidth(v).trim();
+  var m = /<([^<>]+)>\s*$/.exec(s);
+  if (m) s = m[1].trim();
+  return s;
+}
 async function linkRequest(){
   var emailEl=document.getElementById('link-email');
-  var email=((emailEl && emailEl.value) || '').trim();
+  var email=normalizeEmailInput(emailEl && emailEl.value);
+  // 直した結果を入力欄へ戻す — 何が送られるかを本人が見えるようにする
+  if(emailEl && emailEl.value !== email) emailEl.value = email;
   if(!email){ linkMsg('メールアドレスを入力してください', true); return; }
   // 形式チェックはサーバ往復前に (不正フォーマットの往復待ちをなくす)
-  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ linkMsg('正しいメールアドレスをご入力ください', true); return; }
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ linkMsg('正しいメールアドレスをご入力ください（例: name@example.com）', true); return; }
   linkMsg('', false); setLinkBusy('link-send-btn', true, '送信中…');
   try{
     var res=await fetch(API_BASE+'/api/liff/link/request-code', { method:'POST', headers:linkHeaders(), body:JSON.stringify({ email:email }) });
@@ -586,8 +604,10 @@ async function linkRequest(){
 }
 async function linkVerify(){
   var emailEl=document.getElementById('link-email'), codeEl=document.getElementById('link-code');
-  var email=((emailEl && emailEl.value) || '').trim();
-  var code=((codeEl && codeEl.value) || '').trim();
+  var email=normalizeEmailInput(emailEl && emailEl.value);
+  // 🚨 コードも全角で入りうる (０-９)。数字以外は落とす — 空白やハイフン込みの貼り付けも受ける
+  var code=toHalfWidth(codeEl && codeEl.value).replace(/[^0-9]/g, '');
+  if(codeEl && codeEl.value !== code) codeEl.value = code;
   if(!/^[0-9]{6}$/.test(code)){ linkMsg('6桁の確認コードを入力してください', true); return; }
   linkMsg('', false); setLinkBusy('link-verify-btn', true, '確認中…');
   try{

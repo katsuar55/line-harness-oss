@@ -4342,6 +4342,18 @@ function markShopifyLinked() {
     body.className = 'text-sm text-gray-600';
     body.textContent = '会員特典やお届けのお知らせをLINEでお届けしています。';
     card.appendChild(body);
+    // 🚨 解除の導線をここにも置く (2026-08-31 Katsu 実機 FB)。
+    //   連携済みの表示はこのタブと会員証の両方にあるのに、**解除だけ会員証にしかなかった**。
+    //   利用者は「連携の設定はマイアカウントにある」と考えるので、ここで必ず迷う。
+    //   実際の解除 UI (何を失うかの二段確認) は会員証側に一本化したまま、入口だけ足す。
+    var manage = document.createElement('button');
+    manage.type = 'button';
+    manage.className = 'tap w-full text-xs text-gray-600 mt-3 py-3 rounded-xl';
+    manage.style.background = '#f8fafc';
+    manage.style.border = '1px solid #e2e8f0';
+    manage.textContent = '連携の設定・解除';
+    manage.addEventListener('click', openAccountLinkCard);
+    card.appendChild(manage);
   }
 }
 
@@ -4389,7 +4401,34 @@ function shopifyLinkCtaHtml(lead) {
 // LINE 内で完結するメール OTP 連携 (会員証 /liff/my-rank の連携カード) へ。
 // #link は my-rank 側が読み、連携カードへスクロールして強調する (受け側: liff-my-rank.ts renderLink)。
 function openAccountLinkCard() {
-  window.location.href = API_BASE + '/liff/my-rank' + (isDemoRequested() ? '?demo=1' : '') + '#link';
+  // 🚨 「押しても何も起きない」を作らない (2026-08-31 実機で発生)。
+  //   - 既に同じ URL に居ると href 代入は**ハッシュ移動扱いで無反応**になる → reload する
+  //   - isDemoRequested() 等で throw しても、相対 URL で必ず遷移させる
+  //   - それでも遷移しなかったときは、押せるリンクを画面に出す (無言の行き止まりにしない)
+  var url;
+  try { url = API_BASE + '/liff/my-rank' + (isDemoRequested() ? '?demo=1' : '') + '#link'; }
+  catch (e) { url = '/liff/my-rank#link'; }
+  try {
+    if (location.href === url) { location.reload(); return; }
+    location.assign(url);
+  } catch (e) {
+    try { window.location.href = url; } catch (e2) { showLinkNavFallback(url); return; }
+  }
+  setTimeout(function(){ if (location.href !== url) showLinkNavFallback(url); }, 1200);
+}
+
+// 遷移できなかったときの逃げ道。押せるリンクを出して「無反応」で終わらせない。
+function showLinkNavFallback(url) {
+  if (document.getElementById('link-nav-fallback')) return;
+  var a = document.createElement('a');
+  a.id = 'link-nav-fallback';
+  a.href = url;
+  a.textContent = '会員証を開いて連携する →';
+  a.className = 'tap btn-primary py-3 px-5 rounded-xl text-base font-bold mt-2';
+  a.style.display = 'block';
+  a.style.textAlign = 'center';
+  var host = document.querySelector('[data-shopify-link-cta]') || document.body;
+  host.appendChild(a);
 }
 
 function openShopifyLinkPage() {
