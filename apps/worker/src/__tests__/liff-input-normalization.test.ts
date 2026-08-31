@@ -13,15 +13,41 @@
  * 正規化は**実際に関数を走らせて**判定する (regex の目視では全角の扱いが分からない)。
  */
 import { describe, it, expect } from 'vitest';
+import { Hono } from 'hono';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import type { Env } from '../index.js';
+import { liffMyRank } from '../routes/liff-my-rank.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
-const myRank = readFileSync(join(root, '..', 'routes', 'liff-my-rank.ts'), 'utf8').replace(/\r\n/g, '\n');
+const myRankSource = readFileSync(join(root, '..', 'routes', 'liff-my-rank.ts'), 'utf8').replace(/\r\n/g, '\n');
 const pages = readFileSync(join(root, '..', 'routes', 'liff-pages.ts'), 'utf8').replace(/\r\n/g, '\n');
 
-/** ソースから関数ブロックを切り出して実行できる形にする (ロジックを test 側で再実装しない) */
+/**
+ * 🚨 **実行する関数は emit 後の HTML から取り出す** (2026-09-01 本番障害の教訓)。
+ *
+ * この inline JS は TS の template literal から emit されるため、ソースの文字列と
+ * 実際に動く JS は**別物**になる (ソースの `\\s` → 実行時 `\s`)。
+ * ソースを eval すると「テストは緑なのに本番だけ壊れている」を作る。実際、
+ * メール検証の `[^@\s]` が `[^@s]` に化けて **s を含むアドレスが全員拒否**されていた事故は、
+ * ソースを見るテストでは原理的に捕まえられなかった。
+ *
+ * 構造の照合 (どの関数を呼んでいるか等) はソースで足りるが、**動かして判定するもの**は
+ * 必ず emit 後から取る。
+ */
+const myRank: string = await (async () => {
+  const app = new Hono<Env>();
+  app.route('/', liffMyRank as unknown as Hono<Env>);
+  const res = await app.request('/liff/my-rank', undefined, {
+    LIFF_ID: '1234567890-abcdefgh',
+    ACCOUNT_LINK_ENABLED: 'true',
+  } as unknown as Env['Bindings']);
+  expect(res.status).toBe(200);
+  return (await res.text()).replace(/\r\n/g, '\n');
+})();
+
+/** ブロックを切り出して実行できる形にする (ロジックを test 側で再実装しない) */
 function grab(src: string, header: string): string {
   const start = src.indexOf(header);
   expect(start, header).toBeGreaterThan(-1);
@@ -97,7 +123,7 @@ describe('正規化の配線 (実装が呼んでいること)', () => {
   const code = (t: string) => t.replace(/\/\/[^\n]*/g, '');
 
   it('linkRequest がメールを正規化し、結果を入力欄へ書き戻す', () => {
-    const fn = code(grab(myRank, 'async function linkRequest(){'));
+    const fn = code(grab(myRankSource, 'async function linkRequest(){'));
     expect(fn).toContain('normalizeEmailInput(emailEl && emailEl.value)');
     expect(fn).toContain('emailEl.value = email');
     // 例示つきの案内 (行き止まりにしない)
@@ -105,7 +131,7 @@ describe('正規化の配線 (実装が呼んでいること)', () => {
   });
 
   it('linkVerify がコードを正規化する', () => {
-    const fn = code(grab(myRank, 'async function linkVerify(){'));
+    const fn = code(grab(myRankSource, 'async function linkVerify(){'));
     expect(fn).toContain('toHalfWidth(codeEl && codeEl.value)');
     expect(fn).toContain("replace(/[^0-9]/g, '')");
   });
