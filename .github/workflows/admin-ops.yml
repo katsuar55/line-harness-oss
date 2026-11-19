@@ -98,7 +98,8 @@ name: Admin Ops
 #   delivery-status-diagnose:
 #     read-only。LIFF 配送状況カードのデータ経路を件数のみで診断する:
 #     直近14日の webhook 到達 (topic×status 件数) / 注文の friend 紐付け率 /
-#     financial_status 内訳 / fulfillments の friend 紐付け率。PII なし。
+#     financial_status 内訳 / fulfillments の friend 紐付け率 / 発送の LINE 通知の送信数
+#     (notified_at = gate SHOPIFY_LINE_NOTIFY_ENABLED の実効確認) と注文番号の取れる割合。PII なし。
 #     「注文したのにミニアプリに出ない」時の一次切り分け用 (webhook 未達 vs 紐付け失敗)。
 #   apply-migration-078:
 #     migration 078 (連携特典クーポン台帳 line_link_coupons)。CREATE TABLE + INDEX のみ = additive・冪等。
@@ -1311,8 +1312,27 @@ jobs:
               SUM(CASE WHEN friend_id IS NULL THEN 1 ELSE 0 END) AS unlinked
             FROM shopify_fulfillments
           " | tee -a "$GITHUB_STEP_SUMMARY"
+          # 発送の LINE 通知 (SHOPIFY_LINE_NOTIFY_ENABLED) が実際に送られているか。secret は名前しか
+          # 読めないため、送った印 (notified_at) の件数で gate の実効を見る (件数のみ・PII なし)。
+          echo '### 4. 発送の LINE 通知の送信数 (直近30日) + 注文番号の取れる割合' >> "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            SELECT
+              COUNT(*) AS fulfillments_30d,
+              SUM(CASE WHEN friend_id IS NOT NULL AND tracking_number IS NOT NULL THEN 1 ELSE 0 END) AS notifiable_30d,
+              SUM(CASE WHEN notified_at IS NOT NULL THEN 1 ELSE 0 END) AS notified_30d,
+              MAX(notified_at) AS last_notified_at
+            FROM shopify_fulfillments WHERE created_at >= datetime('now','-30 day')
+          " | tee -a "$GITHUB_STEP_SUMMARY"
+          npx wrangler d1 execute naturism-line-crm --remote --json --command "
+            SELECT
+              COUNT(*) AS orders_30d,
+              SUM(CASE WHEN order_number IS NOT NULL THEN 1 ELSE 0 END) AS with_order_number
+            FROM shopify_orders WHERE created_at >= datetime('now','-30 day')
+          " | tee -a "$GITHUB_STEP_SUMMARY"
           {
             echo '### 読み方'
+            echo '- 4 で notifiable_30d > 0 なのに notified_30d = 0 → 発送の LINE 通知の gate (SHOPIFY_LINE_NOTIFY_ENABLED) が true でない'
+            echo '  (LINE への送信が全部失敗している場合も同じ数字になる。2026-11-19 より前の行は、送れなかったときにも notified_at が付いている)'
             echo '- 1 に orders/create が無い → webhook 未達 (Shopify 側の webhook 登録を確認)'
             echo '- orders_unlinked > 0 → 注文はあるが LINE 友だちに紐付いていない (メール/電話不一致。ストアログイン連携 or backfill-customer-friend-id で解消)'
             echo '- fulfillments unlinked > 0 → 発送レコードの紐付け漏れ (2026-07-30 修正デプロイ後の新規発送では発生しない想定)'

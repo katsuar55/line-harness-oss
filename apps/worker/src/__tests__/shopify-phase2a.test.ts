@@ -12,7 +12,7 @@
  *   8. CRUD: Abandoned Carts (GET / stats)
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 
 // ---------------------------------------------------------------------------
@@ -494,6 +494,206 @@ describe('Shopify Phase 2A Routes', () => {
       // 非同期処理 (waitUntil 相当) の完了を待つ
       await new Promise((r) => setTimeout(r, 20));
       expect(sqls.some((s) => s.includes('UPDATE shopify_fulfillments SET friend_id'))).toBe(true);
+    });
+
+    describe('発送の LINE 通知 (領収書のページへの案内つき・1 発送 1 通)', () => {
+      const pushes: Array<{ url: string; body: { to: string; messages: Array<{ type: string; text: string }> } }> = [];
+      let pushStatus = 200;
+
+      beforeEach(() => {
+        pushes.length = 0;
+        pushStatus = 200;
+        vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+          pushes.push({ url: String(url), body: JSON.parse(String(init?.body ?? '{}')) });
+          return new Response('{}', { status: pushStatus });
+        }));
+      });
+
+      afterEach(() => {
+        vi.unstubAllGlobals();
+      });
+
+      type OrderRow = { email: string | null; phone: string | null; friend_id: string | null; order_number?: number | null };
+
+      /**
+       * SQL を見て答える DB。
+       * - 注文の SELECT は order_number を列に含むときだけ order_number を返す (SELECT から列が消えたら落ちる)
+       * - shopify_fulfillments.notified_at を状態として持ち、条件つき UPDATE の changes を返す
+       */
+      function statefulDb(orderRow: OrderRow | null, initialNotifiedAt: string | null = null) {
+        const state = { notifiedAt: initialNotifiedAt };
+        const db = {
+          prepare: vi.fn((sql: string) => {
+            let args: unknown[] = [];
+            const stmt = {
+              bind: vi.fn((...a: unknown[]) => { args = a; return stmt; }),
+              first: vi.fn(async () => {
+                if (sql.includes('FROM shopify_orders')) {
+                  if (!orderRow) return null;
+                  const { order_number, ...rest } = orderRow;
+                  return /\border_number\b/.test(sql) ? { ...rest, order_number } : rest;
+                }
+                if (sql.includes('FROM friends')) return { line_user_id: 'U_test' };
+                return null;
+              }),
+              all: vi.fn(async () => ({ results: [] })),
+              run: vi.fn(async () => {
+                if (sql.includes('SET notified_at = ?') && sql.includes('notified_at IS NULL')) {
+                  if (state.notifiedAt !== null) return { success: true, meta: { changes: 0 } };
+                  state.notifiedAt = String(args[0]);
+                  return { success: true, meta: { changes: 1 } };
+                }
+                if (sql.includes('SET notified_at = NULL')) {
+                  if (state.notifiedAt === args[2]) {
+                    state.notifiedAt = null;
+                    return { success: true, meta: { changes: 1 } };
+                  }
+                  return { success: true, meta: { changes: 0 } };
+                }
+                return { success: true, meta: { changes: 1 } };
+              }),
+            };
+            return stmt;
+          }),
+        } as unknown as D1Database;
+        return { db, state };
+      }
+
+      /** 非同期処理 (waitUntil) を実際に待ってから返す */
+      async function postFulfillment(targetEnv: Env['Bindings'], overrides: Record<string, unknown> = {}) {
+        mockGetShopifyOrderByShopifyId.mockResolvedValueOnce({ id: 'so-1', shopify_order_id: '5551234567890' });
+        mockUpsertShopifyFulfillment.mockResolvedValueOnce({ id: 'sf-1', shopify_fulfillment_id: 'ful_001' });
+        const rawBody = JSON.stringify(makeFulfillmentBody(overrides));
+        const hmac = await generateShopifyHmac(SHOPIFY_SECRET, rawBody);
+        const pending: Promise<unknown>[] = [];
+        const executionCtx = {
+          waitUntil: (p: Promise<unknown>) => { pending.push(p); },
+          passThroughOnException: () => {},
+          props: {},
+        } as unknown as ExecutionContext;
+        const res = await app.request(
+          '/api/integrations/shopify/webhook/fulfillment',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Shopify-Hmac-Sha256': hmac },
+            body: rawBody,
+          },
+          targetEnv,
+          executionCtx,
+        );
+        expect(res.status).toBe(200);
+        expect(pending).toHaveLength(1); // 待つべき処理を本当に待っている
+        await Promise.all(pending);
+      }
+
+      const order: OrderRow = { email: 'a@example.com', phone: null, friend_id: 'f-99', order_number: 4625 };
+      const envWith = (db: D1Database, notify: string | null = 'true') =>  // null = 未設定
+        createMockEnv({
+          SHOPIFY_WEBHOOK_SECRET: SHOPIFY_SECRET,
+          ...(notify === null ? {} : { SHOPIFY_LINE_NOTIFY_ENABLED: notify }),
+          DB: db,
+        });
+
+      it('1 通の文に追跡番号・注文番号・領収書のページのリンクが入る', async () => {
+        const { db, state } = statefulDb(order);
+        await postFulfillment(envWith(db), { name: '#4625.1' });
+
+        expect(pushes).toHaveLength(1);
+        expect(pushes[0].url).toBe('https://api.line.me/v2/bot/message/push');
+        expect(pushes[0].body.to).toBe('U_test');
+        // 吹き出しは 1 つのまま (通数 = 費用を増やさない)
+        expect(pushes[0].body.messages).toHaveLength(1);
+        const text = pushes[0].body.messages[0].text;
+        expect(text).toContain('追跡番号: TRACK123456');
+        expect(text).toContain('注文番号 (#4625) と、ご注文のときのメールアドレス');
+        expect(text).toContain('https://app.2clover.biz/receipt/lookup');
+        expect(state.notifiedAt).not.toBeNull();
+      });
+
+      it('webhook に name が無ければ D1 の order_number から注文番号を出す', async () => {
+        const { db } = statefulDb(order);
+        await postFulfillment(envWith(db));
+
+        expect(pushes).toHaveLength(1);
+        expect(pushes[0].body.messages[0].text).toContain('注文番号 (#4625) と、');
+      });
+
+      it('注文番号が取れないときは番号の部分を省いてリンクは出す', async () => {
+        const { db } = statefulDb({ ...order, order_number: null });
+        await postFulfillment(envWith(db));
+
+        expect(pushes).toHaveLength(1);
+        const text = pushes[0].body.messages[0].text;
+        expect(text).toContain('領収書が必要なお客様は、注文番号と、');
+        expect(text).toContain('https://app.2clover.biz/receipt/lookup');
+      });
+
+      it('同じ発送の fulfillments/update が続いても 2 通目は送らない', async () => {
+        const { db } = statefulDb(order);
+        await postFulfillment(envWith(db), { name: '#4625.1' });
+        await postFulfillment(envWith(db), { name: '#4625.1', shipment_status: 'in_transit' });
+        await postFulfillment(envWith(db), { name: '#4625.1', shipment_status: 'delivered' });
+
+        expect(pushes).toHaveLength(1);
+      });
+
+      it('既に送った印のある発送には送らない', async () => {
+        const { db } = statefulDb(order, '2026-11-18T10:00:00.000');
+        await postFulfillment(envWith(db), { name: '#4625.1' });
+
+        expect(pushes).toHaveLength(0);
+      });
+
+      it('LINE への送信が失敗したら印を戻し、次の update で送り直す', async () => {
+        const { db, state } = statefulDb(order);
+        pushStatus = 500;
+        await postFulfillment(envWith(db), { name: '#4625.1' });
+        expect(pushes).toHaveLength(1);
+        expect(state.notifiedAt).toBeNull();
+
+        pushStatus = 200;
+        await postFulfillment(envWith(db), { name: '#4625.1', shipment_status: 'in_transit' });
+        expect(pushes).toHaveLength(2);
+        expect(state.notifiedAt).not.toBeNull();
+      });
+
+      it('LINE への送信が例外で落ちても印を戻し、次の update で送り直す', async () => {
+        const { db, state } = statefulDb(order);
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new TypeError('network')));
+        await postFulfillment(envWith(db), { name: '#4625.1' });
+        expect(state.notifiedAt).toBeNull();
+
+        vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+          pushes.push({ url: String(url), body: JSON.parse(String(init?.body ?? '{}')) });
+          return new Response('{}', { status: 200 });
+        }));
+        await postFulfillment(envWith(db), { name: '#4625.1', shipment_status: 'in_transit' });
+        expect(pushes).toHaveLength(1);
+        expect(state.notifiedAt).not.toBeNull();
+      });
+
+      it('SHOPIFY_LINE_NOTIFY_ENABLED が true でなければ送らない (今のまま)', async () => {
+        await postFulfillment(envWith(statefulDb(order).db, null), { name: '#4625.1' });
+        await postFulfillment(envWith(statefulDb(order).db, 'false'), { name: '#4625.1' });
+
+        expect(pushes).toHaveLength(0);
+      });
+
+      it('追跡番号が無ければ送らない (今のまま)', async () => {
+        await postFulfillment(envWith(statefulDb(order).db), { tracking_number: undefined, name: '#4625.1' });
+
+        expect(pushes).toHaveLength(0);
+      });
+
+      it('LINE の友だちにひも付いていなければ送らない (注文が無い / 照合でも見つからない)', async () => {
+        await postFulfillment(envWith(statefulDb(null).db), { name: '#4625.1' });
+        await postFulfillment(
+          envWith(statefulDb({ email: 'nobody@example.com', phone: '09000000000', friend_id: null, order_number: 4625 }).db),
+          { name: '#4625.1' },
+        );
+
+        expect(pushes).toHaveLength(0);
+      });
     });
 
     it('returns 401 with invalid signature', async () => {
