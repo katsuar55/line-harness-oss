@@ -21,6 +21,7 @@
 
 import type { LineClient, FlexContainer, Message } from '@line-crm/line-sdk';
 import { auditSystem } from './audit-logger.js';
+import { tagLineUtmDeep } from './line-utm.js';
 
 /** postback data から月を抽出 (1-12)、 invalid なら null */
 export function parseMonthlyDetailPostback(data: string): number | null {
@@ -1717,7 +1718,11 @@ export async function handleMonthlyDetail(
 
   const displayName = friend.display_name ?? 'お客様';
   const messages = getMonthlyDetailMessages(month, displayName);
-  await lineClient.replyMessage(replyToken, messages);
+  // L-1: 公式ストアへのリンクに計測の印 (utm_campaign=monthly_<月>)
+  await lineClient.replyMessage(
+    replyToken,
+    tagLineUtmDeep(messages, { medium: 'message', campaign: `monthly_${month}` }),
+  );
 
   await auditSystem(db, {
     action: 'monthly_postback.detail_sent',

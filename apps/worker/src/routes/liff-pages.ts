@@ -10,6 +10,7 @@ import { visualV2Css } from './liff-portal-fragments/visual-v2.js';
 import { reorderGuardHtml, reorderGuardCss, reorderGuardJs } from './liff-portal-fragments/reorder-guard.js';
 import { shopAnchorsHtml, shopAnchorTarget, shopGridHtml, shopV2Css, shopV2Js } from './liff-portal-fragments/shop-v2.js';
 import { navStateJs, navStateCss } from './liff-portal-fragments/nav-state.js';
+import { lineUtmJs } from './liff-portal-fragments/line-utm.js';
 import { rankHeroCss, rankHeroHtml, rankHeroJs } from './liff-portal-fragments/rank-hero.js';
 import { BUILD_SHA, buildMetaTag } from '../utils/build-info.js';
 
@@ -868,9 +869,9 @@ function portalPage(
           <h3 class="nxq-rname" id="result-name"></h3>
           <div class="nxq-bars" id="result-scores"></div>
           <p class="nxq-rdesc" id="result-reason"></p>
-          <a id="result-compare-link" href="https://naturism-diet.com/pages/compare" target="_blank" rel="noopener" class="nxq-rcta">もっと詳しくみる <span aria-hidden="true">→</span></a>
+          <a id="result-compare-link" data-utm-content="compare" href="https://naturism-diet.com/pages/compare" target="_blank" rel="noopener" class="nxq-rcta">もっと詳しくみる <span aria-hidden="true">→</span></a>
           <div class="flex gap-2 mt-3">
-            <a id="result-store-link" href="#" target="_blank" class="flex-1 btn-primary py-3 rounded-xl text-sm font-bold text-center block">ご購入はこちら ▶</a>
+            <a id="result-store-link" data-utm-content="product" href="#" target="_blank" class="flex-1 btn-primary py-3 rounded-xl text-sm font-bold text-center block">ご購入はこちら ▶</a>
             <button onclick="retryQuiz()" class="flex-1 py-3 rounded-xl text-sm font-bold border border-gray-300 text-gray-600">もう一度診断する</button>
           </div>
           <!-- PR-A: クイズ結果から LINE会員特典 (マイランク) への in-CRM 導線。「LINEが一番お得」=一本化動機を結果画面で提示 -->
@@ -1840,6 +1841,8 @@ async function bootstrapPortal() {
 ${rankHeroJs()}
 
 ${navStateJs()}
+
+${lineUtmJs()}
 
 // ─── Deep Link (hash-based tab navigation from rich menu) ───
 // 写像はこの 1 表が単一の正 (PR-6 で台帳化予定)。handleDeepLink と bootstrapPortal の
@@ -3755,6 +3758,7 @@ function rosEditItems() {
 // 採点R2 前例踏襲: LINE iOS in-app browser の popup block 対策で liff.openWindow 優先 →
 // window.open は戻り値 null 判定 → 最後は同タブ遷移に degrade
 function openExternalUrl(url) {
+  url = nxLineUtmLast(url);
   try {
     if (typeof liff !== 'undefined' && liff.openWindow) {
       liff.openWindow({ url: url, external: true });
