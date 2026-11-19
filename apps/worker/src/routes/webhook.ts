@@ -32,6 +32,11 @@ import { buildEmailDispatchConfig } from '../services/email-dispatch-config.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { generateAiResponse } from '../services/ai-response.js';
 import { analyzeFoodImage, FoodAnalyzerError } from '../services/food-analyzer.js';
+import {
+  FOOD_AI_PAUSED_REASON,
+  FOOD_AI_PAUSED_REPLY,
+  isForeignFoodAiEnabled,
+} from '../services/foreign-food-ai-gate.js';
 import { downloadLineContent, LineContentError } from '../services/line-content.js';
 import { createAIRouterFromEnv } from '../services/ai-router-factory.js';
 import { issueCouponForFriend, WELCOME_VALID_DAYS } from '../services/shopify-coupon-issuer.js';
@@ -1197,10 +1202,18 @@ async function handleEvent(
       return;
     }
 
+    // 食事データの外国 AI 送信 gate (off = 写真は保存するが解析しない)
+    const foodAiOn = isForeignFoodAiEnabled(env);
+
     // 即座に「解析中」を返信 (LINE は 1 秒応答制限のため reply token は同期消費)
     try {
       await lineClient.replyMessage(event.replyToken, [
-        buildMessage('text', '🍽 食事の写真を受け取りました！解析中です…少々お待ちください 🙏'),
+        buildMessage(
+          'text',
+          foodAiOn
+            ? '🍽 食事の写真を受け取りました！解析中です…少々お待ちください 🙏'
+            : FOOD_AI_PAUSED_REPLY,
+        ),
       ]);
     } catch (err) {
       console.error('Failed to send analyzing reply:', err);
@@ -1331,7 +1344,8 @@ async function handleEvent(
       // Phase 5β-prep adoption batch 2: vision provider 利用可否は ANTHROPIC_API_KEY で早期判定
       // (AIRouter 経由でも同じ判定だが、 router 構築コストを省く + 既存テスト互換性のため
       //  apiKey 直接 check を残す)
-      if (!apiKey) {
+      // gate off のときは解析しないので key の有無は問わない (保存だけ進める)
+      if (foodAiOn && !apiKey) {
         await markFoodLogFailed(db, foodLogId, 'AI解析が無効です');
         await sendErrorPush('AI解析機能は現在ご利用いただけません。');
         return;
@@ -1381,6 +1395,12 @@ async function handleEvent(
         } catch (uploadErr) {
           console.error('R2 upload failed (non-fatal):', uploadErr);
         }
+      }
+
+      // 2.5) gate off: 外国 AI に送らず、保存だけで終える (返信は受信時に済み・push しない)
+      if (!foodAiOn) {
+        await markFoodLogFailed(db, foodLogId, FOOD_AI_PAUSED_REASON);
+        return;
       }
 
       // 3) Vision で解析 (Phase 5β-prep adoption batch 2: AIRouter 経由)

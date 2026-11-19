@@ -13,6 +13,7 @@
 
 import { AIRouter, type AIRouterOptions } from '@line-crm/ai-provider';
 import type { Env } from '../index.js';
+import { foreignFoodAiTaskOverride } from './foreign-food-ai-gate.js';
 
 /**
  * Worker env Bindings から AIRouter を構築。
@@ -37,6 +38,10 @@ export function createAIRouterFromEnv(
       // deepseekApiKey: env.DEEPSEEK_API_KEY,
       // moonshotApiKey: env.MOONSHOT_API_KEY,
     },
-    options,
+    {
+      ...options,
+      // 食事データの外国 AI 送信 gate は、呼び出し側の上書きより常に優先する
+      taskPriority: { ...options.taskPriority, ...foreignFoodAiTaskOverride(env) },
+    },
   );
 }

@@ -209,6 +209,8 @@ function makeImageMessageBody(userId: string, messageId: string): object {
 interface PostOpts {
   anthropicKey?: string | undefined;
   db?: D1Database;
+  /** 食事データの外国 AI 送信 gate。既定 true (= 従来の解析経路を検証)。false で未設定。 */
+  foodAiForeign?: boolean;
 }
 
 async function postImageWebhook(body: object, opts: PostOpts = {}): Promise<Response> {
@@ -226,6 +228,7 @@ async function postImageWebhook(body: object, opts: PostOpts = {}): Promise<Resp
     LINE_LOGIN_CHANNEL_SECRET: '',
     WORKER_URL: 'https://worker.example.com',
     ANTHROPIC_API_KEY: opts.anthropicKey,
+    FOOD_AI_FOREIGN_ENABLED: opts.foodAiForeign === false ? undefined : 'true',
     IMAGES: undefined, // skip R2 path in tests
   };
   const req = new Request('http://localhost/webhook', {
@@ -540,5 +543,46 @@ describe('webhook image message — reply + push counts', () => {
     const pushed = capturedPushes[0].messages[0] as { type: string; text?: string };
     expect(pushed.type).toBe('text');
     expect(pushed.text).toMatch(/解析できません|もう一度/);
+  });
+});
+
+describe('webhook image message — 外国 AI 送信 gate off (FOOD_AI_FOREIGN_ENABLED 未設定)', () => {
+  it('解析せず、保存だけして一時停止の理由で記録する (push しない)', async () => {
+    seedFriend('U_gate_off');
+    downloadLineContentMock.mockResolvedValue({
+      bytes: new Uint8Array([1, 2, 3]),
+      contentType: 'image/jpeg',
+    });
+
+    const res = await postImageWebhook(makeImageMessageBody('U_gate_off', 'msg-gate-off'), {
+      anthropicKey: 'sk-test',
+      foodAiForeign: false,
+    });
+
+    expect(res.status).toBe(200);
+    expect(analyzeFoodImageMock).not.toHaveBeenCalled();
+    expect(downloadLineContentMock).toHaveBeenCalledTimes(1);
+    expect(markFoodLogFailedMock).toHaveBeenCalledTimes(1);
+    expect(String(markFoodLogFailedMock.mock.calls[0][2])).toContain('一時停止中');
+    expect(capturedReplies).toHaveLength(1);
+    expect(JSON.stringify(capturedReplies[0].messages)).toContain('お休みしています');
+    expect(capturedPushes).toHaveLength(0);
+  });
+
+  it('API key が無くても、エラーの push を出さない', async () => {
+    seedFriend('U_gate_off_nokey');
+    downloadLineContentMock.mockResolvedValue({
+      bytes: new Uint8Array([1, 2, 3]),
+      contentType: 'image/jpeg',
+    });
+
+    await postImageWebhook(makeImageMessageBody('U_gate_off_nokey', 'msg-gate-off-2'), {
+      anthropicKey: undefined,
+      foodAiForeign: false,
+    });
+
+    expect(analyzeFoodImageMock).not.toHaveBeenCalled();
+    expect(capturedPushes).toHaveLength(0);
+    expect(String(markFoodLogFailedMock.mock.calls[0][2])).toContain('一時停止中');
   });
 });

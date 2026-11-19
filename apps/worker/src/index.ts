@@ -231,6 +231,10 @@ export type Env = {
     //   'true' で issueLinkRewardCoupon が本番 Shopify に書込 (= 未設定なら no-op、 本番未書込)。
     //   ⚠️ 有効化前に migration 078 (line_link_coupons) 適用が必要。
     LINK_REWARD_ENABLED?: string;
+    // 食事データの外国 AI 送信 gate (2026-11-19): 'true' のときだけ食事写真の解析 (vision) と
+    //   栄養の文章 (nutrition-copy) を外国の AI 事業者に送る。未設定 = 停止 (写真の保存は続ける)。
+    //   利用目的の通知と同意の記録 (GATE-3) が整ってから 'true' にする。
+    FOOD_AI_FOREIGN_ENABLED?: string;
     // クーポン期限 sweep + 紹介 queue T2 活性化 gate (順次活性化 R1, 2026-08-13):
     //   'true' で日次 JST 03:40 に ①3台帳の期限切れ status='expired' 確定 ②stuck activating 復旧
     //   ③待機 queue の次の 1 枚を活性化 + LINE push。⚠️ 有効化前に migration 079 適用が必要。
