@@ -865,6 +865,7 @@ function portalPage(
       <!-- Quiz Result (hidden until complete) — YOUR BEST MATCH + 度数バー (本サイトミラー) -->
       <div id="quiz-result" style="display:none;">
         <div class="card p-6 text-center">
+          <p id="quiz-result-from-site" class="text-xs text-green-700 bg-green-50 rounded-xl py-2 px-3 mb-3 font-bold" style="display:none;">公式サイトの診断結果を受け取りました</p>
           <p class="nxq-eyebrow nxq-eyebrow--result mb-1">YOUR BEST MATCH</p>
           <h3 class="nxq-rname" id="result-name"></h3>
           <div class="nxq-bars" id="result-scores"></div>
@@ -1869,6 +1870,7 @@ function handleDeepLink() {
   if (target && target !== 'home') {
     switchTab(target);
   }
+  if (target === 'quiz') { try { showQuizResultFromSite(); } catch (e) { /* 受け取れなければ通常の診断画面のまま */ } }
   // ホームタブ内のセクションへスクロール
   // 注: 通常の #rank は initLiff で /liff/my-rank へ redirect 済。この分岐は ?demo=1 で redirect を skip した時のみ到達するフォールバック。
   if (hash === 'rank') { setTimeout(function() { var el = document.getElementById('rank-card'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }, 300); }
@@ -5147,7 +5149,22 @@ function scoreQuiz9() {
 function finishQuiz() {
   clearQuizState(); // 完了 → 次回は最初から
   var r = scoreQuiz9();
-  var product = QUIZ_PRODUCTS[r.rec];
+  renderQuizResult(r.rec, r.scores, false);
+
+  // Submit to server (non-blocking、結果表示とかぶらないよう少し遅らせて通知)
+  if (!isDemo && idToken) {
+    api('/api/liff/quiz/submit', { answers: quizAnswers }).then(function(res) {
+      if (apiFailed(res)) { showToast('結果を保存できませんでした'); return; }
+      setTimeout(function() { showToast('診断結果を保存しました'); }, 600);
+    }).catch(function() { showToast('結果を保存できませんでした'); });
+  }
+}
+
+// 結果画面の描画 (ミニアプリで診断した場合と、サイトの診断結果を受け取った場合で共通)。
+// fromSite=true のときは、受け取った旨の一言を出し、先のリンクの計測の印を quiz_site にする。
+function renderQuizResult(rec, scores, fromSite) {
+  var product = QUIZ_PRODUCTS[rec];
+  var r = { rec: rec, scores: scores };
 
   // Display result (entrance animation — .section class は switchTab 管理下に入るため inline で)
   document.getElementById('quiz-progress-bar').style.width = '100%';
@@ -5187,13 +5204,39 @@ function finishQuiz() {
     requestAnimationFrame(function () { requestAnimationFrame(function () { fill.style.width = pct + '%'; }); });
   });
 
-  // Submit to server (non-blocking、結果表示とかぶらないよう少し遅らせて通知)
-  if (!isDemo && idToken) {
-    api('/api/liff/quiz/submit', { answers: quizAnswers }).then(function(res) {
-      if (apiFailed(res)) { showToast('結果を保存できませんでした'); return; }
-      setTimeout(function() { showToast('診断結果を保存しました'); }, 600);
-    }).catch(function() { showToast('結果を保存できませんでした'); });
-  }
+  var resultBox = document.getElementById('quiz-result');
+  var note = document.getElementById('quiz-result-from-site');
+  if (note) note.style.display = fromSite ? 'block' : 'none';
+  if (fromSite) { resultBox.setAttribute('data-utm-campaign', 'quiz_site'); }
+  else { resultBox.removeAttribute('data-utm-campaign'); }
+}
+
+// ─── サイトの診断結果を受け取る (L-2・2026-11-19) ───
+// 公式サイトの30秒診断の結果画面から ?page=quiz&qr=<blue|pink|premium>&qb=&qp=&qm= で開かれる。
+// 渡されるのは結果のタイプと3つの度数の点数だけ (回答・個人情報は来ない)。
+// 🚨 表示だけ。サーバーへは送らない・保存しない (GATE-3 の前の約束)。
+// 読んだら URL から落とす (戻るで同じ画面が繰り返し出ないように)。
+function quizSiteScore(v) {
+  var n = parseInt(v, 10);
+  if (isNaN(n) || n < 0 || n > 99) return 0;
+  return n;
+}
+function showQuizResultFromSite() {
+  var params;
+  try { params = new URLSearchParams(window.location.search); } catch (e) { return false; }
+  var rec = params.get('qr');
+  if (!rec || QUIZ_TYPES.indexOf(rec) === -1) return false;
+  var scores = { blue: quizSiteScore(params.get('qb')), pink: quizSiteScore(params.get('qp')), premium: quizSiteScore(params.get('qm')) };
+  try {
+    var url = new URL(window.location.href);
+    ['qr', 'qb', 'qp', 'qm'].forEach(function (k) { url.searchParams.delete(k); });
+    navReplaceUrl(url.pathname + (url.search || '') + (url.hash || ''));
+  } catch (e) { /* 古い WebView: 表示だけ続ける */ }
+  clearQuizState();
+  document.getElementById('quiz-intro').style.display = 'none';
+  document.getElementById('quiz-steps').style.display = 'none';
+  renderQuizResult(rec, scores, true);
+  return true;
 }
 
 // ─── Init ───

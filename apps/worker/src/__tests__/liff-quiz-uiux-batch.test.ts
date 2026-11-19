@@ -97,12 +97,14 @@ describe('quiz UX batch', () => {
   });
 
   it('結果画面に entrance animation (inline style — switchTab 管理の .section は使わない)', () => {
-    const b = fnBlock('finishQuiz');
+    // 2026-11-19 L-2: 描画は renderQuizResult に分離 (サイトの結果を受け取る経路と共通)
+    expect(fnBlock('finishQuiz')).toContain('renderQuizResult(r.rec, r.scores, false)');
+    const b = fnBlock('renderQuizResult');
     expect(b).toMatch(/quiz-result'\)\.style\.animation/);
   });
 
   it('度数バーは本サイト同一: 固定順 (ブルー度→ピンク度→プレミアム度)・%は合計比・ゼロ除算ガード (2026-07-29 9問版ミラー)', () => {
-    const b = fnBlock('finishQuiz');
+    const b = fnBlock('renderQuizResult');
     expect(b).toContain('QUIZ_TYPES.forEach');
     expect(b).toMatch(/total > 0 \? Math\.round/);
     expect(pages).toMatch(/QUIZ_TYPE_LABELS = \{ blue: 'ブルー度', pink: 'ピンク度', premium: 'プレミアム度' \}/);
@@ -121,7 +123,7 @@ describe('quiz UX batch', () => {
   });
 
   it('esbuild backtick trap: quiz 変更ブロックに backtick を含まない', () => {
-    for (const fn of ['startQuiz', 'retryQuiz', 'cancelQuiz', 'selectQuizOption', 'finishQuiz', 'saveQuizState', 'loadQuizState']) {
+    for (const fn of ['startQuiz', 'retryQuiz', 'cancelQuiz', 'selectQuizOption', 'finishQuiz', 'renderQuizResult', 'showQuizResultFromSite', 'quizSiteScore', 'saveQuizState', 'loadQuizState']) {
       expect(fnBlock(fn), fn).not.toContain('`');
     }
   });
