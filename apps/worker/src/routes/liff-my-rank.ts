@@ -18,6 +18,7 @@ import { issueRankDiscountForFriend } from '../services/rank-discount-issuer.js'
 import { MIN_SUBTOTAL_JPY } from '../services/shopify-coupon-issuer.js';
 import { getActiveLinkRewardCoupon } from '../services/link-reward-coupon-issuer.js';
 import { isPurchaseImportPending } from '../services/member-purchase-backfill.js';
+import { lineUtmJs } from './liff-portal-fragments/line-utm.js';
 
 // 顧客向けストアフロント (= 公式ドメイン)。SHOPIFY_STORE_DOMAIN は Admin/API 用なので使わない。
 const STORE_DOMAIN = 'naturism-diet.com';
@@ -385,6 +386,7 @@ function myRankPage(liffId: string, apiBase: string, storeDomain: string): strin
   </div>
 
 <script>
+${lineUtmJs('rank')}
 const LIFF_ID = '${escapeHtml(liffId)}';
 const API_BASE = '${escapeHtml(apiBase)}';
 let idToken = null;

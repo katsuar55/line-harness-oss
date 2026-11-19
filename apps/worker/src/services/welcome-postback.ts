@@ -31,6 +31,7 @@ import type { LineClient, FlexContainer, Message } from '@line-crm/line-sdk';
 import { auditSystem } from './audit-logger.js';
 import { WELCOME_VALID_DAYS } from './shopify-coupon-issuer.js';
 import { formatJstDate } from './ai-fact-context.js';
+import { tagLineUtmDeep } from './line-utm.js';
 
 const AGE_GROUPS = ['10s', '20s', '30s', '40s', '50s', '60s', '70+'] as const;
 type AgeGroup = (typeof AGE_GROUPS)[number];
@@ -444,7 +445,11 @@ export async function handleWelcomeAgeGroup(
       contents: buildMyCouponFlex(couponCode, couponValue, { validDays: WELCOME_VALID_DAYS }),
     },
   ];
-  await lineClient.replyMessage(replyToken, messages);
+  // L-1: 公式ストアへのリンクに計測の印 (utm_campaign=welcome)
+  await lineClient.replyMessage(
+    replyToken,
+    tagLineUtmDeep(messages, { medium: 'message', campaign: 'welcome' }),
+  );
 
   await auditSystem(db, {
     action: 'friend.demographic_collected',
