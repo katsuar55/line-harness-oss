@@ -3,6 +3,7 @@ import { LineClient } from '@line-crm/line-sdk';
 import { notifyAbandonedCart } from '../services/abandoned-cart-notify.js';
 import { syncOrderToMember } from '../services/shopify-order-member-sync.js';
 import { resolveVariant } from '../services/restock.js';
+import { buildFulfillmentLineMessage, resolveShopifyOrderName } from '../services/fulfillment-line-message.js';
 import {
   upsertAbandonedCart,
   getAbandonedCartByCheckoutId,
@@ -301,9 +302,9 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/fulfillment', async (c) =
       try {
         // 注文からメール/電話を取得
         const order = await db
-          .prepare(`SELECT email, phone, friend_id FROM shopify_orders WHERE shopify_order_id = ?`)
+          .prepare(`SELECT email, phone, friend_id, order_number FROM shopify_orders WHERE shopify_order_id = ?`)
           .bind(shopifyOrderId)
-          .first<{ email: string | null; phone: string | null; friend_id: string | null }>();
+          .first<{ email: string | null; phone: string | null; friend_id: string | null; order_number: number | null }>();
 
         let friendId = order?.friend_id ?? null;
         let lineUserId: string | null = null;
@@ -337,14 +338,35 @@ shopifyPhase2a.post('/api/integrations/shopify/webhook/fulfillment', async (c) =
         // LINE通知送信（SHOPIFY_LINE_NOTIFY_ENABLED が 'true' の場合のみ）
         const notifyEnabled = (c.env as unknown as Record<string, string | undefined>).SHOPIFY_LINE_NOTIFY_ENABLED === 'true';
         if (notifyEnabled && lineUserId && trackingNumber) {
-          const message = `ご注文の商品が発送されました！追跡番号: ${trackingNumber}`;
-          await sendLineMessage(c.env.LINE_CHANNEL_ACCESS_TOKEN, lineUserId, message);
+          // 領収書のページへの案内を同じ吹き出しに入れる (通数を増やさない)
+          const orderName = resolveShopifyOrderName(body.name, order?.order_number);
+          const message = buildFulfillmentLineMessage(trackingNumber, orderName);
 
-          // notified_at を更新
-          await db
-            .prepare(`UPDATE shopify_fulfillments SET notified_at = ?, updated_at = ? WHERE shopify_fulfillment_id = ?`)
-            .bind(jstNow(), jstNow(), shopifyFulfillmentId)
+          // 1 発送につき 1 通 (2026-11-19)。この口は fulfillments/update (配送状況の変化のたび) も
+          // 受けるため、旧実装は同じ発送の通知を状況が変わるたびに送り直していた (通数 = 費用が増える)。
+          // 送る前に notified_at が空の行だけを取り (= create と update が同時に来ても 1 通)、
+          // 送れなかったときは印を戻して次の update で送り直せるようにする。
+          // 取った後に Worker が止まる・戻しの UPDATE が失敗すると印が残り送られないが、
+          // 二重に送るより安全な側に倒している。
+          const claimedAt = jstNow();
+          const claim = await db
+            .prepare(`UPDATE shopify_fulfillments SET notified_at = ?, updated_at = ? WHERE shopify_fulfillment_id = ? AND notified_at IS NULL`)
+            .bind(claimedAt, claimedAt, shopifyFulfillmentId)
             .run();
+          if ((claim.meta?.changes ?? 0) > 0) {
+            let sent = false;
+            try {
+              sent = await sendLineMessage(c.env.LINE_CHANNEL_ACCESS_TOKEN, lineUserId, message);
+            } catch (sendErr) {
+              console.error('Shopify fulfillment LINE push threw:', sendErr instanceof Error ? sendErr.name : 'unknown');
+            }
+            if (!sent) {
+              await db
+                .prepare(`UPDATE shopify_fulfillments SET notified_at = NULL, updated_at = ? WHERE shopify_fulfillment_id = ? AND notified_at = ?`)
+                .bind(jstNow(), shopifyFulfillmentId, claimedAt)
+                .run();
+            }
+          }
         }
       } catch (err) {
         console.error('Shopify fulfillment webhook async error:', err);
